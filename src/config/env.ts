@@ -19,19 +19,13 @@ function cleanEnvString(value: unknown): unknown {
 }
 
 /**
- * Enum-поле, которое НИКОГДА не рушит всю сборку .env: если значение
- * отсутствует, пустое, с опечаткой или в неправильном регистре — тихо
- * откатывается на значение по умолчанию вместо жёсткой ошибки.
- * Это осознанный компромисс для некритичных настроек (типа зоны доставки):
- * лучше сервер поработает с разумным значением по умолчанию, чем упадёт
- * целиком из-за одной опечатки в панели Vercel.
+ * Список допустимых значений зоны доставки — задан как константа с
+ * "as const", чтобы TypeScript видел точный список ('city' | 'kazakhstan' |
+ * 'express'), а не просто "string". Это важно: значение потом передаётся
+ * в calculateKaspiDeliveryCost(), которая принимает именно эти три строки,
+ * а не произвольную строку.
  */
-function softEnum<T extends [string, ...string[]]>(values: T, fallback: T[number]) {
-  return z.preprocess((val) => {
-    const cleaned = cleanEnvString(val);
-    return typeof cleaned === 'string' ? cleaned.toLowerCase() : cleaned;
-  }, z.enum(values).catch(fallback));
-}
+const KASPI_DELIVERY_ZONES = ['city', 'kazakhstan', 'express'] as const;
 
 const envSchema = z.object({
   PORT: z.preprocess(cleanEnvString, z.string().default('3000')),
@@ -44,8 +38,12 @@ const envSchema = z.object({
   KASPI_MERCHANT_UID: z.preprocess(cleanEnvString, z.string().optional().default('')),
   KASPI_API_BASE_URL: z.preprocess(cleanEnvString, z.string().default('https://kaspi.kz/shop/api/v2')),
   // Зона по умолчанию для расчёта тарифа Kaspi Доставки: 'city' | 'kazakhstan' | 'express'.
-  // Мягкая проверка — опечатка здесь не должна ронять весь сервер.
-  KASPI_DEFAULT_DELIVERY_ZONE: softEnum(['city', 'kazakhstan', 'express'], 'kazakhstan'),
+  // Мягкая проверка (preprocess чистит строку + .catch() вместо .default()) —
+  // опечатка или лишний пробел в панели Vercel не должны ронять весь сервер.
+  KASPI_DEFAULT_DELIVERY_ZONE: z.preprocess((val) => {
+    const cleaned = cleanEnvString(val);
+    return typeof cleaned === 'string' ? cleaned.toLowerCase() : cleaned;
+  }, z.enum(KASPI_DELIVERY_ZONES).catch('kazakhstan')),
 
   OZON_CLIENT_ID: z.preprocess(cleanEnvString, z.string().optional().default('')),
   OZON_API_KEY: z.preprocess(cleanEnvString, z.string().optional().default('')),
