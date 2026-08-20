@@ -1,0 +1,160 @@
+// Схема базы данных для учёта юнит-экономики Kaspi Магазин + Ozon
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum Marketplace {
+  KASPI
+  OZON
+  WB
+}
+
+// Карточка товара с себестоимостью — основа для расчёта юнит-экономики.
+// Один товар может продаваться на обеих площадках, поэтому храним оба SKU.
+model Product {
+  id          String   @id @default(cuid())
+  sku         String   @unique // внутренний SKU/артикул
+  name        String
+  costPrice   Float    @default(0) // закупочная себестоимость за единицу
+  packagingCost Float  @default(0) // упаковка/расходники за единицу (опционально)
+  weightKg    Float    @default(0.5) // вес единицы товара — нужен для расчёта тарифа Kaspi Доставки
+  kaspiSku    String?  @unique // артикул товара в Kaspi Магазин
+  kaspiTopCategory String? // категория 1-го уровня в Kaspi (для расчёта комиссии)
+  kaspiLeafCategory String? // самая точная категория товара в Kaspi (для расчёта комиссии)
+  ozonOfferId String?  @unique // offer_id товара в Ozon
+  ozonSku     Int?     // числовой sku Ozon (если известен)
+  wbArticle   String?  @unique // артикул продавца (supplierArticle) в Wildberries
+  wbNmId      Int?     // числовой артикул WB (nmId), для справки
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // --- Автобот снижения цены на Kaspi ---
+  kaspiProductUrl    String?  // ссылка на карточку товара на kaspi.kz (откуда читаем цены конкурентов)
+  autoRepriceEnabled Boolean  @default(false)
+  minPrice           Float?   // минимальная цена — граница, ниже которой бот не опустится
+  repriceStep        Float    @default(1) // на сколько ₸ быть дешевле конкурента
+  currentKaspiPrice  Float?   // текущая цена, которую бот выставил (уходит в фид для Kaspi)
+  lastRepricedAt     DateTime?
+
+  // --- Отзывы (снимок с публичной страницы товара) ---
+  kaspiRating        Float?
+  kaspiReviewCount   Int?
+  reviewsUpdatedAt   DateTime?
+
+  orderItems  OrderItem[]
+  priceHistory PriceHistory[]
+
+  @@index([kaspiSku])
+  @@index([ozonOfferId])
+}
+
+// История изменений цены автоботом — чтобы видеть, что и когда происходило.
+model PriceHistory {
+  id               String   @id @default(cuid())
+  product          Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productId        String
+  oldPrice         Float?
+  newPrice         Float
+  lowestCompetitorPrice Float?
+  hitFloor         Boolean  @default(false) // true, если цену пришлось ограничить minPrice
+  createdAt        DateTime @default(now())
+
+  @@index([productId])
+}
+
+// Заказ с площадки. Финансовые поля — это то, что фактически удержала площадка
+// (комиссия, логистика, эквайринг и т.д.), полученное из финансовых отчётов API.
+model Order {
+  id                     String      @id @default(cuid())
+  marketplace            Marketplace
+  externalId             String      // Kaspi: order code; Ozon: posting_number
+  status                 String
+  orderDate              DateTime
+  deliveryType           String?     // самовывоз/курьер, FBS/FBO и т.п.
+  city                   String?
+  kaspiInternalId        String?     // внутренний id заказа в Kaspi (не code!), нужен для API-запросов на статус
+  numberOfSpace          Int?        // количество мест — указывается при формировании накладной
+  waybillGeneratedAt     DateTime?   // когда сформировали накладную (перевели в ASSEMBLE)
+
+  totalRevenue           Float       @default(0) // сумма продажи (то, что заплатил клиент)
+  marketplaceCommission  Float       @default(0) // комиссия площадки
+  logisticsCost          Float       @default(0) // доставка/логистика/фулфилмент
+  acquiringCost          Float       @default(0) // эквайринг/платёжная комиссия (Kaspi)
+  otherFees              Float       @default(0) // прочие удержания
+  adSpendAllocated        Float       @default(0) // распределённые расходы на рекламу (при пересчёте)
+
+  rawData                String?     // JSON исходного ответа API — для отладки/аудита
+
+  items                  OrderItem[]
+
+  createdAt              DateTime    @default(now())
+  updatedAt               DateTime   @updatedAt
+
+  @@unique([marketplace, externalId])
+  @@index([marketplace, orderDate])
+  @@index([status])
+}
+
+// Позиция заказа. costPrice — себестоимость на момент продажи (снапшот),
+// чтобы изменение цены закупки в будущем не искажало историю.
+model OrderItem {
+  id          String   @id @default(cuid())
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderId     String
+  product     Product? @relation(fields: [productId], references: [id])
+  productId   String?
+
+  externalSku String   // артикул/offer_id как он пришёл с площадки
+  name        String
+  quantity    Int      @default(1)
+  price       Float    // цена продажи за единицу
+  costPrice   Float    @default(0) // себестоимость за единицу (снапшот из Product)
+
+  createdAt   DateTime @default(now())
+
+  @@index([orderId])
+  @@index([productId])
+  @@index([externalSku])
+}
+
+// Расходы на рекламу/продвижение — вносятся вручную, т.к. не всегда доступны через API.
+model AdSpend {
+  id          String      @id @default(cuid())
+  marketplace Marketplace
+  date        DateTime
+  amount      Float
+  note        String?
+  createdAt   DateTime    @default(now())
+}
+
+// Прочие ручные операционные расходы (упаковка оптом, хранение, зарплата и т.п.),
+// которые нужно учитывать в общей юнит-экономике, но которые не приходят из API.
+model ManualExpense {
+  id          String      @id @default(cuid())
+  marketplace Marketplace?
+  category    String      // напр. "Хранение", "ФОТ", "Упаковка"
+  date        DateTime
+  amount      Float
+  note        String?
+  createdAt   DateTime    @default(now())
+}
+
+// Журнал синхронизаций — для мониторинга и отладки интеграций.
+model SyncLog {
+  id              String      @id @default(cuid())
+  marketplace     Marketplace
+  status          String      // RUNNING | SUCCESS | ERROR
+  message         String?
+  ordersProcessed Int         @default(0)
+  startedAt       DateTime    @default(now())
+  finishedAt      DateTime?
+}

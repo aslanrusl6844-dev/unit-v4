@@ -1,0 +1,60 @@
+import express from 'express';
+import cors from 'cors';
+import path from 'path';
+import { logger } from '@/utils/logger';
+import { productsRouter } from '@/routes/products.routes';
+import { ordersRouter } from '@/routes/orders.routes';
+import { analyticsRouter } from '@/routes/analytics.routes';
+import { expensesRouter } from '@/routes/expenses.routes';
+import { syncRouter } from '@/routes/sync.routes';
+import { repricerRouter } from '@/routes/repricer.routes';
+import { priceFeedRouter } from '@/routes/priceFeed.routes';
+import { reviewsRouter } from '@/routes/reviews.routes';
+import { marginCalculatorRouter } from '@/routes/marginCalculator.routes';
+
+/**
+ * Собранное Express-приложение без вызова .listen(). Используется двумя
+ * входными точками:
+ *  - src/server.ts   — для локальной разработки (npm run dev)
+ *  - api/[...slug].ts — serverless-функция на Vercel (в продакшене)
+ *
+ * Статика (public/) отдаётся отсюда только для локальной разработки —
+ * на Vercel её раздаёт сам Vercel напрямую (см. "outputDirectory": "public"
+ * в vercel.json), не доходя до этой функции, так быстрее и бесплатно.
+ */
+const app = express();
+
+app.use(cors());
+app.use(express.json());
+
+app.use((req, _res, next) => {
+  logger.debug(`${req.method} ${req.url}`);
+  next();
+});
+
+app.get('/api/health', (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
+
+app.use('/api/products', productsRouter);
+app.use('/api/orders', ordersRouter);
+app.use('/api/analytics', analyticsRouter);
+app.use('/api/expenses', expensesRouter);
+app.use('/api/sync', syncRouter);
+app.use('/api/repricer', repricerRouter);
+app.use('/api/kaspi', priceFeedRouter);
+app.use('/api/reviews', reviewsRouter);
+app.use('/api/margin-calculator', marginCalculatorRouter);
+
+// Дашборд (статика) — актуально только для локальной разработки, см. комментарий выше.
+app.use(express.static(path.join(__dirname, '..', 'public')));
+app.get('*', (req, res, next) => {
+  if (req.path.startsWith('/api')) return next();
+  res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
+});
+
+// Обработчик ошибок
+app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  logger.error({ err }, 'Необработанная ошибка');
+  res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+});
+
+export default app;

@@ -1,0 +1,15 @@
+{
+  "framework": null,
+  "outputDirectory": "public",
+  "buildCommand": "npm run build && npx prisma migrate deploy",
+  "functions": {
+    "api/[...slug].ts": {
+      "maxDuration": 60,
+      "includeFiles": "node_modules/.prisma/client/**"
+    }
+  },
+  "crons": [
+    { "path": "/api/cron/sync", "schedule": "0 3 * * *" },
+    { "path": "/api/cron/reprice", "schedule": "0 4 * * *" }
+  ]
+}

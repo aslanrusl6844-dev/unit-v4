@@ -1,0 +1,200 @@
+/* ---- Design tokens ----
+   Палитра: тёмный "терминал финансиста" — угольный фон, приглушённый холодный
+   текст, зелёный акцент прибыли и янтарный акцент затрат. Бренд-цвета Kaspi/Ozon
+   используются точечно, только как метки-идентификаторы источника данных.
+------------------------------------------------------------------- */
+:root {
+  --bg: #0E1417;
+  --surface: #161D21;
+  --surface-2: #1C2429;
+  --border: #262F35;
+  --text: #E8EDEE;
+  --text-muted: #89969C;
+  --text-faint: #5C686E;
+
+  --profit: #3ECF8E;
+  --profit-dim: #1F5C41;
+  --expense: #E2A03F;
+  --loss: #E2604A;
+
+  --kaspi: #E2231A;
+  --ozon: #005BFF;
+  --wb: #CB11AB;
+
+  --font-display: 'Space Grotesk', sans-serif;
+  --font-body: 'Inter', sans-serif;
+  --font-mono: 'IBM Plex Mono', monospace;
+
+  --radius: 10px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+.app { max-width: 1320px; margin: 0 auto; padding: 20px 24px 60px; }
+
+/* ---- Topbar ---- */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+  padding: 14px 0 22px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+
+.brand { display: flex; align-items: center; gap: 12px; margin-right: auto; }
+.brand__mark {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--bg);
+  background: var(--profit);
+  border-radius: 6px;
+  width: 34px; height: 34px;
+  display: flex; align-items: center; justify-content: center;
+}
+.brand__text h1 { font-family: var(--font-display); font-size: 17px; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+.brand__sub { font-size: 12px; color: var(--text-muted); }
+
+.mp-filter { display: flex; gap: 6px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 3px; }
+.mp-filter__btn {
+  border: none; background: transparent; color: var(--text-muted);
+  font-family: var(--font-body); font-size: 13px; font-weight: 500;
+  padding: 6px 12px; border-radius: 6px; cursor: pointer;
+  display: flex; align-items: center; gap: 6px;
+}
+.mp-filter__btn.is-active { background: var(--surface-2); color: var(--text); }
+.dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+.dot--kaspi { background: var(--kaspi); }
+.dot--ozon { background: var(--ozon); }
+.dot--wb { background: var(--wb); }
+
+.range-picker { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 13px; }
+.range-picker input[type="date"] {
+  background: var(--surface); border: 1px solid var(--border); color: var(--text);
+  border-radius: 7px; padding: 6px 8px; font-family: var(--font-mono); font-size: 12px;
+}
+.range-picker__presets { display: flex; gap: 4px; margin-left: 4px; }
+.range-picker__presets button {
+  background: transparent; border: 1px solid var(--border); color: var(--text-muted);
+  border-radius: 6px; padding: 5px 8px; font-size: 12px; cursor: pointer;
+}
+.range-picker__presets button.is-active { border-color: var(--profit); color: var(--profit); }
+
+.topbar__actions { display: flex; gap: 8px; }
+.btn {
+  font-family: var(--font-body); font-size: 13px; font-weight: 500;
+  padding: 8px 14px; border-radius: 7px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text); cursor: pointer;
+}
+.btn:hover { border-color: var(--text-faint); }
+.btn--ghost { background: transparent; }
+.btn--accent { background: var(--profit); color: #08170F; border: none; font-weight: 600; }
+.btn--accent:hover { filter: brightness(1.06); }
+
+/* ---- Waterfall (signature element) ---- */
+.waterfall {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px 22px;
+  margin-bottom: 20px;
+}
+.waterfall__loading { color: var(--text-faint); font-family: var(--font-mono); font-size: 13px; }
+.wf-row { display: flex; align-items: stretch; gap: 2px; height: 46px; }
+.wf-seg {
+  position: relative;
+  border-radius: 4px;
+  min-width: 4px;
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden;
+}
+.wf-seg--revenue { background: var(--surface-2); border: 1px solid var(--border); }
+.wf-seg--cost { background: rgba(226,96,74,0.16); border: 1px solid rgba(226,96,74,0.35); }
+.wf-seg--profit { background: rgba(62,207,142,0.18); border: 1px solid rgba(62,207,142,0.45); }
+.wf-labels { display: flex; justify-content: space-between; margin-top: 10px; font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
+.wf-legend { display: flex; gap: 18px; margin-top: 14px; flex-wrap: wrap; }
+.wf-legend__item { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-muted); }
+.wf-legend__swatch { width: 9px; height: 9px; border-radius: 2px; }
+
+/* ---- KPI grid ---- */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.kpi-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+.kpi-card__label { font-size: 11.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.kpi-card__value { font-family: var(--font-mono); font-size: 21px; font-weight: 600; margin-top: 6px; letter-spacing: -0.01em; }
+.kpi-card__value.pos { color: var(--profit); }
+.kpi-card__value.neg { color: var(--loss); }
+.kpi-card--accent { border-color: rgba(62,207,142,0.35); background: linear-gradient(180deg, rgba(62,207,142,0.08), transparent); }
+
+/* ---- Panels ---- */
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  margin-bottom: 20px;
+}
+.panel__head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; flex-wrap: wrap; gap: 8px; }
+.panel__head h2 { font-family: var(--font-display); font-size: 14.5px; font-weight: 600; margin: 0; }
+.panel__hint { font-size: 12px; color: var(--text-faint); }
+.panel__hint code { background: var(--surface-2); padding: 2px 6px; border-radius: 4px; font-family: var(--font-mono); color: var(--text); word-break: break-all; }
+
+.seg { display: flex; gap: 3px; background: var(--surface-2); border-radius: 7px; padding: 3px; }
+.seg button { border: none; background: transparent; color: var(--text-muted); font-size: 12px; padding: 5px 10px; border-radius: 5px; cursor: pointer; }
+.seg button.is-active { background: var(--bg); color: var(--text); }
+
+.two-col { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 20px; }
+@media (max-width: 940px) { .two-col { grid-template-columns: 1fr; } }
+
+/* ---- Tables ---- */
+.table-wrap { overflow-x: auto; }
+.table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.table th {
+  text-align: left; font-weight: 500; color: var(--text-faint);
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em;
+  padding: 8px 10px; border-bottom: 1px solid var(--border);
+}
+.table td { padding: 9px 10px; border-bottom: 1px solid rgba(38,47,53,0.6); font-family: var(--font-mono); font-size: 12.5px; }
+.table td.name-cell { font-family: var(--font-body); }
+.table .num { text-align: right; }
+.table tbody tr:hover { background: var(--surface-2); }
+.table .mp-tag { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-body); font-size: 12px; }
+
+.link-btn { background: none; border: none; color: var(--text-faint); cursor: pointer; font-size: 12px; }
+.link-btn:hover { color: var(--loss); }
+
+/* ---- Forms ---- */
+.inline-form { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+.inline-form input, .inline-form select {
+  background: var(--surface-2); border: 1px solid var(--border); color: var(--text);
+  border-radius: 7px; padding: 8px 10px; font-size: 12.5px; font-family: var(--font-body);
+  flex: 1 1 120px;
+}
+.inline-form button { flex: 0 0 auto; }
+
+.foot { text-align: center; color: var(--text-faint); font-size: 12px; font-family: var(--font-mono); padding-top: 8px; }
+
+/* Профиль ввода: cost price editable */
+.cost-input {
+  width: 90px; background: var(--surface-2); border: 1px solid var(--border);
+  color: var(--text); border-radius: 6px; padding: 4px 6px; font-family: var(--font-mono); font-size: 12px;
+}
