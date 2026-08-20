@@ -1,7 +1,7 @@
 import { Router } from 'express';
-import { prisma } from '@/db/prisma';
-import { env } from '@/config/env';
-import { logger } from '@/utils/logger';
+import { prisma } from '../db/prisma';
+import { env } from '../config/env';
+import { logger } from '../utils/logger';
 
 export const priceFeedRouter = Router();
 

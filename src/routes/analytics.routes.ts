@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import dayjs from 'dayjs';
-import { getByProduct, getSummary, getSummaryByMarketplace, getTimeseries } from '@/services/analytics.service';
-import { MarketplaceName } from '@/types';
+import { getByProduct, getSummary, getSummaryByMarketplace, getTimeseries } from '../services/analytics.service';
+import { MarketplaceName } from '../types';
 
 export const analyticsRouter = Router();
 

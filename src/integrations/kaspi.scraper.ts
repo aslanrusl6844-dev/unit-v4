@@ -1,6 +1,6 @@
 import axios from 'axios';
 import * as cheerio from 'cheerio';
-import { logger } from '@/utils/logger';
+import { logger } from '../utils/logger';
 
 /**
  * Читает страницу товара на kaspi.kz (обычную, публичную — ту же, что видит

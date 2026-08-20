@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { prisma } from '@/db/prisma';
-import { runRepricingCycle } from '@/services/repricer.service';
+import { prisma } from '../db/prisma';
+import { runRepricingCycle } from '../services/repricer.service';
 
 export const repricerRouter = Router();
 

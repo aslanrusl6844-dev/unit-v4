@@ -1,9 +1,9 @@
 import cron from 'node-cron';
 import dayjs from 'dayjs';
-import { env } from '@/config/env';
-import { logger } from '@/utils/logger';
-import { syncKaspiOrders, syncOzonOrders, syncWbOrders } from '@/services/sync.service';
-import { runRepricingCycle } from '@/services/repricer.service';
+import { env } from '../config/env';
+import { logger } from '../utils/logger';
+import { syncKaspiOrders, syncOzonOrders, syncWbOrders } from '../services/sync.service';
+import { runRepricingCycle } from '../services/repricer.service';
 
 /**
  * Регулярная синхронизация заказов из Kaspi и Ozon.

@@ -1,40 +1,81 @@
 import 'dotenv/config';
 import { z } from 'zod';
 
+/**
+ * Убирает лишние пробелы/переносы строк и обрамляющие кавычки — частая
+ * причина странных ошибок валидации, когда переменную окружения копируют
+ * из другого места (Vercel Dashboard, .env файл с кавычками и т.п.).
+ */
+function cleanEnvString(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
+/**
+ * Enum-поле, которое НИКОГДА не рушит всю сборку .env: если значение
+ * отсутствует, пустое, с опечаткой или в неправильном регистре — тихо
+ * откатывается на значение по умолчанию вместо жёсткой ошибки.
+ * Это осознанный компромисс для некритичных настроек (типа зоны доставки):
+ * лучше сервер поработает с разумным значением по умолчанию, чем упадёт
+ * целиком из-за одной опечатки в панели Vercel.
+ */
+function softEnum<T extends [string, ...string[]]>(values: T, fallback: T[number]) {
+  return z.preprocess((val) => {
+    const cleaned = cleanEnvString(val);
+    return typeof cleaned === 'string' ? cleaned.toLowerCase() : cleaned;
+  }, z.enum(values).catch(fallback));
+}
+
 const envSchema = z.object({
-  PORT: z.string().default('3000'),
-  NODE_ENV: z.string().default('development'),
-  DATABASE_URL: z.string(),
+  PORT: z.preprocess(cleanEnvString, z.string().default('3000')),
+  NODE_ENV: z.preprocess(cleanEnvString, z.string().default('development')),
+  // DATABASE_URL по-настоящему обязателен — без него сервер физически не
+  // может работать (это не Zod-проверка, Prisma сам откажется подключаться).
+  DATABASE_URL: z.preprocess(cleanEnvString, z.string().min(1, 'DATABASE_URL не задан')),
 
-  KASPI_API_TOKEN: z.string().optional().default(''),
-  KASPI_MERCHANT_UID: z.string().optional().default(''),
-  KASPI_API_BASE_URL: z.string().default('https://kaspi.kz/shop/api/v2'),
-  // Зона по умолчанию для расчёта тарифа Kaspi Доставки, если у заказа
-  // нет более точных данных о том, доставлялся ли он по городу продавца,
-  // по остальному Казахстану или экспрессом: 'city' | 'kazakhstan' | 'express'
-  KASPI_DEFAULT_DELIVERY_ZONE: z.enum(['city', 'kazakhstan', 'express']).default('kazakhstan'),
+  KASPI_API_TOKEN: z.preprocess(cleanEnvString, z.string().optional().default('')),
+  KASPI_MERCHANT_UID: z.preprocess(cleanEnvString, z.string().optional().default('')),
+  KASPI_API_BASE_URL: z.preprocess(cleanEnvString, z.string().default('https://kaspi.kz/shop/api/v2')),
+  // Зона по умолчанию для расчёта тарифа Kaspi Доставки: 'city' | 'kazakhstan' | 'express'.
+  // Мягкая проверка — опечатка здесь не должна ронять весь сервер.
+  KASPI_DEFAULT_DELIVERY_ZONE: softEnum(['city', 'kazakhstan', 'express'], 'kazakhstan'),
 
-  OZON_CLIENT_ID: z.string().optional().default(''),
-  OZON_API_KEY: z.string().optional().default(''),
-  OZON_API_BASE_URL: z.string().default('https://api-seller.ozon.ru'),
+  OZON_CLIENT_ID: z.preprocess(cleanEnvString, z.string().optional().default('')),
+  OZON_API_KEY: z.preprocess(cleanEnvString, z.string().optional().default('')),
+  OZON_API_BASE_URL: z.preprocess(cleanEnvString, z.string().default('https://api-seller.ozon.ru')),
 
-  WB_API_TOKEN: z.string().optional().default(''),
-  WB_STATS_API_BASE_URL: z.string().default('https://statistics-api.wildberries.ru'),
+  WB_API_TOKEN: z.preprocess(cleanEnvString, z.string().optional().default('')),
+  WB_STATS_API_BASE_URL: z.preprocess(cleanEnvString, z.string().default('https://statistics-api.wildberries.ru')),
 
-  SYNC_CRON: z.string().default('*/30 * * * *'),
-  SYNC_INITIAL_LOOKBACK_DAYS: z.string().default('30'),
+  SYNC_CRON: z.preprocess(cleanEnvString, z.string().default('*/30 * * * *')),
+  SYNC_INITIAL_LOOKBACK_DAYS: z.preprocess(cleanEnvString, z.string().default('30')),
 
   // Автобот снижения цены на Kaspi
-  REPRICER_CRON: z.string().default('*/15 * * * *'),
-  PRICE_FEED_SECRET: z.string().optional().default(''),
+  REPRICER_CRON: z.preprocess(cleanEnvString, z.string().default('*/15 * * * *')),
+  PRICE_FEED_SECRET: z.preprocess(cleanEnvString, z.string().optional().default('')),
 });
 
 const parsed = envSchema.safeParse(process.env);
 
 if (!parsed.success) {
+  const details = parsed.error.flatten().fieldErrors;
   // eslint-disable-next-line no-console
-  console.error('Ошибка конфигурации .env:', parsed.error.flatten().fieldErrors);
-  process.exit(1);
+  console.error('Ошибка конфигурации .env:', details);
+  // ВАЖНО: на Vercel (serverless) НЕЛЬЗЯ вызывать process.exit() — это не
+  // "перезапускает" функцию, а ломает рантайм для всех последующих
+  // запросов до нового деплоя. Вместо этого кидаем обычную ошибку — её
+  // поймает обработчик ошибок Express и вернёт понятный 500 с текстом,
+  // вместо необъяснимого падения всего сервера.
+  throw new Error(
+    `Ошибка конфигурации .env: ${JSON.stringify(details)}. Проверьте переменные окружения в настройках проекта.`,
+  );
 }
 
 export const env = {

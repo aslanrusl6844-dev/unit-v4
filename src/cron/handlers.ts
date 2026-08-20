@@ -1,6 +1,6 @@
 import dayjs from 'dayjs';
-import { syncKaspiOrders, syncOzonOrders, syncWbOrders } from '@/services/sync.service';
-import { runRepricingCycle } from '@/services/repricer.service';
+import { syncKaspiOrders, syncOzonOrders, syncWbOrders } from '../services/sync.service';
+import { runRepricingCycle } from '../services/repricer.service';
 
 /**
  * Синхронизация заказов по всем трём площадкам. Вызывается по HTTP из

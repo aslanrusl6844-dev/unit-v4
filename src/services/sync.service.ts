@@ -1,12 +1,12 @@
-import { prisma } from '@/db/prisma';
-import { kaspiClient } from '@/integrations/kaspi.client';
-import { ozonClient } from '@/integrations/ozon.client';
-import { wbClient } from '@/integrations/wb.client';
-import { calcKaspiCommissionAmount } from '@/integrations/kaspi.categories';
-import { calculateKaspiDeliveryCost } from '@/integrations/kaspi.delivery';
-import { env } from '@/config/env';
-import { logger } from '@/utils/logger';
-import { MarketplaceName, NormalizedOrder } from '@/types';
+import { prisma } from '../db/prisma';
+import { kaspiClient } from '../integrations/kaspi.client';
+import { ozonClient } from '../integrations/ozon.client';
+import { wbClient } from '../integrations/wb.client';
+import { calcKaspiCommissionAmount } from '../integrations/kaspi.categories';
+import { calculateKaspiDeliveryCost } from '../integrations/kaspi.delivery';
+import { env } from '../config/env';
+import { logger } from '../utils/logger';
+import { MarketplaceName, NormalizedOrder } from '../types';
 
 interface ResolvedProductInfo {
   productId?: string;

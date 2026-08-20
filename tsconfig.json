@@ -14,11 +14,7 @@
     "declaration": false,
     "sourceMap": true,
     "noUnusedLocals": false,
-    "noUnusedParameters": false,
-    "baseUrl": ".",
-    "paths": {
-      "@/*": ["src/*"]
-    }
+    "noUnusedParameters": false
   },
   "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "dist"]
