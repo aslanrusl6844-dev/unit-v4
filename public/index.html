@@ -170,7 +170,13 @@
         <div class="panel">
           <div class="panel__head">
             <h2>Каталог товаров</h2>
+            <button class="btn btn--ghost" id="syncCatalogBtn">↻ Синхронизировать каталог</button>
           </div>
+          <p class="panel__hint">
+            У Kaspi нет API-метода «отдай список всех моих товаров» (только методы добавления новых) —
+            поэтому каталог собирается из реальных заказов: при синхронизации товары, которых ещё нет
+            в базе, создаются автоматически (себестоимость 0 — обязательно укажи её вручную).
+          </p>
           <div class="seg" id="productStatusTabs">
             <button class="is-active" data-filter="active">Активные</button>
             <button data-filter="inactive">Сняты с продажи</button>
@@ -181,7 +187,8 @@
               <thead>
                 <tr>
                   <th>SKU</th><th>Название</th><th>Kaspi (арт. / категория)</th><th>Ozon</th><th>WB</th>
-                  <th class="num">Себестоимость</th><th>Активен</th><th></th>
+                  <th class="num">Себестоимость</th><th class="num">Комиссия</th><th class="num">Маржа (оценка)</th>
+                  <th>Активен</th><th></th>
                 </tr>
               </thead>
               <tbody></tbody>
@@ -302,9 +309,32 @@
 
       <!-- ============ ДЕМПИНГ ============ -->
       <section class="page" id="page-demping" hidden>
-        <div class="page__head"><h1>Демпинг</h1><p>Автоматическое снижение цены на Kaspi ниже конкурента, с защитой минимальной цены.</p></div>
+        <div class="page__head"><h1>Демпинг</h1><p>Автоматическое снижение цены на Kaspi по выбранной стратегии, с защитой минимальной цены.</p></div>
 
         <div class="kpi-grid" id="dempingStats"></div>
+
+        <div class="panel">
+          <div class="panel__head"><h2>Добавить правило</h2></div>
+          <form class="inline-form" id="repricerRuleForm">
+            <select name="productId" id="repricerProductSelect" required>
+              <option value="">Выбери товар (с артикулом Kaspi)...</option>
+            </select>
+            <input name="kaspiProductUrl" type="url" placeholder="Ссылка на карточку товара kaspi.kz" required style="flex:2 1 220px" />
+            <select name="repriceStrategy">
+              <option value="FIRST_PLACE">Быть на 1-м месте</option>
+              <option value="MATCH_FIRST">Цена конкурента на 1 месте</option>
+              <option value="STICK_TO_FIRST">Прижиматься к первому</option>
+              <option value="SECOND_PLACE">Быть 2-м</option>
+            </select>
+            <input name="minPrice" type="number" step="1" placeholder="Мин. цена" required />
+            <input name="maxPrice" type="number" step="1" placeholder="Макс. цена (опц.)" />
+            <input name="repriceStep" type="number" step="1" placeholder="Шаг" value="1" />
+            <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--text-muted)">
+              <input type="checkbox" name="autoRepriceEnabled" checked /> Активно
+            </label>
+            <button class="btn btn--accent" type="submit">Добавить правило</button>
+          </form>
+        </div>
 
         <div class="panel">
           <div class="panel__head">
@@ -318,7 +348,10 @@
           <div class="table-wrap">
             <table class="table" id="repricerTable">
               <thead>
-                <tr><th>Товар</th><th>Ссылка на Kaspi</th><th class="num">Мин. цена</th><th class="num">Шаг</th><th class="num">Текущая цена</th><th>Бот</th></tr>
+                <tr>
+                  <th>Товар</th><th>Стратегия</th><th class="num">Мин</th><th class="num">Макс</th>
+                  <th class="num">Шаг</th><th class="num">Текущая цена</th><th>Активно</th>
+                </tr>
               </thead>
               <tbody></tbody>
             </table>
@@ -341,7 +374,25 @@
 
       <!-- ============ НАСТРОЙКИ ============ -->
       <section class="page" id="page-settings" hidden>
-        <div class="page__head"><h1>Настройки</h1><p>Статус подключения к площадкам и служебные ссылки.</p></div>
+        <div class="page__head"><h1>Настройки</h1><p>Подключение к Kaspi-магазину, статус площадок и служебные ссылки.</p></div>
+
+        <div class="panel">
+          <div class="panel__head"><h2>Магазин Kaspi</h2></div>
+          <div id="kaspiStoreCurrent" class="panel__hint" style="margin-bottom:12px">Магазин ещё не добавлен.</div>
+          <form class="inline-form" id="kaspiStoreForm">
+            <input name="name" placeholder="Название магазина" required />
+            <input name="bin" placeholder="БИН (необязательно)" />
+            <input name="contactPhone" placeholder="Телефон (необязательно)" />
+            <input name="contactEmail" type="email" placeholder="Email (необязательно)" />
+            <input name="apiToken" type="password" placeholder="Токен (X-Auth-Token) — обязательно" required style="flex:2 1 240px" />
+            <input name="merchantUid" placeholder="Merchant ID (необязательно)" />
+            <button class="btn btn--accent" type="submit">Сохранить магазин</button>
+          </form>
+          <p class="panel__hint">
+            Токен создаётся в кабинете Kaspi: Магазин на Kaspi.kz → Настройки → API.
+            После сохранения он используется для всех запросов к Kaspi Seller API вместо переменной окружения.
+          </p>
+        </div>
 
         <div class="panel">
           <div class="panel__head"><h2>Подключение к площадкам</h2></div>

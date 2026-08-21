@@ -2,6 +2,7 @@ import { Router } from 'express';
 import dayjs from 'dayjs';
 import { prisma } from '../db/prisma';
 import { syncKaspiOrders, syncOzonOrders, syncWbOrders } from '../services/sync.service';
+import { kaspiClient } from '../integrations/kaspi.client';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
 
@@ -53,7 +54,7 @@ syncRouter.get('/logs', async (_req, res) => {
 
 syncRouter.get('/status', async (_req, res) => {
   res.json({
-    kaspi: { configured: env.kaspi.isConfigured },
+    kaspi: { configured: await kaspiClient.isConfigured() },
     ozon: { configured: env.ozon.isConfigured },
     wb: { configured: env.wb.isConfigured },
     cron: env.sync.cron,

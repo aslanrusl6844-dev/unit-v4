@@ -352,10 +352,15 @@ function orderActionCell(o) {
 // =====================================================================
 let productsFormWired = false;
 let allProductsCache = [];
+let kaspiRatesCache = null; // { "Категория": 10.9, ... } — для оценки маржи в таблице
 
 async function loadKaspiCategoriesIntoSelect(selectEl) {
-  if (!selectEl || selectEl.dataset.loaded) return;
   const categories = await api('/products/kaspi-categories');
+  if (!kaspiRatesCache) {
+    kaspiRatesCache = {};
+    categories.forEach((c) => { kaspiRatesCache[c.name] = c.rate; });
+  }
+  if (!selectEl || selectEl.dataset.loaded) return;
   categories
     .sort((a, b) => a.name.localeCompare(b.name, 'ru'))
     .forEach((c) => {
@@ -406,6 +411,20 @@ function wireProductsFormOnce() {
     btn.classList.add('is-active');
     renderProductsAdminTable();
   });
+
+  document.getElementById('syncCatalogBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('syncCatalogBtn');
+    btn.textContent = '…'; btn.disabled = true;
+    try {
+      const res = await api('/sync/kaspi?days=30', { method: 'POST' });
+      alert(`Синхронизация завершена. Обработано заказов Kaspi: ${res.ordersProcessed ?? 0}. Новые товары (если были) появились в списке ниже.`);
+      await loadProductsAdminTable();
+    } catch (err) {
+      alert('Ошибка синхронизации: ' + err.message);
+    } finally {
+      btn.textContent = '↻ Синхронизировать каталог'; btn.disabled = false;
+    }
+  });
 }
 
 async function loadProductsPage() {
@@ -419,6 +438,19 @@ async function loadProductsAdminTable() {
   renderProductsAdminTable();
 }
 
+/** Грубая оценка комиссии/маржи по товару — только для отображения в таблице,
+ *  не учитывает логистику и НДС (для точного расчёта — «Калькулятор маржи»). */
+function estimateUnitEconomics(p) {
+  const refPrice = p.currentKaspiPrice;
+  if (!refPrice || !p.kaspiTopCategory || !kaspiRatesCache) return null;
+  const rate = kaspiRatesCache[p.kaspiTopCategory];
+  if (rate == null) return null;
+  const commission = (refPrice * rate) / 100;
+  const margin = refPrice - commission - (p.costPrice + (p.packagingCost || 0));
+  const marginPct = refPrice > 0 ? (margin / refPrice) * 100 : 0;
+  return { commission, margin, marginPct };
+}
+
 function renderProductsAdminTable() {
   const filter = document.querySelector('#productStatusTabs button.is-active')?.dataset.filter || 'active';
   let products = allProductsCache;
@@ -427,10 +459,12 @@ function renderProductsAdminTable() {
 
   const tbody = document.querySelector('#productsAdminTable tbody');
   if (!products.length) {
-    tbody.innerHTML = `<tr><td colspan="8" style="color:var(--text-faint)">Товаров в этой категории нет</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" style="color:var(--text-faint)">Товаров в этой категории нет</td></tr>`;
     return;
   }
-  tbody.innerHTML = products.map((p) => `
+  tbody.innerHTML = products.map((p) => {
+    const ue = estimateUnitEconomics(p);
+    return `
     <tr data-id="${p.id}">
       <td class="name-cell">${p.sku}</td>
       <td class="name-cell">${p.name}</td>
@@ -438,10 +472,13 @@ function renderProductsAdminTable() {
       <td>${p.ozonOfferId ?? '—'}</td>
       <td>${p.wbArticle ?? '—'}</td>
       <td class="num"><input class="cost-input" type="number" step="0.01" value="${p.costPrice}" data-field="costPrice" /></td>
+      <td class="num">${ue ? fmtMoney(ue.commission) : '—'}</td>
+      <td class="num ${ue ? (ue.margin >= 0 ? 'pos' : 'neg') : ''}">${ue ? `${fmtMoney(ue.margin)} (${ue.marginPct.toFixed(0)}%)` : '—'}</td>
       <td><input type="checkbox" data-field="active" ${p.active !== false ? 'checked' : ''} /></td>
       <td><button class="link-btn" data-action="delete">✕</button></td>
     </tr>
-  `).join('');
+  `;
+  }).join('');
 
   tbody.querySelectorAll('input[data-field="costPrice"]').forEach((input) => {
     input.addEventListener('change', async (e) => {
@@ -651,8 +688,56 @@ async function loadMarginPage() {
 // =====================================================================
 // ДЕМПИНГ
 // =====================================================================
-let repricerRowsWired = false;
 let runRepricerBtnWired = false;
+let repricerRuleFormWired = false;
+
+const STRATEGY_LABELS = {
+  FIRST_PLACE: 'Быть на 1-м месте',
+  MATCH_FIRST: 'Цена конкурента на 1 месте',
+  STICK_TO_FIRST: 'Прижиматься к первому',
+  SECOND_PLACE: 'Быть 2-м',
+};
+
+function wireRepricerRuleFormOnce(kaspiProducts) {
+  const select = document.getElementById('repricerProductSelect');
+  // Список товаров для выбора обновляем каждый раз (могли добавиться новые),
+  // но сам обработчик submit вешаем только один раз.
+  const currentValue = select.value;
+  select.innerHTML = '<option value="">Выбери товар (с артикулом Kaspi)...</option>' +
+    kaspiProducts.map((p) => `<option value="${p.id}">${p.name} (${p.kaspiSku})</option>`).join('');
+  if (currentValue) select.value = currentValue;
+
+  if (repricerRuleFormWired) return;
+  repricerRuleFormWired = true;
+
+  document.getElementById('repricerRuleForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const productId = fd.get('productId');
+    if (!productId) { alert('Выбери товар'); return; }
+
+    const payload = {
+      kaspiProductUrl: fd.get('kaspiProductUrl'),
+      repriceStrategy: fd.get('repriceStrategy'),
+      minPrice: Number(fd.get('minPrice')),
+      maxPrice: fd.get('maxPrice') ? Number(fd.get('maxPrice')) : null,
+      repriceStep: Number(fd.get('repriceStep')) || 1,
+      autoRepriceEnabled: fd.get('autoRepriceEnabled') === 'on',
+    };
+
+    const btn = e.target.querySelector('button[type="submit"]');
+    btn.textContent = '…'; btn.disabled = true;
+    try {
+      await api(`/repricer/${productId}/settings`, { method: 'PUT', body: JSON.stringify(payload) });
+      e.target.reset();
+      await loadDempingPage();
+    } catch (err) {
+      alert('Не удалось сохранить правило: ' + err.message);
+    } finally {
+      btn.textContent = 'Добавить правило'; btn.disabled = false;
+    }
+  });
+}
 
 async function loadDempingPage() {
   document.getElementById('priceFeedUrl').textContent = `${window.location.origin}/api/kaspi/price-feed.xml?token=ВАШ_PRICE_FEED_SECRET`;
@@ -676,8 +761,9 @@ async function loadDempingPage() {
 
   const products = await api('/products');
   const kaspiProducts = products.filter((p) => p.kaspiSku);
+  wireRepricerRuleFormOnce(kaspiProducts);
 
-  const total = kaspiProducts.length;
+  const total = kaspiProducts.filter((p) => p.kaspiProductUrl).length;
   const active = kaspiProducts.filter((p) => p.autoRepriceEnabled).length;
   const ready = kaspiProducts.filter((p) => p.autoRepriceEnabled && p.kaspiProductUrl && p.minPrice != null).length;
 
@@ -688,16 +774,22 @@ async function loadDempingPage() {
   ]);
 
   const tbody = document.querySelector('#repricerTable tbody');
-  if (!kaspiProducts.length) {
-    tbody.innerHTML = `<tr><td colspan="6" style="color:var(--text-faint)">Сначала добавь товары с артикулом Kaspi в разделе «Товары»</td></tr>`;
+  const rulesProducts = kaspiProducts.filter((p) => p.kaspiProductUrl || p.minPrice != null);
+  if (!rulesProducts.length) {
+    tbody.innerHTML = `<tr><td colspan="7" style="color:var(--text-faint)">Правил ещё нет — добавь первое выше</td></tr>`;
     return;
   }
 
-  tbody.innerHTML = kaspiProducts.map((p) => `
+  tbody.innerHTML = rulesProducts.map((p) => `
     <tr data-id="${p.id}">
-      <td class="name-cell">${p.name}</td>
-      <td><input class="cost-input" style="width:180px" type="url" placeholder="https://kaspi.kz/shop/p/..." value="${p.kaspiProductUrl ?? ''}" data-field="kaspiProductUrl" /></td>
+      <td class="name-cell">${p.name}<br><span style="color:var(--text-faint);font-size:11px">${p.kaspiProductUrl ?? 'ссылка не указана'}</span></td>
+      <td>
+        <select class="cost-input" style="width:170px" data-field="repriceStrategy">
+          ${Object.entries(STRATEGY_LABELS).map(([val, label]) => `<option value="${val}" ${p.repriceStrategy === val ? 'selected' : ''}>${label}</option>`).join('')}
+        </select>
+      </td>
       <td class="num"><input class="cost-input" type="number" step="1" placeholder="—" value="${p.minPrice ?? ''}" data-field="minPrice" /></td>
+      <td class="num"><input class="cost-input" type="number" step="1" placeholder="—" value="${p.maxPrice ?? ''}" data-field="maxPrice" /></td>
       <td class="num"><input class="cost-input" type="number" step="1" value="${p.repriceStep ?? 1}" data-field="repriceStep" /></td>
       <td class="num">${p.currentKaspiPrice ? fmtMoney(p.currentKaspiPrice) : '—'}</td>
       <td><input type="checkbox" data-field="autoRepriceEnabled" ${p.autoRepriceEnabled ? 'checked' : ''} /></td>
@@ -706,15 +798,14 @@ async function loadDempingPage() {
 
   tbody.querySelectorAll('tr').forEach((row) => {
     const id = row.dataset.id;
-    row.querySelectorAll('input').forEach((input) => {
-      const evt = input.type === 'checkbox' ? 'change' : 'blur';
+    row.querySelectorAll('input, select').forEach((input) => {
+      const evt = (input.type === 'checkbox' || input.tagName === 'SELECT') ? 'change' : 'blur';
       input.addEventListener(evt, async () => {
         const field = input.dataset.field;
         let value = input.type === 'checkbox' ? input.checked : input.value;
         if (input.type === 'number') value = value === '' ? null : Number(value);
-        if (input.type === 'url' && value === '') value = null;
         await api(`/repricer/${id}/settings`, { method: 'PUT', body: JSON.stringify({ [field]: value }) });
-        if (input.dataset.field === 'autoRepriceEnabled') await loadDempingPage();
+        if (field === 'autoRepriceEnabled') await loadDempingPage();
       });
     });
   });
@@ -757,7 +848,55 @@ async function loadNotificationsPage() {
 // =====================================================================
 // НАСТРОЙКИ
 // =====================================================================
+let kaspiStoreFormWired = false;
+
+function wireKaspiStoreFormOnce() {
+  if (kaspiStoreFormWired) return;
+  kaspiStoreFormWired = true;
+
+  document.getElementById('kaspiStoreForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const payload = {
+      name: fd.get('name'),
+      bin: fd.get('bin') || null,
+      contactPhone: fd.get('contactPhone') || null,
+      contactEmail: fd.get('contactEmail') || null,
+      apiToken: fd.get('apiToken'),
+      merchantUid: fd.get('merchantUid') || null,
+    };
+    const btn = e.target.querySelector('button[type="submit"]');
+    btn.textContent = '…'; btn.disabled = true;
+    try {
+      await api('/settings/kaspi-store', { method: 'POST', body: JSON.stringify(payload) });
+      alert('Магазин сохранён. Все запросы к Kaspi теперь используют этот токен.');
+      e.target.reset();
+      await loadKaspiStoreCurrent();
+      await refreshSyncStatusMini();
+    } catch (err) {
+      alert('Не удалось сохранить магазин: ' + err.message);
+    } finally {
+      btn.textContent = 'Сохранить магазин'; btn.disabled = false;
+    }
+  });
+}
+
+async function loadKaspiStoreCurrent() {
+  const store = await api('/settings/kaspi-store');
+  const el = document.getElementById('kaspiStoreCurrent');
+  if (!store) {
+    el.textContent = 'Магазин ещё не добавлен — заполни форму ниже.';
+    return;
+  }
+  el.innerHTML = `Текущий магазин: <strong style="color:var(--text)">${store.name}</strong>` +
+    (store.bin ? ` · БИН ${store.bin}` : '') +
+    ` · токен: <code>${store.apiTokenMasked}</code>`;
+}
+
 async function loadSettingsPage() {
+  wireKaspiStoreFormOnce();
+  await loadKaspiStoreCurrent();
+
   const status = await api('/sync/status');
 
   document.querySelector('#connectionsTable tbody').innerHTML = `

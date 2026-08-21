@@ -16,7 +16,7 @@ interface ResolvedProductInfo {
   kaspiLeafCategory?: string;
 }
 
-async function resolveProductInfo(marketplace: MarketplaceName, externalSku: string): Promise<ResolvedProductInfo> {
+async function resolveProductInfo(marketplace: MarketplaceName, externalSku: string, itemName: string): Promise<ResolvedProductInfo> {
   const where =
     marketplace === 'KASPI'
       ? { kaspiSku: externalSku }
@@ -26,7 +26,36 @@ async function resolveProductInfo(marketplace: MarketplaceName, externalSku: str
 
   const product = await prisma.product.findFirst({ where });
 
-  if (!product) return { costPrice: 0, weightKg: 0.5 };
+  if (!product) {
+    // Товар с таким SKU ещё не заведён вручную — создаём его автоматически
+    // на основе данных заказа. У Kaspi нет API-эндпоинта "отдай мне список
+    // всех моих товаров" (только методы ДОБАВЛЕНИЯ новых товаров), поэтому
+    // это самый честный способ получить каталог: он собирается из реальных
+    // продаж. Себестоимость по умолчанию 0 — обязательно укажите её в
+    // разделе «Товары», иначе юнит-экономика будет считать нулевую себестоимость.
+    try {
+      const created = await prisma.product.create({
+        data: {
+          sku: `${marketplace.toLowerCase()}-${externalSku}`,
+          name: itemName || externalSku,
+          costPrice: 0,
+          ...(marketplace === 'KASPI' ? { kaspiSku: externalSku } : {}),
+          ...(marketplace === 'OZON' ? { ozonOfferId: externalSku } : {}),
+          ...(marketplace === 'WB' ? { wbArticle: externalSku } : {}),
+        },
+      });
+      logger.info(`[Каталог] Автоматически создан товар из заказа: ${created.name} (${marketplace} ${externalSku})`);
+      return { productId: created.id, costPrice: 0, weightKg: created.weightKg };
+    } catch (err) {
+      // Гонка при параллельной синхронизации (SKU уже создан другим заказом
+      // в это же мгновение) — просто ищем ещё раз, не считаем это ошибкой.
+      const retry = await prisma.product.findFirst({ where });
+      if (retry) return { productId: retry.id, costPrice: retry.costPrice + retry.packagingCost, weightKg: retry.weightKg };
+      logger.warn({ err }, '[Каталог] Не удалось автоматически создать товар');
+      return { costPrice: 0, weightKg: 0.5 };
+    }
+  }
+
   return {
     productId: product.id,
     costPrice: product.costPrice + product.packagingCost,
@@ -73,7 +102,7 @@ function enrichKaspiFinancials(
 async function persistOrder(order: NormalizedOrder): Promise<void> {
   const itemsWithCost = await Promise.all(
     order.items.map(async (item) => {
-      const info = await resolveProductInfo(order.marketplace, item.externalSku);
+      const info = await resolveProductInfo(order.marketplace, item.externalSku, item.name);
       return { ...item, ...info };
     }),
   );
@@ -143,7 +172,7 @@ async function persistOrder(order: NormalizedOrder): Promise<void> {
 }
 
 export async function syncKaspiOrders(dateFrom: Date, dateTo: Date) {
-  if (!kaspiClient.isConfigured) {
+  if (!(await kaspiClient.isConfigured())) {
     logger.warn('[Kaspi] Токен не задан в .env — синхронизация пропущена');
     return { ordersProcessed: 0 };
   }

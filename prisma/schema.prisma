@@ -17,6 +17,28 @@ enum Marketplace {
   WB
 }
 
+enum RepriceStrategy {
+  FIRST_PLACE   // Быть на 1-м месте: дешевле самого дешёвого конкурента на "шаг"
+  MATCH_FIRST   // Цена конкурента на 1 месте: точно как у лидера, без снижения
+  STICK_TO_FIRST // Прижиматься к первому: подстраивается, но не дёргает цену по мелочи
+  SECOND_PLACE  // Быть 2-м: чуть дороже лидера, но дешевле остальных
+}
+
+// Настройки подключения к Kaspi Магазин — вводятся через форму «Добавить
+// магазин» в разделе «Настройки», а не только через переменные окружения.
+// Одна запись = один магазин (мульти-магазин можно добавить позже).
+model KaspiStore {
+  id             String   @id @default(cuid())
+  name           String
+  bin            String?  // БИН — необязательно, для справки
+  contactPhone   String?
+  contactEmail   String?
+  apiToken       String   // X-Auth-Token — обязательное поле, используется для всех запросов к Kaspi
+  merchantUid    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
 // Карточка товара с себестоимостью — основа для расчёта юнит-экономики.
 // Один товар может продаваться на обеих площадках, поэтому храним оба SKU.
 model Product {
@@ -41,7 +63,9 @@ model Product {
   kaspiProductUrl    String?  // ссылка на карточку товара на kaspi.kz (откуда читаем цены конкурентов)
   autoRepriceEnabled Boolean  @default(false)
   minPrice           Float?   // минимальная цена — граница, ниже которой бот не опустится
-  repriceStep        Float    @default(1) // на сколько ₸ быть дешевле конкурента
+  maxPrice           Float?   // максимальная цена — граница, выше которой бот не поднимет (опционально)
+  repriceStep        Float    @default(1) // на сколько ₸ быть дешевле конкурента / шаг корректировки
+  repriceStrategy    RepriceStrategy @default(FIRST_PLACE)
   currentKaspiPrice  Float?   // текущая цена, которую бот выставил (уходит в фид для Kaspi)
   lastRepricedAt     DateTime?
 

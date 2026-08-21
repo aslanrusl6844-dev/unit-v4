@@ -9,23 +9,73 @@ export interface RepriceResult {
   newPrice: number;
   lowestCompetitorPrice: number | null;
   hitFloor: boolean;
+  hitCeiling: boolean;
   changed: boolean;
 }
 
-/**
- * Считает новую цену для одного товара:
- * - находит самую низкую цену конкурента на странице;
- * - вычитает repriceStep, чтобы стать дешевле;
- * - НИКОГДА не опускается ниже minPrice (защита от продажи в убыток).
- */
-export async function repriceProduct(product: {
+export type RepriceStrategy = 'FIRST_PLACE' | 'MATCH_FIRST' | 'STICK_TO_FIRST' | 'SECOND_PLACE';
+
+interface RepriceableProduct {
   id: string;
   sku: string;
   kaspiProductUrl: string | null;
   minPrice: number | null;
+  maxPrice: number | null;
   repriceStep: number;
+  repriceStrategy: RepriceStrategy;
   currentKaspiPrice: number | null;
-}): Promise<RepriceResult | null> {
+}
+
+/**
+ * Считает "желаемую" цену по выбранной стратегии — ДО применения границ
+ * min/max. Стратегии — как в форме добавления правила:
+ *  - FIRST_PLACE («Быть на 1-м месте»): дешевле лидера на шаг
+ *  - MATCH_FIRST («Цена конкурента на 1 месте»): точно как у лидера
+ *  - STICK_TO_FIRST («Прижиматься к первому»): как FIRST_PLACE, но не
+ *    дёргает цену, если и так укладывается в шаг от лидера (меньше лишних
+ *    изменений цены)
+ *  - SECOND_PLACE («Быть 2-м»): чуть дороже лидера, но дешевле остальных —
+ *    если конкурент всего один, встаёт на шаг выше него
+ */
+function calculateDesiredPrice(
+  strategy: RepriceStrategy,
+  sortedCompetitorPrices: number[],
+  step: number,
+  currentPrice: number | null,
+): number | null {
+  if (sortedCompetitorPrices.length === 0) return null;
+  const [first, second] = sortedCompetitorPrices;
+
+  switch (strategy) {
+    case 'MATCH_FIRST':
+      return first;
+
+    case 'STICK_TO_FIRST': {
+      const desired = first - step;
+      if (currentPrice != null && Math.abs(currentPrice - desired) <= step) {
+        return currentPrice; // уже в допустимом диапазоне — не дёргаем цену
+      }
+      return desired;
+    }
+
+    case 'SECOND_PLACE':
+      return second != null ? second : first + step;
+
+    case 'FIRST_PLACE':
+    default:
+      return first - step;
+  }
+}
+
+/**
+ * Считает новую цену для одного товара:
+ * - находит цены конкурентов на странице;
+ * - применяет выбранную стратегию (см. calculateDesiredPrice);
+ * - ограничивает результат диапазоном [minPrice, maxPrice] — НИКОГДА не
+ *   опускается ниже minPrice (защита от продажи в убыток) и не поднимается
+ *   выше maxPrice, если он задан.
+ */
+export async function repriceProduct(product: RepriceableProduct): Promise<RepriceResult | null> {
   if (!product.kaspiProductUrl) {
     logger.warn(`[Repricer] У товара ${product.sku} не указана ссылка kaspiProductUrl — пропуск`);
     return null;
@@ -36,24 +86,29 @@ export async function repriceProduct(product: {
   }
 
   const competitors = await fetchCompetitorPrices(product.kaspiProductUrl);
-  // Исключаем нашу же текущую цену из списка "конкурентов", если она туда попала.
-  const otherPrices = competitors.filter((c) => c.price !== product.currentKaspiPrice);
-  const lowestCompetitorPrice = otherPrices.length > 0 ? otherPrices[0].price : null;
+  const otherPrices = competitors
+    .filter((c) => c.price !== product.currentKaspiPrice)
+    .map((c) => c.price)
+    .sort((a, b) => a - b);
+
+  const lowestCompetitorPrice = otherPrices.length > 0 ? otherPrices[0] : null;
+  const desired = calculateDesiredPrice(product.repriceStrategy, otherPrices, product.repriceStep, product.currentKaspiPrice);
 
   let newPrice: number;
   let hitFloor = false;
+  let hitCeiling = false;
 
-  if (lowestCompetitorPrice == null) {
-    // Конкурентов не нашли (или ты уже единственный продавец) — цену не трогаем.
+  if (desired == null) {
+    // Конкурентов не нашли — цену не трогаем.
     newPrice = product.currentKaspiPrice ?? product.minPrice;
+  } else if (desired < product.minPrice) {
+    newPrice = product.minPrice;
+    hitFloor = true;
+  } else if (product.maxPrice != null && desired > product.maxPrice) {
+    newPrice = product.maxPrice;
+    hitCeiling = true;
   } else {
-    const desiredPrice = lowestCompetitorPrice - product.repriceStep;
-    if (desiredPrice < product.minPrice) {
-      newPrice = product.minPrice;
-      hitFloor = true;
-    } else {
-      newPrice = desiredPrice;
-    }
+    newPrice = desired;
   }
 
   const changed = newPrice !== product.currentKaspiPrice;
@@ -65,6 +120,7 @@ export async function repriceProduct(product: {
     newPrice,
     lowestCompetitorPrice,
     hitFloor,
+    hitCeiling,
     changed,
   };
 }
@@ -78,7 +134,7 @@ export async function runRepricingCycle(): Promise<RepriceResult[]> {
   const results: RepriceResult[] = [];
 
   for (const product of products) {
-    const result = await repriceProduct(product);
+    const result = await repriceProduct(product as RepriceableProduct);
     if (!result) continue;
     results.push(result);
 
@@ -99,8 +155,9 @@ export async function runRepricingCycle(): Promise<RepriceResult[]> {
         }),
       ]);
       logger.info(
-        `[Repricer] ${product.sku}: ${result.oldPrice ?? '—'} → ${result.newPrice} ₸` +
-          (result.hitFloor ? ' (упёрлись в минимальную цену)' : ''),
+        `[Repricer] ${product.sku} (${product.repriceStrategy}): ${result.oldPrice ?? '—'} → ${result.newPrice} ₸` +
+          (result.hitFloor ? ' (упёрлись в минимальную цену)' : '') +
+          (result.hitCeiling ? ' (упёрлись в максимальную цену)' : ''),
       );
     }
   }

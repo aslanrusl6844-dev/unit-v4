@@ -1,6 +1,7 @@
 import axios, { AxiosInstance } from 'axios';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
+import { prisma } from '../db/prisma';
 import { NormalizedOrder, NormalizedOrderItem } from '../types';
 
 /**
@@ -11,7 +12,29 @@ import { NormalizedOrder, NormalizedOrderItem } from '../types';
  * заказов (state/status, диапазоны дат). Если после запуска сервера заказы
  * не подтягиваются — сверьте параметры ниже с актуальным разделом
  * "Заказы" в Kaspi Гид для партнёров и поправьте buildOrdersQuery().
+ *
+ * Токен для запросов берётся ДИНАМИЧЕСКИ: сначала пробуем найти сохранённый
+ * магазин в базе (форма «Добавить магазин» в разделе «Настройки»), и только
+ * если его нет — используем KASPI_API_TOKEN из переменных окружения (для
+ * обратной совместимости с тем, кто настраивал сервер до появления формы).
  */
+
+interface KaspiCredentials {
+  token: string;
+  baseUrl: string;
+  merchantUid: string;
+}
+
+export async function getKaspiCredentials(): Promise<KaspiCredentials | null> {
+  const store = await prisma.kaspiStore.findFirst({ orderBy: { updatedAt: 'desc' } });
+  if (store?.apiToken) {
+    return { token: store.apiToken, baseUrl: env.kaspi.baseUrl, merchantUid: store.merchantUid ?? env.kaspi.merchantUid };
+  }
+  if (env.kaspi.token) {
+    return { token: env.kaspi.token, baseUrl: env.kaspi.baseUrl, merchantUid: env.kaspi.merchantUid };
+  }
+  return null;
+}
 
 interface KaspiOrderAttributes {
   code: string;
@@ -49,21 +72,25 @@ export interface KaspiFetchedOrder {
 }
 
 export class KaspiClient {
-  private http: AxiosInstance;
+  /** true/false — есть ли вообще откуда взять токен (БД или .env). */
+  async isConfigured(): Promise<boolean> {
+    const creds = await getKaspiCredentials();
+    return Boolean(creds?.token);
+  }
 
-  constructor() {
-    this.http = axios.create({
-      baseURL: env.kaspi.baseUrl,
+  private async getHttp(): Promise<AxiosInstance> {
+    const creds = await getKaspiCredentials();
+    if (!creds) {
+      throw new Error('Kaspi API не настроен: добавьте магазин в разделе «Настройки» или задайте KASPI_API_TOKEN в .env');
+    }
+    return axios.create({
+      baseURL: creds.baseUrl,
       headers: {
-        'X-Auth-Token': env.kaspi.token,
+        'X-Auth-Token': creds.token,
         'Content-Type': 'application/vnd.api+json',
       },
       timeout: 20000,
     });
-  }
-
-  get isConfigured() {
-    return env.kaspi.isConfigured;
   }
 
   /**
@@ -71,13 +98,14 @@ export class KaspiClient {
    * (page[number], page[size]) в формате JSON:API.
    */
   async fetchOrders(params: { dateFrom: Date; dateTo: Date; pageSize?: number }): Promise<NormalizedOrder[]> {
+    const http = await this.getHttp();
     const pageSize = params.pageSize ?? 100;
     let pageNumber = 0;
     const allOrders: NormalizedOrder[] = [];
 
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const { data } = await this.http.get<KaspiListResponse<KaspiOrderAttributes>>('/orders', {
+      const { data } = await http.get<KaspiListResponse<KaspiOrderAttributes>>('/orders', {
         params: {
           'page[number]': pageNumber,
           'page[size]': pageSize,
@@ -89,7 +117,7 @@ export class KaspiClient {
       if (!data.data?.length) break;
 
       for (const resource of data.data) {
-        const items = await this.fetchOrderEntries(resource.id);
+        const items = await this.fetchOrderEntries(http, resource.id);
         allOrders.push(this.toNormalizedOrder(resource, items));
       }
 
@@ -105,9 +133,9 @@ export class KaspiClient {
   /**
    * Получить состав заказа (товарные позиции) по id заказа.
    */
-  private async fetchOrderEntries(orderId: string): Promise<NormalizedOrderItem[]> {
+  private async fetchOrderEntries(http: AxiosInstance, orderId: string): Promise<NormalizedOrderItem[]> {
     try {
-      const { data } = await this.http.get(`/orders/${orderId}/entries`, {
+      const { data } = await http.get(`/orders/${orderId}/entries`, {
         params: { include: 'product' },
       });
 
@@ -177,7 +205,8 @@ export class KaspiClient {
    * См. Kaspi Гид: "Как принять новый заказ?"
    */
   async acceptOrder(kaspiInternalId: string, code: string): Promise<void> {
-    await this.http.post('/orders', {
+    const http = await this.getHttp();
+    await http.post('/orders', {
       data: {
         type: 'orders',
         id: kaspiInternalId,
@@ -194,7 +223,8 @@ export class KaspiClient {
    * См. Kaspi Гид: "Как сформировать накладную для передачи заказа на Kaspi Доставку?"
    */
   async formWaybill(kaspiInternalId: string, numberOfSpace: number): Promise<void> {
-    await this.http.post('/orders', {
+    const http = await this.getHttp();
+    await http.post('/orders', {
       data: {
         type: 'orders',
         id: kaspiInternalId,
