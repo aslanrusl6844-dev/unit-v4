@@ -6,6 +6,18 @@
     "api/[...slug].ts": {
       "maxDuration": 60,
       "includeFiles": "node_modules/.prisma/client/**"
+    },
+    "api/cron/sync.ts": {
+      "maxDuration": 60,
+      "includeFiles": "node_modules/.prisma/client/**"
+    },
+    "api/cron/reprice.ts": {
+      "maxDuration": 60,
+      "includeFiles": "node_modules/.prisma/client/**"
+    },
+    "api/cron/warm.ts": {
+      "maxDuration": 30,
+      "includeFiles": "node_modules/.prisma/client/**"
     }
   },
   "crons": [
