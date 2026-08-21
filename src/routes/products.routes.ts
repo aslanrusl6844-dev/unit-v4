@@ -1,13 +1,21 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../db/prisma';
+import { logger } from '../utils/logger';
 import { KASPI_TOP_CATEGORY_RATE } from '../integrations/kaspi.categories';
 
 export const productsRouter = Router();
 
 productsRouter.get('/', async (_req, res) => {
-  const products = await prisma.product.findMany({ orderBy: { updatedAt: 'desc' } });
-  res.json(products);
+  const startedAt = Date.now();
+  try {
+    const products = await prisma.product.findMany({ orderBy: { updatedAt: 'desc' } });
+    logger.info(`[DB] GET /products — ${Date.now() - startedAt}мс, найдено: ${products.length}`);
+    res.json(products);
+  } catch (err) {
+    logger.error({ err }, `[DB] GET /products упал через ${Date.now() - startedAt}мс`);
+    res.status(500).json({ error: 'Ошибка получения товаров', details: String((err as any)?.message ?? err) });
+  }
 });
 
 // Список категорий 1-го уровня Kaspi со ставками — для выпадающего списка в форме товара.
@@ -37,8 +45,15 @@ productsRouter.post('/', async (req, res) => {
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.flatten() });
   }
-  const product = await prisma.product.create({ data: parsed.data });
-  res.status(201).json(product);
+  const startedAt = Date.now();
+  try {
+    const product = await prisma.product.create({ data: parsed.data });
+    logger.info(`[DB] POST /products — ${Date.now() - startedAt}мс, создан: ${product.id}`);
+    res.status(201).json(product);
+  } catch (err) {
+    logger.error({ err }, `[DB] POST /products упал через ${Date.now() - startedAt}мс`);
+    res.status(500).json({ error: 'Ошибка создания товара', details: String((err as any)?.message ?? err) });
+  }
 });
 
 productsRouter.put('/:id', async (req, res) => {

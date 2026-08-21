@@ -55,30 +55,3 @@ export const prisma =
   );
 
 global.__prisma = prisma;
-
-/**
- * Диагностика: логируем длительность каждого запроса к базе данных.
- * Медленные запросы (>1с) и любые ошибки попадают в Runtime Logs Vercel
- * с точным временем — это единственный способ понять, ЧТО именно
- * зависает: само подключение к Neon, конкретный запрос, или что-то ещё.
- */
-if (!(global as any).__prismaLoggingAttached) {
-  prisma.$use(async (params, next) => {
-    const startedAt = Date.now();
-    try {
-      const result = await next(params);
-      const ms = Date.now() - startedAt;
-      if (ms > 1000) {
-        // eslint-disable-next-line no-console
-        console.warn(`🐢 [DB] Медленный запрос: ${params.model}.${params.action} — ${ms}мс`);
-      }
-      return result;
-    } catch (err) {
-      const ms = Date.now() - startedAt;
-      // eslint-disable-next-line no-console
-      console.error(`❌ [DB] Ошибка запроса: ${params.model}.${params.action} — ${ms}мс —`, err);
-      throw err;
-    }
-  });
-  (global as any).__prismaLoggingAttached = true;
-}
