@@ -7,7 +7,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 // начинает искать и собирать функции в api/, так что к моменту сборки
 // этой функции dist/ уже гарантированно существует.
 import app from '../dist/expressApp';
-import { runOrderSync, runReprice } from '../dist/cron/handlers';
+import { runOrderSync, runReprice, runWarmup } from '../dist/cron/handlers';
 
 /**
  * Единая serverless-функция для всех запросов на /api/* (файл называется
@@ -52,6 +52,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     try {
       const results = await runReprice();
       return res.status(200).json({ ok: true, results });
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, error: String(err?.message ?? err) });
+    }
+  }
+
+  if (url.startsWith('/api/cron/warm')) {
+    if (!checkCronSecret(req)) return res.status(401).json({ error: 'Unauthorized' });
+    try {
+      const result = await runWarmup();
+      return res.status(200).json({ ok: true, ...result });
     } catch (err: any) {
       return res.status(500).json({ ok: false, error: String(err?.message ?? err) });
     }
