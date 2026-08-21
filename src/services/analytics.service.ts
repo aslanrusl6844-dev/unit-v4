@@ -127,10 +127,26 @@ export async function getByProduct(filter: RangeFilter) {
 
   const map = new Map<
     string,
-    { sku: string; name: string; quantity: number; revenue: number; cogs: number; profit: number }
+    {
+      sku: string;
+      name: string;
+      quantity: number;
+      revenue: number;
+      cogs: number;
+      commission: number;
+      logistics: number;
+      profit: number;
+    }
   >();
 
   for (const order of orders) {
+    // Комиссию и логистику заказа делим между позициями пропорционально их
+    // доле в выручке заказа — сами суммы (order.marketplaceCommission,
+    // order.logisticsCost) уже посчитаны точно при синхронизации (для
+    // Ozon/WB — из настоящих финансовых отчётов площадки, для Kaspi — по
+    // официальной тарифной таблице), здесь просто разносим по товарам.
+    const orderRevenue = order.items.reduce((s, i) => s + i.price * i.quantity, 0);
+
     for (const item of order.items) {
       const key = item.productId ?? item.externalSku;
       const entry = map.get(key) ?? {
@@ -139,14 +155,22 @@ export async function getByProduct(filter: RangeFilter) {
         quantity: 0,
         revenue: 0,
         cogs: 0,
+        commission: 0,
+        logistics: 0,
         profit: 0,
       };
       const itemRevenue = item.price * item.quantity;
       const itemCogs = item.costPrice * item.quantity;
+      const revenueShare = orderRevenue > 0 ? itemRevenue / orderRevenue : 0;
+      const itemCommission = order.marketplaceCommission * revenueShare;
+      const itemLogistics = order.logisticsCost * revenueShare;
+
       entry.quantity += item.quantity;
       entry.revenue += itemRevenue;
       entry.cogs += itemCogs;
-      entry.profit += itemRevenue - itemCogs;
+      entry.commission += itemCommission;
+      entry.logistics += itemLogistics;
+      entry.profit += itemRevenue - itemCogs - itemCommission - itemLogistics;
       map.set(key, entry);
     }
   }
@@ -156,10 +180,12 @@ export async function getByProduct(filter: RangeFilter) {
       ...e,
       revenue: round2(e.revenue),
       cogs: round2(e.cogs),
+      commission: round2(e.commission),
+      logistics: round2(e.logistics),
       profit: round2(e.profit),
       marginPct: e.revenue > 0 ? round2((e.profit / e.revenue) * 100) : 0,
     }))
-    .sort((a, b) => b.revenue - a.revenue);
+    .sort((a, b) => b.profit - a.profit);
 }
 
 export async function getTimeseries(filter: RangeFilter, groupBy: 'day' | 'week' | 'month' = 'day') {

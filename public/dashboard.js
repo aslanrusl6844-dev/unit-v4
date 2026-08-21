@@ -154,7 +154,9 @@ async function loadOverviewPage() {
   const summary = await fetchSummary();
 
   document.getElementById('overviewKpis').innerHTML = kpiCardsHtml([
-    { label: 'Выручка', value: fmtMoney(summary.revenue), accent: true },
+    { label: 'Выручка', value: fmtMoney(summary.revenue) },
+    { label: 'Прибыль', value: fmtMoney(summary.netProfit), cls: summary.netProfit >= 0 ? 'pos' : 'neg', accent: true },
+    { label: 'Маржа', value: fmtPct(summary.marginPct), cls: summary.marginPct >= 0 ? 'pos' : 'neg' },
     { label: 'Заказов', value: fmt.format(summary.ordersCount || 0) },
     { label: 'Средний чек', value: fmtMoney(summary.aov) },
     { label: 'Продано, шт', value: fmt.format(summary.itemsCount || 0) },
@@ -195,11 +197,13 @@ async function loadTrend() {
 }
 
 async function loadPopularProducts() {
+  // getByProduct на бэкенде уже отсортирован по прибыли (по убыванию) —
+  // здесь просто берём первые 8.
   const data = await api(`/analytics/by-product?${qs({ from: state.from, to: state.to, marketplace: state.marketplace })}`);
   const tbody = document.querySelector('#popularProductsTable tbody');
   const top = data.slice(0, 8);
   if (!top.length) {
-    tbody.innerHTML = `<tr><td colspan="3" style="color:var(--text-faint)">Продаж пока нет</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="4" style="color:var(--text-faint)">Продаж пока нет</td></tr>`;
     return;
   }
   tbody.innerHTML = top.map((p) => `
@@ -207,6 +211,7 @@ async function loadPopularProducts() {
       <td class="name-cell">${p.name}</td>
       <td class="num">${fmt.format(p.quantity)}</td>
       <td class="num">${fmtMoney(p.revenue)}</td>
+      <td class="num ${p.profit >= 0 ? 'pos' : 'neg'}">${fmtMoney(p.profit)}</td>
     </tr>
   `).join('');
 }
@@ -352,7 +357,8 @@ function orderActionCell(o) {
 // =====================================================================
 let productsFormWired = false;
 let allProductsCache = [];
-let kaspiRatesCache = null; // { "Категория": 10.9, ... } — для оценки маржи в таблице
+let kaspiRatesCache = null; // { "Категория": 10.9, ... } — для валидации файла при массовой загрузке
+let productsEconomicsCache = new Map(); // sku -> {quantity, revenue, commission, logistics, profit, marginPct} за текущий период
 
 async function loadKaspiCategoriesIntoSelect(selectEl) {
   const categories = await api('/products/kaspi-categories');
@@ -425,6 +431,104 @@ function wireProductsFormOnce() {
       btn.textContent = '↻ Синхронизировать каталог'; btn.disabled = false;
     }
   });
+
+  document.getElementById('bulkUploadBtn').addEventListener('click', handleBulkUpload);
+}
+
+/**
+ * Массовая загрузка товаров из Excel/CSV. Файл целиком разбирается в
+ * браузере (PapaParse для CSV, SheetJS для Excel), затем отправляется на
+ * сервер ПАЧКАМИ по 150 строк за раз — это специально сделано так, чтобы
+ * ни один отдельный запрос не упирался в таймаут serverless-функции, даже
+ * если файл на тысячи строк.
+ */
+async function handleBulkUpload() {
+  const fileInput = document.getElementById('bulkUploadFile');
+  const file = fileInput.files[0];
+  const progressEl = document.getElementById('bulkUploadProgress');
+  const btn = document.getElementById('bulkUploadBtn');
+
+  if (!file) { alert('Сначала выбери файл'); return; }
+
+  progressEl.innerHTML = `<p style="color:var(--text-faint);font-size:12.5px">Читаю файл…</p>`;
+  btn.disabled = true;
+
+  try {
+    const rows = await parseSpreadsheetFile(file);
+    if (!rows.length) {
+      progressEl.innerHTML = `<p style="color:var(--loss);font-size:12.5px">Не удалось найти ни одной строки с обязательными колонками sku/name.</p>`;
+      return;
+    }
+
+    const CHUNK = 150;
+    let created = 0, updated = 0;
+    const allErrors = [];
+
+    for (let i = 0; i < rows.length; i += CHUNK) {
+      const chunk = rows.slice(i, i + CHUNK);
+      progressEl.innerHTML = `<p style="color:var(--text-muted);font-size:12.5px">Загружено ${i} из ${rows.length}…</p>`;
+      const res = await api('/products/bulk-upsert', { method: 'POST', body: JSON.stringify({ products: chunk }) });
+      created += res.created;
+      updated += res.updated;
+      allErrors.push(...res.errors);
+    }
+
+    progressEl.innerHTML = `
+      <p style="color:var(--accent);font-size:12.5px">
+        Готово: создано ${created}, обновлено ${updated} из ${rows.length}.
+        ${allErrors.length ? `Ошибок: ${allErrors.length} (первые: ${allErrors.slice(0, 5).join('; ')})` : ''}
+      </p>`;
+    fileInput.value = '';
+    await loadProductsAdminTable();
+  } catch (err) {
+    progressEl.innerHTML = `<p style="color:var(--loss);font-size:12.5px">Ошибка: ${err.message}</p>`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/** Разбирает CSV (PapaParse) или Excel (SheetJS) в массив строк для bulk-upsert. */
+function parseSpreadsheetFile(file) {
+  return new Promise((resolve, reject) => {
+    const isExcel = /\.xlsx?$/i.test(file.name);
+
+    const normalizeRow = (row) => {
+      // Ключи колонок могут быть с разным регистром/пробелами — приводим к единому виду.
+      const norm = {};
+      Object.keys(row).forEach((k) => { norm[k.trim().toLowerCase()] = row[k]; });
+      const sku = String(norm.sku ?? '').trim();
+      const name = String(norm.name ?? norm['название'] ?? '').trim();
+      if (!sku || !name) return null;
+      return {
+        sku,
+        name,
+        kaspiSku: norm.kaspisku ? String(norm.kaspisku).trim() : null,
+        costPrice: Number(norm.costprice ?? norm['себестоимость'] ?? 0) || 0,
+        kaspiTopCategory: norm.kaspitopcategory ? String(norm.kaspitopcategory).trim() : null,
+      };
+    };
+
+    if (isExcel) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const wb = XLSX.read(e.target.result, { type: 'array' });
+          const sheet = wb.Sheets[wb.SheetNames[0]];
+          const json = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+          resolve(json.map(normalizeRow).filter(Boolean));
+        } catch (err) { reject(err); }
+      };
+      reader.onerror = () => reject(new Error('Не удалось прочитать файл'));
+      reader.readAsArrayBuffer(file);
+    } else {
+      Papa.parse(file, {
+        header: true,
+        skipEmptyLines: true,
+        complete: (res) => resolve(res.data.map(normalizeRow).filter(Boolean)),
+        error: (err) => reject(err),
+      });
+    }
+  });
 }
 
 async function loadProductsPage() {
@@ -434,21 +538,13 @@ async function loadProductsPage() {
 }
 
 async function loadProductsAdminTable() {
-  allProductsCache = await api('/products');
+  const [products, economics] = await Promise.all([
+    api('/products'),
+    api(`/analytics/by-product?${qs({ from: state.from, to: state.to, marketplace: state.marketplace })}`),
+  ]);
+  allProductsCache = products;
+  productsEconomicsCache = new Map(economics.map((e) => [e.sku, e]));
   renderProductsAdminTable();
-}
-
-/** Грубая оценка комиссии/маржи по товару — только для отображения в таблице,
- *  не учитывает логистику и НДС (для точного расчёта — «Калькулятор маржи»). */
-function estimateUnitEconomics(p) {
-  const refPrice = p.currentKaspiPrice;
-  if (!refPrice || !p.kaspiTopCategory || !kaspiRatesCache) return null;
-  const rate = kaspiRatesCache[p.kaspiTopCategory];
-  if (rate == null) return null;
-  const commission = (refPrice * rate) / 100;
-  const margin = refPrice - commission - (p.costPrice + (p.packagingCost || 0));
-  const marginPct = refPrice > 0 ? (margin / refPrice) * 100 : 0;
-  return { commission, margin, marginPct };
 }
 
 function renderProductsAdminTable() {
@@ -459,21 +555,23 @@ function renderProductsAdminTable() {
 
   const tbody = document.querySelector('#productsAdminTable tbody');
   if (!products.length) {
-    tbody.innerHTML = `<tr><td colspan="10" style="color:var(--text-faint)">Товаров в этой категории нет</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="12" style="color:var(--text-faint)">Товаров в этой категории нет</td></tr>`;
     return;
   }
   tbody.innerHTML = products.map((p) => {
-    const ue = estimateUnitEconomics(p);
+    const ue = productsEconomicsCache.get(p.sku);
     return `
     <tr data-id="${p.id}">
       <td class="name-cell">${p.sku}</td>
       <td class="name-cell">${p.name}</td>
       <td class="name-cell">${p.kaspiSku ?? '—'}${p.kaspiTopCategory ? `<br><span style="color:var(--text-faint);font-size:11px">${p.kaspiLeafCategory ?? p.kaspiTopCategory}</span>` : ''}</td>
-      <td>${p.ozonOfferId ?? '—'}</td>
-      <td>${p.wbArticle ?? '—'}</td>
       <td class="num"><input class="cost-input" type="number" step="0.01" value="${p.costPrice}" data-field="costPrice" /></td>
+      <td class="num">${ue ? fmt.format(ue.quantity) : '—'}</td>
+      <td class="num">${ue ? fmtMoney(ue.revenue) : '—'}</td>
       <td class="num">${ue ? fmtMoney(ue.commission) : '—'}</td>
-      <td class="num ${ue ? (ue.margin >= 0 ? 'pos' : 'neg') : ''}">${ue ? `${fmtMoney(ue.margin)} (${ue.marginPct.toFixed(0)}%)` : '—'}</td>
+      <td class="num">${ue ? fmtMoney(ue.logistics) : '—'}</td>
+      <td class="num ${ue ? (ue.profit >= 0 ? 'pos' : 'neg') : ''}">${ue ? fmtMoney(ue.profit) : '—'}</td>
+      <td class="num ${ue ? (ue.marginPct >= 0 ? 'pos' : 'neg') : ''}">${ue ? fmtPct(ue.marginPct) : '—'}</td>
       <td><input type="checkbox" data-field="active" ${p.active !== false ? 'checked' : ''} /></td>
       <td><button class="link-btn" data-action="delete">✕</button></td>
     </tr>
@@ -483,23 +581,36 @@ function renderProductsAdminTable() {
   tbody.querySelectorAll('input[data-field="costPrice"]').forEach((input) => {
     input.addEventListener('change', async (e) => {
       const id = e.target.closest('tr').dataset.id;
-      await api(`/products/${id}`, { method: 'PUT', body: JSON.stringify({ costPrice: Number(e.target.value) }) });
-      await loadProductsAdminTable();
+      try {
+        await api(`/products/${id}`, { method: 'PUT', body: JSON.stringify({ costPrice: Number(e.target.value) }) });
+        await loadProductsAdminTable();
+      } catch (err) {
+        alert('Не удалось сохранить себестоимость: ' + err.message);
+      }
     });
   });
   tbody.querySelectorAll('input[data-field="active"]').forEach((input) => {
     input.addEventListener('change', async (e) => {
       const id = e.target.closest('tr').dataset.id;
-      await api(`/products/${id}`, { method: 'PUT', body: JSON.stringify({ active: e.target.checked }) });
-      await loadProductsAdminTable();
+      try {
+        await api(`/products/${id}`, { method: 'PUT', body: JSON.stringify({ active: e.target.checked }) });
+        await loadProductsAdminTable();
+      } catch (err) {
+        alert('Не удалось изменить статус: ' + err.message);
+        e.target.checked = !e.target.checked;
+      }
     });
   });
   tbody.querySelectorAll('button[data-action="delete"]').forEach((btn) => {
     btn.addEventListener('click', async (e) => {
       const id = e.target.closest('tr').dataset.id;
       if (!confirm('Удалить товар?')) return;
-      await api(`/products/${id}`, { method: 'DELETE' });
-      await loadProductsAdminTable();
+      try {
+        await api(`/products/${id}`, { method: 'DELETE' });
+        await loadProductsAdminTable();
+      } catch (err) {
+        alert('Не удалось удалить товар: ' + err.message);
+      }
     });
   });
 }

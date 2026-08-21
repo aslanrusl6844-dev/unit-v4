@@ -50,10 +50,115 @@ productsRouter.post('/', async (req, res) => {
     const product = await prisma.product.create({ data: parsed.data });
     logger.info(`[DB] POST /products — ${Date.now() - startedAt}мс, создан: ${product.id}`);
     res.status(201).json(product);
-  } catch (err) {
+  } catch (err: any) {
     logger.error({ err }, `[DB] POST /products упал через ${Date.now() - startedAt}мс`);
-    res.status(500).json({ error: 'Ошибка создания товара', details: String((err as any)?.message ?? err) });
+    // P2002 = нарушение уникальности (например, такой SKU/kaspiSku уже есть) — частая, понятная причина.
+    if (err?.code === 'P2002') {
+      return res.status(409).json({
+        error: 'Товар с таким SKU, артикулом Kaspi, Ozon или WB уже существует',
+        details: String(err?.meta?.target ?? ''),
+      });
+    }
+    res.status(500).json({ error: 'Ошибка создания товара', details: String(err?.message ?? err) });
   }
+});
+
+/**
+ * Массовая загрузка товаров (Excel/CSV) — файл парсится в браузере
+ * (см. public/dashboard.js), сюда приходит уже готовый JSON-массив.
+ * Сервер сам режет присланное на партии по 200 строк на транзакцию —
+ * так безопаснее для serverless-таймаутов, даже если с фронта вдруг
+ * прилетит большой массив целиком.
+ */
+const bulkRowSchema = z.object({
+  sku: z.string().min(1),
+  name: z.string().min(1),
+  kaspiSku: z.string().optional().nullable(),
+  costPrice: z.number().nonnegative().default(0),
+  kaspiTopCategory: z.string().optional().nullable(),
+});
+
+const BULK_CHUNK_SIZE = 200;
+
+productsRouter.post('/bulk-upsert', async (req, res) => {
+  const bodySchema = z.object({ products: z.array(bulkRowSchema).min(1).max(2000) });
+  const parsed = bodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'Неверный формат данных', details: parsed.error.flatten() });
+  }
+
+  const rows = parsed.data.products;
+  let created = 0;
+  let updated = 0;
+  const errors: string[] = [];
+
+  for (let i = 0; i < rows.length; i += BULK_CHUNK_SIZE) {
+    const chunk = rows.slice(i, i + BULK_CHUNK_SIZE);
+    try {
+      const results = await prisma.$transaction(
+        chunk.map((row) =>
+          prisma.product.upsert({
+            where: { sku: row.sku },
+            update: {
+              name: row.name,
+              costPrice: row.costPrice,
+              ...(row.kaspiSku ? { kaspiSku: row.kaspiSku } : {}),
+              ...(row.kaspiTopCategory ? { kaspiTopCategory: row.kaspiTopCategory } : {}),
+            },
+            create: {
+              sku: row.sku,
+              name: row.name,
+              costPrice: row.costPrice,
+              kaspiSku: row.kaspiSku || null,
+              kaspiTopCategory: row.kaspiTopCategory || null,
+            },
+          }),
+        ),
+      );
+      // upsert не говорит напрямую "создан или обновлён" — считаем по createdAt≈updatedAt.
+      results.forEach((r) => {
+        if (Math.abs(r.createdAt.getTime() - r.updatedAt.getTime()) < 1000) created += 1;
+        else updated += 1;
+      });
+    } catch (err: any) {
+      logger.error({ err }, `[Bulk] Ошибка в партии строк ${i}-${i + chunk.length}`);
+      // Транзакция всей партии упала (например, дубликат kaspiSku внутри
+      // самой партии) — пробуем построчно, чтобы не терять весь пакет из-за одной плохой строки.
+      for (const row of chunk) {
+        try {
+          const existing = await prisma.product.findUnique({ where: { sku: row.sku } });
+          if (existing) {
+            await prisma.product.update({
+              where: { sku: row.sku },
+              data: {
+                name: row.name,
+                costPrice: row.costPrice,
+                ...(row.kaspiSku ? { kaspiSku: row.kaspiSku } : {}),
+                ...(row.kaspiTopCategory ? { kaspiTopCategory: row.kaspiTopCategory } : {}),
+              },
+            });
+            updated += 1;
+          } else {
+            await prisma.product.create({
+              data: {
+                sku: row.sku,
+                name: row.name,
+                costPrice: row.costPrice,
+                kaspiSku: row.kaspiSku || null,
+                kaspiTopCategory: row.kaspiTopCategory || null,
+              },
+            });
+            created += 1;
+          }
+        } catch (rowErr: any) {
+          errors.push(`${row.sku}: ${String(rowErr?.message ?? rowErr).slice(0, 150)}`);
+        }
+      }
+    }
+  }
+
+  logger.info(`[Bulk] Загрузка завершена: создано ${created}, обновлено ${updated}, ошибок ${errors.length}`);
+  res.json({ ok: true, total: rows.length, created, updated, errors: errors.slice(0, 50) });
 });
 
 productsRouter.put('/:id', async (req, res) => {
@@ -64,8 +169,10 @@ productsRouter.put('/:id', async (req, res) => {
   try {
     const product = await prisma.product.update({ where: { id: req.params.id }, data: parsed.data });
     res.json(product);
-  } catch {
-    res.status(404).json({ error: 'Товар не найден' });
+  } catch (err: any) {
+    if (err?.code === 'P2025') return res.status(404).json({ error: 'Товар не найден' });
+    logger.error({ err }, `[DB] PUT /products/${req.params.id} упал`);
+    res.status(500).json({ error: 'Не удалось обновить товар', details: String(err?.message ?? err) });
   }
 });
 
@@ -73,7 +180,9 @@ productsRouter.delete('/:id', async (req, res) => {
   try {
     await prisma.product.delete({ where: { id: req.params.id } });
     res.status(204).send();
-  } catch {
-    res.status(404).json({ error: 'Товар не найден' });
+  } catch (err: any) {
+    if (err?.code === 'P2025') return res.status(404).json({ error: 'Товар не найден' });
+    logger.error({ err }, `[DB] DELETE /products/${req.params.id} упал`);
+    res.status(500).json({ error: 'Не удалось удалить товар', details: String(err?.message ?? err) });
   }
 });

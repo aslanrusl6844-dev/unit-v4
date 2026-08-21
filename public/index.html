@@ -94,10 +94,10 @@
 
         <div class="two-col">
           <div class="panel">
-            <div class="panel__head"><h2>Популярные товары</h2></div>
+            <div class="panel__head"><h2>Топ товаров по прибыли</h2></div>
             <div class="table-wrap">
               <table class="table" id="popularProductsTable">
-                <thead><tr><th>Товар</th><th class="num">Продано</th><th class="num">Выручка</th></tr></thead>
+                <thead><tr><th>Товар</th><th class="num">Продано</th><th class="num">Выручка</th><th class="num">Прибыль</th></tr></thead>
                 <tbody></tbody>
               </table>
             </div>
@@ -149,6 +149,24 @@
 
         <div class="panel">
           <div class="panel__head">
+            <h2>Массовая загрузка (Excel/CSV)</h2>
+          </div>
+          <p class="panel__hint">
+            Файл должен содержать колонки: <code>sku</code> (внутренний SKU, обязательно),
+            <code>name</code> (название, обязательно), <code>kaspiSku</code> (артикул Kaspi),
+            <code>costPrice</code> (себестоимость), <code>kaspiTopCategory</code> (категория Kaspi —
+            должна точно совпадать с одной из категорий в выпадающем списке ниже).
+            Товар с уже существующим SKU — обновится, новый — создастся. Поддерживает сотни и тысячи строк.
+          </p>
+          <div class="inline-form">
+            <input type="file" id="bulkUploadFile" accept=".csv,.xlsx,.xls" />
+            <button class="btn btn--accent" id="bulkUploadBtn">Загрузить файл</button>
+          </div>
+          <div id="bulkUploadProgress"></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel__head">
             <h2>Добавить товар</h2>
           </div>
           <form class="inline-form" id="productForm">
@@ -186,14 +204,18 @@
             <table class="table" id="productsAdminTable">
               <thead>
                 <tr>
-                  <th>SKU</th><th>Название</th><th>Kaspi (арт. / категория)</th><th>Ozon</th><th>WB</th>
-                  <th class="num">Себестоимость</th><th class="num">Комиссия</th><th class="num">Маржа (оценка)</th>
+                  <th>SKU</th><th>Название</th><th>Kaspi (арт. / категория)</th>
+                  <th class="num">Себестоимость</th>
+                  <th class="num">Продано, шт</th><th class="num">Выручка</th>
+                  <th class="num">Комиссия</th><th class="num">Логистика</th>
+                  <th class="num">Прибыль</th><th class="num">Маржа</th>
                   <th>Активен</th><th></th>
                 </tr>
               </thead>
               <tbody></tbody>
             </table>
           </div>
+          <p class="panel__hint">Продано/выручка/прибыль — за выбранный период (даты вверху страницы).</p>
         </div>
       </section>
 
@@ -437,6 +459,8 @@
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="/dashboard.js"></script>
 </body>
 </html>

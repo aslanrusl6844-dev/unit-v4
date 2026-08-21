@@ -31,12 +31,16 @@ settingsRouter.post('/kaspi-store', async (req, res) => {
   const parsed = kaspiStoreSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
 
-  const existing = await prisma.kaspiStore.findFirst({ orderBy: { updatedAt: 'desc' } });
-  const store = existing
-    ? await prisma.kaspiStore.update({ where: { id: existing.id }, data: parsed.data })
-    : await prisma.kaspiStore.create({ data: parsed.data });
+  try {
+    const existing = await prisma.kaspiStore.findFirst({ orderBy: { updatedAt: 'desc' } });
+    const store = existing
+      ? await prisma.kaspiStore.update({ where: { id: existing.id }, data: parsed.data })
+      : await prisma.kaspiStore.create({ data: parsed.data });
 
-  res.status(201).json({ ...store, apiToken: undefined, apiTokenMasked: `••••${store.apiToken.slice(-4)}` });
+    res.status(201).json({ ...store, apiToken: undefined, apiTokenMasked: `••••${store.apiToken.slice(-4)}` });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Не удалось сохранить магазин', details: String(err?.message ?? err) });
+  }
 });
 
 settingsRouter.delete('/kaspi-store/:id', async (req, res) => {
