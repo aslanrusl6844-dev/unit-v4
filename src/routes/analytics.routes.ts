@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import dayjs from 'dayjs';
-import { getByProduct, getSummary, getSummaryByMarketplace, getTimeseries } from '../services/analytics.service';
+import { getByCategory, getByProduct, getSummary, getSummaryByMarketplace, getTimeseries } from '../services/analytics.service';
 import { MarketplaceName } from '../types';
 
 export const analyticsRouter = Router();
@@ -21,6 +21,12 @@ analyticsRouter.get('/summary', async (req, res) => {
 analyticsRouter.get('/by-product', async (req, res) => {
   const range = parseRange(req.query as Record<string, string>);
   const data = await getByProduct(range);
+  res.json(data);
+});
+
+analyticsRouter.get('/by-category', async (req, res) => {
+  const range = parseRange(req.query as Record<string, string>);
+  const data = await getByCategory(range);
   res.json(data);
 });
 

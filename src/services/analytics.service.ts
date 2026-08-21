@@ -96,6 +96,29 @@ export async function getSummaryByMarketplace(filter: Omit<RangeFilter, 'marketp
   return { kaspi, ozon, wb, total };
 }
 
+export async function getByCategory(filter: RangeFilter) {
+  const orders = await prisma.order.findMany({
+    where: whereClause(filter),
+    include: { items: { include: { product: true } } },
+  });
+
+  const map = new Map<string, { category: string; quantity: number; revenue: number }>();
+
+  for (const order of orders) {
+    for (const item of order.items) {
+      const category = item.product?.kaspiTopCategory || 'Без категории';
+      const entry = map.get(category) ?? { category, quantity: 0, revenue: 0 };
+      entry.quantity += item.quantity;
+      entry.revenue += item.price * item.quantity;
+      map.set(category, entry);
+    }
+  }
+
+  return Array.from(map.values())
+    .map((e) => ({ ...e, revenue: round2(e.revenue) }))
+    .sort((a, b) => b.revenue - a.revenue);
+}
+
 export async function getByProduct(filter: RangeFilter) {
   const orders = await prisma.order.findMany({
     where: whereClause(filter),

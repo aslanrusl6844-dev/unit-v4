@@ -3,285 +3,385 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Юнит-экономика · Kaspi + Ozon</title>
+<title>Юнит-экономика · Kaspi + Ozon + WB</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
 
 <div class="app">
 
-  <header class="topbar">
-    <div class="brand">
-      <span class="brand__mark">UE</span>
-      <div class="brand__text">
-        <h1>Юнит-экономика</h1>
-        <span class="brand__sub">Kaspi Магазин · Ozon</span>
+  <!-- ===== Боковое меню ===== -->
+  <aside class="sidebar">
+    <div class="sidebar__brand">
+      <span class="brand-mark">UE</span>
+      <div class="brand-text">
+        <div class="brand-title">Юнит-экономика</div>
+        <div class="brand-sub">Kaspi · Ozon · WB</div>
       </div>
     </div>
 
-    <nav class="mp-filter" id="mpFilter">
-      <button class="mp-filter__btn is-active" data-mp="">Всё вместе</button>
-      <button class="mp-filter__btn" data-mp="KASPI"><i class="dot dot--kaspi"></i>Kaspi</button>
-      <button class="mp-filter__btn" data-mp="OZON"><i class="dot dot--ozon"></i>Ozon</button>
-      <button class="mp-filter__btn" data-mp="WB"><i class="dot dot--wb"></i>WB</button>
+    <nav class="sidebar__nav">
+      <div class="nav-group-label">Магазин</div>
+      <button class="nav-item is-active" data-page="overview"><i class="ni">▤</i>Обзор</button>
+      <button class="nav-item" data-page="orders"><i class="ni">🛒</i>Заказы</button>
+      <button class="nav-item" data-page="products"><i class="ni">📦</i>Товары</button>
+      <button class="nav-item" data-page="finance"><i class="ni">💰</i>Финансы</button>
+      <button class="nav-item" data-page="reviews"><i class="ni">★</i>Отзывы</button>
+
+      <div class="nav-group-label">Инструменты</div>
+      <button class="nav-item" data-page="margin"><i class="ni">🧮</i>Калькулятор маржи</button>
+      <button class="nav-item" data-page="niches"><i class="ni">🎯</i>Ниши</button>
+      <button class="nav-item" data-page="demping"><i class="ni">🔥</i>Демпинг</button>
+
+      <div class="nav-group-label">Система</div>
+      <button class="nav-item" data-page="notifications"><i class="ni">🔔</i>Уведомления</button>
+      <button class="nav-item" data-page="settings"><i class="ni">⚙</i>Настройки</button>
     </nav>
 
-    <div class="range-picker">
-      <input type="date" id="dateFrom" />
-      <span>&mdash;</span>
-      <input type="date" id="dateTo" />
-      <div class="range-picker__presets">
-        <button data-days="7">7д</button>
-        <button data-days="30" class="is-active">30д</button>
-        <button data-days="90">90д</button>
-      </div>
-    </div>
+    <div class="sidebar__foot" id="syncStatusMini">—</div>
+  </aside>
 
-    <div class="topbar__actions">
-      <button class="btn btn--ghost" id="syncKaspiBtn">↻ Kaspi</button>
-      <button class="btn btn--ghost" id="syncOzonBtn">↻ Ozon</button>
-      <button class="btn btn--ghost" id="syncWbBtn">↻ WB</button>
-    </div>
-  </header>
+  <!-- ===== Основной контент ===== -->
+  <main class="main">
 
-  <main class="content">
-
-    <!-- Waterfall: сигнатурный элемент — путь от выручки к чистой прибыли -->
-    <section class="waterfall" id="waterfall" aria-label="От выручки к чистой прибыли">
-      <div class="waterfall__loading">Загрузка данных…</div>
-    </section>
-
-    <!-- KPI карточки -->
-    <section class="kpi-grid" id="kpiGrid"></section>
-
-    <!-- График динамики -->
-    <section class="panel">
-      <div class="panel__head">
-        <h2>Динамика</h2>
-        <div class="seg" id="groupBySeg">
-          <button class="is-active" data-group="day">По дням</button>
-          <button data-group="week">По неделям</button>
-          <button data-group="month">По месяцам</button>
+    <header class="topbar">
+      <div class="topbar__range">
+        <input type="date" id="dateFrom" />
+        <span class="range-dash">—</span>
+        <input type="date" id="dateTo" />
+        <div class="preset-group">
+          <button data-days="7">7д</button>
+          <button data-days="30" class="is-active">30д</button>
+          <button data-days="90">90д</button>
         </div>
       </div>
-      <canvas id="trendChart" height="90"></canvas>
-    </section>
 
-    <div class="two-col">
-      <!-- Юнит-экономика по товарам -->
-      <section class="panel">
-        <div class="panel__head">
-          <h2>По товарам</h2>
-          <span class="panel__hint">Себестоимость редактируется в разделе «Товары»</span>
+      <nav class="mp-filter" id="mpFilter">
+        <button class="mp-filter__btn is-active" data-mp="">Всё вместе</button>
+        <button class="mp-filter__btn" data-mp="KASPI"><i class="dot dot--kaspi"></i>Kaspi</button>
+        <button class="mp-filter__btn" data-mp="OZON"><i class="dot dot--ozon"></i>Ozon</button>
+        <button class="mp-filter__btn" data-mp="WB"><i class="dot dot--wb"></i>WB</button>
+      </nav>
+
+      <div class="topbar__actions">
+        <button class="btn btn--ghost" id="syncKaspiBtn">↻ Kaspi</button>
+        <button class="btn btn--ghost" id="syncOzonBtn">↻ Ozon</button>
+        <button class="btn btn--ghost" id="syncWbBtn">↻ WB</button>
+      </div>
+    </header>
+
+    <div class="pages">
+
+      <!-- ============ ОБЗОР ============ -->
+      <section class="page is-active" id="page-overview">
+        <div class="page__head"><h1>Обзор</h1><p>Ключевые метрики, динамика выручки и топ товаров.</p></div>
+
+        <div class="kpi-grid" id="overviewKpis"></div>
+
+        <div class="panel">
+          <div class="panel__head">
+            <h2>Динамика выручки</h2>
+            <div class="seg" id="groupBySeg">
+              <button class="is-active" data-group="day">По дням</button>
+              <button data-group="week">По неделям</button>
+              <button data-group="month">По месяцам</button>
+            </div>
+          </div>
+          <canvas id="trendChart" height="90"></canvas>
         </div>
-        <div class="table-wrap">
-          <table class="table" id="productsTable">
-            <thead>
-              <tr>
-                <th>Товар</th>
-                <th class="num">Продано, шт</th>
-                <th class="num">Выручка</th>
-                <th class="num">Себестоимость</th>
-                <th class="num">Прибыль</th>
-                <th class="num">Маржа</th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
+
+        <div class="two-col">
+          <div class="panel">
+            <div class="panel__head"><h2>Популярные товары</h2></div>
+            <div class="table-wrap">
+              <table class="table" id="popularProductsTable">
+                <thead><tr><th>Товар</th><th class="num">Продано</th><th class="num">Выручка</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel__head"><h2>По категориям</h2></div>
+            <div class="table-wrap">
+              <table class="table" id="byCategoryTable">
+                <thead><tr><th>Категория</th><th class="num">Продано</th><th class="num">Выручка</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
         </div>
       </section>
 
-      <!-- Последние заказы -->
-      <section class="panel">
-        <div class="panel__head">
-          <h2>Последние заказы</h2>
-        </div>
-        <div class="inline-form" id="ordersFilters" style="margin-bottom:10px">
-          <input name="search" type="text" placeholder="Номер заказа, товар..." style="flex:1 1 160px" />
-          <select name="city"><option value="">Все города</option></select>
-          <select name="deliveryType"><option value="">Тип доставки</option></select>
-        </div>
-        <div class="seg" id="statusTabs" style="margin-bottom:10px;flex-wrap:wrap">
-          <button class="is-active" data-status="">Все</button>
-          <button data-status="preorder">Предзаказ</button>
-          <button data-status="packing">Упаковка</button>
-          <button data-status="handover">Передача</button>
-          <button data-status="delivering">Доставляется</button>
-          <button data-status="cancelled">Отменены</button>
-        </div>
-        <div class="table-wrap">
-          <table class="table" id="ordersTable">
-            <thead>
-              <tr>
-                <th>№</th>
-                <th>Площадка</th>
-                <th>Дата</th>
-                <th>Статус</th>
-                <th class="num">Сумма</th>
-                <th>Накладная</th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
+      <!-- ============ ЗАКАЗЫ ============ -->
+      <section class="page" id="page-orders" hidden>
+        <div class="page__head"><h1>Заказы</h1><p>Список заказов со всех площадок с фильтрами.</p></div>
+
+        <div class="panel">
+          <div class="inline-form" id="ordersFilters">
+            <input name="search" type="text" placeholder="Номер заказа, товар..." style="flex:2 1 200px" />
+            <select name="city"><option value="">Все города</option></select>
+            <select name="deliveryType"><option value="">Тип доставки</option></select>
+          </div>
+          <div class="seg seg--wide" id="statusTabs">
+            <button class="is-active" data-status="">Все</button>
+            <button data-status="preorder">Предзаказ</button>
+            <button data-status="packing">Упаковка</button>
+            <button data-status="handover">Передача</button>
+            <button data-status="delivering">Доставляется</button>
+            <button data-status="cancelled">Отменены</button>
+          </div>
+          <div class="table-wrap">
+            <table class="table" id="ordersTable">
+              <thead>
+                <tr><th>№</th><th>Площадка</th><th>Дата</th><th>Статус</th><th class="num">Сумма</th><th>Накладная</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
         </div>
       </section>
+
+      <!-- ============ ТОВАРЫ ============ -->
+      <section class="page" id="page-products" hidden>
+        <div class="page__head"><h1>Товары</h1><p>Себестоимость, категории и привязка SKU к площадкам.</p></div>
+
+        <div class="panel">
+          <div class="panel__head">
+            <h2>Добавить товар</h2>
+          </div>
+          <form class="inline-form" id="productForm">
+            <input name="sku" placeholder="Внутренний SKU" required />
+            <input name="name" placeholder="Название товара" required />
+            <input name="costPrice" type="number" step="0.01" placeholder="Себестоимость" required />
+            <input name="weightKg" type="number" step="0.01" placeholder="Вес, кг" value="0.5" />
+            <input name="kaspiSku" placeholder="Артикул Kaspi" />
+            <select name="kaspiTopCategory" id="kaspiTopCategorySelect">
+              <option value="">Категория Kaspi (для комиссии)</option>
+            </select>
+            <input name="kaspiLeafCategory" placeholder="Точная категория Kaspi (опц.)" />
+            <input name="ozonOfferId" placeholder="offer_id Ozon" />
+            <input name="wbArticle" placeholder="Артикул WB (supplierArticle)" />
+            <button class="btn btn--accent" type="submit">Добавить</button>
+          </form>
+        </div>
+
+        <div class="panel">
+          <div class="panel__head">
+            <h2>Каталог товаров</h2>
+          </div>
+          <div class="seg" id="productStatusTabs">
+            <button class="is-active" data-filter="active">Активные</button>
+            <button data-filter="inactive">Сняты с продажи</button>
+            <button data-filter="all">Все</button>
+          </div>
+          <div class="table-wrap">
+            <table class="table" id="productsAdminTable">
+              <thead>
+                <tr>
+                  <th>SKU</th><th>Название</th><th>Kaspi (арт. / категория)</th><th>Ozon</th><th>WB</th>
+                  <th class="num">Себестоимость</th><th>Активен</th><th></th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ ФИНАНСЫ ============ -->
+      <section class="page" id="page-finance" hidden>
+        <div class="page__head"><h1>Финансы</h1><p>Настоящая прибыль: от выручки до чистого остатка, по товарам и площадкам.</p></div>
+
+        <div class="panel">
+          <div class="panel__head"><h2>От выручки к чистой прибыли</h2></div>
+          <div id="waterfall"><div class="waterfall__loading">Загрузка данных…</div></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel__head"><h2>Прибыль по товарам</h2><span class="panel__hint">Себестоимость редактируется в разделе «Товары»</span></div>
+          <div class="table-wrap">
+            <table class="table" id="productsTable">
+              <thead>
+                <tr><th>Товар</th><th class="num">Продано, шт</th><th class="num">Выручка</th><th class="num">Себестоимость</th><th class="num">Прибыль</th><th class="num">Маржа</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel__head"><h2>Реклама и прочие расходы</h2></div>
+          <form class="inline-form" id="expenseForm">
+            <select name="marketplace">
+              <option value="KASPI">Kaspi</option>
+              <option value="OZON">Ozon</option>
+              <option value="WB">WB</option>
+            </select>
+            <input name="date" type="date" required />
+            <input name="amount" type="number" step="0.01" placeholder="Сумма" required />
+            <input name="note" placeholder="Комментарий" />
+            <button class="btn btn--accent" type="submit">Добавить расход</button>
+          </form>
+          <div class="table-wrap">
+            <table class="table" id="expensesTable">
+              <thead><tr><th>Дата</th><th>Площадка</th><th class="num">Сумма</th><th>Комментарий</th><th></th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ ОТЗЫВЫ ============ -->
+      <section class="page" id="page-reviews" hidden>
+        <div class="page__head"><h1>Отзывы</h1><p>Рейтинг и число отзывов с публичных карточек товаров на Kaspi.</p></div>
+
+        <div class="panel">
+          <div class="panel__head">
+            <h2>Отзывы на Kaspi</h2>
+            <button class="btn btn--ghost" id="refreshReviewsBtn">↻ Обновить всё</button>
+          </div>
+          <p class="panel__hint">Данные читаются с публичной страницы товара (у Kaspi нет API отзывов для продавцов)</p>
+          <div class="table-wrap">
+            <table class="table" id="reviewsTable">
+              <thead><tr><th>Товар</th><th class="num">Рейтинг</th><th class="num">Отзывов</th><th>Обновлено</th><th></th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ КАЛЬКУЛЯТОР МАРЖИ ============ -->
+      <section class="page" id="page-margin" hidden>
+        <div class="page__head"><h1>Калькулятор маржи</h1><p>Вставь ссылку на товар Kaspi — цена подтянется сама.</p></div>
+
+        <div class="panel">
+          <form class="inline-form" id="marginScrapeForm">
+            <input name="url" type="url" placeholder="https://kaspi.kz/shop/p/..." style="flex:2 1 300px" required />
+            <button class="btn btn--ghost" type="submit">Проверить</button>
+          </form>
+          <form class="inline-form" id="marginCalcForm">
+            <input name="price" type="number" step="1" placeholder="Цена продажи" required />
+            <input name="costPrice" type="number" step="0.01" placeholder="Себестоимость" required />
+            <input name="packagingCost" type="number" step="0.01" placeholder="Упаковка" value="0" />
+            <input name="weightKg" type="number" step="0.01" placeholder="Вес, кг" value="0.5" />
+            <select name="kaspiTopCategory" id="marginCategorySelect" required>
+              <option value="">Категория Kaspi</option>
+            </select>
+            <select name="deliveryZone">
+              <option value="kazakhstan">По Казахстану</option>
+              <option value="city">По городу</option>
+              <option value="express">Express</option>
+            </select>
+            <button class="btn btn--accent" type="submit">Посчитать маржу</button>
+          </form>
+          <div id="marginCalcResult"></div>
+        </div>
+      </section>
+
+      <!-- ============ НИШИ ============ -->
+      <section class="page" id="page-niches" hidden>
+        <div class="page__head"><h1>Ниши</h1><p>Самые востребованные категории и трендовые товары.</p></div>
+
+        <div class="panel panel--placeholder">
+          <div class="placeholder-icon">🎯</div>
+          <h2>Раздел в разработке</h2>
+          <p>
+            Честно: рейтинг категорий и трендовые товары «по всему Kaspi» (как у Northline) —
+            это отдельная большая функция. Она требует регулярно обходить каталог Kaspi
+            по всем категориям и считать спрос по <em>чужим</em> товарам, а не только по твоим —
+            это совсем другая задача, чем учёт юнит-экономики твоего магазина, и пока не реализована.
+          </p>
+          <p>
+            Когда будешь готов — можно добавить отдельным этапом: обход публичных страниц
+            категорий Kaspi по расписанию и сохранение снимков популярности товаров.
+          </p>
+        </div>
+      </section>
+
+      <!-- ============ ДЕМПИНГ ============ -->
+      <section class="page" id="page-demping" hidden>
+        <div class="page__head"><h1>Демпинг</h1><p>Автоматическое снижение цены на Kaspi ниже конкурента, с защитой минимальной цены.</p></div>
+
+        <div class="kpi-grid" id="dempingStats"></div>
+
+        <div class="panel">
+          <div class="panel__head">
+            <h2>Правила демпинга</h2>
+            <button class="btn btn--ghost" id="runRepricerBtn">▶ Применить сейчас</button>
+          </div>
+          <p class="panel__hint" id="priceFeedHint">
+            Ссылку для автозагрузки цен укажи в кабинете Kaspi (Товары → Загрузить прайс-лист → автоматическая загрузка):
+            <code id="priceFeedUrl">/api/kaspi/price-feed.xml?token=...</code>
+          </p>
+          <div class="table-wrap">
+            <table class="table" id="repricerTable">
+              <thead>
+                <tr><th>Товар</th><th>Ссылка на Kaspi</th><th class="num">Мин. цена</th><th class="num">Шаг</th><th class="num">Текущая цена</th><th>Бот</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ УВЕДОМЛЕНИЯ ============ -->
+      <section class="page" id="page-notifications" hidden>
+        <div class="page__head"><h1>Уведомления</h1><p>Журнал фоновых задач: синхронизация с площадками и автобот цены.</p></div>
+
+        <div class="panel">
+          <div class="panel__head">
+            <h2>Последние события</h2>
+            <button class="btn btn--ghost" id="refreshNotificationsBtn">↻ Обновить</button>
+          </div>
+          <div id="notificationsList"></div>
+        </div>
+      </section>
+
+      <!-- ============ НАСТРОЙКИ ============ -->
+      <section class="page" id="page-settings" hidden>
+        <div class="page__head"><h1>Настройки</h1><p>Статус подключения к площадкам и служебные ссылки.</p></div>
+
+        <div class="panel">
+          <div class="panel__head"><h2>Подключение к площадкам</h2></div>
+          <div class="table-wrap">
+            <table class="table" id="connectionsTable">
+              <thead><tr><th>Площадка</th><th>Статус</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel__head"><h2>Служебные ссылки</h2></div>
+          <div class="settings-links">
+            <div class="settings-links__row">
+              <span>Автообновление цен для Kaspi (прайс-лист)</span>
+              <code id="settingsPriceFeedUrl">—</code>
+            </div>
+            <div class="settings-links__row">
+              <span>Фоновая синхронизация (для внешнего планировщика)</span>
+              <code>/api/cron/sync?secret=ВАШ_CRON_SECRET</code>
+            </div>
+            <div class="settings-links__row">
+              <span>Автобот цены (для внешнего планировщика)</span>
+              <code>/api/cron/reprice?secret=ВАШ_CRON_SECRET</code>
+            </div>
+            <div class="settings-links__row">
+              <span>"Подогрев" базы данных (для внешнего планировщика)</span>
+              <code>/api/cron/warm?secret=ВАШ_CRON_SECRET</code>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel__head"><h2>Расписание фоновых задач</h2></div>
+          <p id="settingsCronInfo" class="panel__hint">—</p>
+        </div>
+      </section>
+
     </div>
-
-    <div class="two-col">
-      <!-- Управление товарами / себестоимостью -->
-      <section class="panel" id="productsAdminPanel">
-        <div class="panel__head">
-          <h2>Товары и себестоимость</h2>
-        </div>
-        <form class="inline-form" id="productForm">
-          <input name="sku" placeholder="Внутренний SKU" required />
-          <input name="name" placeholder="Название товара" required />
-          <input name="costPrice" type="number" step="0.01" placeholder="Себестоимость" required />
-          <input name="weightKg" type="number" step="0.01" placeholder="Вес, кг" value="0.5" />
-          <input name="kaspiSku" placeholder="Артикул Kaspi" />
-          <select name="kaspiTopCategory" id="kaspiTopCategorySelect">
-            <option value="">Категория Kaspi (для комиссии)</option>
-          </select>
-          <input name="kaspiLeafCategory" placeholder="Точная категория Kaspi (опц.)" />
-          <input name="ozonOfferId" placeholder="offer_id Ozon" />
-          <input name="wbArticle" placeholder="Артикул WB (supplierArticle)" />
-          <button class="btn btn--accent" type="submit">Добавить</button>
-        </form>
-        <div class="table-wrap">
-          <table class="table" id="productsAdminTable">
-            <thead>
-              <tr>
-                <th>SKU</th>
-                <th>Название</th>
-                <th>Kaspi (арт. / категория)</th>
-                <th>Ozon</th>
-                <th>WB</th>
-                <th class="num">Себестоимость</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
-      </section>
-
-      <!-- Расходы на рекламу / прочее -->
-      <section class="panel" id="expensesPanel">
-        <div class="panel__head">
-          <h2>Реклама и прочие расходы</h2>
-        </div>
-        <form class="inline-form" id="expenseForm">
-          <select name="marketplace">
-            <option value="KASPI">Kaspi</option>
-            <option value="OZON">Ozon</option>
-            <option value="WB">WB</option>
-          </select>
-          <input name="date" type="date" required />
-          <input name="amount" type="number" step="0.01" placeholder="Сумма" required />
-          <input name="note" placeholder="Комментарий" />
-          <button class="btn btn--accent" type="submit">Добавить расход</button>
-        </form>
-        <div class="table-wrap">
-          <table class="table" id="expensesTable">
-            <thead>
-              <tr>
-                <th>Дата</th>
-                <th>Площадка</th>
-                <th class="num">Сумма</th>
-                <th>Комментарий</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
-      </section>
-    </div>
-
-    <!-- Автобот снижения цены на Kaspi -->
-    <section class="panel" id="repricerPanel">
-      <div class="panel__head">
-        <h2>Автобот цены на Kaspi</h2>
-        <button class="btn btn--ghost" id="runRepricerBtn">▶ Проверить цены сейчас</button>
-      </div>
-      <p class="panel__hint" id="priceFeedHint">
-        Ссылку для автозагрузки цен укажи в кабинете Kaspi (Товары → Загрузить прайс-лист → автоматическая загрузка):
-        <code id="priceFeedUrl">/api/kaspi/price-feed.xml?token=...</code>
-      </p>
-      <div class="table-wrap">
-        <table class="table" id="repricerTable">
-          <thead>
-            <tr>
-              <th>Товар</th>
-              <th>Ссылка на Kaspi</th>
-              <th class="num">Мин. цена</th>
-              <th class="num">Шаг</th>
-              <th class="num">Текущая цена</th>
-              <th>Бот</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </section>
-
-    <!-- Быстрый калькулятор маржи по ссылке -->
-    <section class="panel" id="marginCalcPanel">
-      <div class="panel__head">
-        <h2>Быстрый калькулятор маржи</h2>
-        <span class="panel__hint">Вставь ссылку на товар Kaspi — цена подтянется сама</span>
-      </div>
-      <form class="inline-form" id="marginScrapeForm">
-        <input name="url" type="url" placeholder="https://kaspi.kz/shop/p/..." style="flex:2 1 300px" required />
-        <button class="btn btn--ghost" type="submit">Проверить</button>
-      </form>
-      <form class="inline-form" id="marginCalcForm">
-        <input name="price" type="number" step="1" placeholder="Цена продажи" required />
-        <input name="costPrice" type="number" step="0.01" placeholder="Себестоимость" required />
-        <input name="packagingCost" type="number" step="0.01" placeholder="Упаковка" value="0" />
-        <input name="weightKg" type="number" step="0.01" placeholder="Вес, кг" value="0.5" />
-        <select name="kaspiTopCategory" id="marginCategorySelect" required>
-          <option value="">Категория Kaspi</option>
-        </select>
-        <select name="deliveryZone">
-          <option value="kazakhstan">По Казахстану</option>
-          <option value="city">По городу</option>
-          <option value="express">Express</option>
-        </select>
-        <button class="btn btn--accent" type="submit">Посчитать маржу</button>
-      </form>
-      <div id="marginCalcResult"></div>
-    </section>
-
-    <!-- Отзывы -->
-    <section class="panel" id="reviewsPanel">
-      <div class="panel__head">
-        <h2>Отзывы на Kaspi</h2>
-        <button class="btn btn--ghost" id="refreshReviewsBtn">↻ Обновить всё</button>
-      </div>
-      <p class="panel__hint">Данные читаются с публичной страницы товара (у Kaspi нет API отзывов для продавцов)</p>
-      <div class="table-wrap">
-        <table class="table" id="reviewsTable">
-          <thead>
-            <tr>
-              <th>Товар</th>
-              <th class="num">Рейтинг</th>
-              <th class="num">Отзывов</th>
-              <th>Обновлено</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </section>
-
-    <footer class="foot">
-      <span id="syncStatus">—</span>
-    </footer>
-
   </main>
 </div>
 
