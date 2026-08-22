@@ -102,6 +102,22 @@ document.querySelectorAll('.nav-item').forEach((btn) => {
 function renderWaterfall(summary) {
   const el = document.getElementById('waterfall');
   if (!el) return;
+
+  // Крупная карточка чистой прибыли — обновляется вместе с воронкой,
+  // из тех же данных сводки (summary.netProfit), так что расхождений
+  // между ними быть не может.
+  const cardValueEl = document.getElementById('netProfitCardValue');
+  if (cardValueEl) {
+    const netProfit = summary.netProfit || 0;
+    cardValueEl.textContent = fmtMoney(netProfit);
+    cardValueEl.style.color = netProfit >= 0 ? 'var(--accent)' : 'var(--loss)';
+    const card = document.getElementById('netProfitCard');
+    card.style.background = netProfit >= 0
+      ? 'linear-gradient(160deg, var(--accent-soft), var(--surface))'
+      : 'linear-gradient(160deg, var(--loss-soft), var(--surface))';
+    card.style.borderColor = netProfit >= 0 ? 'rgba(22,163,74,0.35)' : 'rgba(220,38,38,0.35)';
+  }
+
   const revenue = summary.revenue || 0;
   const cogs = summary.cogs || 0;
   const fees = (summary.marketplaceCommission || 0) + (summary.logisticsCost || 0) + (summary.acquiringCost || 0) + (summary.otherFees || 0);

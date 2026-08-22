@@ -243,9 +243,17 @@
       <section class="page" id="page-finance" hidden>
         <div class="page__head"><h1>Финансы</h1><p>Настоящая прибыль: от выручки до чистого остатка, по товарам и площадкам.</p></div>
 
-        <div class="panel">
-          <div class="panel__head"><h2>От выручки к чистой прибыли</h2></div>
-          <div id="waterfall"><div class="waterfall__loading">Загрузка данных…</div></div>
+        <div style="display:flex;gap:20px;align-items:stretch;flex-wrap:wrap;margin-bottom:20px">
+          <div class="panel" style="flex:2 1 480px;margin-bottom:0">
+            <div class="panel__head"><h2>От выручки к чистой прибыли</h2></div>
+            <div id="waterfall"><div class="waterfall__loading">Загрузка данных…</div></div>
+          </div>
+
+          <div class="panel" id="netProfitCard" style="flex:1 1 220px;margin-bottom:0;background:linear-gradient(160deg, var(--accent-soft), var(--surface));border-color:rgba(22,163,74,0.35);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:8px;padding:28px 20px">
+            <div style="font-size:12.5px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em;font-weight:600">Чистая прибыль</div>
+            <div id="netProfitCardValue" style="font-family:var(--font-mono);font-size:34px;font-weight:700;color:var(--accent);letter-spacing:-0.02em">—</div>
+            <div style="font-size:11.5px;color:var(--text-faint)">за выбранный период</div>
+          </div>
         </div>
 
         <div class="panel">
