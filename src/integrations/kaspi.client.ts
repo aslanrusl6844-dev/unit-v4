@@ -141,7 +141,6 @@ export class KaspiClient {
   async fetchOrders(params: { dateFrom: Date; dateTo: Date; pageSize?: number }): Promise<NormalizedOrder[]> {
     const http = await this.getHttp();
     const pageSize = params.pageSize ?? 20; // как в официальном примере Kaspi Гид
-    const allOrders: NormalizedOrder[] = [];
     const seenIds = new Set<string>();
 
     // ВАЖНО: у Kaspi "state" и "status" — два РАЗНЫХ поля заказа, не
@@ -171,57 +170,88 @@ export class KaspiClient {
     const dateChunks = KaspiClient.chunkDateRange(params.dateFrom, params.dateTo, 14);
     logger.info(`[Kaspi] Период разбит на ${dateChunks.length} кусков (максимум 14 дней каждый)`);
 
+    // ВАЖНО для скорости: на serverless (Vercel) есть жёсткий лимит времени
+    // выполнения — а раньше все комбинации state×chunk опрашивались СТРОГО
+    // ПО ОЧЕРЕДИ, из-за чего 30-дневная синхронизация (6 статусов × 3 куска
+    // дат = 18 запросов, плюс ещё по одному запросу состава на каждый заказ)
+    // легко не укладывалась в отведённое время. Теперь все комбинации
+    // state×chunk запрашиваются ОДНОВРЕМЕННО (Promise.all) — это не уменьшает
+    // число запросов к Kaspi, но резко сокращает время ожидания по часам,
+    // потому что запросы идут параллельно, а не друг за другом.
+    const tasks: Array<Promise<NormalizedOrder[]>> = [];
     for (const state of STATES) {
       for (const chunk of dateChunks) {
-        let pageNumber = 0;
-        // eslint-disable-next-line no-constant-condition
-        while (true) {
-          let data: KaspiListResponse<KaspiOrderAttributes>;
-          try {
-            const response = await http.get<KaspiListResponse<KaspiOrderAttributes>>('/orders', {
-              params: {
-                'page[number]': pageNumber,
-                'page[size]': pageSize,
-                'filter[orders][state]': state,
-                'filter[orders][creationDate][$ge]': chunk.from.getTime(),
-                'filter[orders][creationDate][$le]': chunk.to.getTime(),
-              },
-            });
-            data = response.data;
-          } catch (err: any) {
-            // Логируем ТОЧНОЕ тело ответа Kaspi при ошибке — только по коду
-            // статуса (400/401/403) не понять, что конкретно не устроило API,
-            // а тело ответа обычно содержит понятное описание причины.
-            const kaspiErrorBody = err?.response?.data;
-            logger.error(
-              { status: err?.response?.status, body: kaspiErrorBody, state, chunk, pageNumber },
-              '[Kaspi] Ошибка запроса заказов',
-            );
-            throw new Error(
-              `Kaspi API вернул ошибку ${err?.response?.status ?? ''} при запросе заказов (state=${state}, ` +
-                `${chunk.from.toISOString().slice(0, 10)}..${chunk.to.toISOString().slice(0, 10)}): ` +
-                `${JSON.stringify(kaspiErrorBody) || err?.message || err}`,
-            );
-          }
-
-          if (!data.data?.length) break;
-
-          for (const resource of data.data) {
-            if (seenIds.has(resource.id)) continue; // на всякий случай, вдруг заказ попал в выборку дважды
-            seenIds.add(resource.id);
-            const items = await this.fetchOrderEntries(http, resource.id);
-            allOrders.push(this.toNormalizedOrder(resource, items));
-          }
-
-          const totalPages = data.meta?.pageCount ?? 1;
-          pageNumber += 1;
-          if (pageNumber >= totalPages) break;
-        }
+        tasks.push(this.fetchOrdersForStateAndChunk(http, state, chunk, pageSize, seenIds));
       }
     }
+    const results = await Promise.all(tasks);
+    const allOrders = results.flat();
 
     logger.info(`[Kaspi] Загружено заказов: ${allOrders.length}`);
     return allOrders;
+  }
+
+  /** Один state + один кусок дат — со своей постраничной пагинацией внутри. */
+  private async fetchOrdersForStateAndChunk(
+    http: AxiosInstance,
+    state: string,
+    chunk: { from: Date; to: Date },
+    pageSize: number,
+    seenIds: Set<string>,
+  ): Promise<NormalizedOrder[]> {
+    const orders: NormalizedOrder[] = [];
+    let pageNumber = 0;
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      let data: KaspiListResponse<KaspiOrderAttributes>;
+      try {
+        const response = await http.get<KaspiListResponse<KaspiOrderAttributes>>('/orders', {
+          params: {
+            'page[number]': pageNumber,
+            'page[size]': pageSize,
+            'filter[orders][state]': state,
+            'filter[orders][creationDate][$ge]': chunk.from.getTime(),
+            'filter[orders][creationDate][$le]': chunk.to.getTime(),
+          },
+        });
+        data = response.data;
+      } catch (err: any) {
+        // Логируем ТОЧНОЕ тело ответа Kaspi при ошибке — только по коду
+        // статуса (400/401/403) не понять, что конкретно не устроило API,
+        // а тело ответа обычно содержит понятное описание причины.
+        const kaspiErrorBody = err?.response?.data;
+        logger.error(
+          { status: err?.response?.status, body: kaspiErrorBody, state, chunk, pageNumber },
+          '[Kaspi] Ошибка запроса заказов',
+        );
+        throw new Error(
+          `Kaspi API вернул ошибку ${err?.response?.status ?? ''} при запросе заказов (state=${state}, ` +
+            `${chunk.from.toISOString().slice(0, 10)}..${chunk.to.toISOString().slice(0, 10)}): ` +
+            `${JSON.stringify(kaspiErrorBody) || err?.message || err}`,
+        );
+      }
+
+      if (!data.data?.length) break;
+
+      // Состав каждого заказа тоже запрашиваем ПАРАЛЛЕЛЬНО (а не по очереди) —
+      // это второй по значимости источник задержки при большом числе заказов.
+      const newResources = data.data.filter((resource) => {
+        if (seenIds.has(resource.id)) return false; // на всякий случай, вдруг заказ попал в выборку дважды
+        seenIds.add(resource.id);
+        return true;
+      });
+      const itemsPerOrder = await Promise.all(newResources.map((resource) => this.fetchOrderEntries(http, resource.id)));
+      newResources.forEach((resource, i) => {
+        orders.push(this.toNormalizedOrder(resource, itemsPerOrder[i]));
+      });
+
+      const totalPages = data.meta?.pageCount ?? 1;
+      pageNumber += 1;
+      if (pageNumber >= totalPages) break;
+    }
+
+    return orders;
   }
 
   /**
