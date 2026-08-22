@@ -184,6 +184,17 @@ async function loadOverviewPage() {
 async function loadTrend() {
   const canvas = document.getElementById('trendChart');
   if (!canvas) return;
+
+  // Chart.js подключается с CDN отдельным <script> тегом — если сеть
+  // подвела именно в этот момент (или скрипт заблокирован расширением),
+  // глобальная переменная Chart может быть не определена. Не даём этому
+  // уронить всю остальную страницу (и тем более — маскироваться под
+  // "ошибку синхронизации", если график перерисовывается сразу после неё).
+  if (typeof Chart === 'undefined') {
+    console.warn('Chart.js не загрузился — график динамики временно недоступен, остальная страница работает как обычно.');
+    return;
+  }
+
   const data = await api(`/analytics/timeseries?${qs({ from: state.from, to: state.to, marketplace: state.marketplace, groupBy: state.groupBy })}`);
 
   const labels = data.map((d) => d.date);
@@ -509,7 +520,11 @@ function wireProductsFormOnce() {
     try {
       const res = await runChunkedKaspiSync(days);
       alert(`Синхронизировано заказов: ${res.ordersProcessed}. Создано товаров: ${res.productsCreated}.`);
-      await loadProductsAdminTable();
+      try {
+        await loadProductsAdminTable();
+      } catch (renderErr) {
+        console.warn('Синхронизация прошла успешно, но при обновлении таблицы возникла ошибка:', renderErr);
+      }
     } catch (err) {
       alert('Ошибка синхронизации: ' + err.message);
     } finally {
@@ -1390,7 +1405,16 @@ document.getElementById('syncKaspiBtn').addEventListener('click', async () => {
   btn.textContent = '…'; btn.disabled = true;
   try {
     const res = await runChunkedKaspiSync(days);
-    await reloadCurrentPage();
+    // Сама синхронизация уже прошла успешно к этому моменту — данные
+    // сохранены в базе. Ошибку перерисовки страницы (например, график ещё
+    // не успел загрузиться) НЕ считаем ошибкой синхронизации — иначе
+    // пользователь увидит пугающее "ошибка синхронизации" по товару,
+    // который на самом деле уже сохранился.
+    try {
+      await reloadCurrentPage();
+    } catch (renderErr) {
+      console.warn('Синхронизация Kaspi прошла успешно, но при обновлении страницы возникла ошибка:', renderErr);
+    }
     alert(`Синхронизировано заказов: ${res.ordersProcessed}. Создано товаров: ${res.productsCreated}.`);
   } catch (err) {
     alert('Ошибка синхронизации Kaspi: ' + err.message);
@@ -1404,7 +1428,11 @@ document.getElementById('syncOzonBtn').addEventListener('click', async () => {
   btn.textContent = '…'; btn.disabled = true;
   try {
     const res = await api('/sync/ozon?days=7', { method: 'POST' });
-    await reloadCurrentPage();
+    try {
+      await reloadCurrentPage();
+    } catch (renderErr) {
+      console.warn('Синхронизация Ozon прошла успешно, но при обновлении страницы возникла ошибка:', renderErr);
+    }
     alert(`Синхронизация Ozon завершена. Обработано заказов: ${res.ordersProcessed ?? 0}.`);
   } catch (err) {
     alert('Ошибка синхронизации Ozon: ' + err.message);
@@ -1418,7 +1446,11 @@ document.getElementById('syncWbBtn').addEventListener('click', async () => {
   btn.textContent = '…'; btn.disabled = true;
   try {
     const res = await api('/sync/wb?days=7', { method: 'POST' });
-    await reloadCurrentPage();
+    try {
+      await reloadCurrentPage();
+    } catch (renderErr) {
+      console.warn('Синхронизация WB прошла успешно, но при обновлении страницы возникла ошибка:', renderErr);
+    }
     alert(`Синхронизация WB завершена. Обработано заказов: ${res.ordersProcessed ?? 0}.`);
   } catch (err) {
     alert('Ошибка синхронизации WB: ' + err.message);
