@@ -10,26 +10,28 @@ import app from '../dist/expressApp';
 import { getKaspiStore, saveKaspiStore } from '../dist/handlers/kaspiStore';
 
 /**
- * Catch-all serverless-функция для всех ОСТАЛЬНЫХ запросов на /api/*
- * (файл называется [...slug].ts — ловит любой путь под /api/, который не
- * попал под более специфичный именной файл).
+ * ГЛАВНАЯ serverless-функция для всех запросов на /api/*, КРОМЕ тех, что
+ * попадают под более специфичные выделенные файлы (api/cron/*.ts,
+ * api/settings/kaspi-store.ts).
  *
- * Cron-эндпоинты и /api/settings/kaspi-store специально вынесены в
- * ОТДЕЛЬНЫЕ файлы (api/cron/sync.ts, api/settings/kaspi-store.ts и т.д.) —
- * у именных файлов в Vercel нет никакой неоднозначности с маршрутизацией
- * вложенных путей, в отличие от catch-all. Всё остальное (товары, заказы,
- * аналитика и т.д.) обрабатывает обычное Express-приложение.
- *
- * ВАЖНО: /api/settings/kaspi-store продублирован и ЗДЕСЬ — на случай, если
- * выделенный файл api/settings/kaspi-store.ts по какой-то причине не
- * подхватится Vercel (например, из-за неполной синхронизации файлов на
- * GitHub). Это резервный путь — сохранение магазина сработает даже если
- * основной механизм не сработает.
+ * ВАЖНО — почему файл называется index.ts, а не [...slug].ts:
+ * файл с именем [...slug].ts — это "угадай-соглашение" Vercel по имени
+ * файла для catch-all маршрутов. У нас были устойчивые проблемы именно с
+ * МНОГОСЕГМЕНТНЫМИ путями через этот механизм (/sync/status, /sync/kaspi,
+ * /settings/kaspi-store стабильно давали 404, хотя однос-сегментные пути
+ * вроде /products работали). Поэтому вместо соглашения об имени файла
+ * используется ЯВНЫЙ "rewrites" в vercel.json — это самый прямой,
+ * официально документированный способ направить весь трафик /api/* в один
+ * обработчик, без угадывания по имени файла.
  */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const url = req.url || '';
 
+    // /api/settings/kaspi-store продублирован и здесь на случай, если
+    // выделенный файл api/settings/kaspi-store.ts почему-либо не
+    // подхватится — три независимых пути гарантируют, что подключение
+    // Kaspi-магазина сработает.
     if (url.startsWith('/api/settings/kaspi-store')) {
       if (req.method === 'GET') return res.status(200).json(await getKaspiStore());
       if (req.method === 'POST') {

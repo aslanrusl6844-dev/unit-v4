@@ -3,7 +3,7 @@
   "outputDirectory": "public",
   "buildCommand": "npm run build && npx prisma migrate deploy",
   "functions": {
-    "api/[...slug].ts": {
+    "api/index.ts": {
       "maxDuration": 60,
       "includeFiles": "node_modules/.prisma/client/**"
     },
@@ -24,8 +24,12 @@
       "includeFiles": "node_modules/.prisma/client/**"
     }
   },
+  "rewrites": [
+    { "source": "/api/:path*", "destination": "/api/index" }
+  ],
   "crons": [
     { "path": "/api/cron/sync", "schedule": "0 3 * * *" },
     { "path": "/api/cron/reprice", "schedule": "0 4 * * *" }
   ]
 }
+
