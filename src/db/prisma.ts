@@ -48,10 +48,38 @@ function ensureServerlessSafeUrl(rawUrl: string | undefined): string | undefined
 
 const datasourceUrl = ensureServerlessSafeUrl(process.env.DATABASE_URL);
 
-export const prisma =
-  global.__prisma ??
-  new PrismaClient(
-    datasourceUrl ? { datasources: { db: { url: datasourceUrl } } } : undefined,
-  );
+/**
+ * КРИТИЧЕСКИ ВАЖНО: этот файл импортируется практически всеми роутами.
+ * Если "new PrismaClient()" здесь бросит исключение — это происходит на
+ * этапе ЗАГРУЗКИ МОДУЛЯ, ДО того, как успевает сработать хоть один
+ * try/catch внутри обработчика запроса. Результат — крах ВСЕЙ функции на
+ * Vercel (500 FUNCTION_INVOCATION_FAILED) для АБСОЛЮТНО ЛЮБОЙ страницы
+ * сайта, даже той, что базу вообще не использует.
+ *
+ * Поэтому конструктор обязательно в try/catch. Если что-то пошло не так —
+ * не роняем импорт модуля, а создаём "заглушку", которая кинет понятную
+ * ошибку ТОЛЬКО в момент реального обращения к базе (prisma.product.findMany()
+ * и т.п.) — и эта ошибка уже будет поймана существующими try/catch в роутах.
+ */
+function createPrismaClient(): PrismaClient {
+  try {
+    return new PrismaClient(datasourceUrl ? { datasources: { db: { url: datasourceUrl } } } : undefined);
+  } catch (err: any) {
+    // eslint-disable-next-line no-console
+    console.error('⚠️ Не удалось создать PrismaClient при старте:', err?.message ?? err);
+    const lazyError = new Error(
+      `База данных недоступна: ${String(err?.message ?? err)}. Проверьте DATABASE_URL в Environment Variables и что миграции применены.`,
+    );
+    // Proxy бросает ошибку только при попытке РЕАЛЬНО воспользоваться
+    // клиентом (prisma.product...), а не при простом импорте файла.
+    return new Proxy({}, {
+      get() {
+        throw lazyError;
+      },
+    }) as PrismaClient;
+  }
+}
+
+export const prisma = global.__prisma ?? createPrismaClient();
 
 global.__prisma = prisma;
