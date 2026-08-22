@@ -68,35 +68,55 @@ async function resolveProductInfo(marketplace: MarketplaceName, externalSku: str
 /**
  * Для Kaspi считаем комиссию (по категории каждого товара, из официальной
  * тарифной таблицы) и логистику (по тарифу Kaspi Доставки, на основе
- * суммы/веса заказа), т.к. сам API Kaspi эти суммы не отдаёт.
+ * суммы/веса заказа) — сам API Kaspi эти суммы не отдаёт.
+ *
+ * Возвращает и итоги по заказу (для Order), и точную разбивку по каждой
+ * позиции (для OrderItem) — это и есть «точный разнос», а не восстановление
+ * задним числом через пропорцию от суммы заказа.
  */
 function enrichKaspiFinancials(
   order: NormalizedOrder,
   itemsWithInfo: Array<{ price: number; quantity: number; weightKg: number; kaspiTopCategory?: string; kaspiLeafCategory?: string }>,
-): { marketplaceCommission: number; logisticsCost: number } {
+): { marketplaceCommission: number; logisticsCost: number; perItem: Array<{ commission: number; itemLogistics: number }> } {
   let marketplaceCommission = 0;
   let totalWeight = 0;
 
-  for (const item of itemsWithInfo) {
+  // Шаг 1: точная комиссия каждой позиции по СВОЕЙ категории.
+  const perItemCommission = itemsWithInfo.map((item) => {
     const itemRevenue = item.price * item.quantity;
     totalWeight += item.weightKg * item.quantity;
 
-    if (item.kaspiTopCategory) {
-      marketplaceCommission += calcKaspiCommissionAmount(itemRevenue, {
-        topCategory: item.kaspiTopCategory,
-        leafCategory: item.kaspiLeafCategory,
-      });
+    if (!item.kaspiTopCategory) {
+      // Категория не указана в карточке товара — комиссия для этой позиции
+      // не считается (0), чтобы не искажать отчёт неверной ставкой.
+      // Заполните kaspiTopCategory в разделе «Товары».
+      return 0;
     }
-    // Если категория товара не указана в карточке — комиссия для этой
-    // позиции не считается (0), чтобы не искажать отчёт неверной ставкой.
-    // Заполните kaspiTopCategory/kaspiLeafCategory в разделе «Товары».
-  }
+    const commission = calcKaspiCommissionAmount(itemRevenue, {
+      topCategory: item.kaspiTopCategory,
+      leafCategory: item.kaspiLeafCategory,
+    });
+    marketplaceCommission += commission;
+    return commission;
+  });
 
   const logisticsCost = order.kaspiDelivery
     ? calculateKaspiDeliveryCost(order.totalRevenue, totalWeight, env.kaspi.defaultDeliveryZone)
     : 0;
 
-  return { marketplaceCommission, logisticsCost };
+  // Шаг 2: логистика заказа делится между позициями ПО ВЕСУ (не по цене) —
+  // тариф Kaspi Доставки зависит от веса посылки, поэтому это точнее, чем
+  // пропорция от выручки.
+  const perItem = itemsWithInfo.map((item, i) => {
+    const itemWeight = item.weightKg * item.quantity;
+    const weightShare = totalWeight > 0 ? itemWeight / totalWeight : 1 / itemsWithInfo.length;
+    return {
+      commission: perItemCommission[i],
+      itemLogistics: logisticsCost * weightShare,
+    };
+  });
+
+  return { marketplaceCommission, logisticsCost, perItem };
 }
 
 async function persistOrder(order: NormalizedOrder): Promise<void> {
@@ -112,10 +132,25 @@ async function persistOrder(order: NormalizedOrder): Promise<void> {
   });
 
   let { marketplaceCommission, logisticsCost } = order;
+  // perItemFinancials[i] соответствует itemsWithCost[i] — точная комиссия и
+  // логистика КОНКРЕТНО этой позиции (не восстановленная задним числом).
+  let perItemFinancials: Array<{ commission: number; itemLogistics: number }>;
+
   if (order.marketplace === 'KASPI') {
     const kaspiFinancials = enrichKaspiFinancials(order, itemsWithCost);
     marketplaceCommission = kaspiFinancials.marketplaceCommission;
     logisticsCost = kaspiFinancials.logisticsCost;
+    perItemFinancials = kaspiFinancials.perItem;
+  } else {
+    // Ozon/WB: комиссия площадки — процент от цены (не зависит от категории
+    // так резко, как у Kaspi), поэтому распределение по доле выручки внутри
+    // заказа даёт точный результат (для WB это вообще 1-в-1, т.к. там один
+    // заказ = один товар — см. src/integrations/wb.client.ts).
+    const orderRevenue = itemsWithCost.reduce((s, i) => s + i.price * i.quantity, 0);
+    perItemFinancials = itemsWithCost.map((item) => {
+      const share = orderRevenue > 0 ? (item.price * item.quantity) / orderRevenue : 1 / itemsWithCost.length;
+      return { commission: marketplaceCommission * share, itemLogistics: logisticsCost * share };
+    });
   }
 
   const orderData = {
@@ -134,41 +169,32 @@ async function persistOrder(order: NormalizedOrder): Promise<void> {
     rawData: JSON.stringify(order.raw ?? {}),
   };
 
+  const itemsCreateData = itemsWithCost.map((i, idx) => ({
+    externalSku: i.externalSku,
+    name: i.name,
+    quantity: i.quantity,
+    price: i.price,
+    costPrice: i.costPrice,
+    productId: i.productId,
+    commission: round2(perItemFinancials[idx].commission),
+    itemLogistics: round2(perItemFinancials[idx].itemLogistics),
+  }));
+
   if (existing) {
     await prisma.orderItem.deleteMany({ where: { orderId: existing.id } });
     await prisma.order.update({
       where: { id: existing.id },
-      data: {
-        ...orderData,
-        items: {
-          create: itemsWithCost.map((i) => ({
-            externalSku: i.externalSku,
-            name: i.name,
-            quantity: i.quantity,
-            price: i.price,
-            costPrice: i.costPrice,
-            productId: i.productId,
-          })),
-        },
-      },
+      data: { ...orderData, items: { create: itemsCreateData } },
     });
   } else {
     await prisma.order.create({
-      data: {
-        ...orderData,
-        items: {
-          create: itemsWithCost.map((i) => ({
-            externalSku: i.externalSku,
-            name: i.name,
-            quantity: i.quantity,
-            price: i.price,
-            costPrice: i.costPrice,
-            productId: i.productId,
-          })),
-        },
-      },
+      data: { ...orderData, items: { create: itemsCreateData } },
     });
   }
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
 }
 
 export async function syncKaspiOrders(dateFrom: Date, dateTo: Date) {

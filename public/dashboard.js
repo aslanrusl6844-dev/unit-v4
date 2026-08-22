@@ -236,6 +236,7 @@ async function loadByCategory() {
 // ЗАКАЗЫ
 // =====================================================================
 let ordersFiltersWired = false;
+let selectedOrderIds = new Set();
 
 function wireOrdersFiltersOnce() {
   if (ordersFiltersWired) return;
@@ -255,8 +256,44 @@ function wireOrdersFiltersOnce() {
     if (!btn) return;
     document.querySelectorAll('#statusTabs button').forEach((b) => b.classList.remove('is-active'));
     btn.classList.add('is-active');
+    selectedOrderIds.clear();
     loadOrders();
   });
+
+  document.getElementById('ordersSelectAll').addEventListener('change', (e) => {
+    document.querySelectorAll('#ordersTable tbody input[type="checkbox"][data-order-id]').forEach((cb) => {
+      cb.checked = e.target.checked;
+      if (e.target.checked) selectedOrderIds.add(cb.dataset.orderId);
+      else selectedOrderIds.delete(cb.dataset.orderId);
+    });
+    updateOrdersSelectedCount();
+  });
+
+  document.getElementById('bulkWaybillBtn').addEventListener('click', async () => {
+    if (!selectedOrderIds.size) { alert('Сначала выбери заказы (чекбоксы слева от номера)'); return; }
+    if (!confirm(`Сформировать накладные для ${selectedOrderIds.size} заказ(ов)? Заявки уйдут в кабинет Kaspi.`)) return;
+    const btn = document.getElementById('bulkWaybillBtn');
+    btn.textContent = '…'; btn.disabled = true;
+    try {
+      const res = await api('/orders/bulk-waybill', { method: 'POST', body: JSON.stringify({ ids: Array.from(selectedOrderIds) }) });
+      alert(`Готово: успешно ${res.succeeded}, с ошибкой ${res.failed}.` + (res.failed ? '\n' + res.results.filter((r) => !r.ok).map((r) => r.error).join('\n') : ''));
+      selectedOrderIds.clear();
+      await loadOrders();
+    } catch (err) {
+      alert('Ошибка: ' + err.message);
+    } finally {
+      btn.textContent = '📄 Сформировать накладные'; btn.disabled = false;
+    }
+  });
+
+  document.getElementById('printWaybillsBtn').addEventListener('click', () => {
+    if (!selectedOrderIds.size) { alert('Сначала выбери заказы (чекбоксы слева от номера)'); return; }
+    window.open(`/api/orders/print/waybills?ids=${Array.from(selectedOrderIds).join(',')}`, '_blank');
+  });
+}
+
+function updateOrdersSelectedCount() {
+  document.getElementById('ordersSelectedCount').textContent = `Выбрано: ${selectedOrderIds.size}`;
 }
 
 async function loadOrdersPage() {
@@ -293,12 +330,15 @@ async function loadOrders() {
     search: filters.get('search'), city: filters.get('city'), deliveryType: filters.get('deliveryType'), statusGroup,
   })}`);
   const tbody = document.querySelector('#ordersTable tbody');
+  document.getElementById('ordersSelectAll').checked = false;
   if (!res.orders.length) {
-    tbody.innerHTML = `<tr><td colspan="6" style="color:var(--text-faint)">Нет заказов за период</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" style="color:var(--text-faint)">Нет заказов за период</td></tr>`;
+    updateOrdersSelectedCount();
     return;
   }
   tbody.innerHTML = res.orders.map((o) => `
     <tr>
+      <td><input type="checkbox" data-order-id="${o.id}" ${selectedOrderIds.has(o.id) ? 'checked' : ''} /></td>
       <td>${o.externalId}</td>
       <td><span class="mp-tag"><i class="dot dot--${o.marketplace.toLowerCase()}"></i>${mpLabel(o.marketplace)}</span></td>
       <td>${new Date(o.orderDate).toLocaleDateString('ru-RU')}</td>
@@ -307,6 +347,15 @@ async function loadOrders() {
       <td>${orderActionCell(o)}</td>
     </tr>
   `).join('');
+
+  tbody.querySelectorAll('input[type="checkbox"][data-order-id]').forEach((cb) => {
+    cb.addEventListener('change', () => {
+      if (cb.checked) selectedOrderIds.add(cb.dataset.orderId);
+      else selectedOrderIds.delete(cb.dataset.orderId);
+      updateOrdersSelectedCount();
+    });
+  });
+  updateOrdersSelectedCount();
 
   tbody.querySelectorAll('button[data-action="accept-order"]').forEach((btn) => {
     btn.addEventListener('click', async () => {
@@ -560,11 +609,19 @@ function renderProductsAdminTable() {
   }
   tbody.innerHTML = products.map((p) => {
     const ue = productsEconomicsCache.get(p.sku);
+    // Есть продажи, но не указана категория Kaspi -> комиссия всегда 0,
+    // прибыль в таком случае завышена. Явно предупреждаем, а не молчим.
+    const missingCategory = ue && ue.quantity > 0 && !p.kaspiTopCategory;
+    const categoryCell = p.kaspiTopCategory
+      ? `<br><span style="color:var(--text-faint);font-size:11px">${p.kaspiLeafCategory ?? p.kaspiTopCategory}</span>`
+      : missingCategory
+        ? `<br><span style="color:var(--warn);font-size:11px" title="Без категории комиссия считается как 0 — прибыль по этому товару завышена">⚠ нет категории</span>`
+        : '';
     return `
     <tr data-id="${p.id}">
       <td class="name-cell">${p.sku}</td>
       <td class="name-cell">${p.name}</td>
-      <td class="name-cell">${p.kaspiSku ?? '—'}${p.kaspiTopCategory ? `<br><span style="color:var(--text-faint);font-size:11px">${p.kaspiLeafCategory ?? p.kaspiTopCategory}</span>` : ''}</td>
+      <td class="name-cell">${p.kaspiSku ?? '—'}${categoryCell}</td>
       <td class="num"><input class="cost-input" type="number" step="0.01" value="${p.costPrice}" data-field="costPrice" /></td>
       <td class="num">${ue ? fmt.format(ue.quantity) : '—'}</td>
       <td class="num">${ue ? fmtMoney(ue.revenue) : '—'}</td>
@@ -746,10 +803,98 @@ async function loadReviewsPage() {
 // КАЛЬКУЛЯТОР МАРЖИ
 // =====================================================================
 let marginFormWired = false;
+let lastMarginPayload = null; // последний запрос — переиспользуется слайдером "что если"
+
+function buildMarginPayload(fd, priceOverride) {
+  return {
+    price: priceOverride ?? Number(fd.get('price')),
+    price1688: Number(fd.get('price1688')) || 0,
+    cargoRatePerKg: Number(fd.get('cargoRatePerKg')) || 0,
+    packagingCost: Number(fd.get('packagingCost')) || 0,
+    weightKg: Number(fd.get('weightKg')) || 0.5,
+    kaspiTopCategory: fd.get('kaspiTopCategory'),
+    deliveryZone: fd.get('deliveryZone'),
+    targetMarginPct: Number(fd.get('targetMarginPct')) || 20,
+  };
+}
+
+function renderMarginResult(result) {
+  const verdictIsBuy = result.verdict === 'BUY';
+  const verdictColor = verdictIsBuy ? 'var(--accent)' : 'var(--loss)';
+  const verdictBg = verdictIsBuy ? 'var(--accent-soft)' : 'var(--loss-soft)';
+
+  document.getElementById('marginCalcResult').innerHTML = `
+    <div style="display:flex;gap:20px;margin-top:16px;flex-wrap:wrap">
+      <div style="flex:1 1 220px;background:${verdictBg};border-radius:10px;padding:18px;">
+        <div style="font-family:var(--font-display);font-size:20px;font-weight:700;color:${verdictColor}">
+          ${verdictIsBuy ? '✓ Брать' : '✕ Не брать'}
+        </div>
+        <div style="font-size:13px;color:var(--text-muted);margin-top:4px">прибыль ${fmtMoney(result.netProfit)} с единицы</div>
+        <div style="margin-top:14px;font-size:12.5px;color:var(--text-muted)">
+          Категория: <strong style="color:var(--text)">${result.kaspiTopCategory ?? '—'}</strong>${result.commissionRate != null ? ` · комиссия ${result.commissionRate}%` : ''}
+        </div>
+        <div style="font-size:12.5px;color:var(--text-muted);margin-top:4px">
+          Цель ${result.targetMarginPct}% —
+          <strong style="color:${result.goalReached ? 'var(--accent)' : 'var(--loss)'}">${result.goalReached ? 'достигнута ✓' : `не достигнута (сейчас ${result.marginPct}%)`}</strong>
+        </div>
+      </div>
+
+      <div style="flex:1 1 260px;background:var(--bg);border-radius:10px;padding:18px;font-family:var(--font-mono);font-size:13px">
+        <div style="display:flex;justify-content:space-between;padding:4px 0"><span>Цена Kaspi</span><span>${fmtMoney(result.price)}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:4px 0;color:var(--loss)"><span>− Комиссия Kaspi${result.commissionRate != null ? ` (${result.commissionRate}%)` : ''}</span><span>−${fmtMoney(result.commission)}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:4px 0;color:var(--loss)"><span>− Логистика Kaspi</span><span>−${fmtMoney(result.logistics)}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:4px 0;color:var(--loss)" title="1688: ${fmtMoney(result.price1688)} · карго: ${fmtMoney(result.cargoCost)} · упаковка: ${fmtMoney(result.packagingCost)}">
+          <span>− Себестоимость</span><span>−${fmtMoney(result.costPrice)}</span>
+        </div>
+        <div style="font-size:11px;color:var(--text-faint);padding:0 0 8px">
+          1688: ${fmtMoney(result.price1688)} · карго: ${fmtMoney(result.cargoCost)} · упаковка: ${fmtMoney(result.packagingCost)}
+        </div>
+        <div style="display:flex;justify-content:space-between;padding:8px 0 0;border-top:1px solid var(--border);font-weight:600;color:${verdictColor}">
+          <span>= Прибыль</span><span>${fmtMoney(result.netProfit)} (${result.marginPct}%)</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:16px;background:var(--bg)">
+      <div class="panel__head"><h2>Что если уронить цену под демпинг</h2></div>
+      <input type="range" id="marginWhatIfSlider" min="${Math.round(result.price * 0.5)}" max="${result.price}" value="${result.price}" style="width:100%" />
+      <div id="marginWhatIfResult" style="display:flex;justify-content:space-between;margin-top:8px;font-family:var(--font-mono);font-size:13px">
+        <span>при ${fmtMoney(result.price)}</span>
+        <span>маржа <strong class="${result.marginPct >= 0 ? 'pos' : 'neg'}">${result.marginPct}%</strong></span>
+      </div>
+    </div>
+  `;
+
+  const slider = document.getElementById('marginWhatIfSlider');
+  let debounceTimer;
+  slider.addEventListener('input', () => {
+    clearTimeout(debounceTimer);
+    const price = Number(slider.value);
+    debounceTimer = setTimeout(async () => {
+      if (!lastMarginPayload) return;
+      const whatIfResult = await api('/margin-calculator/calculate', {
+        method: 'POST',
+        body: JSON.stringify({ ...lastMarginPayload, price }),
+      });
+      document.getElementById('marginWhatIfResult').innerHTML = `
+        <span>при ${fmtMoney(price)}</span>
+        <span>маржа <strong class="${whatIfResult.marginPct >= 0 ? 'pos' : 'neg'}">${whatIfResult.marginPct}%</strong></span>
+      `;
+    }, 250);
+  });
+}
 
 function wireMarginFormOnce() {
   if (marginFormWired) return;
   marginFormWired = true;
+
+  document.getElementById('marginModeSeg').addEventListener('click', (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    document.querySelectorAll('#marginModeSeg button').forEach((b) => b.classList.remove('is-active'));
+    btn.classList.add('is-active');
+    document.getElementById('marginScrapeForm').style.display = btn.dataset.mode === 'link' ? 'flex' : 'none';
+  });
 
   document.getElementById('marginScrapeForm').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -762,32 +907,21 @@ function wireMarginFormOnce() {
     } catch (err) {
       alert('Не удалось прочитать страницу: ' + err.message);
     } finally {
-      btn.textContent = 'Проверить'; btn.disabled = false;
+      btn.textContent = 'Заполнить цену'; btn.disabled = false;
     }
   });
 
   document.getElementById('marginCalcForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
-    const payload = {
-      price: Number(fd.get('price')),
-      costPrice: Number(fd.get('costPrice')),
-      packagingCost: Number(fd.get('packagingCost')) || 0,
-      weightKg: Number(fd.get('weightKg')) || 0.5,
-      kaspiTopCategory: fd.get('kaspiTopCategory'),
-      deliveryZone: fd.get('deliveryZone'),
-    };
-    const result = await api('/margin-calculator/calculate', { method: 'POST', body: JSON.stringify(payload) });
-    const cls = result.isProfitable ? 'pos' : 'neg';
-    document.getElementById('marginCalcResult').innerHTML = `
-      <div class="kpi-grid" style="margin-top:14px">
-        <div class="kpi-card"><div class="kpi-card__label">Комиссия Kaspi</div><div class="kpi-card__value">${fmtMoney(result.commission)}</div></div>
-        <div class="kpi-card"><div class="kpi-card__label">Логистика</div><div class="kpi-card__value">${fmtMoney(result.logistics)}</div></div>
-        <div class="kpi-card kpi-card--accent"><div class="kpi-card__label">Чистая прибыль</div><div class="kpi-card__value ${cls}">${fmtMoney(result.netProfit)}</div></div>
-        <div class="kpi-card"><div class="kpi-card__label">Маржа</div><div class="kpi-card__value ${cls}">${result.marginPct}%</div></div>
-        <div class="kpi-card"><div class="kpi-card__label">ROI</div><div class="kpi-card__value ${cls}">${result.roiPct}%</div></div>
-      </div>
-    `;
+    const payload = buildMarginPayload(fd);
+    lastMarginPayload = payload;
+    try {
+      const result = await api('/margin-calculator/calculate', { method: 'POST', body: JSON.stringify(payload) });
+      renderMarginResult({ ...result, kaspiTopCategory: payload.kaspiTopCategory });
+    } catch (err) {
+      alert('Не удалось посчитать: ' + err.message);
+    }
   });
 }
 

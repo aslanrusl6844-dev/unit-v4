@@ -140,13 +140,6 @@ export async function getByProduct(filter: RangeFilter) {
   >();
 
   for (const order of orders) {
-    // Комиссию и логистику заказа делим между позициями пропорционально их
-    // доле в выручке заказа — сами суммы (order.marketplaceCommission,
-    // order.logisticsCost) уже посчитаны точно при синхронизации (для
-    // Ozon/WB — из настоящих финансовых отчётов площадки, для Kaspi — по
-    // официальной тарифной таблице), здесь просто разносим по товарам.
-    const orderRevenue = order.items.reduce((s, i) => s + i.price * i.quantity, 0);
-
     for (const item of order.items) {
       const key = item.productId ?? item.externalSku;
       const entry = map.get(key) ?? {
@@ -161,16 +154,16 @@ export async function getByProduct(filter: RangeFilter) {
       };
       const itemRevenue = item.price * item.quantity;
       const itemCogs = item.costPrice * item.quantity;
-      const revenueShare = orderRevenue > 0 ? itemRevenue / orderRevenue : 0;
-      const itemCommission = order.marketplaceCommission * revenueShare;
-      const itemLogistics = order.logisticsCost * revenueShare;
-
+      // commission/itemLogistics уже точно посчитаны и сохранены на уровне
+      // позиции в момент синхронизации (см. sync.service.ts) — здесь просто
+      // суммируем готовые значения, никакой пропорции/восстановления задним
+      // числом больше не нужно.
       entry.quantity += item.quantity;
       entry.revenue += itemRevenue;
       entry.cogs += itemCogs;
-      entry.commission += itemCommission;
-      entry.logistics += itemLogistics;
-      entry.profit += itemRevenue - itemCogs - itemCommission - itemLogistics;
+      entry.commission += item.commission;
+      entry.logistics += item.itemLogistics;
+      entry.profit += itemRevenue - itemCogs - item.commission - item.itemLogistics;
       map.set(key, entry);
     }
   }

@@ -129,13 +129,20 @@
             <button data-status="preorder">Предзаказ</button>
             <button data-status="packing">Упаковка</button>
             <button data-status="handover">Передача</button>
-            <button data-status="delivering">Доставляется</button>
-            <button data-status="cancelled">Отменены</button>
+            <button data-status="delivering">Переданы на доставку</button>
+            <button data-status="cancelled">Отменены при доставке</button>
+          </div>
+          <div class="inline-form" style="justify-content:space-between;align-items:center">
+            <span id="ordersSelectedCount" style="font-size:12.5px;color:var(--text-muted)">Выбрано: 0</span>
+            <div style="display:flex;gap:8px">
+              <button class="btn btn--ghost" id="bulkWaybillBtn">📄 Сформировать накладные</button>
+              <button class="btn btn--ghost" id="printWaybillsBtn">🖨 Распечатать выбранные</button>
+            </div>
           </div>
           <div class="table-wrap">
             <table class="table" id="ordersTable">
               <thead>
-                <tr><th>№</th><th>Площадка</th><th>Дата</th><th>Статус</th><th class="num">Сумма</th><th>Накладная</th></tr>
+                <tr><th><input type="checkbox" id="ordersSelectAll" /></th><th>№</th><th>Площадка</th><th>Дата</th><th>Статус</th><th class="num">Сумма</th><th>Накладная</th></tr>
               </thead>
               <tbody></tbody>
             </table>
@@ -283,28 +290,41 @@
 
       <!-- ============ КАЛЬКУЛЯТОР МАРЖИ ============ -->
       <section class="page" id="page-margin" hidden>
-        <div class="page__head"><h1>Калькулятор маржи</h1><p>Вставь ссылку на товар Kaspi — цена подтянется сама.</p></div>
+        <div class="page__head"><h1>Калькулятор маржи</h1><p>Вставь ссылку на товар Kaspi или заполни вручную — сразу увидишь вердикт и разбор прибыли.</p></div>
 
         <div class="panel">
+          <div class="seg" id="marginModeSeg">
+            <button class="is-active" data-mode="link">По ссылке Kaspi</button>
+            <button data-mode="manual">Заполнить вручную</button>
+          </div>
+
           <form class="inline-form" id="marginScrapeForm">
             <input name="url" type="url" placeholder="https://kaspi.kz/shop/p/..." style="flex:2 1 300px" required />
-            <button class="btn btn--ghost" type="submit">Проверить</button>
+            <button class="btn btn--ghost" type="submit">Заполнить цену</button>
           </form>
-          <form class="inline-form" id="marginCalcForm">
-            <input name="price" type="number" step="1" placeholder="Цена продажи" required />
-            <input name="costPrice" type="number" step="0.01" placeholder="Себестоимость" required />
-            <input name="packagingCost" type="number" step="0.01" placeholder="Упаковка" value="0" />
-            <input name="weightKg" type="number" step="0.01" placeholder="Вес, кг" value="0.5" />
-            <select name="kaspiTopCategory" id="marginCategorySelect" required>
-              <option value="">Категория Kaspi</option>
-            </select>
-            <select name="deliveryZone">
-              <option value="kazakhstan">По Казахстану</option>
-              <option value="city">По городу</option>
-              <option value="express">Express</option>
-            </select>
+
+          <form id="marginCalcForm">
+            <div class="inline-form">
+              <input name="price" type="number" step="1" placeholder="Цена продажи на Kaspi, ₸" required style="flex:1 1 200px" />
+              <select name="kaspiTopCategory" id="marginCategorySelect" required style="flex:1 1 200px">
+                <option value="">Категория Kaspi</option>
+              </select>
+              <select name="deliveryZone">
+                <option value="kazakhstan">По Казахстану</option>
+                <option value="city">По городу</option>
+                <option value="express">Express</option>
+              </select>
+            </div>
+            <div class="inline-form">
+              <input name="price1688" type="number" step="0.01" placeholder="Цена 1688, ₸" value="0" />
+              <input name="cargoRatePerKg" type="number" step="0.01" placeholder="Карго, ₸/кг" value="1500" />
+              <input name="weightKg" type="number" step="0.01" placeholder="Вес, кг" value="0.5" />
+              <input name="packagingCost" type="number" step="0.01" placeholder="Упаковка, ₸" value="0" />
+              <input name="targetMarginPct" type="number" step="1" placeholder="Цель по марже, %" value="20" style="max-width:140px" />
+            </div>
             <button class="btn btn--accent" type="submit">Посчитать маржу</button>
           </form>
+
           <div id="marginCalcResult"></div>
         </div>
       </section>
