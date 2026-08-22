@@ -144,21 +144,29 @@ export class KaspiClient {
     const allOrders: NormalizedOrder[] = [];
     const seenIds = new Set<string>();
 
-    // Все известные значения state, которые встречаются в заказах Kaspi
-    // (см. также STATUS_GROUPS в src/routes/orders.routes.ts). COMPLETED и
-    // ARCHIVE — это реальные завершённые продажи, ключевые для юнит-экономики.
-    const STATES = [
-      'NEW',
-      'SIGN_REQUIRED',
-      'APPROVED_BY_BANK',
-      'ACCEPTED_BY_MERCHANT',
-      'ASSEMBLE',
-      'COMPLETED',
-      'CANCELLED',
-      'CANCELLING',
-      'RETURNED',
-      'ARCHIVE',
-    ];
+    // ВАЖНО: у Kaspi "state" и "status" — два РАЗНЫХ поля заказа, не
+    // взаимозаменяемые (проверено по стороннему, но полному описанию
+    // Kaspi Merchant API — github.com/abdymazhit/kaspi-merchant-api):
+    //
+    //   filter[orders][state]  — ОБЯЗАТЕЛЬНЫЙ фильтр, ровно 6 значений:
+    //     NEW, SIGN_REQUIRED, PICKUP, DELIVERY, KASPI_DELIVERY, ARCHIVE
+    //     (это "фаза" заказа: новый -> требует подписи -> самовывоз/доставка
+    //     -> архив после завершения цикла, независимо от исхода).
+    //
+    //   filter[orders][status] — НЕобязательный фильтр, другие значения:
+    //     APPROVED_BY_BANK, ACCEPTED_BY_MERCHANT, COMPLETED, CANCELLED,
+    //     CANCELLING, KASPI_DELIVERY_RETURN_REQUESTED,
+    //     RETURN_ACCEPTED_BY_MERCHANT, RETURNED — это его "исход/статус
+    //     обработки" внутри фазы. Раньше мы ошибочно передавали эти
+    //     значения КАК state — Kaspi возвращал 400 "does not match".
+    //
+    // Мы используем ТОЛЬКО filter[orders][state] (он обязателен), перебирая
+    // все 6 допустимых значений — раз "status" необязателен, запрос по
+    // каждому state уже возвращает заказы С ЛЮБЫМ статусом внутри этой фазы,
+    // включая настоящие завершённые продажи (ARCHIVE — куда попадают все
+    // заказы после окончания цикла, вне зависимости от того, чем он
+    // закончился: доставлен, отменён или возвращён).
+    const STATES = ['NEW', 'SIGN_REQUIRED', 'PICKUP', 'DELIVERY', 'KASPI_DELIVERY', 'ARCHIVE'];
 
     const dateChunks = KaspiClient.chunkDateRange(params.dateFrom, params.dateTo, 14);
     logger.info(`[Kaspi] Период разбит на ${dateChunks.length} кусков (максимум 14 дней каждый)`);
@@ -273,7 +281,14 @@ export class KaspiClient {
     return {
       externalId: attrs.code,
       marketplace: 'KASPI',
-      status: attrs.state ?? attrs.status,
+      // Наш внутренний статус (используется для фильтров на странице
+      // «Заказы» — Предзаказ/Упаковка/Передача/Переданы на доставку/
+      // Отменены) ожидает значения вида APPROVED_BY_BANK/ACCEPTED_BY_MERCHANT/
+      // COMPLETED/CANCELLED — это поле "status" у Kaspi, более информативное,
+      // чем "state" (у которого всего 6 общих фаз). Используем status в
+      // приоритете, state — только как запасной вариант для совсем новых
+      // заказов, у которых status ещё не назначен.
+      status: attrs.status ?? attrs.state,
       orderDate: new Date(attrs.creationDate),
       deliveryType: attrs.deliveryMode,
       city: attrs.city?.name,
