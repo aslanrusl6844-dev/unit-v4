@@ -103,14 +103,40 @@ export class KaspiClient {
   }
 
   /**
+   * Разбивает период на куски не длиннее maxDays — у Kaspi есть жёсткое
+   * ограничение на диапазон filter[orders][creationDate] (точное сообщение
+   * от их API: "Exceeded the maximum difference for the filter[orders]
+   * [creationDate] (in days). Actual [30], max [14]."). Если запросить
+   * сразу 30 или 90 дней, Kaspi вернёт 400 — поэтому режем на куски по
+   * 14 дней и опрашиваем каждый кусок отдельно.
+   */
+  private static chunkDateRange(dateFrom: Date, dateTo: Date, maxDays = 14): Array<{ from: Date; to: Date }> {
+    const chunks: Array<{ from: Date; to: Date }> = [];
+    const maxMs = maxDays * 24 * 60 * 60 * 1000;
+    let chunkStart = dateFrom.getTime();
+    const endMs = dateTo.getTime();
+
+    while (chunkStart < endMs) {
+      const chunkEnd = Math.min(chunkStart + maxMs, endMs);
+      chunks.push({ from: new Date(chunkStart), to: new Date(chunkEnd) });
+      chunkStart = chunkEnd;
+    }
+    if (chunks.length === 0) chunks.push({ from: dateFrom, to: dateTo });
+    return chunks;
+  }
+
+  /**
    * Получить список заказов за период. Kaspi отдаёт данные постранично
    * (page[number], page[size]) в формате JSON:API.
    *
-   * ВАЖНО: судя по официальным примерам Kaspi Гид, фильтр
-   * filter[orders][state] присутствует в КАЖДОМ примере запроса — похоже,
-   * что без него API возвращает 400. У Kaspi нет единого "покажи заказы
-   * любого статуса" — поэтому запрашиваем ПО ОЧЕРЕДИ для каждого
-   * известного состояния заказа и объединяем результат.
+   * Два важных ограничения API Kaspi, с которыми пришлось считаться:
+   * 1. filter[orders][state] ОБЯЗАТЕЛЕН — единого "покажи заказы любого
+   *    статуса" нет, поэтому опрашиваем ПО ОЧЕРЕДИ каждое известное
+   *    состояние (включая COMPLETED/ARCHIVE — реальные завершённые продажи,
+   *    которые и нужны для юнit-экономики, а не только новые NEW-заказы).
+   * 2. Диапазон creationDate не может быть больше 14 дней за один запрос —
+   *    поэтому весь период режется на куски по 14 дней (chunkDateRange) и
+   *    результаты по всем кускам объединяются.
    */
   async fetchOrders(params: { dateFrom: Date; dateTo: Date; pageSize?: number }): Promise<NormalizedOrder[]> {
     const http = await this.getHttp();
@@ -119,7 +145,8 @@ export class KaspiClient {
     const seenIds = new Set<string>();
 
     // Все известные значения state, которые встречаются в заказах Kaspi
-    // (см. также STATUS_GROUPS в src/routes/orders.routes.ts).
+    // (см. также STATUS_GROUPS в src/routes/orders.routes.ts). COMPLETED и
+    // ARCHIVE — это реальные завершённые продажи, ключевые для юнит-экономики.
     const STATES = [
       'NEW',
       'SIGN_REQUIRED',
@@ -133,49 +160,55 @@ export class KaspiClient {
       'ARCHIVE',
     ];
 
+    const dateChunks = KaspiClient.chunkDateRange(params.dateFrom, params.dateTo, 14);
+    logger.info(`[Kaspi] Период разбит на ${dateChunks.length} кусков (максимум 14 дней каждый)`);
+
     for (const state of STATES) {
-      let pageNumber = 0;
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        let data: KaspiListResponse<KaspiOrderAttributes>;
-        try {
-          const response = await http.get<KaspiListResponse<KaspiOrderAttributes>>('/orders', {
-            params: {
-              'page[number]': pageNumber,
-              'page[size]': pageSize,
-              'filter[orders][state]': state,
-              'filter[orders][creationDate][$ge]': params.dateFrom.getTime(),
-              'filter[orders][creationDate][$le]': params.dateTo.getTime(),
-            },
-          });
-          data = response.data;
-        } catch (err: any) {
-          // Логируем ТОЧНОЕ тело ответа Kaspi при ошибке — только по коду
-          // статуса (400/401/403) не понять, что конкретно не устроило API,
-          // а тело ответа обычно содержит понятное описание причины.
-          const kaspiErrorBody = err?.response?.data;
-          logger.error(
-            { status: err?.response?.status, body: kaspiErrorBody, state, pageNumber },
-            '[Kaspi] Ошибка запроса заказов',
-          );
-          throw new Error(
-            `Kaspi API вернул ошибку ${err?.response?.status ?? ''} при запросе заказов (state=${state}): ` +
-              `${JSON.stringify(kaspiErrorBody) || err?.message || err}`,
-          );
+      for (const chunk of dateChunks) {
+        let pageNumber = 0;
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          let data: KaspiListResponse<KaspiOrderAttributes>;
+          try {
+            const response = await http.get<KaspiListResponse<KaspiOrderAttributes>>('/orders', {
+              params: {
+                'page[number]': pageNumber,
+                'page[size]': pageSize,
+                'filter[orders][state]': state,
+                'filter[orders][creationDate][$ge]': chunk.from.getTime(),
+                'filter[orders][creationDate][$le]': chunk.to.getTime(),
+              },
+            });
+            data = response.data;
+          } catch (err: any) {
+            // Логируем ТОЧНОЕ тело ответа Kaspi при ошибке — только по коду
+            // статуса (400/401/403) не понять, что конкретно не устроило API,
+            // а тело ответа обычно содержит понятное описание причины.
+            const kaspiErrorBody = err?.response?.data;
+            logger.error(
+              { status: err?.response?.status, body: kaspiErrorBody, state, chunk, pageNumber },
+              '[Kaspi] Ошибка запроса заказов',
+            );
+            throw new Error(
+              `Kaspi API вернул ошибку ${err?.response?.status ?? ''} при запросе заказов (state=${state}, ` +
+                `${chunk.from.toISOString().slice(0, 10)}..${chunk.to.toISOString().slice(0, 10)}): ` +
+                `${JSON.stringify(kaspiErrorBody) || err?.message || err}`,
+            );
+          }
+
+          if (!data.data?.length) break;
+
+          for (const resource of data.data) {
+            if (seenIds.has(resource.id)) continue; // на всякий случай, вдруг заказ попал в выборку дважды
+            seenIds.add(resource.id);
+            const items = await this.fetchOrderEntries(http, resource.id);
+            allOrders.push(this.toNormalizedOrder(resource, items));
+          }
+
+          const totalPages = data.meta?.pageCount ?? 1;
+          pageNumber += 1;
+          if (pageNumber >= totalPages) break;
         }
-
-        if (!data.data?.length) break;
-
-        for (const resource of data.data) {
-          if (seenIds.has(resource.id)) continue; // на всякий случай, вдруг заказ попал в выборку дважды
-          seenIds.add(resource.id);
-          const items = await this.fetchOrderEntries(http, resource.id);
-          allOrders.push(this.toNormalizedOrder(resource, items));
-        }
-
-        const totalPages = data.meta?.pageCount ?? 1;
-        pageNumber += 1;
-        if (pageNumber >= totalPages) break;
       }
     }
 
