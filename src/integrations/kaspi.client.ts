@@ -105,34 +105,78 @@ export class KaspiClient {
   /**
    * Получить список заказов за период. Kaspi отдаёт данные постранично
    * (page[number], page[size]) в формате JSON:API.
+   *
+   * ВАЖНО: судя по официальным примерам Kaspi Гид, фильтр
+   * filter[orders][state] присутствует в КАЖДОМ примере запроса — похоже,
+   * что без него API возвращает 400. У Kaspi нет единого "покажи заказы
+   * любого статуса" — поэтому запрашиваем ПО ОЧЕРЕДИ для каждого
+   * известного состояния заказа и объединяем результат.
    */
   async fetchOrders(params: { dateFrom: Date; dateTo: Date; pageSize?: number }): Promise<NormalizedOrder[]> {
     const http = await this.getHttp();
-    const pageSize = params.pageSize ?? 100;
-    let pageNumber = 0;
+    const pageSize = params.pageSize ?? 20; // как в официальном примере Kaspi Гид
     const allOrders: NormalizedOrder[] = [];
+    const seenIds = new Set<string>();
 
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      const { data } = await http.get<KaspiListResponse<KaspiOrderAttributes>>('/orders', {
-        params: {
-          'page[number]': pageNumber,
-          'page[size]': pageSize,
-          'filter[orders][creationDate][$ge]': params.dateFrom.getTime(),
-          'filter[orders][creationDate][$le]': params.dateTo.getTime(),
-        },
-      });
+    // Все известные значения state, которые встречаются в заказах Kaspi
+    // (см. также STATUS_GROUPS в src/routes/orders.routes.ts).
+    const STATES = [
+      'NEW',
+      'SIGN_REQUIRED',
+      'APPROVED_BY_BANK',
+      'ACCEPTED_BY_MERCHANT',
+      'ASSEMBLE',
+      'COMPLETED',
+      'CANCELLED',
+      'CANCELLING',
+      'RETURNED',
+      'ARCHIVE',
+    ];
 
-      if (!data.data?.length) break;
+    for (const state of STATES) {
+      let pageNumber = 0;
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        let data: KaspiListResponse<KaspiOrderAttributes>;
+        try {
+          const response = await http.get<KaspiListResponse<KaspiOrderAttributes>>('/orders', {
+            params: {
+              'page[number]': pageNumber,
+              'page[size]': pageSize,
+              'filter[orders][state]': state,
+              'filter[orders][creationDate][$ge]': params.dateFrom.getTime(),
+              'filter[orders][creationDate][$le]': params.dateTo.getTime(),
+            },
+          });
+          data = response.data;
+        } catch (err: any) {
+          // Логируем ТОЧНОЕ тело ответа Kaspi при ошибке — только по коду
+          // статуса (400/401/403) не понять, что конкретно не устроило API,
+          // а тело ответа обычно содержит понятное описание причины.
+          const kaspiErrorBody = err?.response?.data;
+          logger.error(
+            { status: err?.response?.status, body: kaspiErrorBody, state, pageNumber },
+            '[Kaspi] Ошибка запроса заказов',
+          );
+          throw new Error(
+            `Kaspi API вернул ошибку ${err?.response?.status ?? ''} при запросе заказов (state=${state}): ` +
+              `${JSON.stringify(kaspiErrorBody) || err?.message || err}`,
+          );
+        }
 
-      for (const resource of data.data) {
-        const items = await this.fetchOrderEntries(http, resource.id);
-        allOrders.push(this.toNormalizedOrder(resource, items));
+        if (!data.data?.length) break;
+
+        for (const resource of data.data) {
+          if (seenIds.has(resource.id)) continue; // на всякий случай, вдруг заказ попал в выборку дважды
+          seenIds.add(resource.id);
+          const items = await this.fetchOrderEntries(http, resource.id);
+          allOrders.push(this.toNormalizedOrder(resource, items));
+        }
+
+        const totalPages = data.meta?.pageCount ?? 1;
+        pageNumber += 1;
+        if (pageNumber >= totalPages) break;
       }
-
-      const totalPages = data.meta?.pageCount ?? 1;
-      pageNumber += 1;
-      if (pageNumber >= totalPages) break;
     }
 
     logger.info(`[Kaspi] Загружено заказов: ${allOrders.length}`);
@@ -168,8 +212,11 @@ export class KaspiClient {
               : entry.attributes.totalPrice,
         };
       });
-    } catch (err) {
-      logger.warn({ err, orderId }, '[Kaspi] Не удалось получить состав заказа');
+    } catch (err: any) {
+      logger.warn(
+        { status: err?.response?.status, body: err?.response?.data, orderId },
+        '[Kaspi] Не удалось получить состав заказа',
+      );
       return [];
     }
   }
