@@ -56,7 +56,16 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get('/api/health', (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
+// buildMarker — вручную обновляемая метка версии кода. После деплоя
+// открой https://твой-сайт.vercel.app/api/health в браузере: если там
+// видно "kaspi-14day-date-chunking" — новый код точно на сервере. Если
+// нет (или health вообще не отвечает) — деплой ещё не подхватил свежие
+// файлы, и проблему нужно искать в самой загрузке на GitHub/Vercel, а не в коде.
+app.get('/api/health', (_req, res) => res.json({
+  ok: true,
+  time: new Date().toISOString(),
+  buildMarker: 'kaspi-14day-date-chunking',
+}));
 
 app.use('/api/products', productsRouter);
 app.use('/api/orders', ordersRouter);
