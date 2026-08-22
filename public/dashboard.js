@@ -709,6 +709,13 @@ function renderProductsAdminTable() {
   if (filter === 'active') products = products.filter((p) => p.active !== false);
   if (filter === 'inactive') products = products.filter((p) => p.active === false);
 
+  // Фильтр по площадке (кнопки Kaspi/Ozon/WB вверху страницы) — товар
+  // считается "принадлежащим" площадке, если у него заполнен
+  // соответствующий артикул (kaspiSku / ozonOfferId / wbArticle).
+  if (state.marketplace === 'KASPI') products = products.filter((p) => p.kaspiSku);
+  if (state.marketplace === 'OZON') products = products.filter((p) => p.ozonOfferId);
+  if (state.marketplace === 'WB') products = products.filter((p) => p.wbArticle);
+
   const tbody = document.querySelector('#productsAdminTable tbody');
   if (!products.length) {
     tbody.innerHTML = `<tr><td colspan="12" style="color:var(--text-faint)">Товаров в этой категории нет</td></tr>`;
