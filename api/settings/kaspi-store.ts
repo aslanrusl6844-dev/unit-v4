@@ -11,22 +11,28 @@ import { getKaspiStore, saveKaspiStore, deleteKaspiStore } from '../../dist/hand
  * DELETE (удалить по id — передайте ?id=... в query).
  */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method === 'GET') {
-    return res.status(200).json(await getKaspiStore());
-  }
+  try {
+    if (req.method === 'GET') {
+      return res.status(200).json(await getKaspiStore());
+    }
 
-  if (req.method === 'POST') {
-    const result = await saveKaspiStore(req.body);
-    return res.status(result.status).json(result.body);
-  }
+    if (req.method === 'POST') {
+      const result = await saveKaspiStore(req.body);
+      return res.status(result.status).json(result.body);
+    }
 
-  if (req.method === 'DELETE') {
-    const id = String(req.query.id || '');
-    if (!id) return res.status(400).json({ error: 'Не указан id магазина (?id=...)' });
-    const result = await deleteKaspiStore(id);
-    if (result.status === 204) return res.status(204).send(null);
-    return res.status(result.status).json(result.body);
-  }
+    if (req.method === 'DELETE') {
+      const id = String(req.query.id || '');
+      if (!id) return res.status(400).json({ error: 'Не указан id магазина (?id=...)' });
+      const result = await deleteKaspiStore(id);
+      if (result.status === 204) return res.status(204).send(null);
+      return res.status(result.status).json(result.body);
+    }
 
-  return res.status(405).json({ error: 'Метод не поддерживается' });
+    return res.status(405).json({ error: 'Метод не поддерживается' });
+  } catch (err: any) {
+    // Последний рубеж: если что-то всё же прорвалось необработанным —
+    // отдаём понятный JSON вместо голого краха функции.
+    return res.status(500).json({ error: 'Внутренняя ошибка сервера', details: String(err?.message ?? err) });
+  }
 }

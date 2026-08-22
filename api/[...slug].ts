@@ -20,5 +20,12 @@ import app from '../dist/expressApp';
  * аналитика и т.д.) обрабатывает обычное Express-приложение.
  */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  return app(req as any, res as any);
+  try {
+    return app(req as any, res as any);
+  } catch (err: any) {
+    // Последний рубеж защиты: Express сам ловит ошибки внутри своих
+    // роутов (см. errorHandler в expressApp.ts), но это на случай,
+    // если что-то прорвётся мимо него.
+    res.status(500).json({ error: 'Внутренняя ошибка сервера', details: String(err?.message ?? err) });
+  }
 }

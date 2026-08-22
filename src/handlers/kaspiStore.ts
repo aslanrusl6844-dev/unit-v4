@@ -21,10 +21,17 @@ export const kaspiStoreSchema = z.object({
 });
 
 export async function getKaspiStore() {
-  const store = await prisma.kaspiStore.findFirst({ orderBy: { updatedAt: 'desc' } });
-  if (!store) return null;
-  // Токен целиком не отдаём — только последние 4 символа, для подтверждения сохранения.
-  return { ...store, apiToken: undefined, apiTokenMasked: `••••${store.apiToken.slice(-4)}` };
+  try {
+    const store = await prisma.kaspiStore.findFirst({ orderBy: { updatedAt: 'desc' } });
+    if (!store) return null;
+    // Токен целиком не отдаём — только последние 4 символа, для подтверждения сохранения.
+    return { ...store, apiToken: undefined, apiTokenMasked: `••••${store.apiToken.slice(-4)}` };
+  } catch (err: any) {
+    // Не даём ошибке долететь необработанной до вызывающего кода — иначе
+    // на Vercel это выглядит как полный крах функции без единой зацепки,
+    // вместо понятного сообщения.
+    throw new Error(`Не удалось получить магазин: ${String(err?.message ?? err)}`);
+  }
 }
 
 export async function saveKaspiStore(body: unknown) {
