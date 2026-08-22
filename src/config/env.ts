@@ -5,6 +5,14 @@ import { z } from 'zod';
  * Убирает лишние пробелы/переносы строк и обрамляющие кавычки — частая
  * причина странных ошибок валидации, когда переменную окружения копируют
  * из другого места (Vercel Dashboard, .env файл с кавычками и т.п.).
+ *
+ * ВАЖНО: если после очистки строка стала ПУСТОЙ — возвращаем undefined,
+ * а не ''. Иначе для полей с z.string().default('какое-то значение')
+ * дефолт сработает только когда переменная вообще ОТСУТСТВУЕТ, но не
+ * когда она явно задана пустой строкой (например, кто-то добавил
+ * переменную в Vercel и оставил значение пустым) — и тогда вместо
+ * дефолта (например, базового URL Kaspi API) получится '', из-за чего
+ * запросы к API падают с "Invalid URL".
  */
 function cleanEnvString(value: unknown): unknown {
   if (typeof value !== 'string') return value;
@@ -13,9 +21,10 @@ function cleanEnvString(value: unknown): unknown {
     (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
     (trimmed.startsWith("'") && trimmed.endsWith("'"))
   ) {
-    return trimmed.slice(1, -1).trim();
+    const unquoted = trimmed.slice(1, -1).trim();
+    return unquoted === '' ? undefined : unquoted;
   }
-  return trimmed;
+  return trimmed === '' ? undefined : trimmed;
 }
 
 /**

@@ -1219,8 +1219,11 @@ document.getElementById('syncKaspiBtn').addEventListener('click', async () => {
   const btn = document.getElementById('syncKaspiBtn');
   btn.textContent = '…'; btn.disabled = true;
   try {
-    await api('/sync/kaspi?days=7', { method: 'POST' });
+    const res = await api('/sync/kaspi?days=7', { method: 'POST' });
     await reloadCurrentPage();
+    alert(`Синхронизация Kaspi завершена. Обработано заказов: ${res.ordersProcessed ?? 0}.`);
+  } catch (err) {
+    alert('Ошибка синхронизации Kaspi: ' + err.message);
   } finally {
     btn.textContent = '↻ Kaspi'; btn.disabled = false;
   }
@@ -1230,8 +1233,11 @@ document.getElementById('syncOzonBtn').addEventListener('click', async () => {
   const btn = document.getElementById('syncOzonBtn');
   btn.textContent = '…'; btn.disabled = true;
   try {
-    await api('/sync/ozon?days=7', { method: 'POST' });
+    const res = await api('/sync/ozon?days=7', { method: 'POST' });
     await reloadCurrentPage();
+    alert(`Синхронизация Ozon завершена. Обработано заказов: ${res.ordersProcessed ?? 0}.`);
+  } catch (err) {
+    alert('Ошибка синхронизации Ozon: ' + err.message);
   } finally {
     btn.textContent = '↻ Ozon'; btn.disabled = false;
   }
@@ -1241,8 +1247,11 @@ document.getElementById('syncWbBtn').addEventListener('click', async () => {
   const btn = document.getElementById('syncWbBtn');
   btn.textContent = '…'; btn.disabled = true;
   try {
-    await api('/sync/wb?days=7', { method: 'POST' });
+    const res = await api('/sync/wb?days=7', { method: 'POST' });
     await reloadCurrentPage();
+    alert(`Синхронизация WB завершена. Обработано заказов: ${res.ordersProcessed ?? 0}.`);
+  } catch (err) {
+    alert('Ошибка синхронизации WB: ' + err.message);
   } finally {
     btn.textContent = '↻ WB'; btn.disabled = false;
   }

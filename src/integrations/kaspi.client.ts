@@ -83,6 +83,15 @@ export class KaspiClient {
     if (!creds) {
       throw new Error('Kaspi API не настроен: добавьте магазин в разделе «Настройки» или задайте KASPI_API_TOKEN в .env');
     }
+    // Явная проверка вместо того, чтобы дать axios упасть с непонятным
+    // "Invalid URL" — если базовый адрес API вдруг оказался пустым или
+    // не похож на настоящий URL, сразу говорим прямо, в чём дело.
+    if (!creds.baseUrl || !/^https?:\/\//.test(creds.baseUrl)) {
+      throw new Error(
+        `Некорректный базовый адрес Kaspi API: "${creds.baseUrl}". Проверьте KASPI_API_BASE_URL в Environment Variables ` +
+          `(должен быть похож на https://kaspi.kz/shop/api/v2) или просто удалите эту переменную, чтобы использовалось значение по умолчанию.`,
+      );
+    }
     return axios.create({
       baseURL: creds.baseUrl,
       headers: {
