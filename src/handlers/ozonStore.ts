@@ -4,7 +4,10 @@ import { prisma } from '../db/prisma';
 /** Логика подключения Ozon — по образцу src/handlers/kaspiStore.ts. */
 
 export const ozonStoreSchema = z.object({
-  clientId: z.string().min(1, 'Укажите Client-Id'),
+  clientId: z
+    .string()
+    .min(1, 'Укажите Client-Id')
+    .regex(/^\d+$/, 'Client-Id должен состоять только из цифр (это числовой ID из кабинета Ozon, не email и не название магазина)'),
   apiKey: z.string().min(5, 'Api-Key обязателен и должен быть похож на настоящий'),
 });
 

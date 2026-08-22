@@ -101,6 +101,23 @@ export class OzonClient {
     return orders;
   }
 
+  /**
+   * Точная форма запроса к Ozon (для диагностики — см. п.1 вопроса):
+   *
+   *   POST {OZON_API_BASE_URL}/v3/posting/fbs/list
+   *   Headers:
+   *     Client-Id: <из формы в Настройках или OZON_CLIENT_ID>
+   *     Api-Key:   <из формы в Настройках или OZON_API_KEY>
+   *     Content-Type: application/json
+   *   Body:
+   *     {
+   *       "dir": "asc",
+   *       "filter": { "since": "<ISO-дата>", "to": "<ISO-дата>" },
+   *       "limit": 100,
+   *       "offset": 0,
+   *       "with": { "analytics_data": true, "financial_data": false }
+   *     }
+   */
   private async fetchAllFbsPostings(http: AxiosInstance, dateFrom: Date, dateTo: Date): Promise<OzonPosting[]> {
     const limit = 100;
     let offset = 0;
@@ -108,7 +125,7 @@ export class OzonClient {
 
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const { data } = await http.post('/v3/posting/fbs/list', {
+      const requestBody = {
         dir: 'asc',
         filter: {
           since: dateFrom.toISOString(),
@@ -117,7 +134,26 @@ export class OzonClient {
         limit,
         offset,
         with: { analytics_data: true, financial_data: false },
-      });
+      };
+
+      let data: any;
+      try {
+        const response = await http.post('/v3/posting/fbs/list', requestBody);
+        data = response.data;
+      } catch (err: any) {
+        // Логируем ТОЧНОЕ тело ответа Ozon при ошибке — по одному коду
+        // статуса (400/401/403) не понять причину, а тело обычно содержит
+        // понятное описание (например "wrong client-id format" и т.п.).
+        const ozonErrorBody = err?.response?.data;
+        logger.error(
+          { status: err?.response?.status, body: ozonErrorBody, requestBody },
+          '[Ozon] Ошибка запроса заказов (fbs/list)',
+        );
+        throw new Error(
+          `Ozon API вернул ошибку ${err?.response?.status ?? ''} при запросе заказов: ` +
+            `${JSON.stringify(ozonErrorBody) || err?.message || err}`,
+        );
+      }
 
       const postings: OzonPosting[] = data.result?.postings ?? [];
       all.push(...postings);
@@ -145,14 +181,30 @@ export class OzonClient {
 
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const { data } = await http.post('/v3/finance/transaction/list', {
+      const requestBody = {
         filter: {
           date: { from: dateFrom.toISOString(), to: dateTo.toISOString() },
           transaction_type: 'all',
         },
         page,
         page_size: pageSize,
-      });
+      };
+
+      let data: any;
+      try {
+        const response = await http.post('/v3/finance/transaction/list', requestBody);
+        data = response.data;
+      } catch (err: any) {
+        const ozonErrorBody = err?.response?.data;
+        logger.error(
+          { status: err?.response?.status, body: ozonErrorBody, requestBody },
+          '[Ozon] Ошибка запроса финансовых транзакций',
+        );
+        throw new Error(
+          `Ozon API вернул ошибку ${err?.response?.status ?? ''} при запросе финансовых транзакций: ` +
+            `${JSON.stringify(ozonErrorBody) || err?.message || err}`,
+        );
+      }
 
       const operations: OzonFinanceTransaction[] = data.result?.operations ?? [];
       for (const op of operations) {
