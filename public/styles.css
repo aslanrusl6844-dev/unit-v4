@@ -201,6 +201,12 @@ body {
 .table .mp-tag { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-body); font-size: 12px; }
 .table td.pos { color: var(--accent); }
 .table td.neg { color: var(--loss); }
+.table tfoot td {
+  font-weight: 700;
+  border-top: 2px solid var(--text);
+  border-bottom: none;
+  background: var(--bg);
+}
 
 .link-btn { background: none; border: none; color: var(--text-faint); cursor: pointer; font-size: 13px; }
 .link-btn:hover { color: var(--loss); }

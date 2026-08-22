@@ -125,19 +125,30 @@ export async function getByProduct(filter: RangeFilter) {
     include: { items: { include: { product: true } } },
   });
 
+  const adSpendAgg = await prisma.adSpend.aggregate({
+    where: {
+      date: { gte: filter.from, lte: filter.to },
+      ...(filter.marketplace ? { marketplace: filter.marketplace } : {}),
+    },
+    _sum: { amount: true },
+  });
+  const totalAdSpend = adSpendAgg._sum.amount ?? 0;
+
   const map = new Map<
     string,
     {
       sku: string;
       name: string;
       quantity: number;
+      avgPrice: number;
       revenue: number;
       cogs: number;
       commission: number;
       logistics: number;
-      profit: number;
     }
   >();
+
+  let grandTotalRevenue = 0;
 
   for (const order of orders) {
     for (const item of order.items) {
@@ -146,11 +157,11 @@ export async function getByProduct(filter: RangeFilter) {
         sku: item.product?.sku ?? item.externalSku,
         name: item.name,
         quantity: 0,
+        avgPrice: 0,
         revenue: 0,
         cogs: 0,
         commission: 0,
         logistics: 0,
-        profit: 0,
       };
       const itemRevenue = item.price * item.quantity;
       const itemCogs = item.costPrice * item.quantity;
@@ -163,22 +174,40 @@ export async function getByProduct(filter: RangeFilter) {
       entry.cogs += itemCogs;
       entry.commission += item.commission;
       entry.logistics += item.itemLogistics;
-      entry.profit += itemRevenue - itemCogs - item.commission - item.itemLogistics;
+      grandTotalRevenue += itemRevenue;
       map.set(key, entry);
     }
   }
 
+  // Реклама распределяется между товарами ПРОПОРЦИОНАЛЬНО ВЫРУЧКЕ (не
+  // количеству штук) — так честнее экономически: товар, который принёс
+  // больше денег, "нёс" на себе и больше рекламного бюджета, независимо от
+  // того, сколько единиц было продано. Дешёвый товар, проданный много раз
+  // на ту же сумму, что и дорогой — один раз, получит одинаковую долю
+  // рекламы, что и отражает реальный вклад в оборот.
   return Array.from(map.values())
-    .map((e) => ({
-      ...e,
-      revenue: round2(e.revenue),
-      cogs: round2(e.cogs),
-      commission: round2(e.commission),
-      logistics: round2(e.logistics),
-      profit: round2(e.profit),
-      marginPct: e.revenue > 0 ? round2((e.profit / e.revenue) * 100) : 0,
-    }))
-    .sort((a, b) => b.profit - a.profit);
+    .map((e) => {
+      const adSpendShare = grandTotalRevenue > 0 ? (e.revenue / grandTotalRevenue) * totalAdSpend : 0;
+      const netProfit = e.revenue - e.cogs - e.commission - e.logistics - adSpendShare;
+      return {
+        sku: e.sku,
+        name: e.name,
+        quantity: e.quantity,
+        avgPrice: e.quantity > 0 ? round2(e.revenue / e.quantity) : 0,
+        revenue: round2(e.revenue),
+        cogs: round2(e.cogs),
+        commission: round2(e.commission),
+        logistics: round2(e.logistics),
+        adSpend: round2(adSpendShare),
+        netProfit: round2(netProfit),
+        // profit — оставлен для обратной совместимости с местами, которые
+        // уже используют это поле (Обзор, старая версия таблицы товаров);
+        // значение то же самое, что netProfit.
+        profit: round2(netProfit),
+        marginPct: e.revenue > 0 ? round2((netProfit / e.revenue) * 100) : 0,
+      };
+    })
+    .sort((a, b) => b.netProfit - a.netProfit);
 }
 
 export async function getTimeseries(filter: RangeFilter, groupBy: 'day' | 'week' | 'month' = 'day') {

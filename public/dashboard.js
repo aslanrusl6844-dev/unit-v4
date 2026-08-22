@@ -785,20 +785,55 @@ async function loadFinancePage() {
 async function loadByProductFinance() {
   const data = await api(`/analytics/by-product?${qs({ from: state.from, to: state.to, marketplace: state.marketplace })}`);
   const tbody = document.querySelector('#productsTable tbody');
+  const tfoot = document.querySelector('#productsTable tfoot');
   if (!data.length) {
-    tbody.innerHTML = `<tr><td colspan="6" style="color:var(--text-faint)">Нет данных за период</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" style="color:var(--text-faint)">Нет данных за период</td></tr>`;
+    tfoot.innerHTML = '';
     return;
   }
   tbody.innerHTML = data.map((p) => `
     <tr>
       <td class="name-cell">${p.name}</td>
       <td class="num">${fmt.format(p.quantity)}</td>
+      <td class="num">${fmtMoney(p.avgPrice)}</td>
       <td class="num">${fmtMoney(p.revenue)}</td>
       <td class="num">${fmtMoney(p.cogs)}</td>
-      <td class="num">${fmtMoney(p.profit)}</td>
-      <td class="num">${fmtPct(p.marginPct)}</td>
+      <td class="num">${fmtMoney(p.commission)}</td>
+      <td class="num">${fmtMoney(p.logistics)}</td>
+      <td class="num">${fmtMoney(p.adSpend)}</td>
+      <td class="num ${p.netProfit >= 0 ? 'pos' : 'neg'}">${fmtMoney(p.netProfit)}</td>
+      <td class="num ${p.marginPct >= 0 ? 'pos' : 'neg'}">${fmtPct(p.marginPct)}</td>
     </tr>
   `).join('');
+
+  // Строка "Итого" — суммы по всем денежным колонкам. Средняя цена и маржа
+  // считаются заново от суммарных чисел (не среднее из строк — так корректнее).
+  const totals = data.reduce((acc, p) => ({
+    quantity: acc.quantity + p.quantity,
+    revenue: acc.revenue + p.revenue,
+    cogs: acc.cogs + p.cogs,
+    commission: acc.commission + p.commission,
+    logistics: acc.logistics + p.logistics,
+    adSpend: acc.adSpend + p.adSpend,
+    netProfit: acc.netProfit + p.netProfit,
+  }), { quantity: 0, revenue: 0, cogs: 0, commission: 0, logistics: 0, adSpend: 0, netProfit: 0 });
+  const totalMarginPct = totals.revenue > 0 ? (totals.netProfit / totals.revenue) * 100 : 0;
+  const totalAvgPrice = totals.quantity > 0 ? totals.revenue / totals.quantity : 0;
+
+  tfoot.innerHTML = `
+    <tr>
+      <td>Итого</td>
+      <td class="num">${fmt.format(totals.quantity)}</td>
+      <td class="num">${fmtMoney(totalAvgPrice)}</td>
+      <td class="num">${fmtMoney(totals.revenue)}</td>
+      <td class="num">${fmtMoney(totals.cogs)}</td>
+      <td class="num">${fmtMoney(totals.commission)}</td>
+      <td class="num">${fmtMoney(totals.logistics)}</td>
+      <td class="num">${fmtMoney(totals.adSpend)}</td>
+      <td class="num ${totals.netProfit >= 0 ? 'pos' : 'neg'}">${fmtMoney(totals.netProfit)}</td>
+      <td class="num ${totalMarginPct >= 0 ? 'pos' : 'neg'}">${fmtPct(totalMarginPct)}</td>
+    </tr>
+  `;
 }
 
 async function loadExpenses() {

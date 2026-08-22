@@ -249,13 +249,32 @@
         </div>
 
         <div class="panel">
-          <div class="panel__head"><h2>Прибыль по товарам</h2><span class="panel__hint">Себестоимость редактируется в разделе «Товары»</span></div>
+          <div class="panel__head">
+            <h2>Прибыль по товарам</h2>
+            <span class="panel__hint">Себестоимость редактируется в разделе «Товары»</span>
+          </div>
+          <p class="panel__hint">
+            Реклама распределяется между товарами пропорционально их доле в выручке (не по штукам) —
+            так честнее: товар, принёсший больше денег, "несёт" и большую долю рекламного бюджета.
+          </p>
           <div class="table-wrap">
             <table class="table" id="productsTable">
               <thead>
-                <tr><th>Товар</th><th class="num">Продано, шт</th><th class="num">Выручка</th><th class="num">Себестоимость</th><th class="num">Прибыль</th><th class="num">Маржа</th></tr>
+                <tr>
+                  <th>Товар</th>
+                  <th class="num">Продано, шт</th>
+                  <th class="num">Цена (сред.)</th>
+                  <th class="num">Выручка</th>
+                  <th class="num">Себестоимость</th>
+                  <th class="num">Комиссия Kaspi</th>
+                  <th class="num">Логистика Kaspi</th>
+                  <th class="num">Реклама (доля)</th>
+                  <th class="num">Чистая прибыль</th>
+                  <th class="num">Маржа</th>
+                </tr>
               </thead>
               <tbody></tbody>
+              <tfoot></tfoot>
             </table>
           </div>
         </div>
