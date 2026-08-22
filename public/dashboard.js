@@ -1265,9 +1265,51 @@ async function loadKaspiStoreCurrent() {
     ` · токен: <code>${store.apiTokenMasked}</code>`;
 }
 
+let ozonStoreFormWired = false;
+
+function wireOzonStoreFormOnce() {
+  if (ozonStoreFormWired) return;
+  ozonStoreFormWired = true;
+
+  document.getElementById('ozonStoreForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const payload = {
+      clientId: fd.get('clientId'),
+      apiKey: fd.get('apiKey'),
+    };
+    const btn = e.target.querySelector('button[type="submit"]');
+    const originalText = btn.textContent;
+    btn.textContent = '…'; btn.disabled = true;
+    try {
+      await api('/settings/ozon-store', { method: 'POST', body: JSON.stringify(payload) });
+      alert('Магазин Ozon сохранён. Все запросы к Ozon теперь используют этот Client-Id/Api-Key.');
+      e.target.reset();
+      await loadOzonStoreCurrent();
+      await refreshSyncStatusMini();
+    } catch (err) {
+      alert('Не удалось сохранить магазин Ozon: ' + err.message);
+    } finally {
+      btn.textContent = originalText; btn.disabled = false;
+    }
+  });
+}
+
+async function loadOzonStoreCurrent() {
+  const store = await api('/settings/ozon-store');
+  const el = document.getElementById('ozonStoreCurrent');
+  if (!store) {
+    el.textContent = 'Магазин ещё не добавлен — заполни форму ниже.';
+    return;
+  }
+  el.innerHTML = `Client-Id: <strong style="color:var(--text)">${store.clientId}</strong> · Api-Key: <code>${store.apiKeyMasked}</code>`;
+}
+
 async function loadSettingsPage() {
   wireKaspiStoreFormOnce();
+  wireOzonStoreFormOnce();
   await loadKaspiStoreCurrent();
+  await loadOzonStoreCurrent();
 
   const status = await api('/sync/status');
 

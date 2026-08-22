@@ -39,6 +39,16 @@ model KaspiStore {
   updatedAt      DateTime @updatedAt
 }
 
+// Подключение к Ozon Seller API — через форму в разделе «Настройки»,
+// аналогично KaspiStore. Один магазин на сервер.
+model OzonStore {
+  id          String   @id @default(cuid())
+  clientId    String
+  apiKey      String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
 // Карточка товара с себестоимостью — основа для расчёта юнит-экономики.
 // Один товар может продаваться на обеих площадках, поэтому храним оба SKU.
 model Product {

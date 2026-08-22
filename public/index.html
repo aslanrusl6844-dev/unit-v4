@@ -478,6 +478,20 @@
         </div>
 
         <div class="panel">
+          <div class="panel__head"><h2>Магазин Ozon</h2></div>
+          <div id="ozonStoreCurrent" class="panel__hint" style="margin-bottom:12px">Магазин ещё не добавлен.</div>
+          <form class="inline-form" id="ozonStoreForm">
+            <input name="clientId" placeholder="Client-Id — обязательно" required />
+            <input name="apiKey" type="password" placeholder="Api-Key — обязательно" required style="flex:2 1 240px" />
+            <button class="btn btn--accent" type="submit">Сохранить / Подключить Ozon</button>
+          </form>
+          <p class="panel__hint">
+            Client-Id и Api-Key создаются в кабинете продавца Ozon: Настройки → Seller API.
+            После сохранения они используются для всех запросов к Ozon Seller API вместо переменных окружения.
+          </p>
+        </div>
+
+        <div class="panel">
           <div class="panel__head"><h2>Подключение к площадкам</h2></div>
           <div class="table-wrap">
             <table class="table" id="connectionsTable">

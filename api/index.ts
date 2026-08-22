@@ -8,6 +8,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 // этой функции dist/ уже гарантированно существует.
 import app from '../dist/expressApp';
 import { getKaspiStore, saveKaspiStore } from '../dist/handlers/kaspiStore';
+import { getOzonStore, saveOzonStore } from '../dist/handlers/ozonStore';
 
 /**
  * ГЛАВНАЯ serverless-функция для всех запросов на /api/*, КРОМЕ тех, что
@@ -36,6 +37,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (req.method === 'GET') return res.status(200).json(await getKaspiStore());
       if (req.method === 'POST') {
         const result = await saveKaspiStore(req.body);
+        return res.status(result.status).json(result.body);
+      }
+    }
+
+    if (url.startsWith('/api/settings/ozon-store')) {
+      if (req.method === 'GET') return res.status(200).json(await getOzonStore());
+      if (req.method === 'POST') {
+        const result = await saveOzonStore(req.body);
         return res.status(result.status).json(result.body);
       }
     }

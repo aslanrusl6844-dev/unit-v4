@@ -1,6 +1,7 @@
 import axios, { AxiosInstance } from 'axios';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
+import { prisma } from '../db/prisma';
 import { NormalizedOrder, NormalizedOrderItem } from '../types';
 
 /**
@@ -11,7 +12,29 @@ import { NormalizedOrder, NormalizedOrderItem } from '../types';
  * а реальные удержания (комиссия, логистика, эквайринг) — через
  * POST /v3/finance/transaction/list, т.к. в самом заказе комиссия не всегда
  * отражена финально (может меняться после начисления).
+ *
+ * Client-Id/Api-Key берутся ДИНАМИЧЕСКИ: сначала пробуем найти сохранённый
+ * магазин в базе (форма в разделе «Настройки»), и только если его нет —
+ * используем OZON_CLIENT_ID/OZON_API_KEY из переменных окружения (для
+ * обратной совместимости с тем, кто настраивал сервер до появления формы).
  */
+
+interface OzonCredentials {
+  clientId: string;
+  apiKey: string;
+  baseUrl: string;
+}
+
+async function getOzonCredentials(): Promise<OzonCredentials | null> {
+  const store = await prisma.ozonStore.findFirst({ orderBy: { updatedAt: 'desc' } });
+  if (store?.clientId && store?.apiKey) {
+    return { clientId: store.clientId, apiKey: store.apiKey, baseUrl: env.ozon.baseUrl };
+  }
+  if (env.ozon.clientId && env.ozon.apiKey) {
+    return { clientId: env.ozon.clientId, apiKey: env.ozon.apiKey, baseUrl: env.ozon.baseUrl };
+  }
+  return null;
+}
 
 interface OzonPostingProduct {
   sku: number;
@@ -46,27 +69,31 @@ interface OzonFinanceTransaction {
 }
 
 export class OzonClient {
-  private http: AxiosInstance;
+  async isConfigured(): Promise<boolean> {
+    const creds = await getOzonCredentials();
+    return Boolean(creds?.clientId && creds?.apiKey);
+  }
 
-  constructor() {
-    this.http = axios.create({
-      baseURL: env.ozon.baseUrl,
+  private async getHttp(): Promise<AxiosInstance> {
+    const creds = await getOzonCredentials();
+    if (!creds) {
+      throw new Error('Ozon API не настроен: добавьте магазин в разделе «Настройки» или задайте OZON_CLIENT_ID/OZON_API_KEY в .env');
+    }
+    return axios.create({
+      baseURL: creds.baseUrl,
       headers: {
-        'Client-Id': env.ozon.clientId,
-        'Api-Key': env.ozon.apiKey,
+        'Client-Id': creds.clientId,
+        'Api-Key': creds.apiKey,
         'Content-Type': 'application/json',
       },
       timeout: 20000,
     });
   }
 
-  get isConfigured() {
-    return env.ozon.isConfigured;
-  }
-
   async fetchOrders(params: { dateFrom: Date; dateTo: Date }): Promise<NormalizedOrder[]> {
-    const postings = await this.fetchAllFbsPostings(params.dateFrom, params.dateTo);
-    const financeByPosting = await this.fetchFinanceByPosting(params.dateFrom, params.dateTo);
+    const http = await this.getHttp();
+    const postings = await this.fetchAllFbsPostings(http, params.dateFrom, params.dateTo);
+    const financeByPosting = await this.fetchFinanceByPosting(http, params.dateFrom, params.dateTo);
 
     const orders = postings.map((posting) => this.toNormalizedOrder(posting, financeByPosting.get(posting.posting_number)));
 
@@ -74,14 +101,14 @@ export class OzonClient {
     return orders;
   }
 
-  private async fetchAllFbsPostings(dateFrom: Date, dateTo: Date): Promise<OzonPosting[]> {
+  private async fetchAllFbsPostings(http: AxiosInstance, dateFrom: Date, dateTo: Date): Promise<OzonPosting[]> {
     const limit = 100;
     let offset = 0;
     const all: OzonPosting[] = [];
 
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const { data } = await this.http.post('/v3/posting/fbs/list', {
+      const { data } = await http.post('/v3/posting/fbs/list', {
         dir: 'asc',
         filter: {
           since: dateFrom.toISOString(),
@@ -108,6 +135,7 @@ export class OzonClient {
    * эквайринг и т.д.), сгруппированные по posting_number.
    */
   private async fetchFinanceByPosting(
+    http: AxiosInstance,
     dateFrom: Date,
     dateTo: Date,
   ): Promise<Map<string, { commission: number; logistics: number; other: number }>> {
@@ -117,7 +145,7 @@ export class OzonClient {
 
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const { data } = await this.http.post('/v3/finance/transaction/list', {
+      const { data } = await http.post('/v3/finance/transaction/list', {
         filter: {
           date: { from: dateFrom.toISOString(), to: dateTo.toISOString() },
           transaction_type: 'all',

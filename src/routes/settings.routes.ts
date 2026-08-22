@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { getKaspiStore, saveKaspiStore, deleteKaspiStore } from '../handlers/kaspiStore';
+import { getOzonStore, saveOzonStore } from '../handlers/ozonStore';
 
 export const settingsRouter = Router();
 
@@ -15,5 +16,14 @@ settingsRouter.post('/kaspi-store', async (req, res) => {
 settingsRouter.delete('/kaspi-store/:id', async (req, res) => {
   const result = await deleteKaspiStore(req.params.id);
   if (result.status === 204) return res.status(204).send();
+  res.status(result.status).json(result.body);
+});
+
+settingsRouter.get('/ozon-store', async (_req, res) => {
+  res.json(await getOzonStore());
+});
+
+settingsRouter.post('/ozon-store', async (req, res) => {
+  const result = await saveOzonStore(req.body);
   res.status(result.status).json(result.body);
 });

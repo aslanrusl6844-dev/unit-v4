@@ -254,7 +254,7 @@ export async function syncKaspiOrders(dateFrom: Date, dateTo: Date) {
 }
 
 export async function syncOzonOrders(dateFrom: Date, dateTo: Date) {
-  if (!ozonClient.isConfigured) {
+  if (!(await ozonClient.isConfigured())) {
     logger.warn('[Ozon] Client-Id/Api-Key не заданы в .env — синхронизация пропущена');
     return { ordersProcessed: 0, productsCreated: 0 };
   }
