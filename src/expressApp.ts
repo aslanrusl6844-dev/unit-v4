@@ -1,16 +1,16 @@
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
-import { logger } from '@/utils/logger';
-import { productsRouter } from '@/routes/products.routes';
-import { ordersRouter } from '@/routes/orders.routes';
-import { analyticsRouter } from '@/routes/analytics.routes';
-import { expensesRouter } from '@/routes/expenses.routes';
-import { syncRouter } from '@/routes/sync.routes';
-import { repricerRouter } from '@/routes/repricer.routes';
-import { priceFeedRouter } from '@/routes/priceFeed.routes';
-import { reviewsRouter } from '@/routes/reviews.routes';
-import { marginCalculatorRouter } from '@/routes/marginCalculator.routes';
+import { logger } from './utils/logger';
+import { productsRouter } from './routes/products.routes';
+import { ordersRouter } from './routes/orders.routes';
+import { analyticsRouter } from './routes/analytics.routes';
+import { expensesRouter } from './routes/expenses.routes';
+import { syncRouter } from './routes/sync.routes';
+import { repricerRouter } from './routes/repricer.routes';
+import { priceFeedRouter } from './routes/priceFeed.routes';
+import { reviewsRouter } from './routes/reviews.routes';
+import { marginCalculatorRouter } from './routes/marginCalculator.routes';
 
 /**
  * Собранное Express-приложение без вызова .listen(). Используется двумя

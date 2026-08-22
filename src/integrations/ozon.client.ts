@@ -1,7 +1,7 @@
 import axios, { AxiosInstance } from 'axios';
-import { env } from '@/config/env';
-import { logger } from '@/utils/logger';
-import { NormalizedOrder, NormalizedOrderItem } from '@/types';
+import { env } from '../config/env';
+import { logger } from '../utils/logger';
+import { NormalizedOrder, NormalizedOrderItem } from '../types';
 
 /**
  * Клиент для Ozon Seller API.

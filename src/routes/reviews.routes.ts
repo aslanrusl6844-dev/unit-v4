@@ -1,7 +1,7 @@
 import { Router } from 'express';
-import { prisma } from '@/db/prisma';
-import { fetchProductPageInfo } from '@/integrations/kaspi.scraper';
-import { logger } from '@/utils/logger';
+import { prisma } from '../db/prisma';
+import { fetchProductPageInfo } from '../integrations/kaspi.scraper';
+import { logger } from '../utils/logger';
 
 export const reviewsRouter = Router();
 

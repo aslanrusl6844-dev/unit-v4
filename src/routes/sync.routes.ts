@@ -1,9 +1,9 @@
 import { Router } from 'express';
 import dayjs from 'dayjs';
-import { prisma } from '@/db/prisma';
-import { syncKaspiOrders, syncOzonOrders, syncWbOrders } from '@/services/sync.service';
-import { env } from '@/config/env';
-import { logger } from '@/utils/logger';
+import { prisma } from '../db/prisma';
+import { syncKaspiOrders, syncOzonOrders, syncWbOrders } from '../services/sync.service';
+import { env } from '../config/env';
+import { logger } from '../utils/logger';
 
 export const syncRouter = Router();
 

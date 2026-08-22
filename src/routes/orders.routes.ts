@@ -1,8 +1,8 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { prisma } from '@/db/prisma';
-import { kaspiClient } from '@/integrations/kaspi.client';
-import { MarketplaceName } from '@/types';
+import { prisma } from '../db/prisma';
+import { kaspiClient } from '../integrations/kaspi.client';
+import { MarketplaceName } from '../types';
 
 export const ordersRouter = Router();
 

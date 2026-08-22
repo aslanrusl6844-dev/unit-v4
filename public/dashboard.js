@@ -322,9 +322,18 @@ document.getElementById('productForm').addEventListener('submit', async (e) => {
     ozonOfferId: fd.get('ozonOfferId') || null,
     wbArticle: fd.get('wbArticle') || null,
   };
-  await api('/products', { method: 'POST', body: JSON.stringify(payload) });
-  e.target.reset();
-  loadProductsAdmin();
+  const btn = e.target.querySelector('button[type="submit"]');
+  const originalText = btn.textContent;
+  btn.textContent = '…'; btn.disabled = true;
+  try {
+    await api('/products', { method: 'POST', body: JSON.stringify(payload) });
+    e.target.reset();
+    await loadProductsAdmin();
+  } catch (err) {
+    alert('Не удалось добавить товар: ' + err.message);
+  } finally {
+    btn.textContent = originalText; btn.disabled = false;
+  }
 });
 
 // ---------- Expenses ----------

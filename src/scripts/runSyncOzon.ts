@@ -1,6 +1,6 @@
 import dayjs from 'dayjs';
-import { syncOzonOrders } from '@/services/sync.service';
-import { logger } from '@/utils/logger';
+import { syncOzonOrders } from '../services/sync.service';
+import { logger } from '../utils/logger';
 
 const days = Number(process.argv[2]) || 30;
 const dateTo = new Date();

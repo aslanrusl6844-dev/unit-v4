@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { prisma } from '@/db/prisma';
+import { prisma } from '../db/prisma';
 
 export const expensesRouter = Router();
 

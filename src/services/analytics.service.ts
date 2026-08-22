@@ -1,5 +1,5 @@
-import { prisma } from '@/db/prisma';
-import { MarketplaceName, UnitEconomicsSummary } from '@/types';
+import { prisma } from '../db/prisma';
+import { MarketplaceName, UnitEconomicsSummary } from '../types';
 
 interface RangeFilter {
   from: Date;

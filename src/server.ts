@@ -1,7 +1,7 @@
-import app from '@/expressApp';
-import { env } from '@/config/env';
-import { logger } from '@/utils/logger';
-import { startScheduler } from '@/jobs/scheduler';
+import app from './expressApp';
+import { env } from './config/env';
+import { logger } from './utils/logger';
+import { startScheduler } from './jobs/scheduler';
 
 /**
  * Точка входа ТОЛЬКО для локальной разработки (npm run dev / npm start).

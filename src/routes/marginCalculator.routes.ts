@@ -1,8 +1,8 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { fetchProductPageInfo } from '@/integrations/kaspi.scraper';
-import { calcKaspiCommissionAmount, KASPI_TOP_CATEGORY_RATE } from '@/integrations/kaspi.categories';
-import { calculateKaspiDeliveryCost, KaspiDeliveryZone } from '@/integrations/kaspi.delivery';
+import { fetchProductPageInfo } from '../integrations/kaspi.scraper';
+import { calcKaspiCommissionAmount, KASPI_TOP_CATEGORY_RATE } from '../integrations/kaspi.categories';
+import { calculateKaspiDeliveryCost, KaspiDeliveryZone } from '../integrations/kaspi.delivery';
 
 export const marginCalculatorRouter = Router();
 

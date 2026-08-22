@@ -1,6 +1,6 @@
-import { prisma } from '@/db/prisma';
-import { fetchCompetitorPrices } from '@/integrations/kaspi.scraper';
-import { logger } from '@/utils/logger';
+import { prisma } from '../db/prisma';
+import { fetchCompetitorPrices } from '../integrations/kaspi.scraper';
+import { logger } from '../utils/logger';
 
 export interface RepriceResult {
   productId: string;
