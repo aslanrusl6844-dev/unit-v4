@@ -66,11 +66,19 @@
       </nav>
 
       <div class="topbar__actions">
+        <select id="kaspiSyncDays" title="За сколько дней синхронизировать Kaspi" style="background:var(--bg);border:1px solid var(--border);border-radius:7px;padding:7px 8px;font-size:12px;color:var(--text)">
+          <option value="3">Kaspi: 3 дня</option>
+          <option value="7" selected>Kaspi: 7 дней</option>
+          <option value="14">Kaspi: 14 дней</option>
+          <option value="30">Kaspi: 30 дней</option>
+        </select>
         <button class="btn btn--ghost" id="syncKaspiBtn">↻ Kaspi</button>
         <button class="btn btn--ghost" id="syncOzonBtn">↻ Ozon</button>
         <button class="btn btn--ghost" id="syncWbBtn">↻ WB</button>
       </div>
     </header>
+
+    <div id="syncProgressBanner" hidden style="position:sticky;top:60px;z-index:9;background:var(--accent-soft);border-bottom:1px solid rgba(22,163,74,0.3);padding:10px 28px;font-size:13px;color:var(--text)"></div>
 
     <div class="pages">
 
@@ -202,6 +210,11 @@
             поэтому каталог собирается из реальных заказов: при синхронизации товары, которых ещё нет
             в базе, создаются автоматически (себестоимость 0 — обязательно укажи её вручную).
           </p>
+          <div class="inline-form" style="align-items:center">
+            <span style="font-size:12.5px;color:var(--text-muted)">Быстро проставить себестоимость всем товарам с нулевой:</span>
+            <input id="bulkCostPriceInput" type="number" step="0.01" placeholder="Например, 1500" style="max-width:140px" />
+            <button class="btn btn--ghost" id="bulkCostPriceBtn">Проставить всем с себестоимостью 0</button>
+          </div>
           <div class="seg" id="productStatusTabs">
             <button class="is-active" data-filter="active">Активные</button>
             <button data-filter="inactive">Сняты с продажи</button>

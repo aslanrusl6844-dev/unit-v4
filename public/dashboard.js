@@ -467,12 +467,32 @@ function wireProductsFormOnce() {
     renderProductsAdminTable();
   });
 
-  document.getElementById('syncCatalogBtn').addEventListener('click', async () => {
-    const btn = document.getElementById('syncCatalogBtn');
+  document.getElementById('bulkCostPriceBtn').addEventListener('click', async () => {
+    const input = document.getElementById('bulkCostPriceInput');
+    const value = Number(input.value);
+    if (!value || value <= 0) { alert('Укажи положительную себестоимость'); return; }
+    if (!confirm(`Проставить себестоимость ${value} ₸ всем товарам, у которых сейчас 0?`)) return;
+    const btn = document.getElementById('bulkCostPriceBtn');
     btn.textContent = '…'; btn.disabled = true;
     try {
-      const res = await api('/sync/kaspi?days=30', { method: 'POST' });
-      alert(`Синхронизация завершена. Обработано заказов Kaspi: ${res.ordersProcessed ?? 0}. Новые товары (если были) появились в списке ниже.`);
+      const res = await api('/products/bulk-set-cost-price', { method: 'POST', body: JSON.stringify({ costPrice: value }) });
+      alert(`Обновлено товаров: ${res.updated}.`);
+      input.value = '';
+      await loadProductsAdminTable();
+    } catch (err) {
+      alert('Ошибка: ' + err.message);
+    } finally {
+      btn.textContent = 'Проставить всем с себестоимостью 0'; btn.disabled = false;
+    }
+  });
+
+  document.getElementById('syncCatalogBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('syncCatalogBtn');
+    const days = Number(document.getElementById('kaspiSyncDays').value) || 7;
+    btn.textContent = '…'; btn.disabled = true;
+    try {
+      const res = await runChunkedKaspiSync(days);
+      alert(`Синхронизировано заказов: ${res.ordersProcessed}. Создано товаров: ${res.productsCreated}.`);
       await loadProductsAdminTable();
     } catch (err) {
       alert('Ошибка синхронизации: ' + err.message);
@@ -483,6 +503,62 @@ function wireProductsFormOnce() {
 
   document.getElementById('bulkUploadBtn').addEventListener('click', handleBulkUpload);
 }
+
+// =====================================================================
+// Разбиение синхронизации Kaspi на маленькие последовательные куски —
+// вместо одного большого запроса (который на serverless легко упирается
+// в лимит времени), запрашиваем по SYNC_CHUNK_DAYS дней за раз, показывая
+// прогресс, пока не покроем весь запрошенный период.
+// =====================================================================
+const SYNC_CHUNK_DAYS = 7;
+
+function showSyncProgress(text) {
+  const banner = document.getElementById('syncProgressBanner');
+  banner.hidden = false;
+  banner.textContent = text;
+}
+function hideSyncProgress() {
+  document.getElementById('syncProgressBanner').hidden = true;
+}
+
+/**
+ * Синхронизирует Kaspi за totalDays дней, разбивая на куски по
+ * SYNC_CHUNK_DAYS дней и вызывая /api/sync/kaspi по очереди для каждого
+ * куска. Показывает прогресс, суммирует результат по всем кускам.
+ * Останавливается при первой ошибке (но сохранённое в БД за предыдущие
+ * успешные куски никуда не пропадает).
+ */
+async function runChunkedKaspiSync(totalDays) {
+  const chunks = [];
+  const now = new Date();
+  for (let daysAgoEnd = totalDays; daysAgoEnd > 0; daysAgoEnd -= SYNC_CHUNK_DAYS) {
+    const daysAgoStart = Math.max(daysAgoEnd - SYNC_CHUNK_DAYS, 0);
+    const to = new Date(now.getTime() - daysAgoStart * 24 * 60 * 60 * 1000);
+    const from = new Date(now.getTime() - daysAgoEnd * 24 * 60 * 60 * 1000);
+    chunks.push({ from, to });
+  }
+
+  let ordersProcessed = 0;
+  let productsCreated = 0;
+
+  try {
+    for (let i = 0; i < chunks.length; i++) {
+      const { from, to } = chunks[i];
+      showSyncProgress(
+        `⏳ Синхронизация Kaspi… кусок ${i + 1} из ${chunks.length} ` +
+          `(${from.toLocaleDateString('ru-RU')}–${to.toLocaleDateString('ru-RU')}). Не закрывайте страницу.`,
+      );
+      const res = await api(`/sync/kaspi?${qs({ from: from.toISOString(), to: to.toISOString() })}`, { method: 'POST' });
+      ordersProcessed += res.ordersProcessed ?? 0;
+      productsCreated += res.productsCreated ?? 0;
+    }
+  } finally {
+    hideSyncProgress();
+  }
+
+  return { ordersProcessed, productsCreated };
+}
+
 
 /**
  * Массовая загрузка товаров из Excel/CSV. Файл целиком разбирается в
@@ -1217,11 +1293,12 @@ async function refreshSyncStatusMini() {
 
 document.getElementById('syncKaspiBtn').addEventListener('click', async () => {
   const btn = document.getElementById('syncKaspiBtn');
+  const days = Number(document.getElementById('kaspiSyncDays').value) || 7;
   btn.textContent = '…'; btn.disabled = true;
   try {
-    const res = await api('/sync/kaspi?days=7', { method: 'POST' });
+    const res = await runChunkedKaspiSync(days);
     await reloadCurrentPage();
-    alert(`Синхронизация Kaspi завершена. Обработано заказов: ${res.ordersProcessed ?? 0}.`);
+    alert(`Синхронизировано заказов: ${res.ordersProcessed}. Создано товаров: ${res.productsCreated}.`);
   } catch (err) {
     alert('Ошибка синхронизации Kaspi: ' + err.message);
   } finally {

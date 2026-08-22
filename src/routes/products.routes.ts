@@ -161,6 +161,28 @@ productsRouter.post('/bulk-upsert', async (req, res) => {
   res.json({ ok: true, total: rows.length, created, updated, errors: errors.slice(0, 50) });
 });
 
+/**
+ * Массово проставить себестоимость — самый частый сценарий: после
+ * автосоздания товаров из заказов у десятков позиций себестоимость 0,
+ * и по одной их вручную не находишься. Обновляет ВСЕ товары с нулевой
+ * себестоимостью на одно и то же значение одним запросом.
+ */
+productsRouter.post('/bulk-set-cost-price', async (req, res) => {
+  const schema = z.object({ costPrice: z.number().nonnegative() });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+
+  try {
+    const result = await prisma.product.updateMany({
+      where: { costPrice: 0 },
+      data: { costPrice: parsed.data.costPrice },
+    });
+    res.json({ ok: true, updated: result.count });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Не удалось обновить себестоимость', details: String(err?.message ?? err) });
+  }
+});
+
 productsRouter.put('/:id', async (req, res) => {
   const parsed = productSchema.partial().safeParse(req.body);
   if (!parsed.success) {

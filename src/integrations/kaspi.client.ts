@@ -142,6 +142,8 @@ export class KaspiClient {
     const http = await this.getHttp();
     const pageSize = params.pageSize ?? 20; // как в официальном примере Kaspi Гид
     const seenIds = new Set<string>();
+    // Общий на весь запуск кэш названий товаров — см. комментарий в fetchOrderEntries.
+    const productCache = new Map<string, { name: string; code: string }>();
 
     // ВАЖНО: у Kaspi "state" и "status" — два РАЗНЫХ поля заказа, не
     // взаимозаменяемые (проверено по стороннему, но полному описанию
@@ -181,7 +183,7 @@ export class KaspiClient {
     const tasks: Array<Promise<NormalizedOrder[]>> = [];
     for (const state of STATES) {
       for (const chunk of dateChunks) {
-        tasks.push(this.fetchOrdersForStateAndChunk(http, state, chunk, pageSize, seenIds));
+        tasks.push(this.fetchOrdersForStateAndChunk(http, state, chunk, pageSize, seenIds, productCache));
       }
     }
     const results = await Promise.all(tasks);
@@ -198,6 +200,7 @@ export class KaspiClient {
     chunk: { from: Date; to: Date },
     pageSize: number,
     seenIds: Set<string>,
+    productCache: Map<string, { name: string; code: string }>,
   ): Promise<NormalizedOrder[]> {
     const orders: NormalizedOrder[] = [];
     let pageNumber = 0;
@@ -241,7 +244,7 @@ export class KaspiClient {
         seenIds.add(resource.id);
         return true;
       });
-      const itemsPerOrder = await Promise.all(newResources.map((resource) => this.fetchOrderEntries(http, resource.id)));
+      const itemsPerOrder = await Promise.all(newResources.map((resource) => this.fetchOrderEntries(http, resource.id, productCache)));
       newResources.forEach((resource, i) => {
         orders.push(this.toNormalizedOrder(resource, itemsPerOrder[i]));
       });
@@ -256,39 +259,90 @@ export class KaspiClient {
 
   /**
    * Получить состав заказа (товарные позиции) по id заказа.
+   *
+   * ВАЖНО: обычный include=product на списке позиций НЕ отдаёт название
+   * товара (проверено — атрибуты entries содержат только количество/цену,
+   * без имени). Название нужно запрашивать ОТДЕЛЬНО, по ссылке из
+   * relationships.product (стандартный JSON:API related-link) — либо, если
+   * её нет в ответе, напрямую через /orderentries/{entryId}/product.
+   *
+   * productCache — общий на весь запуск синхронизации кэш "id товара Kaspi
+   * -> {name, code}", чтобы не запрашивать название повторно для одного и
+   * того же товара в разных заказах (у активного магазина одни и те же
+   * товары покупают многократно — кэш ощутимо сокращает число запросов).
    */
-  private async fetchOrderEntries(http: AxiosInstance, orderId: string): Promise<NormalizedOrderItem[]> {
+  private async fetchOrderEntries(
+    http: AxiosInstance,
+    orderId: string,
+    productCache: Map<string, { name: string; code: string }>,
+  ): Promise<NormalizedOrderItem[]> {
     try {
-      const { data } = await http.get(`/orders/${orderId}/entries`, {
-        params: { include: 'product' },
-      });
-
+      const { data } = await http.get(`/orders/${orderId}/entries`);
       const resources: KaspiJsonApiResource<KaspiEntryAttributes>[] = data.data ?? [];
-      const included: any[] = data.included ?? [];
 
-      return resources.map((entry) => {
-        const relationships: any = entry.relationships ?? {};
-        const productLinkId = relationships.product?.data?.id;
-        const productRef = included.find((inc) => inc.type === 'products' && inc.id === productLinkId);
-        const merchantSku = productRef?.attributes?.sku ?? productRef?.attributes?.code ?? entry.id;
-        const name = productRef?.attributes?.name ?? 'Товар без названия';
+      return await Promise.all(
+        resources.map(async (entry) => {
+          const relationships: any = entry.relationships ?? {};
+          const productId: string | undefined = relationships.product?.data?.id;
+          const relatedLink: string | undefined = relationships.product?.links?.related;
 
-        return {
-          externalSku: String(merchantSku),
-          name,
-          quantity: entry.attributes.quantity ?? 1,
-          price:
-            entry.attributes.quantity > 0
-              ? entry.attributes.totalPrice / entry.attributes.quantity
-              : entry.attributes.totalPrice,
-        };
-      });
+          let productInfo = productId ? productCache.get(productId) : undefined;
+          if (!productInfo) {
+            productInfo = await this.fetchEntryProduct(http, entry.id, relatedLink);
+            if (productId && productInfo) productCache.set(productId, productInfo);
+          }
+
+          const merchantSku = productInfo?.code || entry.id;
+          // Если название так и не удалось получить — оставляем пустую
+          // строку здесь; понятное "запасное" имя (не одинаковое для всех)
+          // формируется на уровне src/services/sync.service.ts, где уже
+          // известен и SKU/артикул для подстановки в название.
+          const name = productInfo?.name?.trim() || '';
+
+          return {
+            externalSku: String(merchantSku),
+            name,
+            quantity: entry.attributes.quantity ?? 1,
+            price:
+              entry.attributes.quantity > 0
+                ? entry.attributes.totalPrice / entry.attributes.quantity
+                : entry.attributes.totalPrice,
+          };
+        }),
+      );
     } catch (err: any) {
       logger.warn(
         { status: err?.response?.status, body: err?.response?.data, orderId },
         '[Kaspi] Не удалось получить состав заказа',
       );
       return [];
+    }
+  }
+
+  /** Название и код товара по id позиции заказа — отдельный запрос, см. комментарий выше. */
+  private async fetchEntryProduct(
+    http: AxiosInstance,
+    entryId: string,
+    relatedLink?: string,
+  ): Promise<{ name: string; code: string } | undefined> {
+    try {
+      // Если сервер сам прислал ссылку в relationships.product.links.related —
+      // используем её (это абсолютный URL, axios справится с ним даже при
+      // настроенном baseURL). Иначе — собираем путь по образцу официального
+      // метода Kaspi API "получить товар по id позиции заказа".
+      const { data } = relatedLink
+        ? await http.get(relatedLink)
+        : await http.get(`/orderentries/${entryId}/product`);
+
+      const attrs = data?.data?.attributes;
+      if (!attrs) return undefined;
+      return { name: attrs.name ?? '', code: attrs.code ?? '' };
+    } catch (err: any) {
+      logger.warn(
+        { status: err?.response?.status, entryId },
+        '[Kaspi] Не удалось получить название товара по позиции заказа',
+      );
+      return undefined;
     }
   }
 

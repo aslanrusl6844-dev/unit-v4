@@ -16,7 +16,12 @@ interface ResolvedProductInfo {
   kaspiLeafCategory?: string;
 }
 
-async function resolveProductInfo(marketplace: MarketplaceName, externalSku: string, itemName: string): Promise<ResolvedProductInfo> {
+async function resolveProductInfo(
+  marketplace: MarketplaceName,
+  externalSku: string,
+  itemName: string,
+  stats: { productsCreated: number },
+): Promise<ResolvedProductInfo> {
   const where =
     marketplace === 'KASPI'
       ? { kaspiSku: externalSku }
@@ -33,17 +38,25 @@ async function resolveProductInfo(marketplace: MarketplaceName, externalSku: str
     // это самый честный способ получить каталог: он собирается из реальных
     // продаж. Себестоимость по умолчанию 0 — обязательно укажите её в
     // разделе «Товары», иначе юнит-экономика будет считать нулевую себестоимость.
+    //
+    // Название: если Kaspi не смог отдать нормальное название товара (см.
+    // src/integrations/kaspi.client.ts — там отдельный запрос за названием
+    // по каждой позиции), НЕ пишем одинаковое "Товар без названия" для всех —
+    // используем сам SKU/артикул, так хотя бы можно отличить товары друг от
+    // друга в каталоге до того, как вручную поправишь название.
+    const resolvedName = itemName && itemName.trim() ? itemName.trim() : `Kaspi-товар ${externalSku}`;
     try {
       const created = await prisma.product.create({
         data: {
           sku: `${marketplace.toLowerCase()}-${externalSku}`,
-          name: itemName || externalSku,
+          name: resolvedName,
           costPrice: 0,
           ...(marketplace === 'KASPI' ? { kaspiSku: externalSku } : {}),
           ...(marketplace === 'OZON' ? { ozonOfferId: externalSku } : {}),
           ...(marketplace === 'WB' ? { wbArticle: externalSku } : {}),
         },
       });
+      stats.productsCreated += 1;
       logger.info(`[Каталог] Автоматически создан товар из заказа: ${created.name} (${marketplace} ${externalSku})`);
       return { productId: created.id, costPrice: 0, weightKg: created.weightKg };
     } catch (err) {
@@ -54,6 +67,18 @@ async function resolveProductInfo(marketplace: MarketplaceName, externalSku: str
       logger.warn({ err }, '[Каталог] Не удалось автоматически создать товар');
       return { costPrice: 0, weightKg: 0.5 };
     }
+  }
+
+  // Если товар уже был создан автоматически БЕЗ нормального названия
+  // (плейсхолдер "Kaspi-товар ..." или старое "Товар без названия"), а
+  // сейчас пришло настоящее название — подтягиваем его, чтобы каталог
+  // сам собой становился читаемее по мере повторных синхронизаций.
+  if (
+    itemName &&
+    itemName.trim() &&
+    (product.name.startsWith('Kaspi-товар') || product.name === 'Товар без названия')
+  ) {
+    await prisma.product.update({ where: { id: product.id }, data: { name: itemName.trim() } });
   }
 
   return {
@@ -119,10 +144,10 @@ function enrichKaspiFinancials(
   return { marketplaceCommission, logisticsCost, perItem };
 }
 
-async function persistOrder(order: NormalizedOrder): Promise<void> {
+async function persistOrder(order: NormalizedOrder, stats: { productsCreated: number }): Promise<void> {
   const itemsWithCost = await Promise.all(
     order.items.map(async (item) => {
-      const info = await resolveProductInfo(order.marketplace, item.externalSku, item.name);
+      const info = await resolveProductInfo(order.marketplace, item.externalSku, item.name, stats);
       return { ...item, ...info };
     }),
   );
@@ -200,28 +225,29 @@ function round2(n: number): number {
 export async function syncKaspiOrders(dateFrom: Date, dateTo: Date) {
   if (!(await kaspiClient.isConfigured())) {
     logger.warn('[Kaspi] Токен не задан в .env — синхронизация пропущена');
-    return { ordersProcessed: 0 };
+    return { ordersProcessed: 0, productsCreated: 0 };
   }
 
   const log = await prisma.syncLog.create({
     data: { marketplace: 'KASPI', status: 'RUNNING' },
   });
 
+  const stats = { productsCreated: 0 };
   try {
     const orders = await kaspiClient.fetchOrders({ dateFrom, dateTo });
     for (const order of orders) {
-      await persistOrder(order);
+      await persistOrder(order, stats);
     }
     await prisma.syncLog.update({
       where: { id: log.id },
       data: { status: 'SUCCESS', ordersProcessed: orders.length, finishedAt: new Date() },
     });
-    return { ordersProcessed: orders.length };
+    return { ordersProcessed: orders.length, productsCreated: stats.productsCreated };
   } catch (err: any) {
     logger.error({ err }, '[Kaspi] Ошибка синхронизации');
     await prisma.syncLog.update({
       where: { id: log.id },
-      data: { status: 'ERROR', message: String(err?.message ?? err), finishedAt: new Date() },
+      data: { status: 'ERROR', message: String(err?.message ?? err), finishedAt: new Date(), ordersProcessed: 0 },
     });
     throw err;
   }
@@ -230,23 +256,24 @@ export async function syncKaspiOrders(dateFrom: Date, dateTo: Date) {
 export async function syncOzonOrders(dateFrom: Date, dateTo: Date) {
   if (!ozonClient.isConfigured) {
     logger.warn('[Ozon] Client-Id/Api-Key не заданы в .env — синхронизация пропущена');
-    return { ordersProcessed: 0 };
+    return { ordersProcessed: 0, productsCreated: 0 };
   }
 
   const log = await prisma.syncLog.create({
     data: { marketplace: 'OZON', status: 'RUNNING' },
   });
 
+  const stats = { productsCreated: 0 };
   try {
     const orders = await ozonClient.fetchOrders({ dateFrom, dateTo });
     for (const order of orders) {
-      await persistOrder(order);
+      await persistOrder(order, stats);
     }
     await prisma.syncLog.update({
       where: { id: log.id },
       data: { status: 'SUCCESS', ordersProcessed: orders.length, finishedAt: new Date() },
     });
-    return { ordersProcessed: orders.length };
+    return { ordersProcessed: orders.length, productsCreated: stats.productsCreated };
   } catch (err: any) {
     logger.error({ err }, '[Ozon] Ошибка синхронизации');
     await prisma.syncLog.update({
@@ -260,23 +287,24 @@ export async function syncOzonOrders(dateFrom: Date, dateTo: Date) {
 export async function syncWbOrders(dateFrom: Date, dateTo: Date) {
   if (!wbClient.isConfigured) {
     logger.warn('[Wildberries] Токен не задан в .env — синхронизация пропущена');
-    return { ordersProcessed: 0 };
+    return { ordersProcessed: 0, productsCreated: 0 };
   }
 
   const log = await prisma.syncLog.create({
     data: { marketplace: 'WB', status: 'RUNNING' },
   });
 
+  const stats = { productsCreated: 0 };
   try {
     const orders = await wbClient.fetchOrders({ dateFrom, dateTo });
     for (const order of orders) {
-      await persistOrder(order);
+      await persistOrder(order, stats);
     }
     await prisma.syncLog.update({
       where: { id: log.id },
       data: { status: 'SUCCESS', ordersProcessed: orders.length, finishedAt: new Date() },
     });
-    return { ordersProcessed: orders.length };
+    return { ordersProcessed: orders.length, productsCreated: stats.productsCreated };
   } catch (err: any) {
     logger.error({ err }, '[Wildberries] Ошибка синхронизации');
     await prisma.syncLog.update({
