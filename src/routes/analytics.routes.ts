@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import dayjs from 'dayjs';
-import { getByCategory, getByProduct, getSummary, getSummaryByMarketplace, getTimeseries } from '../services/analytics.service';
+import { getByCategory, getByProduct, getSummary, getSummaryByMarketplace, getTimeseries, getProductForecasts } from '../services/analytics.service';
 import { MarketplaceName } from '../types';
 
 export const analyticsRouter = Router();
@@ -34,5 +34,14 @@ analyticsRouter.get('/timeseries', async (req, res) => {
   const range = parseRange(req.query as Record<string, string>);
   const groupBy = (req.query.groupBy as 'day' | 'week' | 'month') || 'day';
   const data = await getTimeseries(range, groupBy);
+  res.json(data);
+});
+
+/**
+ * Прогнозная юнит-экономика по каталогу — не зависит от периода/фильтра
+ * дат (это оценка "сейчас", а не отчёт за период) — см. analytics.service.ts.
+ */
+analyticsRouter.get('/forecast', async (_req, res) => {
+  const data = await getProductForecasts();
   res.json(data);
 });

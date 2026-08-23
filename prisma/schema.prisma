@@ -66,6 +66,21 @@ model Product {
   wbArticle   String?  @unique // артикул продавца (supplierArticle) в Wildberries
   wbNmId      Int?     // числовой артикул WB (nmId), для справки
   active      Boolean  @default(true)
+  // Лучшая известная ТЕКУЩАЯ цена продажи — ОТДЕЛЬНО по каждой площадке
+  // (один и тот же товар может стоить и продаваться на Kaspi/Ozon/WB
+  // по-разному, с разной комиссией и логистикой каждой площадки).
+  // Обновляется двумя способами: (1) живыми данными из API площадки при
+  // синхронизации каталога (сейчас так для Ozon — API отдаёт price прямо
+  // в ответе); (2) ценой последней фактической продажи ИМЕННО НА ЭТОЙ
+  // площадке (для Kaspi/WB, у которых нет отдельного метода "текущая цена
+  // товара"). На основе этих полей считается ПРОГНОЗНАЯ юнит-экономика по
+  // каждой площадке в каталоге — даже если по товару ещё не было продаж.
+  kaspiReferencePrice          Float?
+  kaspiReferencePriceUpdatedAt DateTime?
+  ozonReferencePrice           Float?
+  ozonReferencePriceUpdatedAt  DateTime?
+  wbReferencePrice             Float?
+  wbReferencePriceUpdatedAt    DateTime?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 

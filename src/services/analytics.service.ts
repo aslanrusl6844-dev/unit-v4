@@ -1,5 +1,8 @@
 import { prisma } from '../db/prisma';
 import { MarketplaceName, UnitEconomicsSummary } from '../types';
+import { calcKaspiCommissionAmount } from '../integrations/kaspi.categories';
+import { calculateKaspiDeliveryCost } from '../integrations/kaspi.delivery';
+import { env } from '../config/env';
 
 interface RangeFilter {
   from: Date;
@@ -253,4 +256,153 @@ export async function getTimeseries(filter: RangeFilter, groupBy: 'day' | 'week'
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+/**
+ * ПРОГНОЗНАЯ юнит-экономика по каталогу — ОТДЕЛЬНО ПО КАЖДОЙ ПЛОЩАДКЕ,
+ * оценка "если продать по текущей цене прямо сейчас", даже если по
+ * товару на этой площадке ещё не было ни одной продажи.
+ *
+ * У каждой площадки — свои поля цены (kaspiReferencePrice/ozonReferencePrice/
+ * wbReferencePrice) и честно РАЗНЫЙ источник оценки комиссии/логистики,
+ * потому что у нас нет одинаково надёжных данных по всем трём:
+ *
+ *  - Kaspi (если указана категория): точный расчёт по официальной
+ *    тарифной таблице (та же формула, что при синхронизации заказов) —
+ *    это НАСТОЯЩАЯ оценка, не статистика по прошлым продажам, работает
+ *    даже с нуля продаж на Kaspi.
+ *  - Ozon / WB (и Kaspi без указанной категории): официальных тарифных
+ *    таблиц у нас для них нет — поэтому оценка строится по СРЕДНЕЙ
+ *    фактической ставке комиссии/логистики (% от цены) из уже
+ *    состоявшихся продаж ЭТОГО ЖЕ товара НА ЭТОЙ ЖЕ площадке (ставки не
+ *    смешиваются между площадками — у Ozon и WB разные комиссии). Если
+ *    продаж на этой площадке вообще не было — честно возвращаем
+ *    "нет данных", а не выдуманное число.
+ */
+export interface ProductForecast {
+  productId: string;
+  marketplace: MarketplaceName;
+  referencePrice: number | null;
+  estCommission: number | null;
+  estLogistics: number | null;
+  estProfit: number | null;
+  estMarginPct: number | null;
+  source: 'kaspi-tariff' | 'historical-average' | 'no-data';
+}
+
+export async function getProductForecasts(): Promise<ProductForecast[]> {
+  const products = await prisma.product.findMany();
+
+  // Средняя фактическая ставка комиссии/логистики (доля от цены) по
+  // каждому товару, ОТДЕЛЬНО по каждой площадке — считаем один раз по
+  // всем позициям заказов сразу, а не отдельным запросом на каждый товар.
+  const items = await prisma.orderItem.findMany({
+    where: { productId: { not: null }, price: { gt: 0 } },
+    select: { productId: true, price: true, commission: true, itemLogistics: true, order: { select: { marketplace: true } } },
+  });
+  const rateStats = new Map<string, { commissionRateSum: number; logisticsRateSum: number; count: number }>();
+  for (const item of items) {
+    if (!item.productId) continue;
+    const key = `${item.productId}:${item.order.marketplace}`;
+    const entry = rateStats.get(key) ?? { commissionRateSum: 0, logisticsRateSum: 0, count: 0 };
+    entry.commissionRateSum += item.commission / item.price;
+    entry.logisticsRateSum += item.itemLogistics / item.price;
+    entry.count += 1;
+    rateStats.set(key, entry);
+  }
+
+  function historicalOrNoData(
+    productId: string,
+    marketplace: MarketplaceName,
+    referencePrice: number,
+    totalCost: number,
+  ): ProductForecast {
+    const stats = rateStats.get(`${productId}:${marketplace}`);
+    if (stats && stats.count > 0) {
+      const estCommission = referencePrice * (stats.commissionRateSum / stats.count);
+      const estLogistics = referencePrice * (stats.logisticsRateSum / stats.count);
+      const estProfit = referencePrice - totalCost - estCommission - estLogistics;
+      return {
+        productId,
+        marketplace,
+        referencePrice,
+        estCommission: round2(estCommission),
+        estLogistics: round2(estLogistics),
+        estProfit: round2(estProfit),
+        estMarginPct: referencePrice > 0 ? round2((estProfit / referencePrice) * 100) : 0,
+        source: 'historical-average',
+      };
+    }
+    // Совсем нет данных для оценки комиссии/логистики на ЭТОЙ площадке
+    // (ни тарифа, ни истории продаж здесь) — честно показываем только
+    // цену и себестоимость, не выдумываем комиссию.
+    return {
+      productId,
+      marketplace,
+      referencePrice,
+      estCommission: null,
+      estLogistics: null,
+      estProfit: round2(referencePrice - totalCost),
+      estMarginPct: null,
+      source: 'no-data',
+    };
+  }
+
+  const forecasts: ProductForecast[] = [];
+
+  for (const p of products) {
+    const totalCost = p.costPrice + p.packagingCost;
+
+    // --- Kaspi ---
+    if (p.kaspiSku) {
+      const referencePrice = p.kaspiReferencePrice ?? null;
+      if (referencePrice == null) {
+        forecasts.push({ productId: p.id, marketplace: 'KASPI', referencePrice: null, estCommission: null, estLogistics: null, estProfit: null, estMarginPct: null, source: 'no-data' });
+      } else if (p.kaspiTopCategory) {
+        // Точный тариф — не статистика, работает даже с нуля продаж.
+        const estCommission = calcKaspiCommissionAmount(referencePrice, {
+          topCategory: p.kaspiTopCategory,
+          leafCategory: p.kaspiLeafCategory ?? undefined,
+        });
+        // Для прогноза (ещё нет реального заказа) предполагаем доставку
+        // Kaspi Доставкой по умолчанию — это наиболее частый случай.
+        const estLogistics = calculateKaspiDeliveryCost(referencePrice, p.weightKg, env.kaspi.defaultDeliveryZone);
+        const estProfit = referencePrice - totalCost - estCommission - estLogistics;
+        forecasts.push({
+          productId: p.id,
+          marketplace: 'KASPI',
+          referencePrice,
+          estCommission: round2(estCommission),
+          estLogistics: round2(estLogistics),
+          estProfit: round2(estProfit),
+          estMarginPct: referencePrice > 0 ? round2((estProfit / referencePrice) * 100) : 0,
+          source: 'kaspi-tariff',
+        });
+      } else {
+        forecasts.push(historicalOrNoData(p.id, 'KASPI', referencePrice, totalCost));
+      }
+    }
+
+    // --- Ozon ---
+    if (p.ozonOfferId) {
+      const referencePrice = p.ozonReferencePrice ?? null;
+      if (referencePrice == null) {
+        forecasts.push({ productId: p.id, marketplace: 'OZON', referencePrice: null, estCommission: null, estLogistics: null, estProfit: null, estMarginPct: null, source: 'no-data' });
+      } else {
+        forecasts.push(historicalOrNoData(p.id, 'OZON', referencePrice, totalCost));
+      }
+    }
+
+    // --- Wildberries ---
+    if (p.wbArticle) {
+      const referencePrice = p.wbReferencePrice ?? null;
+      if (referencePrice == null) {
+        forecasts.push({ productId: p.id, marketplace: 'WB', referencePrice: null, estCommission: null, estLogistics: null, estProfit: null, estMarginPct: null, source: 'no-data' });
+      } else {
+        forecasts.push(historicalOrNoData(p.id, 'WB', referencePrice, totalCost));
+      }
+    }
+  }
+
+  return forecasts;
 }

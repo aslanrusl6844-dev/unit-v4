@@ -212,10 +212,15 @@
           </div>
           <p class="panel__hint">
             <strong>Kaspi:</strong> у Kaspi нет API-метода «отдай список всех моих товаров» (только методы
-            добавления новых) — поэтому каталог собирается из реальных заказов при синхронизации.<br>
-            <strong>Ozon и WB:</strong> здесь каталог подтягивается напрямую из настоящего "списка товаров"
-            каждой площадки — появятся ВСЕ товары, которые сейчас стоят на продаже, даже если по ним ещё не
-            было ни одной продажи.<br>
+            добавления новых) — поэтому каталог собирается из реальных заказов при синхронизации. Это значит,
+            что и статус «снят с продажи» Kaspi нам тоже не отдаёт — переключай вкладку «Активен» вручную,
+            когда снимаешь товар с продажи в самом кабинете Kaspi.<br>
+            <strong>Ozon:</strong> каталог подтягивается напрямую из «списка товаров» через API — попадают
+            только товары со статусом видимости <code>VISIBLE</code> («сейчас видны покупателям»), снятые
+            с продажи в каталог не попадают.<br>
+            <strong>WB:</strong> каталог подтягивается через Content API — по умолчанию он уже не отдаёт
+            карточки, отправленные в корзину (удалённые), но WB не даёт отдельного признака «временно снят с
+            продажи, но карточка ещё существует» — такие товары в каталог всё равно попадут, отключай вручную.<br>
             Во всех случаях: новый товар создаётся с себестоимостью 0 — обязательно укажи её вручную
             (или воспользуйся массовой загрузкой/проставлением ниже).
           </p>
@@ -233,18 +238,37 @@
             <table class="table" id="productsAdminTable">
               <thead>
                 <tr>
-                  <th>SKU</th><th>Название</th><th>Kaspi (арт. / категория)</th>
-                  <th class="num">Себестоимость</th>
-                  <th class="num">Продано, шт</th><th class="num">Выручка</th>
+                  <th rowspan="2">SKU</th><th rowspan="2">Название</th>
+                  <th rowspan="2">Артикулы</th>
+                  <th rowspan="2" class="num" style="min-width:100px">Себестоимость</th>
+                  <th colspan="5" style="text-align:center;border-left:2px solid var(--border)"><span class="dot dot--kaspi"></span> Kaspi</th>
+                  <th colspan="5" style="text-align:center;border-left:2px solid var(--border)"><span class="dot dot--ozon"></span> Ozon</th>
+                  <th colspan="5" style="text-align:center;border-left:2px solid var(--border)"><span class="dot dot--wb"></span> WB</th>
+                  <th rowspan="2">Активен</th><th rowspan="2"></th>
+                </tr>
+                <tr>
+                  <th class="num" style="border-left:2px solid var(--border)">Цена</th>
                   <th class="num">Комиссия</th><th class="num">Логистика</th>
-                  <th class="num">Прибыль</th><th class="num">Маржа</th>
-                  <th>Активен</th><th></th>
+                  <th class="num">Прибыль/шт</th><th class="num">Маржа</th>
+                  <th class="num" style="border-left:2px solid var(--border)">Цена</th>
+                  <th class="num">Комиссия</th><th class="num">Логистика</th>
+                  <th class="num">Прибыль/шт</th><th class="num">Маржа</th>
+                  <th class="num" style="border-left:2px solid var(--border)">Цена</th>
+                  <th class="num">Комиссия</th><th class="num">Логистика</th>
+                  <th class="num">Прибыль/шт</th><th class="num">Маржа</th>
                 </tr>
               </thead>
               <tbody></tbody>
             </table>
           </div>
-          <p class="panel__hint">Продано/выручка/прибыль — за выбранный период (даты вверху страницы).</p>
+          <p class="panel__hint">
+            Прогноз по каждой площадке — отдельная цена, комиссия и логистика (своя у Kaspi, своя у Ozon,
+            своя у WB), считается по текущей цене прямо сейчас, даже без единой продажи на этой площадке.
+            Для Kaspi с указанной категорией — точный тариф. Для Ozon/WB (и Kaspi без категории) — средняя
+            ставка по прошлым продажам этого товара ИМЕННО на этой площадке (значок ≈); если продаж на ней
+            ещё не было — честно «—», без выдуманных чисел. «—» в столбце «Цена» означает, что товар не
+            привязан к этой площадке или для него ещё нет известной текущей цены.
+          </p>
         </div>
       </section>
 

@@ -107,7 +107,7 @@ export class OzonClient {
    * data.result.items, и data.items — на случай мелких отличий между
    * версиями API.
    */
-  async fetchCatalog(): Promise<Array<{ offerId: string; name: string; active: boolean }>> {
+  async fetchCatalog(): Promise<Array<{ offerId: string; name: string; active: boolean; price?: number }>> {
     const http = await this.getHttp();
     const idPairs: Array<{ productId: number; offerId: string }> = [];
     let lastId = '';
@@ -139,7 +139,7 @@ export class OzonClient {
     logger.info(`[Ozon] В каталоге товаров (visibility=VISIBLE): ${idPairs.length}`);
 
     // Название и точный статус (archived) добираем пачками по 100 через info/list.
-    const catalog: Array<{ offerId: string; name: string; active: boolean }> = [];
+    const catalog: Array<{ offerId: string; name: string; active: boolean; price?: number }> = [];
     for (let i = 0; i < idPairs.length; i += 100) {
       const chunk = idPairs.slice(i, i + 100);
       try {
@@ -147,7 +147,7 @@ export class OzonClient {
           offer_id: chunk.map((c) => c.offerId),
         });
         const result = data.result ?? data;
-        const items: Array<{ offer_id: string; name?: string; archived?: boolean }> = result?.items ?? [];
+        const items: Array<{ offer_id: string; name?: string; archived?: boolean; price?: string }> = result?.items ?? [];
         items.forEach((item) => {
           catalog.push({
             offerId: item.offer_id,
@@ -155,6 +155,8 @@ export class OzonClient {
             // Если поле archived не пришло — считаем товар активным (лучше
             // показать лишний товар, чем незаметно потерять настоящий).
             active: item.archived !== true,
+            // Ozon отдаёт price строкой — переводим в число для расчётов.
+            price: item.price ? Number(item.price) : undefined,
           });
         });
       } catch (err: any) {

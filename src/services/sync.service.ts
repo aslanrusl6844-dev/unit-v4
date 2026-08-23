@@ -216,6 +216,30 @@ async function persistOrder(order: NormalizedOrder, stats: { productsCreated: nu
       data: { ...orderData, items: { create: itemsCreateData } },
     });
   }
+
+  // Обновляем "референсную" цену товара — ОТДЕЛЬНО для той площадки, на
+  // которой случился этот заказ (у Kaspi/Ozon/WB своя цена и свои поля).
+  // Обновляем только если ЭТОТ заказ новее, чем то, что уже сохранено по
+  // этой конкретной площадке — иначе досинхронизация старых периодов
+  // могла бы затереть свежую цену устаревшей.
+  for (const item of itemsWithCost) {
+    if (!item.productId) continue;
+    const product = await prisma.product.findUnique({ where: { id: item.productId } });
+    if (!product) continue;
+
+    let updateData: Record<string, any> | null = null;
+    if (order.marketplace === 'KASPI' && (!product.kaspiReferencePriceUpdatedAt || order.orderDate > product.kaspiReferencePriceUpdatedAt)) {
+      updateData = { kaspiReferencePrice: item.price, kaspiReferencePriceUpdatedAt: order.orderDate };
+    } else if (order.marketplace === 'OZON' && (!product.ozonReferencePriceUpdatedAt || order.orderDate > product.ozonReferencePriceUpdatedAt)) {
+      updateData = { ozonReferencePrice: item.price, ozonReferencePriceUpdatedAt: order.orderDate };
+    } else if (order.marketplace === 'WB' && (!product.wbReferencePriceUpdatedAt || order.orderDate > product.wbReferencePriceUpdatedAt)) {
+      updateData = { wbReferencePrice: item.price, wbReferencePriceUpdatedAt: order.orderDate };
+    }
+
+    if (updateData) {
+      await prisma.product.update({ where: { id: item.productId }, data: updateData });
+    }
+  }
 }
 
 function round2(n: number): number {
@@ -343,6 +367,10 @@ export async function syncOzonCatalog() {
           // Название обновляем, только если сейчас placeholder — реальное
           // ручное название пользователя не затираем.
           ...(existing.name.startsWith('Ozon-товар') ? { name: item.name } : {}),
+          // Живая цена из API Ozon — самая надёжная referencePrice, какая
+          // у нас есть (точнее, чем цена последней продажи, которая могла
+          // устареть). Обновляем её всегда, если Ozon её прислал.
+          ...(item.price ? { ozonReferencePrice: item.price, ozonReferencePriceUpdatedAt: new Date() } : {}),
         },
       });
       updated += 1;
@@ -354,6 +382,7 @@ export async function syncOzonCatalog() {
           costPrice: 0,
           ozonOfferId: item.offerId,
           active: item.active,
+          ...(item.price ? { ozonReferencePrice: item.price, ozonReferencePriceUpdatedAt: new Date() } : {}),
         },
       });
       created += 1;

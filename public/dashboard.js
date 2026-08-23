@@ -434,7 +434,7 @@ function orderActionCell(o) {
 let productsFormWired = false;
 let allProductsCache = [];
 let kaspiRatesCache = null; // { "Категория": 10.9, ... } — для валидации файла при массовой загрузке
-let productsEconomicsCache = new Map(); // sku -> {quantity, revenue, commission, logistics, profit, marginPct} за текущий период
+let productsForecastCache = new Map(); // "productId:MARKETPLACE" -> прогноз "если продать по текущей цене сейчас" (см. getProductForecasts)
 
 async function loadKaspiCategoriesIntoSelect(selectEl) {
   const categories = await api('/products/kaspi-categories');
@@ -730,13 +730,32 @@ async function loadProductsPage() {
 }
 
 async function loadProductsAdminTable() {
-  const [products, economics] = await Promise.all([
+  const [products, forecasts] = await Promise.all([
     api('/products'),
-    api(`/analytics/by-product?${qs({ from: state.from, to: state.to, marketplace: state.marketplace })}`),
+    api('/analytics/forecast'),
   ]);
   allProductsCache = products;
-  productsEconomicsCache = new Map(economics.map((e) => [e.sku, e]));
+  // Прогноз теперь ПО ПЛОЩАДКЕ: ключ "productId:MARKETPLACE" -> запись прогноза.
+  productsForecastCache = new Map(forecasts.map((f) => [`${f.productId}:${f.marketplace}`, f]));
   renderProductsAdminTable();
+}
+
+function renderForecastCells(p, marketplace) {
+  const fc = productsForecastCache.get(`${p.id}:${marketplace}`);
+  if (!fc) {
+    // Товар вообще не привязан к этой площадке (нет артикула).
+    return `<td class="num" style="border-left:2px solid var(--border);color:var(--text-faint)">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td>`;
+  }
+  const badge = fc.source === 'historical-average'
+    ? ` <span style="color:var(--text-faint);font-size:10px" title="Оценка по средней ставке из прошлых продаж этого товара на ${mpLabel(marketplace)}">≈</span>`
+    : '';
+  return `
+    <td class="num" style="border-left:2px solid var(--border)">${fc.referencePrice != null ? fmtMoney(fc.referencePrice) : '—'}</td>
+    <td class="num">${fc.estCommission != null ? fmtMoney(fc.estCommission) + badge : '—'}</td>
+    <td class="num">${fc.estLogistics != null ? fmtMoney(fc.estLogistics) + badge : '—'}</td>
+    <td class="num ${fc.estProfit != null ? (fc.estProfit >= 0 ? 'pos' : 'neg') : ''}">${fc.estProfit != null ? fmtMoney(fc.estProfit) : '—'}</td>
+    <td class="num ${fc.estMarginPct != null ? (fc.estMarginPct >= 0 ? 'pos' : 'neg') : ''}">${fc.estMarginPct != null ? fmtPct(fc.estMarginPct) : '—'}</td>
+  `;
 }
 
 function renderProductsAdminTable() {
@@ -754,31 +773,32 @@ function renderProductsAdminTable() {
 
   const tbody = document.querySelector('#productsAdminTable tbody');
   if (!products.length) {
-    tbody.innerHTML = `<tr><td colspan="12" style="color:var(--text-faint)">Товаров в этой категории нет</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="22" style="color:var(--text-faint)">Товаров в этой категории нет</td></tr>`;
     return;
   }
   tbody.innerHTML = products.map((p) => {
-    const ue = productsEconomicsCache.get(p.sku);
-    // Есть продажи, но не указана категория Kaspi -> комиссия всегда 0,
-    // прибыль в таком случае завышена. Явно предупреждаем, а не молчим.
-    const missingCategory = ue && ue.quantity > 0 && !p.kaspiTopCategory;
-    const categoryCell = p.kaspiTopCategory
-      ? `<br><span style="color:var(--text-faint);font-size:11px">${p.kaspiLeafCategory ?? p.kaspiTopCategory}</span>`
-      : missingCategory
-        ? `<br><span style="color:var(--warn);font-size:11px" title="Без категории комиссия считается как 0 — прибыль по этому товару завышена">⚠ нет категории</span>`
-        : '';
+    // Есть категория Kaspi — показываем её; нет, но товар привязан к
+    // Kaspi — предупреждаем, что оценка там будет по истории, а не по тарифу.
+    const kaspiHint = p.kaspiSku
+      ? (p.kaspiTopCategory
+          ? `<br><span style="color:var(--text-faint);font-size:11px">${p.kaspiLeafCategory ?? p.kaspiTopCategory}</span>`
+          : `<br><span style="color:var(--warn);font-size:11px" title="Без категории точный тариф Kaspi не посчитать — прогноз (если есть) будет по истории продаж">⚠ нет категории</span>`)
+      : '';
+    const articles = [
+      p.kaspiSku ? `<span title="Kaspi"><i class="dot dot--kaspi"></i> ${p.kaspiSku}</span>` : '',
+      p.ozonOfferId ? `<span title="Ozon"><i class="dot dot--ozon"></i> ${p.ozonOfferId}</span>` : '',
+      p.wbArticle ? `<span title="WB"><i class="dot dot--wb"></i> ${p.wbArticle}</span>` : '',
+    ].filter(Boolean).join('<br>');
+
     return `
     <tr data-id="${p.id}">
       <td class="name-cell">${p.sku}</td>
       <td class="name-cell">${p.name}</td>
-      <td class="name-cell">${p.kaspiSku ?? '—'}${categoryCell}</td>
+      <td class="name-cell" style="font-size:11px">${articles || '—'}${kaspiHint}</td>
       <td class="num"><input class="cost-input" type="number" step="0.01" value="${p.costPrice}" data-field="costPrice" /></td>
-      <td class="num">${ue ? fmt.format(ue.quantity) : '—'}</td>
-      <td class="num">${ue ? fmtMoney(ue.revenue) : '—'}</td>
-      <td class="num">${ue ? fmtMoney(ue.commission) : '—'}</td>
-      <td class="num">${ue ? fmtMoney(ue.logistics) : '—'}</td>
-      <td class="num ${ue ? (ue.profit >= 0 ? 'pos' : 'neg') : ''}">${ue ? fmtMoney(ue.profit) : '—'}</td>
-      <td class="num ${ue ? (ue.marginPct >= 0 ? 'pos' : 'neg') : ''}">${ue ? fmtPct(ue.marginPct) : '—'}</td>
+      ${renderForecastCells(p, 'KASPI')}
+      ${renderForecastCells(p, 'OZON')}
+      ${renderForecastCells(p, 'WB')}
       <td><input type="checkbox" data-field="active" ${p.active !== false ? 'checked' : ''} /></td>
       <td><button class="link-btn" data-action="delete">✕</button></td>
     </tr>
