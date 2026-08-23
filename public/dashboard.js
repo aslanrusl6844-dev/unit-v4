@@ -1074,6 +1074,19 @@ function renderProductsAdminTable() {
 function updateProductsSelectedCount() {
   const el = document.getElementById('productsSelectedCount');
   if (el) el.textContent = `Выбрано: ${selectedProductIds.size}`;
+
+  // Счётчик "в продаже" — считается по ВСЕМ товарам Kaspi (не только по
+  // текущей странице пагинации), из нашего внутреннего статуса "Активен".
+  // Это НЕ живой статус с Kaspi (у их API просто нет такого метода) — при
+  // изменении переключателя "Активен" число сразу обновится, при новой
+  // синхронизации — тоже, но реальную рассинхронизацию с кабинетом Kaspi
+  // может показать только сам продавец, переключив статус вручную.
+  const countEl = document.getElementById('productsInSaleCount');
+  if (countEl) {
+    const kaspiProducts = allProductsCache.filter((p) => p.kaspiSku);
+    const inSale = kaspiProducts.filter((p) => p.active !== false).length;
+    countEl.textContent = `${inSale} / ${kaspiProducts.length} в продаже (Kaspi)`;
+  }
 }
 
 function renderProductsPagination(totalPages, totalCount) {
