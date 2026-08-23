@@ -61,6 +61,15 @@ model WbStore {
   updatedAt   DateTime @updatedAt
 }
 
+// Ставка налога ИП — настраивается в разделе «Настройки», по умолчанию 4%
+// (упрощённый режим: налог считается от ВЫРУЧКИ, а не от прибыли). Одна
+// запись на сервер.
+model TaxSettings {
+  id        String   @id @default(cuid())
+  ratePct   Float    @default(4)
+  updatedAt DateTime @updatedAt
+}
+
 // Карточка товара с себестоимостью — основа для расчёта юнит-экономики.
 // Один товар может продаваться на обеих площадках, поэтому храним оба SKU.
 model Product {

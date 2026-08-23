@@ -103,26 +103,39 @@ function renderWaterfall(summary) {
   const el = document.getElementById('waterfall');
   if (!el) return;
 
-  // Крупная карточка чистой прибыли — обновляется вместе с воронкой,
-  // из тех же данных сводки (summary.netProfit), так что расхождений
-  // между ними быть не может.
+  // Три карточки — "Прибыль до налога" / "Налог" / "К выводу" — из тех же
+  // данных сводки, что и воронка, так что расхождений между ними быть не может.
+  const payout = summary.payout ?? summary.netProfit ?? 0;
+  const profitBeforeTax = summary.netProfit || 0;
+  const taxAmount = summary.taxAmount || 0;
+
+  const profitBeforeTaxEl = document.getElementById('profitBeforeTaxValue');
+  if (profitBeforeTaxEl) {
+    profitBeforeTaxEl.textContent = fmtMoney(profitBeforeTax);
+    profitBeforeTaxEl.style.color = profitBeforeTax >= 0 ? 'var(--text)' : 'var(--loss)';
+  }
+  const taxLabelEl = document.getElementById('taxCardLabel');
+  if (taxLabelEl) taxLabelEl.textContent = `Налог ИП ${summary.taxRatePct ?? 4}%`;
+  const taxValueEl = document.getElementById('taxAmountValue');
+  if (taxValueEl) taxValueEl.textContent = fmtMoney(taxAmount);
+
   const cardValueEl = document.getElementById('netProfitCardValue');
   if (cardValueEl) {
-    const netProfit = summary.netProfit || 0;
-    cardValueEl.textContent = fmtMoney(netProfit);
-    cardValueEl.style.color = netProfit >= 0 ? 'var(--accent)' : 'var(--loss)';
+    cardValueEl.textContent = fmtMoney(payout);
+    cardValueEl.style.color = payout >= 0 ? 'var(--accent)' : 'var(--loss)';
     const card = document.getElementById('netProfitCard');
-    card.style.background = netProfit >= 0
+    card.style.background = payout >= 0
       ? 'linear-gradient(160deg, var(--accent-soft), var(--surface))'
       : 'linear-gradient(160deg, var(--loss-soft), var(--surface))';
-    card.style.borderColor = netProfit >= 0 ? 'rgba(22,163,74,0.35)' : 'rgba(220,38,38,0.35)';
+    card.style.borderColor = payout >= 0 ? 'rgba(22,163,74,0.35)' : 'rgba(220,38,38,0.35)';
   }
 
   const revenue = summary.revenue || 0;
   const cogs = summary.cogs || 0;
   const fees = (summary.marketplaceCommission || 0) + (summary.logisticsCost || 0) + (summary.acquiringCost || 0) + (summary.otherFees || 0);
   const ads = (summary.adSpend || 0) + (summary.manualExpenses || 0);
-  const net = summary.netProfit || 0;
+  const tax = summary.taxAmount || 0;
+  const finalPayout = summary.payout ?? (summary.netProfit || 0);
 
   const total = Math.max(revenue, 1);
   const seg = (val) => Math.max((Math.abs(val) / total) * 100, val === 0 ? 0 : 1.2);
@@ -133,18 +146,20 @@ function renderWaterfall(summary) {
       <div class="wf-seg wf-seg--cost" style="flex: ${seg(cogs)}"></div>
       <div class="wf-seg wf-seg--cost" style="flex: ${seg(fees)}"></div>
       <div class="wf-seg wf-seg--cost" style="flex: ${seg(ads)}"></div>
-      <div class="wf-seg wf-seg--profit" style="flex: ${seg(Math.max(net,0))}"></div>
+      <div class="wf-seg wf-seg--cost" style="flex: ${seg(tax)}"></div>
+      <div class="wf-seg wf-seg--profit" style="flex: ${seg(Math.max(finalPayout,0))}"></div>
     </div>
     <div class="wf-labels">
       <span>Выручка ${fmtMoney(revenue)}</span>
-      <span>Чистая прибыль ${fmtMoney(net)}</span>
+      <span>К выводу ${fmtMoney(finalPayout)}</span>
     </div>
     <div class="wf-legend">
       <div class="wf-legend__item"><span class="wf-legend__swatch" style="background:var(--bg);border:1px solid var(--border)"></span>Выручка</div>
       <div class="wf-legend__item"><span class="wf-legend__swatch" style="background:var(--loss)"></span>Себестоимость ${fmtMoney(cogs)}</div>
       <div class="wf-legend__item"><span class="wf-legend__swatch" style="background:var(--loss)"></span>Комиссии/логистика ${fmtMoney(fees)}</div>
       <div class="wf-legend__item"><span class="wf-legend__swatch" style="background:var(--loss)"></span>Реклама и прочее ${fmtMoney(ads)}</div>
-      <div class="wf-legend__item"><span class="wf-legend__swatch" style="background:var(--accent)"></span>Чистая прибыль</div>
+      <div class="wf-legend__item"><span class="wf-legend__swatch" style="background:var(--loss)"></span>Налог ИП ${fmtMoney(tax)}</div>
+      <div class="wf-legend__item"><span class="wf-legend__swatch" style="background:var(--accent)"></span>К выводу</div>
     </div>
   `;
 }
@@ -171,7 +186,9 @@ async function loadOverviewPage() {
 
   document.getElementById('overviewKpis').innerHTML = kpiCardsHtml([
     { label: 'Выручка', value: fmtMoney(summary.revenue) },
-    { label: 'Прибыль', value: fmtMoney(summary.netProfit), cls: summary.netProfit >= 0 ? 'pos' : 'neg', accent: true },
+    { label: 'Прибыль до налога', value: fmtMoney(summary.netProfit), cls: summary.netProfit >= 0 ? 'pos' : 'neg' },
+    { label: `Налог ИП ${summary.taxRatePct ?? 4}%`, value: fmtMoney(summary.taxAmount || 0), cls: 'neg' },
+    { label: 'К выводу', value: fmtMoney(summary.payout ?? summary.netProfit), cls: (summary.payout ?? summary.netProfit) >= 0 ? 'pos' : 'neg', accent: true },
     { label: 'Маржа', value: fmtPct(summary.marginPct), cls: summary.marginPct >= 0 ? 'pos' : 'neg' },
     { label: 'Заказов', value: fmt.format(summary.ordersCount || 0) },
     { label: 'Средний чек', value: fmtMoney(summary.aov) },
@@ -796,7 +813,7 @@ function isLinkedToMarketplace(p, marketplace) {
 function renderForecastCells(p, marketplace) {
   if (!isLinkedToMarketplace(p, marketplace)) {
     // Товар вообще не привязан к этой площадке (нет артикула) — редактировать нечего.
-    return `<td class="num" style="border-left:2px solid var(--border);color:var(--text-faint)">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td>`;
+    return `<td class="num" style="border-left:2px solid var(--border);color:var(--text-faint)">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td>`;
   }
   const fc = productsForecastCache.get(`${p.id}:${marketplace}`);
   const badge = (fc?.source === 'historical-average' || fc?.source === 'kaspi-tariff-default')
@@ -809,8 +826,9 @@ function renderForecastCells(p, marketplace) {
     </td>
     <td class="num">${fc?.estCommission != null ? `${fmtMoney(fc.estCommission)}${fc.estCommissionRate != null ? ` <span style="color:var(--text-faint);font-size:10px">(${fc.estCommissionRate}%)</span>` : ''}` + badge : '—'}</td>
     <td class="num">${fc?.estLogistics != null ? fmtMoney(fc.estLogistics) + badge : '—'}</td>
-    <td class="num ${fc?.estProfit != null ? (fc.estProfit >= 0 ? 'pos' : 'neg') : ''}">${fc?.estProfit != null ? fmtMoney(fc.estProfit) : '—'}</td>
-    <td class="num ${fc?.estMarginPct != null ? (fc.estMarginPct >= 0 ? 'pos' : 'neg') : ''}">${fc?.estMarginPct != null ? fmtPct(fc.estMarginPct) : '—'}</td>
+    <td class="num">${fc?.estTax != null ? fmtMoney(fc.estTax) : '—'}</td>
+    <td class="num ${fc?.estPayout != null ? (fc.estPayout >= 0 ? 'pos' : 'neg') : ''}" title="С учётом налога ИП">${fc?.estPayout != null ? fmtMoney(fc.estPayout) : '—'}</td>
+    <td class="num ${fc?.estMarginAfterTaxPct != null ? (fc.estMarginAfterTaxPct >= 0 ? 'pos' : 'neg') : ''}" title="С учётом налога ИП">${fc?.estMarginAfterTaxPct != null ? fmtPct(fc.estMarginAfterTaxPct) : '—'}</td>
   `;
 }
 
@@ -864,19 +882,20 @@ function renderProductsTableHead(marketplaces) {
         <th class="num">Цена</th>
         <th class="num">Комиссия</th>
         <th class="num">Логистика</th>
-        <th class="num">Прибыль/шт</th>
-        <th class="num">Маржа</th>
+        <th class="num">Налог</th>
+        <th class="num" title="С учётом налога ИП">Прибыль/шт</th>
+        <th class="num" title="С учётом налога ИП">Маржа</th>
         <th>Активен</th><th></th>
       </tr>
     `;
   } else {
     // "Всё вместе" — три компактных блока, как раньше (без единственно
     // очевидного выбора площадки это разумный компромисс).
-    const groupHeaders = marketplaces.map((mp) => `<th colspan="5" style="text-align:center;border-left:2px solid var(--border)"><span class="dot dot--${mp.toLowerCase()}"></span> ${mpLabel(mp)}</th>`).join('');
+    const groupHeaders = marketplaces.map((mp) => `<th colspan="6" style="text-align:center;border-left:2px solid var(--border)"><span class="dot dot--${mp.toLowerCase()}"></span> ${mpLabel(mp)}</th>`).join('');
     const subHeaders = marketplaces.map(() => `
       <th class="num" style="border-left:2px solid var(--border)">Цена</th>
-      <th class="num">Комиссия</th><th class="num">Логистика</th>
-      <th class="num">Прибыль/шт</th><th class="num">Маржа</th>
+      <th class="num">Комиссия</th><th class="num">Логистика</th><th class="num">Налог</th>
+      <th class="num" title="С учётом налога ИП">Прибыль/шт</th><th class="num" title="С учётом налога ИП">Маржа</th>
     `).join('');
     thead.innerHTML = `
       <tr>
@@ -910,14 +929,15 @@ function renderProductsAdminTable() {
   renderProductsTableHead(marketplaces);
 
   // Сортировка "убыточные — наверх": при одной выбранной площадке сортируем
-  // по прогнозной прибыли по возрастанию — самые большие убытки видны сразу,
-  // без прокрутки вниз. Товары без прогноза (нет данных) — в самый конец,
-  // они не "плохие", просто про них пока нечего сказать.
+  // по прогнозной прибыли ПОСЛЕ НАЛОГА (estPayout) по возрастанию — именно
+  // это теперь основная колонка "Прибыль/шт" в таблице, самые большие
+  // убытки видны сразу, без прокрутки вниз. Товары без прогноза (нет
+  // данных) — в самый конец, они не "плохие", просто про них пока нечего сказать.
   if (marketplaces.length === 1) {
     const mp = marketplaces[0];
     products = [...products].sort((a, b) => {
-      const pa = productsForecastCache.get(`${a.id}:${mp}`)?.estProfit;
-      const pb = productsForecastCache.get(`${b.id}:${mp}`)?.estProfit;
+      const pa = productsForecastCache.get(`${a.id}:${mp}`)?.estPayout;
+      const pb = productsForecastCache.get(`${b.id}:${mp}`)?.estPayout;
       if (pa == null && pb == null) return 0;
       if (pa == null) return 1;
       if (pb == null) return -1;
@@ -926,7 +946,7 @@ function renderProductsAdminTable() {
   }
 
   const tbody = document.querySelector('#productsAdminTable tbody');
-  const totalCols = 5 + marketplaces.length * 5 + 2; // +1 за колонку чекбокса
+  const totalCols = 5 + marketplaces.length * 6 + 2; // +1 за колонку чекбокса, 6 колонок на площадку (цена/комиссия/логистика/налог/прибыль/маржа)
 
   // Пагинация — по PRODUCTS_PAGE_SIZE карточек на страницу, чтобы даже при
   // тысяче с лишним товаров список оставался удобным.
@@ -1168,7 +1188,7 @@ async function loadByProductFinance() {
   const tbody = document.querySelector('#productsTable tbody');
   const tfoot = document.querySelector('#productsTable tfoot');
   if (!data.length) {
-    tbody.innerHTML = `<tr><td colspan="10" style="color:var(--text-faint)">Нет данных за период</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="13" style="color:var(--text-faint)">Нет данных за период</td></tr>`;
     tfoot.innerHTML = '';
     return;
   }
@@ -1184,11 +1204,16 @@ async function loadByProductFinance() {
       <td class="num">${fmtMoney(p.adSpend)}</td>
       <td class="num ${p.netProfit >= 0 ? 'pos' : 'neg'}">${fmtMoney(p.netProfit)}</td>
       <td class="num ${p.marginPct >= 0 ? 'pos' : 'neg'}">${fmtPct(p.marginPct)}</td>
+      <td class="num">${fmtMoney(p.tax)}${p.taxRatePct ? ` <span style="color:var(--text-faint);font-size:10px">(${p.taxRatePct}%)</span>` : ''}</td>
+      <td class="num ${p.payout >= 0 ? 'pos' : 'neg'}">${fmtMoney(p.payout)}</td>
+      <td class="num ${p.marginAfterTaxPct >= 0 ? 'pos' : 'neg'}">${fmtPct(p.marginAfterTaxPct)}</td>
     </tr>
   `).join('');
 
   // Строка "Итого" — суммы по всем денежным колонкам. Средняя цена и маржа
   // считаются заново от суммарных чисел (не среднее из строк — так корректнее).
+  // Сумма "tax" по всем товарам здесь СХОДИТСЯ с summary.taxAmount на карточках
+  // выше — обе считаются от одной и той же выручки с одной и той же ставкой.
   const totals = data.reduce((acc, p) => ({
     quantity: acc.quantity + p.quantity,
     revenue: acc.revenue + p.revenue,
@@ -1197,8 +1222,11 @@ async function loadByProductFinance() {
     logistics: acc.logistics + p.logistics,
     adSpend: acc.adSpend + p.adSpend,
     netProfit: acc.netProfit + p.netProfit,
-  }), { quantity: 0, revenue: 0, cogs: 0, commission: 0, logistics: 0, adSpend: 0, netProfit: 0 });
+    tax: acc.tax + p.tax,
+    payout: acc.payout + p.payout,
+  }), { quantity: 0, revenue: 0, cogs: 0, commission: 0, logistics: 0, adSpend: 0, netProfit: 0, tax: 0, payout: 0 });
   const totalMarginPct = totals.revenue > 0 ? (totals.netProfit / totals.revenue) * 100 : 0;
+  const totalMarginAfterTaxPct = totals.revenue > 0 ? (totals.payout / totals.revenue) * 100 : 0;
   const totalAvgPrice = totals.quantity > 0 ? totals.revenue / totals.quantity : 0;
 
   tfoot.innerHTML = `
@@ -1213,6 +1241,9 @@ async function loadByProductFinance() {
       <td class="num">${fmtMoney(totals.adSpend)}</td>
       <td class="num ${totals.netProfit >= 0 ? 'pos' : 'neg'}">${fmtMoney(totals.netProfit)}</td>
       <td class="num ${totalMarginPct >= 0 ? 'pos' : 'neg'}">${fmtPct(totalMarginPct)}</td>
+      <td class="num">${fmtMoney(totals.tax)}</td>
+      <td class="num ${totals.payout >= 0 ? 'pos' : 'neg'}">${fmtMoney(totals.payout)}</td>
+      <td class="num ${totalMarginAfterTaxPct >= 0 ? 'pos' : 'neg'}">${fmtPct(totalMarginAfterTaxPct)}</td>
     </tr>
   `;
 }
@@ -1707,13 +1738,43 @@ async function loadWbStoreCurrent() {
   el.innerHTML = `Токен: <code>${store.apiTokenMasked}</code>`;
 }
 
+let taxSettingsFormWired = false;
+
+function wireTaxSettingsFormOnce() {
+  if (taxSettingsFormWired) return;
+  taxSettingsFormWired = true;
+
+  document.getElementById('taxSettingsForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const btn = e.target.querySelector('button[type="submit"]');
+    const originalText = btn.textContent;
+    btn.textContent = '…'; btn.disabled = true;
+    try {
+      await api('/settings/tax', { method: 'POST', body: JSON.stringify({ ratePct: Number(fd.get('ratePct')) }) });
+      alert('Ставка налога сохранена. Применится сразу на «Финансы», «Обзоре» и в таблице «Товары».');
+    } catch (err) {
+      alert('Не удалось сохранить ставку налога: ' + err.message);
+    } finally {
+      btn.textContent = originalText; btn.disabled = false;
+    }
+  });
+}
+
+async function loadTaxSettings() {
+  const settings = await api('/settings/tax');
+  document.querySelector('#taxSettingsForm input[name="ratePct"]').value = settings.ratePct;
+}
+
 async function loadSettingsPage() {
   wireKaspiStoreFormOnce();
   wireOzonStoreFormOnce();
   wireWbStoreFormOnce();
+  wireTaxSettingsFormOnce();
   await loadKaspiStoreCurrent();
   await loadOzonStoreCurrent();
   await loadWbStoreCurrent();
+  await loadTaxSettings();
 
   const status = await api('/sync/status');
 

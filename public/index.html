@@ -273,15 +273,25 @@
         <div class="page__head"><h1>Финансы</h1><p>Настоящая прибыль: от выручки до чистого остатка, по товарам и площадкам.</p></div>
 
         <div style="display:flex;gap:20px;align-items:stretch;flex-wrap:wrap;margin-bottom:20px">
-          <div class="panel" style="flex:2 1 480px;margin-bottom:0">
+          <div class="panel" style="flex:2 1 400px;margin-bottom:0">
             <div class="panel__head"><h2>От выручки к чистой прибыли</h2></div>
             <div id="waterfall"><div class="waterfall__loading">Загрузка данных…</div></div>
           </div>
 
+          <div class="panel" style="flex:1 1 170px;margin-bottom:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:6px;padding:20px 14px">
+            <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em;font-weight:600">Прибыль до налога</div>
+            <div id="profitBeforeTaxValue" style="font-family:var(--font-mono);font-size:22px;font-weight:700;letter-spacing:-0.02em">—</div>
+          </div>
+
+          <div class="panel" style="flex:1 1 170px;margin-bottom:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:6px;padding:20px 14px">
+            <div id="taxCardLabel" style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em;font-weight:600">Налог ИП</div>
+            <div id="taxAmountValue" style="font-family:var(--font-mono);font-size:22px;font-weight:700;color:var(--loss);letter-spacing:-0.02em">—</div>
+          </div>
+
           <div class="panel" id="netProfitCard" style="flex:1 1 220px;margin-bottom:0;background:linear-gradient(160deg, var(--accent-soft), var(--surface));border-color:rgba(22,163,74,0.35);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:8px;padding:28px 20px">
-            <div style="font-size:12.5px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em;font-weight:600">Чистая прибыль</div>
+            <div style="font-size:12.5px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em;font-weight:600">К выводу</div>
             <div id="netProfitCardValue" style="font-family:var(--font-mono);font-size:34px;font-weight:700;color:var(--accent);letter-spacing:-0.02em">—</div>
-            <div style="font-size:11.5px;color:var(--text-faint)">за выбранный период</div>
+            <div style="font-size:11.5px;color:var(--text-faint)">прибыль до налога минус налог, за выбранный период</div>
           </div>
         </div>
 
@@ -308,6 +318,9 @@
                   <th class="num">Реклама (доля)</th>
                   <th class="num">Чистая прибыль</th>
                   <th class="num">Маржа</th>
+                  <th class="num">Налог ИП</th>
+                  <th class="num">К выводу</th>
+                  <th class="num">Маржа после налога</th>
                 </tr>
               </thead>
               <tbody></tbody>
@@ -533,6 +546,19 @@
             товаров (категория «Контент») — при создании токена отметь обе категории, иначе часть функций
             (например, «Каталог WB» на странице «Товары») будет недоступна. После сохранения токен
             используется для всех запросов к Wildberries API вместо переменной окружения.
+          </p>
+        </div>
+
+        <div class="panel">
+          <div class="panel__head"><h2>Налог ИП</h2></div>
+          <form class="inline-form" id="taxSettingsForm">
+            <input name="ratePct" type="number" step="0.1" min="0" max="100" placeholder="Ставка, %" style="max-width:140px" required />
+            <button class="btn btn--accent" type="submit">Сохранить ставку</button>
+          </form>
+          <p class="panel__hint">
+            Налог считается от <strong>выручки</strong> (не от прибыли и не от суммы после комиссии) — так,
+            как устроен упрощённый режим для ИП. По умолчанию 4%. Применяется сразу везде: «Финансы»,
+            «Обзор» и таблица «Товары».
           </p>
         </div>
 

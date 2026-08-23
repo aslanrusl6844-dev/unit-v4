@@ -48,8 +48,11 @@ export interface UnitEconomicsSummary {
   adSpend: number;
   manualExpenses: number;
   grossProfit: number; // revenue - cogs
-  netProfit: number; // revenue - cogs - все удержания и расходы
+  netProfit: number; // revenue - cogs - все удержания и расходы = "прибыль ДО налога"
   marginPct: number; // netProfit / revenue * 100
   roiPct: number; // netProfit / (cogs + все расходы) * 100
   aov: number; // средний чек = revenue / ordersCount
+  taxRatePct: number; // ставка налога ИП, %
+  taxAmount: number; // налог = revenue * taxRatePct / 100 (НЕ от прибыли)
+  payout: number; // "к выводу" = netProfit - taxAmount
 }
