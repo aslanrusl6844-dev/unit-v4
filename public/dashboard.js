@@ -495,6 +495,7 @@ function wireProductsFormOnce() {
     document.querySelectorAll('#productStatusTabs button').forEach((b) => b.classList.remove('is-active'));
     btn.classList.add('is-active');
     productsCurrentPage = 1;
+    selectedProductIds.clear();
     renderProductsAdminTable();
   });
 
@@ -1075,17 +1076,20 @@ function updateProductsSelectedCount() {
   const el = document.getElementById('productsSelectedCount');
   if (el) el.textContent = `Выбрано: ${selectedProductIds.size}`;
 
-  // Счётчик "в продаже" — считается по ВСЕМ товарам Kaspi (не только по
-  // текущей странице пагинации), из нашего внутреннего статуса "Активен".
-  // Это НЕ живой статус с Kaspi (у их API просто нет такого метода) — при
-  // изменении переключателя "Активен" число сразу обновится, при новой
-  // синхронизации — тоже, но реальную рассинхронизацию с кабинетом Kaspi
-  // может показать только сам продавец, переключив статус вручную.
+  // Счётчик "в продаже" — считается ПО ТЕКУЩЕЙ выбранной площадке (кнопки
+  // Kaspi/Ozon/WB вверху), не всегда по Kaspi. При "Всё вместе" показываем
+  // по Kaspi как наиболее часто интересующей площадке (там же и главные
+  // проблемы с ручным статусом). Это НЕ живой статус с самой площадки (у
+  // Kaspi/WB нет такого API-метода) — при изменении переключателя
+  // "Активен" число сразу обновится, но реальную рассинхронизацию с
+  // кабинетом может показать только сам продавец, переключив статус вручную.
   const countEl = document.getElementById('productsInSaleCount');
   if (countEl) {
-    const kaspiProducts = allProductsCache.filter((p) => p.kaspiSku);
-    const inSale = kaspiProducts.filter((p) => p.active !== false).length;
-    countEl.textContent = `${inSale} / ${kaspiProducts.length} в продаже (Kaspi)`;
+    const mp = state.marketplace || 'KASPI';
+    const articleField = mp === 'KASPI' ? 'kaspiSku' : mp === 'OZON' ? 'ozonOfferId' : 'wbArticle';
+    const mpProducts = allProductsCache.filter((p) => p[articleField]);
+    const inSale = mpProducts.filter((p) => p.active !== false).length;
+    countEl.textContent = `${inSale} в продаже (${mpLabel(mp)})`;
   }
 }
 
@@ -1700,6 +1704,9 @@ document.getElementById('mpFilter').addEventListener('click', (e) => {
   btn.classList.add('is-active');
   state.marketplace = btn.dataset.mp;
   productsCurrentPage = 1;
+  // Выбор товаров чекбоксами — тоже сбрасываем: иначе счётчик "Выбрано"
+  // показывал бы товары с ДРУГОЙ площадки, отмеченные до переключения.
+  selectedProductIds.clear();
   reloadCurrentPage();
 });
 
