@@ -4,6 +4,7 @@ import { prisma } from '../db/prisma';
 import { syncKaspiOrders, syncOzonOrders, syncWbOrders, syncOzonCatalog, syncWbCatalog } from '../services/sync.service';
 import { kaspiClient } from '../integrations/kaspi.client';
 import { ozonClient } from '../integrations/ozon.client';
+import { wbClient } from '../integrations/wb.client';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
 
@@ -92,7 +93,7 @@ syncRouter.get('/status', async (_req, res) => {
   res.json({
     kaspi: { configured: await kaspiClient.isConfigured() },
     ozon: { configured: await ozonClient.isConfigured() },
-    wb: { configured: env.wb.isConfigured },
+    wb: { configured: await wbClient.isConfigured() },
     cron: env.sync.cron,
   });
 });

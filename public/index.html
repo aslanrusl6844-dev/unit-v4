@@ -521,6 +521,22 @@
         </div>
 
         <div class="panel">
+          <div class="panel__head"><h2>Магазин Wildberries</h2></div>
+          <div id="wbStoreCurrent" class="panel__hint" style="margin-bottom:12px">Магазин ещё не добавлен.</div>
+          <form class="inline-form" id="wbStoreForm">
+            <input name="apiToken" type="password" placeholder="API-ключ (токен) — обязательно" required style="flex:2 1 320px" />
+            <button class="btn btn--accent" type="submit">Сохранить / Подключить WB</button>
+          </form>
+          <p class="panel__hint">
+            Токен создаётся в личном кабинете продавца Wildberries: Настройки → Доступ к API → Создать новый токен.
+            Один и тот же токен используется и для заказов (категория доступа «Статистика»), и для каталога
+            товаров (категория «Контент») — при создании токена отметь обе категории, иначе часть функций
+            (например, «Каталог WB» на странице «Товары») будет недоступна. После сохранения токен
+            используется для всех запросов к Wildberries API вместо переменной окружения.
+          </p>
+        </div>
+
+        <div class="panel">
           <div class="panel__head"><h2>Подключение к площадкам</h2></div>
           <div class="table-wrap">
             <table class="table" id="connectionsTable">

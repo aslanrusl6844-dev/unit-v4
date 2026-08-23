@@ -1670,11 +1670,50 @@ async function loadOzonStoreCurrent() {
   el.innerHTML = `Client-Id: <strong style="color:var(--text)">${store.clientId}</strong> · Api-Key: <code>${store.apiKeyMasked}</code>`;
 }
 
+let wbStoreFormWired = false;
+
+function wireWbStoreFormOnce() {
+  if (wbStoreFormWired) return;
+  wbStoreFormWired = true;
+
+  document.getElementById('wbStoreForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const payload = { apiToken: fd.get('apiToken') };
+    const btn = e.target.querySelector('button[type="submit"]');
+    const originalText = btn.textContent;
+    btn.textContent = '…'; btn.disabled = true;
+    try {
+      await api('/settings/wb-store', { method: 'POST', body: JSON.stringify(payload) });
+      alert('Магазин Wildberries сохранён. Все запросы к WB теперь используют этот токен.');
+      e.target.reset();
+      await loadWbStoreCurrent();
+      await refreshSyncStatusMini();
+    } catch (err) {
+      alert('Не удалось сохранить магазин WB: ' + err.message);
+    } finally {
+      btn.textContent = originalText; btn.disabled = false;
+    }
+  });
+}
+
+async function loadWbStoreCurrent() {
+  const store = await api('/settings/wb-store');
+  const el = document.getElementById('wbStoreCurrent');
+  if (!store) {
+    el.textContent = 'Магазин ещё не добавлен — заполни форму ниже.';
+    return;
+  }
+  el.innerHTML = `Токен: <code>${store.apiTokenMasked}</code>`;
+}
+
 async function loadSettingsPage() {
   wireKaspiStoreFormOnce();
   wireOzonStoreFormOnce();
+  wireWbStoreFormOnce();
   await loadKaspiStoreCurrent();
   await loadOzonStoreCurrent();
+  await loadWbStoreCurrent();
 
   const status = await api('/sync/status');
 

@@ -335,7 +335,7 @@ export async function syncOzonOrders(dateFrom: Date, dateTo: Date) {
 }
 
 export async function syncWbOrders(dateFrom: Date, dateTo: Date) {
-  if (!wbClient.isConfigured) {
+  if (!(await wbClient.isConfigured())) {
     logger.warn('[Wildberries] Токен не задан в .env — синхронизация пропущена');
     return { ordersProcessed: 0, productsCreated: 0 };
   }
@@ -420,7 +420,7 @@ export async function syncOzonCatalog() {
 }
 
 export async function syncWbCatalog() {
-  if (!wbClient.isConfigured) {
+  if (!(await wbClient.isConfigured())) {
     logger.warn('[Wildberries] Токен не задан — синхронизация каталога пропущена');
     return { created: 0, updated: 0 };
   }

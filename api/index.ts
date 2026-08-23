@@ -9,6 +9,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import app from '../dist/expressApp';
 import { getKaspiStore, saveKaspiStore } from '../dist/handlers/kaspiStore';
 import { getOzonStore, saveOzonStore } from '../dist/handlers/ozonStore';
+import { getWbStore, saveWbStore } from '../dist/handlers/wbStore';
 
 /**
  * ГЛАВНАЯ serverless-функция для всех запросов на /api/*, КРОМЕ тех, что
@@ -45,6 +46,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (req.method === 'GET') return res.status(200).json(await getOzonStore());
       if (req.method === 'POST') {
         const result = await saveOzonStore(req.body);
+        return res.status(result.status).json(result.body);
+      }
+    }
+
+    if (url.startsWith('/api/settings/wb-store')) {
+      if (req.method === 'GET') return res.status(200).json(await getWbStore());
+      if (req.method === 'POST') {
+        const result = await saveWbStore(req.body);
         return res.status(result.status).json(result.body);
       }
     }

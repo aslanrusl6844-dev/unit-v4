@@ -49,6 +49,18 @@ model OzonStore {
   updatedAt   DateTime @updatedAt
 }
 
+// Подключение к Wildberries — через форму в разделе «Настройки», по
+// аналогии с KaspiStore/OzonStore. Один и тот же токен используется и для
+// Statistics API (заказы/отчёт о реализации), и для Content API (карточки
+// товаров) — если у токена нет нужной категории доступа, конкретный метод
+// вернёт ошибку авторизации, но остальные продолжат работать.
+model WbStore {
+  id          String   @id @default(cuid())
+  apiToken    String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
 // Карточка товара с себестоимостью — основа для расчёта юнит-экономики.
 // Один товар может продаваться на обеих площадках, поэтому храним оба SKU.
 model Product {
