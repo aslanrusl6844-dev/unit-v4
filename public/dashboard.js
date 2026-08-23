@@ -761,14 +761,14 @@ function renderForecastCells(p, marketplace) {
   }
   const fc = productsForecastCache.get(`${p.id}:${marketplace}`);
   const badge = (fc?.source === 'historical-average' || fc?.source === 'kaspi-tariff-default')
-    ? ` <span style="color:var(--text-faint);font-size:10px" title="${fc.source === 'kaspi-tariff-default' ? 'Категория неизвестна — применена усреднённая ставка комиссии Kaspi (10,9%), укажи категорию для точного расчёта' : `Оценка по средней ставке из прошлых продаж этого товара на ${mpLabel(marketplace)}`}">≈</span>`
+    ? ` <span style="color:var(--text-faint);font-size:10px" title="${fc.source === 'kaspi-tariff-default' ? 'Категория неизвестна — применена усреднённая ставка комиссии Kaspi (12.5%), укажи категорию для точного расчёта' : `Оценка по средней ставке из прошлых продаж этого товара на ${mpLabel(marketplace)}`}">≈</span>`
     : '';
   const priceValue = fc?.referencePrice != null ? fc.referencePrice : '';
   return `
     <td class="num" style="border-left:2px solid var(--border)">
       <input class="cost-input" type="number" step="1" placeholder="Цена" value="${priceValue}" data-price-field="${priceFieldName(marketplace)}" style="width:85px" />
     </td>
-    <td class="num">${fc?.estCommission != null ? fmtMoney(fc.estCommission) + badge : '—'}</td>
+    <td class="num">${fc?.estCommission != null ? `${fmtMoney(fc.estCommission)}${fc.estCommissionRate != null ? ` <span style="color:var(--text-faint);font-size:10px">(${fc.estCommissionRate}%)</span>` : ''}` + badge : '—'}</td>
     <td class="num">${fc?.estLogistics != null ? fmtMoney(fc.estLogistics) + badge : '—'}</td>
     <td class="num ${fc?.estProfit != null ? (fc.estProfit >= 0 ? 'pos' : 'neg') : ''}">${fc?.estProfit != null ? fmtMoney(fc.estProfit) : '—'}</td>
     <td class="num ${fc?.estMarginPct != null ? (fc.estMarginPct >= 0 ? 'pos' : 'neg') : ''}">${fc?.estMarginPct != null ? fmtPct(fc.estMarginPct) : '—'}</td>
@@ -904,7 +904,7 @@ function renderProductsAdminTable() {
       const kaspiHint = p.kaspiSku
         ? (p.kaspiTopCategory || p.kaspiLeafCategory
             ? `<br><span style="color:var(--text-faint);font-size:11px">${p.kaspiLeafCategory ?? p.kaspiTopCategory}</span>`
-            : `<br><span style="color:var(--warn);font-size:11px" title="Категория неизвестна — комиссия считается по усреднённой ставке 10,9%">⚠ нет категории</span>`)
+            : `<br><span style="color:var(--warn);font-size:11px" title="Категория неизвестна — комиссия считается по усреднённой ставке 12.5%">⚠ нет категории</span>`)
         : '';
       articlesCell = [
         p.kaspiSku ? `<span title="Kaspi"><i class="dot dot--kaspi"></i> ${p.kaspiSku}</span>` : '',
@@ -1042,7 +1042,7 @@ async function loadByProductFinance() {
       <td class="num">${fmtMoney(p.avgPrice)}</td>
       <td class="num">${fmtMoney(p.revenue)}</td>
       <td class="num">${fmtMoney(p.cogs)}</td>
-      <td class="num">${fmtMoney(p.commission)}</td>
+      <td class="num">${fmtMoney(p.commission)}${p.commissionRate ? ` <span style="color:var(--text-faint);font-size:10px">(${p.commissionRate}%)</span>` : ''}</td>
       <td class="num">${fmtMoney(p.logistics)}</td>
       <td class="num">${fmtMoney(p.adSpend)}</td>
       <td class="num ${p.netProfit >= 0 ? 'pos' : 'neg'}">${fmtMoney(p.netProfit)}</td>

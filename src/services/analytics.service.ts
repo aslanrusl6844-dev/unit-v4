@@ -1,6 +1,6 @@
 import { prisma } from '../db/prisma';
 import { MarketplaceName, UnitEconomicsSummary } from '../types';
-import { calcKaspiCommissionAmount } from '../integrations/kaspi.categories';
+import { calcKaspiCommissionAmount, getKaspiCommissionRate } from '../integrations/kaspi.categories';
 import { calculateKaspiDeliveryCost } from '../integrations/kaspi.delivery';
 import { env } from '../config/env';
 
@@ -200,6 +200,11 @@ export async function getByProduct(filter: RangeFilter) {
         revenue: round2(e.revenue),
         cogs: round2(e.cogs),
         commission: round2(e.commission),
+        // Эффективная ставка комиссии за период — % от выручки. Если в
+        // период попали продажи по разным ценам/категориям — это средняя
+        // фактическая ставка, не единая "official rate" (это нормально —
+        // именно так и есть, комиссия реально считается по факту).
+        commissionRate: e.revenue > 0 ? round2((e.commission / e.revenue) * 100) : 0,
         logistics: round2(e.logistics),
         adSpend: round2(adSpendShare),
         netProfit: round2(netProfit),
@@ -284,6 +289,7 @@ export interface ProductForecast {
   marketplace: MarketplaceName;
   referencePrice: number | null;
   estCommission: number | null;
+  estCommissionRate: number | null; // ставка комиссии в %, для отображения "сумма (ставка%)"
   estLogistics: number | null;
   estProfit: number | null;
   estMarginPct: number | null;
@@ -319,7 +325,8 @@ export async function getProductForecasts(): Promise<ProductForecast[]> {
   ): ProductForecast {
     const stats = rateStats.get(`${productId}:${marketplace}`);
     if (stats && stats.count > 0) {
-      const estCommission = referencePrice * (stats.commissionRateSum / stats.count);
+      const avgCommissionRate = stats.commissionRateSum / stats.count;
+      const estCommission = referencePrice * avgCommissionRate;
       const estLogistics = referencePrice * (stats.logisticsRateSum / stats.count);
       const estProfit = referencePrice - totalCost - estCommission - estLogistics;
       return {
@@ -327,6 +334,7 @@ export async function getProductForecasts(): Promise<ProductForecast[]> {
         marketplace,
         referencePrice,
         estCommission: round2(estCommission),
+        estCommissionRate: round2(avgCommissionRate * 100),
         estLogistics: round2(estLogistics),
         estProfit: round2(estProfit),
         estMarginPct: referencePrice > 0 ? round2((estProfit / referencePrice) * 100) : 0,
@@ -341,6 +349,7 @@ export async function getProductForecasts(): Promise<ProductForecast[]> {
       marketplace,
       referencePrice,
       estCommission: null,
+      estCommissionRate: null,
       estLogistics: null,
       estProfit: round2(referencePrice - totalCost),
       estMarginPct: null,
@@ -357,15 +366,19 @@ export async function getProductForecasts(): Promise<ProductForecast[]> {
     if (p.kaspiSku) {
       const referencePrice = p.kaspiReferencePrice ?? null;
       if (referencePrice == null) {
-        forecasts.push({ productId: p.id, marketplace: 'KASPI', referencePrice: null, estCommission: null, estLogistics: null, estProfit: null, estMarginPct: null, source: 'no-data' });
+        forecasts.push({ productId: p.id, marketplace: 'KASPI', referencePrice: null, estCommission: null, estCommissionRate: null, estLogistics: null, estProfit: null, estMarginPct: null, source: 'no-data' });
       } else {
         // Точный тариф Kaspi — не статистика, работает даже с нуля продаж.
         // Верхняя категория не обязательна: если её нет, но есть leaf
         // (например, автоматически подтянутая из данных заказа Kaspi),
         // getKaspiCommissionRate сама найдёт точную ставку по leaf, а если
-        // вообще ничего не известно — применит безопасный дефолт 10,9%
+        // вообще ничего не известно — применит безопасный дефолт 12.5%
         // (это ставка у большинства категорий Kaspi, так что даже без
         // категории оценка обычно верна, просто помечаем её иначе — ~).
+        const commissionRate = getKaspiCommissionRate({
+          topCategory: p.kaspiTopCategory ?? '',
+          leafCategory: p.kaspiLeafCategory ?? undefined,
+        });
         const estCommission = calcKaspiCommissionAmount(referencePrice, {
           topCategory: p.kaspiTopCategory ?? '',
           leafCategory: p.kaspiLeafCategory ?? undefined,
@@ -379,6 +392,7 @@ export async function getProductForecasts(): Promise<ProductForecast[]> {
           marketplace: 'KASPI',
           referencePrice,
           estCommission: round2(estCommission),
+          estCommissionRate: commissionRate,
           estLogistics: round2(estLogistics),
           estProfit: round2(estProfit),
           estMarginPct: referencePrice > 0 ? round2((estProfit / referencePrice) * 100) : 0,
@@ -391,7 +405,7 @@ export async function getProductForecasts(): Promise<ProductForecast[]> {
     if (p.ozonOfferId) {
       const referencePrice = p.ozonReferencePrice ?? null;
       if (referencePrice == null) {
-        forecasts.push({ productId: p.id, marketplace: 'OZON', referencePrice: null, estCommission: null, estLogistics: null, estProfit: null, estMarginPct: null, source: 'no-data' });
+        forecasts.push({ productId: p.id, marketplace: 'OZON', referencePrice: null, estCommission: null, estCommissionRate: null, estLogistics: null, estProfit: null, estMarginPct: null, source: 'no-data' });
       } else {
         forecasts.push(historicalOrNoData(p.id, 'OZON', referencePrice, totalCost));
       }
@@ -401,7 +415,7 @@ export async function getProductForecasts(): Promise<ProductForecast[]> {
     if (p.wbArticle) {
       const referencePrice = p.wbReferencePrice ?? null;
       if (referencePrice == null) {
-        forecasts.push({ productId: p.id, marketplace: 'WB', referencePrice: null, estCommission: null, estLogistics: null, estProfit: null, estMarginPct: null, source: 'no-data' });
+        forecasts.push({ productId: p.id, marketplace: 'WB', referencePrice: null, estCommission: null, estCommissionRate: null, estLogistics: null, estProfit: null, estMarginPct: null, source: 'no-data' });
       } else {
         forecasts.push(historicalOrNoData(p.id, 'WB', referencePrice, totalCost));
       }

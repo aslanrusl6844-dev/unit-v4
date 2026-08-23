@@ -128,19 +128,18 @@ function enrichKaspiFinancials(
   let marketplaceCommission = 0;
   let totalWeight = 0;
 
-  // Шаг 1: точная комиссия каждой позиции по СВОЕЙ категории.
+  // Шаг 1: точная комиссия каждой позиции по СВОЕЙ категории. Если верхняя
+  // категория не указана — НЕ считаем комиссию нулевой (раньше было так,
+  // это искажало отчёт в лучшую сторону сильнее, чем безопасный дефолт).
+  // calcKaspiCommissionAmount сама подберёт точную ставку по leaf-категории
+  // (если она известна из данных заказа Kaspi) или применит безопасный
+  // дефолт 12.5% — это ставка у подавляющего большинства категорий Kaspi.
   const perItemCommission = itemsWithInfo.map((item) => {
     const itemRevenue = item.price * item.quantity;
     totalWeight += item.weightKg * item.quantity;
 
-    if (!item.kaspiTopCategory) {
-      // Категория не указана в карточке товара — комиссия для этой позиции
-      // не считается (0), чтобы не искажать отчёт неверной ставкой.
-      // Заполните kaspiTopCategory в разделе «Товары».
-      return 0;
-    }
     const commission = calcKaspiCommissionAmount(itemRevenue, {
-      topCategory: item.kaspiTopCategory,
+      topCategory: item.kaspiTopCategory ?? '',
       leafCategory: item.kaspiLeafCategory,
     });
     marketplaceCommission += commission;
