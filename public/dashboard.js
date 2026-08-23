@@ -435,6 +435,9 @@ let productsFormWired = false;
 let allProductsCache = [];
 let kaspiRatesCache = null; // { "Категория": 10.9, ... } — для валидации файла при массовой загрузке
 let productsForecastCache = new Map(); // "productId:MARKETPLACE" -> прогноз "если продать по текущей цене сейчас" (см. getProductForecasts)
+let selectedProductIds = new Set(); // выбранные чекбоксами товары — сохраняется между страницами пагинации, сбрасывается при смене фильтра/площадки
+let productsCurrentPage = 1;
+const PRODUCTS_PAGE_SIZE = 15;
 
 async function loadKaspiCategoriesIntoSelect(selectEl) {
   const categories = await api('/products/kaspi-categories');
@@ -491,7 +494,42 @@ function wireProductsFormOnce() {
     if (!btn) return;
     document.querySelectorAll('#productStatusTabs button').forEach((b) => b.classList.remove('is-active'));
     btn.classList.add('is-active');
+    productsCurrentPage = 1;
     renderProductsAdminTable();
+  });
+
+  document.getElementById('productsArchiveBtn').addEventListener('click', async () => {
+    if (!selectedProductIds.size) { alert('Сначала выбери товары (чекбоксы слева)'); return; }
+    if (!confirm(`Снять с продажи (в архив) ${selectedProductIds.size} товар(ов)?`)) return;
+    const btn = document.getElementById('productsArchiveBtn');
+    btn.disabled = true;
+    try {
+      const res = await api('/products/bulk-archive', { method: 'POST', body: JSON.stringify({ ids: Array.from(selectedProductIds) }) });
+      alert(`Отправлено в архив: ${res.archived}.`);
+      selectedProductIds.clear();
+      await loadProductsAdminTable();
+    } catch (err) {
+      alert('Не удалось архивировать: ' + err.message);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  document.getElementById('productsDeleteBtn').addEventListener('click', async () => {
+    if (!selectedProductIds.size) { alert('Сначала выбери товары (чекбоксы слева)'); return; }
+    if (!confirm(`Удалить безвозвратно ${selectedProductIds.size} товар(ов)? Это действие нельзя отменить.`)) return;
+    const btn = document.getElementById('productsDeleteBtn');
+    btn.disabled = true;
+    try {
+      const res = await api('/products/bulk-delete', { method: 'POST', body: JSON.stringify({ ids: Array.from(selectedProductIds) }) });
+      alert(`Удалено: ${res.deleted}.`);
+      selectedProductIds.clear();
+      await loadProductsAdminTable();
+    } catch (err) {
+      alert('Не удалось удалить: ' + err.message);
+    } finally {
+      btn.disabled = false;
+    }
   });
 
   document.getElementById('bulkCostPriceBtn').addEventListener('click', async () => {
@@ -813,11 +851,13 @@ function getVisibleMarketplaces() {
 
 function renderProductsTableHead(marketplaces) {
   const thead = document.getElementById('productsAdminThead');
+  const selectAllCb = `<th rowspan="${marketplaces.length === 1 ? 1 : 2}"><input type="checkbox" id="productsSelectAllOnPage" title="Выбрать все на этой странице" /></th>`;
   if (marketplaces.length === 1) {
     // Одна площадка — шапка в один ряд, широкие понятные колонки, без group-заголовков.
     const mp = marketplaces[0];
     thead.innerHTML = `
       <tr>
+        ${selectAllCb}
         <th>SKU</th><th>Название</th><th>Артикул ${mpLabel(mp)}</th>
         <th class="num">Себестоимость</th>
         <th class="num">Цена</th>
@@ -839,6 +879,7 @@ function renderProductsTableHead(marketplaces) {
     `).join('');
     thead.innerHTML = `
       <tr>
+        ${selectAllCb}
         <th rowspan="2">SKU</th><th rowspan="2">Название</th><th rowspan="2">Артикулы</th>
         <th rowspan="2" class="num">Себестоимость</th>
         ${groupHeaders}
@@ -884,12 +925,24 @@ function renderProductsAdminTable() {
   }
 
   const tbody = document.querySelector('#productsAdminTable tbody');
-  const totalCols = 4 + marketplaces.length * 5 + 2;
+  const totalCols = 5 + marketplaces.length * 5 + 2; // +1 за колонку чекбокса
+
+  // Пагинация — по PRODUCTS_PAGE_SIZE карточек на страницу, чтобы даже при
+  // тысяче с лишним товаров список оставался удобным.
+  const totalPages = Math.max(1, Math.ceil(products.length / PRODUCTS_PAGE_SIZE));
+  if (productsCurrentPage > totalPages) productsCurrentPage = totalPages;
+  if (productsCurrentPage < 1) productsCurrentPage = 1;
+  const pageStart = (productsCurrentPage - 1) * PRODUCTS_PAGE_SIZE;
+  const pageProducts = products.slice(pageStart, pageStart + PRODUCTS_PAGE_SIZE);
+
+  renderProductsPagination(totalPages, products.length);
+  updateProductsSelectedCount();
+
   if (!products.length) {
     tbody.innerHTML = `<tr><td colspan="${totalCols}" style="color:var(--text-faint)">Товаров в этой категории нет</td></tr>`;
     return;
   }
-  tbody.innerHTML = products.map((p) => {
+  tbody.innerHTML = pageProducts.map((p) => {
     // Одна площадка выбрана — в колонке "Артикул" показываем только его,
     // а для Kaspi ещё и редактируемый выбор категории (без неё точный
     // тариф комиссии не посчитать). "Всё вместе" — показываем все
@@ -918,6 +971,7 @@ function renderProductsAdminTable() {
 
     return `
     <tr data-id="${p.id}">
+      <td><input type="checkbox" class="products-row-select" data-id="${p.id}" ${selectedProductIds.has(p.id) ? 'checked' : ''} /></td>
       <td class="name-cell">${p.sku}</td>
       <td class="name-cell">${p.name}</td>
       <td class="name-cell" style="font-size:11px">${articlesCell}</td>
@@ -928,6 +982,31 @@ function renderProductsAdminTable() {
     </tr>
   `;
   }).join('');
+
+  // Чекбокс "выбрать всё на странице" — отражает состояние ТОЛЬКО видимых
+  // сейчас строк (не всей выборки целиком).
+  const selectAllCb = document.getElementById('productsSelectAllOnPage');
+  if (selectAllCb) {
+    selectAllCb.checked = pageProducts.length > 0 && pageProducts.every((p) => selectedProductIds.has(p.id));
+    selectAllCb.onchange = () => {
+      pageProducts.forEach((p) => {
+        if (selectAllCb.checked) selectedProductIds.add(p.id);
+        else selectedProductIds.delete(p.id);
+      });
+      renderProductsAdminTable();
+    };
+  }
+
+  tbody.querySelectorAll('input.products-row-select').forEach((cb) => {
+    cb.addEventListener('change', (e) => {
+      const id = e.target.dataset.id;
+      if (e.target.checked) selectedProductIds.add(id);
+      else selectedProductIds.delete(id);
+      updateProductsSelectedCount();
+      const selectAll = document.getElementById('productsSelectAllOnPage');
+      if (selectAll) selectAll.checked = pageProducts.every((p) => selectedProductIds.has(p.id));
+    });
+  });
 
   tbody.querySelectorAll('input[data-field="costPrice"]').forEach((input) => {
     input.addEventListener('change', async (e) => {
@@ -988,6 +1067,47 @@ function renderProductsAdminTable() {
       } catch (err) {
         alert('Не удалось удалить товар: ' + err.message);
       }
+    });
+  });
+}
+
+function updateProductsSelectedCount() {
+  const el = document.getElementById('productsSelectedCount');
+  if (el) el.textContent = `Выбрано: ${selectedProductIds.size}`;
+}
+
+function renderProductsPagination(totalPages, totalCount) {
+  const el = document.getElementById('productsPagination');
+  if (!el) return;
+  if (totalPages <= 1) { el.innerHTML = ''; return; }
+
+  const btn = (label, page, disabled, active) =>
+    `<button class="btn btn--ghost" data-page="${page}" ${disabled ? 'disabled' : ''} style="padding:6px 12px;min-width:36px;${active ? 'background:var(--primary);color:#fff' : ''}">${label}</button>`;
+
+  let pages = [];
+  // Не более 7 кнопок с номерами страниц — с многоточиями по краям для очень длинных списков.
+  if (totalPages <= 7) {
+    pages = Array.from({ length: totalPages }, (_, i) => i + 1);
+  } else if (productsCurrentPage <= 4) {
+    pages = [1, 2, 3, 4, 5, '…', totalPages];
+  } else if (productsCurrentPage >= totalPages - 3) {
+    pages = [1, '…', totalPages - 4, totalPages - 3, totalPages - 2, totalPages - 1, totalPages];
+  } else {
+    pages = [1, '…', productsCurrentPage - 1, productsCurrentPage, productsCurrentPage + 1, '…', totalPages];
+  }
+
+  el.innerHTML = `
+    <span style="font-size:12px;color:var(--text-faint);margin-right:8px">Всего: ${fmt.format(totalCount)}</span>
+    ${btn('← Назад', productsCurrentPage - 1, productsCurrentPage === 1, false)}
+    ${pages.map((p) => (p === '…' ? `<span style="padding:0 4px;color:var(--text-faint)">…</span>` : btn(String(p), p, false, p === productsCurrentPage))).join('')}
+    ${btn('Далее →', productsCurrentPage + 1, productsCurrentPage === totalPages, false)}
+  `;
+
+  el.querySelectorAll('button[data-page]').forEach((b) => {
+    b.addEventListener('click', () => {
+      productsCurrentPage = Number(b.dataset.page);
+      renderProductsAdminTable();
+      document.getElementById('productsAdminTable')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
   });
 }
@@ -1566,6 +1686,7 @@ document.getElementById('mpFilter').addEventListener('click', (e) => {
   document.querySelectorAll('.mp-filter__btn').forEach((b) => b.classList.remove('is-active'));
   btn.classList.add('is-active');
   state.marketplace = btn.dataset.mp;
+  productsCurrentPage = 1;
   reloadCurrentPage();
 });
 

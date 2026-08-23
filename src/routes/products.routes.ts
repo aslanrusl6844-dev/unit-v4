@@ -189,6 +189,36 @@ productsRouter.post('/bulk-set-cost-price', async (req, res) => {
   }
 });
 
+/** Массовое удаление — для очистки мусорных карточек (например,
+ *  "Товар без названия", появившихся из-за проблем при синхронизации). */
+productsRouter.post('/bulk-delete', async (req, res) => {
+  const schema = z.object({ ids: z.array(z.string()).min(1).max(2000) });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+
+  try {
+    const result = await prisma.product.deleteMany({ where: { id: { in: parsed.data.ids } } });
+    res.json({ ok: true, deleted: result.count });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Не удалось удалить товары', details: String(err?.message ?? err) });
+  }
+});
+
+/** Массовая архивация (снятие с продажи внутри сервиса — active=false),
+ *  без физического удаления записей и истории заказов по ним. */
+productsRouter.post('/bulk-archive', async (req, res) => {
+  const schema = z.object({ ids: z.array(z.string()).min(1).max(2000) });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+
+  try {
+    const result = await prisma.product.updateMany({ where: { id: { in: parsed.data.ids } }, data: { active: false } });
+    res.json({ ok: true, archived: result.count });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Не удалось архивировать товары', details: String(err?.message ?? err) });
+  }
+});
+
 productsRouter.put('/:id', async (req, res) => {
   const parsed = productSchema.partial().safeParse(req.body);
   if (!parsed.success) {

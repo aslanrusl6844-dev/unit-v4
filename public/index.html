@@ -234,12 +234,20 @@
             <button data-filter="inactive">Сняты с продажи</button>
             <button data-filter="all">Все</button>
           </div>
+          <div class="inline-form" style="justify-content:space-between;align-items:center">
+            <span id="productsSelectedCount" style="font-size:12.5px;color:var(--text-muted)">Выбрано: 0</span>
+            <div style="display:flex;gap:8px">
+              <button class="btn btn--ghost" id="productsArchiveBtn">📥 В архив (снять с продажи)</button>
+              <button class="btn btn--ghost" id="productsDeleteBtn" style="color:var(--loss)">🗑 Удалить выбранные</button>
+            </div>
+          </div>
           <div class="table-wrap">
             <table class="table" id="productsAdminTable">
               <thead id="productsAdminThead"></thead>
               <tbody></tbody>
             </table>
           </div>
+          <div id="productsPagination" style="display:flex;justify-content:center;align-items:center;gap:6px;margin-top:14px;flex-wrap:wrap"></div>
           <p class="panel__hint">
             Прогноз показывается по выбранной наверху площадке (кнопки Kaspi/Ozon/WB) — своя цена, комиссия
             и логистика для каждой, считается по текущей цене прямо сейчас, даже без единой продажи на этой
