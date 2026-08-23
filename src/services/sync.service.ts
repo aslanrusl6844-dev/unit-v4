@@ -21,6 +21,8 @@ async function resolveProductInfo(
   externalSku: string,
   itemName: string,
   stats: { productsCreated: number },
+  kaspiLeafCategoryFromApi?: string,
+  weightGFromApi?: number,
 ): Promise<ResolvedProductInfo> {
   const where =
     marketplace === 'KASPI'
@@ -54,11 +56,23 @@ async function resolveProductInfo(
           ...(marketplace === 'KASPI' ? { kaspiSku: externalSku } : {}),
           ...(marketplace === 'OZON' ? { ozonOfferId: externalSku } : {}),
           ...(marketplace === 'WB' ? { wbArticle: externalSku } : {}),
+          // Категория и вес — если Kaspi прислал их в данных заказа (см.
+          // fetchEntryDetail в kaspi.client.ts), заполняем сразу, чтобы
+          // комиссия считалась правильно с первой же синхронизации, а не
+          // висела "нет категории" до ручного заполнения.
+          ...(kaspiLeafCategoryFromApi ? { kaspiLeafCategory: kaspiLeafCategoryFromApi } : {}),
+          ...(weightGFromApi ? { weightKg: round2(weightGFromApi / 1000) } : {}),
         },
       });
       stats.productsCreated += 1;
       logger.info(`[Каталог] Автоматически создан товар из заказа: ${created.name} (${marketplace} ${externalSku})`);
-      return { productId: created.id, costPrice: 0, weightKg: created.weightKg };
+      return {
+        productId: created.id,
+        costPrice: 0,
+        weightKg: created.weightKg,
+        kaspiTopCategory: created.kaspiTopCategory ?? undefined,
+        kaspiLeafCategory: created.kaspiLeafCategory ?? undefined,
+      };
     } catch (err) {
       // Гонка при параллельной синхронизации (SKU уже создан другим заказом
       // в это же мгновение) — просто ищем ещё раз, не считаем это ошибкой.
@@ -73,20 +87,28 @@ async function resolveProductInfo(
   // (плейсхолдер "Kaspi-товар ..." или старое "Товар без названия"), а
   // сейчас пришло настоящее название — подтягиваем его, чтобы каталог
   // сам собой становился читаемее по мере повторных синхронизаций.
-  if (
-    itemName &&
-    itemName.trim() &&
-    (product.name.startsWith('Kaspi-товар') || product.name === 'Товар без названия')
-  ) {
-    await prisma.product.update({ where: { id: product.id }, data: { name: itemName.trim() } });
+  // То же самое — для категории/веса: заполняем, только если у товара их
+  // ЕЩЁ НЕТ (не перезаписываем то, что пользователь мог указать вручную).
+  const updateData: Record<string, any> = {};
+  if (itemName && itemName.trim() && (product.name.startsWith('Kaspi-товар') || product.name === 'Товар без названия')) {
+    updateData.name = itemName.trim();
+  }
+  if (kaspiLeafCategoryFromApi && !product.kaspiLeafCategory) {
+    updateData.kaspiLeafCategory = kaspiLeafCategoryFromApi;
+  }
+  if (weightGFromApi && (!product.weightKg || product.weightKg === 0.5)) {
+    updateData.weightKg = round2(weightGFromApi / 1000);
+  }
+  if (Object.keys(updateData).length > 0) {
+    await prisma.product.update({ where: { id: product.id }, data: updateData });
   }
 
   return {
     productId: product.id,
     costPrice: product.costPrice + product.packagingCost,
-    weightKg: product.weightKg,
+    weightKg: updateData.weightKg ?? product.weightKg,
     kaspiTopCategory: product.kaspiTopCategory ?? undefined,
-    kaspiLeafCategory: product.kaspiLeafCategory ?? undefined,
+    kaspiLeafCategory: updateData.kaspiLeafCategory ?? product.kaspiLeafCategory ?? undefined,
   };
 }
 
@@ -147,7 +169,7 @@ function enrichKaspiFinancials(
 async function persistOrder(order: NormalizedOrder, stats: { productsCreated: number }): Promise<void> {
   const itemsWithCost = await Promise.all(
     order.items.map(async (item) => {
-      const info = await resolveProductInfo(order.marketplace, item.externalSku, item.name, stats);
+      const info = await resolveProductInfo(order.marketplace, item.externalSku, item.name, stats, item.kaspiLeafCategory, item.weightG);
       return { ...item, ...info };
     }),
   );

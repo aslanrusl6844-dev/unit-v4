@@ -8,6 +8,12 @@ export interface NormalizedOrderItem {
   name: string;
   quantity: number;
   price: number; // цена за единицу
+  // Категория и вес позиции — приходят от Kaspi (не у всех площадок есть).
+  // Категория здесь LEAF-уровня (например, "Зонты"), не совпадает по
+  // формату с верхнеуровневой таблицей ставок — используется как
+  // kaspiLeafCategory, для более точного расчёта комиссии (LEAF_OVERRIDES).
+  kaspiLeafCategory?: string;
+  weightG?: number; // вес в граммах, если известен
 }
 
 export interface NormalizedOrder {

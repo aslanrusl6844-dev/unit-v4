@@ -287,7 +287,7 @@ export interface ProductForecast {
   estLogistics: number | null;
   estProfit: number | null;
   estMarginPct: number | null;
-  source: 'kaspi-tariff' | 'historical-average' | 'no-data';
+  source: 'kaspi-tariff' | 'kaspi-tariff-default' | 'historical-average' | 'no-data';
 }
 
 export async function getProductForecasts(): Promise<ProductForecast[]> {
@@ -358,10 +358,16 @@ export async function getProductForecasts(): Promise<ProductForecast[]> {
       const referencePrice = p.kaspiReferencePrice ?? null;
       if (referencePrice == null) {
         forecasts.push({ productId: p.id, marketplace: 'KASPI', referencePrice: null, estCommission: null, estLogistics: null, estProfit: null, estMarginPct: null, source: 'no-data' });
-      } else if (p.kaspiTopCategory) {
-        // Точный тариф — не статистика, работает даже с нуля продаж.
+      } else {
+        // Точный тариф Kaspi — не статистика, работает даже с нуля продаж.
+        // Верхняя категория не обязательна: если её нет, но есть leaf
+        // (например, автоматически подтянутая из данных заказа Kaspi),
+        // getKaspiCommissionRate сама найдёт точную ставку по leaf, а если
+        // вообще ничего не известно — применит безопасный дефолт 10,9%
+        // (это ставка у большинства категорий Kaspi, так что даже без
+        // категории оценка обычно верна, просто помечаем её иначе — ~).
         const estCommission = calcKaspiCommissionAmount(referencePrice, {
-          topCategory: p.kaspiTopCategory,
+          topCategory: p.kaspiTopCategory ?? '',
           leafCategory: p.kaspiLeafCategory ?? undefined,
         });
         // Для прогноза (ещё нет реального заказа) предполагаем доставку
@@ -376,10 +382,8 @@ export async function getProductForecasts(): Promise<ProductForecast[]> {
           estLogistics: round2(estLogistics),
           estProfit: round2(estProfit),
           estMarginPct: referencePrice > 0 ? round2((estProfit / referencePrice) * 100) : 0,
-          source: 'kaspi-tariff',
+          source: (p.kaspiTopCategory || p.kaspiLeafCategory) ? 'kaspi-tariff' : 'kaspi-tariff-default',
         });
-      } else {
-        forecasts.push(historicalOrNoData(p.id, 'KASPI', referencePrice, totalCost));
       }
     }
 

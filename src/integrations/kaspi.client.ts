@@ -286,18 +286,24 @@ export class KaspiClient {
           const productId: string | undefined = relationships.product?.data?.id;
           const relatedLink: string | undefined = relationships.product?.links?.related;
 
-          let productInfo = productId ? productCache.get(productId) : undefined;
-          if (!productInfo) {
-            productInfo = await this.fetchEntryProduct(http, entry.id, relatedLink);
-            if (productId && productInfo) productCache.set(productId, productInfo);
-          }
+          const [productInfoResolved, entryDetail] = await Promise.all([
+            (async () => {
+              let productInfo = productId ? productCache.get(productId) : undefined;
+              if (!productInfo) {
+                productInfo = await this.fetchEntryProduct(http, entry.id, relatedLink);
+                if (productId && productInfo) productCache.set(productId, productInfo);
+              }
+              return productInfo;
+            })(),
+            this.fetchEntryDetail(http, entry.id),
+          ]);
 
-          const merchantSku = productInfo?.code || entry.id;
+          const merchantSku = productInfoResolved?.code || entry.id;
           // Если название так и не удалось получить — оставляем пустую
           // строку здесь; понятное "запасное" имя (не одинаковое для всех)
           // формируется на уровне src/services/sync.service.ts, где уже
           // известен и SKU/артикул для подстановки в название.
-          const name = productInfo?.name?.trim() || '';
+          const name = productInfoResolved?.name?.trim() || '';
 
           return {
             externalSku: String(merchantSku),
@@ -307,6 +313,14 @@ export class KaspiClient {
               entry.attributes.quantity > 0
                 ? entry.attributes.totalPrice / entry.attributes.quantity
                 : entry.attributes.totalPrice,
+            // Категория и вес — прямо из Kaspi, если API их прислал (см.
+            // fetchEntryDetail). Категория здесь — LEAF-уровень (например,
+            // "Зонты"), не совпадает по формату с нашей таблицей ставок по
+            // ВЕРХНИМ категориям — сохраняем как kaspiLeafCategory, точную
+            // ставку по ней можно посчитать напрямую (см. LEAF_OVERRIDES в
+            // kaspi.categories.ts), либо используется безопасный дефолт.
+            kaspiLeafCategory: entryDetail?.category?.title,
+            weightG: entryDetail?.weight,
           };
         }),
       );
@@ -316,6 +330,30 @@ export class KaspiClient {
         '[Kaspi] Не удалось получить состав заказа',
       );
       return [];
+    }
+  }
+
+  /**
+   * Полная детализация ОДНОЙ позиции заказа — GET /orderentries/{entryId}
+   * (не список, а именно один элемент). Только тут Kaspi отдаёт category
+   * ({code, title}) и вес — списочный метод /orders/{id}/entries их не
+   * содержит. Официально задокументировано в Kaspi Гид (q3204).
+   */
+  private async fetchEntryDetail(
+    http: AxiosInstance,
+    entryId: string,
+  ): Promise<{ category?: { code: string; title: string }; weight?: number } | undefined> {
+    try {
+      const { data } = await http.get(`/orderentries/${entryId}`);
+      const attrs = data?.data?.attributes;
+      if (!attrs) return undefined;
+      return { category: attrs.category, weight: attrs.weight };
+    } catch (err: any) {
+      logger.warn(
+        { status: err?.response?.status, entryId },
+        '[Kaspi] Не удалось получить категорию/вес позиции заказа',
+      );
+      return undefined;
     }
   }
 

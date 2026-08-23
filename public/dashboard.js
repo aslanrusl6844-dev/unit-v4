@@ -760,8 +760,8 @@ function renderForecastCells(p, marketplace) {
     return `<td class="num" style="border-left:2px solid var(--border);color:var(--text-faint)">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td>`;
   }
   const fc = productsForecastCache.get(`${p.id}:${marketplace}`);
-  const badge = fc?.source === 'historical-average'
-    ? ` <span style="color:var(--text-faint);font-size:10px" title="Оценка по средней ставке из прошлых продаж этого товара на ${mpLabel(marketplace)}">≈</span>`
+  const badge = (fc?.source === 'historical-average' || fc?.source === 'kaspi-tariff-default')
+    ? ` <span style="color:var(--text-faint);font-size:10px" title="${fc.source === 'kaspi-tariff-default' ? 'Категория неизвестна — применена усреднённая ставка комиссии Kaspi (10,9%), укажи категорию для точного расчёта' : `Оценка по средней ставке из прошлых продаж этого товара на ${mpLabel(marketplace)}`}">≈</span>`
     : '';
   const priceValue = fc?.referencePrice != null ? fc.referencePrice : '';
   return `
