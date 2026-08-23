@@ -528,7 +528,43 @@ function wireProductsFormOnce() {
     } catch (err) {
       alert('Ошибка синхронизации: ' + err.message);
     } finally {
-      btn.textContent = '↻ Синхронизировать каталог'; btn.disabled = false;
+      btn.textContent = '↻ Каталог Kaspi (из заказов)'; btn.disabled = false;
+    }
+  });
+
+  document.getElementById('syncOzonCatalogBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('syncOzonCatalogBtn');
+    btn.textContent = '…'; btn.disabled = true;
+    try {
+      const res = await api('/sync/ozon-catalog', { method: 'POST' });
+      alert(`Каталог Ozon синхронизирован. Создано товаров: ${res.created}. Обновлено: ${res.updated}.`);
+      try {
+        await loadProductsAdminTable();
+      } catch (renderErr) {
+        console.warn('Синхронизация прошла успешно, но при обновлении таблицы возникла ошибка:', renderErr);
+      }
+    } catch (err) {
+      alert('Ошибка синхронизации каталога Ozon: ' + err.message);
+    } finally {
+      btn.textContent = '↻ Каталог Ozon'; btn.disabled = false;
+    }
+  });
+
+  document.getElementById('syncWbCatalogBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('syncWbCatalogBtn');
+    btn.textContent = '…'; btn.disabled = true;
+    try {
+      const res = await api('/sync/wb-catalog', { method: 'POST' });
+      alert(`Каталог WB синхронизирован. Создано товаров: ${res.created}. Обновлено: ${res.updated}.`);
+      try {
+        await loadProductsAdminTable();
+      } catch (renderErr) {
+        console.warn('Синхронизация прошла успешно, но при обновлении таблицы возникла ошибка:', renderErr);
+      }
+    } catch (err) {
+      alert('Ошибка синхронизации каталога WB: ' + err.message);
+    } finally {
+      btn.textContent = '↻ Каталог WB'; btn.disabled = false;
     }
   });
 

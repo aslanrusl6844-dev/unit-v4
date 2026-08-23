@@ -90,6 +90,73 @@ export class OzonClient {
     });
   }
 
+  /**
+   * Полный каталог товаров, СЕЙЧАС стоящих на продаже (не из заказов, а из
+   * собственного метода Ozon "список товаров"):
+   *   POST /v2/product/list — постранично отдаёт {product_id, offer_id}
+   *   POST /v2/product/info/list — по списку id отдаёт name/archived и т.д.
+   * filter.visibility: "VISIBLE" — именно "сейчас видны покупателям", а не
+   * вообще все когда-либо созданные (включая давно снятые с продажи).
+   */
+  async fetchCatalog(): Promise<Array<{ offerId: string; name: string; active: boolean }>> {
+    const http = await this.getHttp();
+    const idPairs: Array<{ productId: number; offerId: string }> = [];
+    let lastId = '';
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      let data: any;
+      try {
+        const response = await http.post('/v2/product/list', {
+          filter: { visibility: 'VISIBLE' },
+          last_id: lastId,
+          limit: 100,
+        });
+        data = response.data;
+      } catch (err: any) {
+        const ozonErrorBody = err?.response?.data;
+        logger.error({ status: err?.response?.status, body: ozonErrorBody }, '[Ozon] Ошибка запроса списка товаров');
+        throw new Error(`Ozon API вернул ошибку ${err?.response?.status ?? ''} при запросе каталога: ${JSON.stringify(ozonErrorBody) || err?.message}`);
+      }
+
+      const items: Array<{ product_id: number; offer_id: string }> = data.result?.items ?? [];
+      items.forEach((i) => idPairs.push({ productId: i.product_id, offerId: i.offer_id }));
+
+      lastId = data.result?.last_id ?? '';
+      if (!items.length || !lastId) break;
+    }
+
+    logger.info(`[Ozon] В каталоге товаров (visibility=VISIBLE): ${idPairs.length}`);
+
+    // Название и точный статус (archived) добираем пачками по 100 через info/list.
+    const catalog: Array<{ offerId: string; name: string; active: boolean }> = [];
+    for (let i = 0; i < idPairs.length; i += 100) {
+      const chunk = idPairs.slice(i, i + 100);
+      try {
+        const { data } = await http.post('/v2/product/info/list', {
+          offer_id: chunk.map((c) => c.offerId),
+        });
+        const items: Array<{ offer_id: string; name?: string; archived?: boolean }> = data.result?.items ?? [];
+        items.forEach((item) => {
+          catalog.push({
+            offerId: item.offer_id,
+            name: item.name?.trim() || `Ozon-товар ${item.offer_id}`,
+            // Если поле archived не пришло — считаем товар активным (лучше
+            // показать лишний товар, чем незаметно потерять настоящий).
+            active: item.archived !== true,
+          });
+        });
+      } catch (err: any) {
+        const ozonErrorBody = err?.response?.data;
+        logger.error({ status: err?.response?.status, body: ozonErrorBody }, '[Ozon] Ошибка запроса деталей товаров');
+        // Не прерываем всю синхронизацию из-за одной неудачной пачки — просто
+        // пропускаем эти offer_id, остальные всё равно синхронизируются.
+      }
+    }
+
+    return catalog;
+  }
+
   async fetchOrders(params: { dateFrom: Date; dateTo: Date }): Promise<NormalizedOrder[]> {
     const http = await this.getHttp();
     const postings = await this.fetchAllFbsPostings(http, params.dateFrom, params.dateTo);

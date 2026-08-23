@@ -204,12 +204,20 @@
         <div class="panel">
           <div class="panel__head">
             <h2>Каталог товаров</h2>
-            <button class="btn btn--ghost" id="syncCatalogBtn">↻ Синхронизировать каталог</button>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button class="btn btn--ghost" id="syncCatalogBtn">↻ Каталог Kaspi (из заказов)</button>
+              <button class="btn btn--ghost" id="syncOzonCatalogBtn">↻ Каталог Ozon</button>
+              <button class="btn btn--ghost" id="syncWbCatalogBtn">↻ Каталог WB</button>
+            </div>
           </div>
           <p class="panel__hint">
-            У Kaspi нет API-метода «отдай список всех моих товаров» (только методы добавления новых) —
-            поэтому каталог собирается из реальных заказов: при синхронизации товары, которых ещё нет
-            в базе, создаются автоматически (себестоимость 0 — обязательно укажи её вручную).
+            <strong>Kaspi:</strong> у Kaspi нет API-метода «отдай список всех моих товаров» (только методы
+            добавления новых) — поэтому каталог собирается из реальных заказов при синхронизации.<br>
+            <strong>Ozon и WB:</strong> здесь каталог подтягивается напрямую из настоящего "списка товаров"
+            каждой площадки — появятся ВСЕ товары, которые сейчас стоят на продаже, даже если по ним ещё не
+            было ни одной продажи.<br>
+            Во всех случаях: новый товар создаётся с себестоимостью 0 — обязательно укажи её вручную
+            (или воспользуйся массовой загрузкой/проставлением ниже).
           </p>
           <div class="inline-form" style="align-items:center">
             <span style="font-size:12.5px;color:var(--text-muted)">Быстро проставить себестоимость всем товарам с нулевой:</span>

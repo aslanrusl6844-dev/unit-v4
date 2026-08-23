@@ -314,3 +314,91 @@ export async function syncWbOrders(dateFrom: Date, dateTo: Date) {
     throw err;
   }
 }
+
+/**
+ * Синхронизация КАТАЛОГА (не заказов) — подтягивает список товаров,
+ * которые СЕЙЧАС стоят на продаже на площадке, через собственный API
+ * площадки "список товаров" (не через историю заказов). Создаёт новые
+ * товары (себестоимость 0 — обязательно проставить вручную) и обновляет
+ * название/статус активности уже существующих, НЕ трогая себестоимость,
+ * которую пользователь мог уже проставить.
+ */
+export async function syncOzonCatalog() {
+  if (!(await ozonClient.isConfigured())) {
+    logger.warn('[Ozon] Магазин не настроен — синхронизация каталога пропущена');
+    return { created: 0, updated: 0 };
+  }
+
+  const catalog = await ozonClient.fetchCatalog();
+  let created = 0;
+  let updated = 0;
+
+  for (const item of catalog) {
+    const existing = await prisma.product.findFirst({ where: { ozonOfferId: item.offerId } });
+    if (existing) {
+      await prisma.product.update({
+        where: { id: existing.id },
+        data: {
+          active: item.active,
+          // Название обновляем, только если сейчас placeholder — реальное
+          // ручное название пользователя не затираем.
+          ...(existing.name.startsWith('Ozon-товар') ? { name: item.name } : {}),
+        },
+      });
+      updated += 1;
+    } else {
+      await prisma.product.create({
+        data: {
+          sku: `ozon-${item.offerId}`,
+          name: item.name,
+          costPrice: 0,
+          ozonOfferId: item.offerId,
+          active: item.active,
+        },
+      });
+      created += 1;
+    }
+  }
+
+  logger.info(`[Ozon] Каталог синхронизирован: создано ${created}, обновлено ${updated}`);
+  return { created, updated };
+}
+
+export async function syncWbCatalog() {
+  if (!wbClient.isConfigured) {
+    logger.warn('[Wildberries] Токен не задан — синхронизация каталога пропущена');
+    return { created: 0, updated: 0 };
+  }
+
+  const catalog = await wbClient.fetchCatalog();
+  let created = 0;
+  let updated = 0;
+
+  for (const item of catalog) {
+    const existing = await prisma.product.findFirst({ where: { wbArticle: item.vendorCode } });
+    if (existing) {
+      await prisma.product.update({
+        where: { id: existing.id },
+        data: {
+          wbNmId: item.nmId,
+          ...(existing.name.startsWith('WB-товар') ? { name: item.name } : {}),
+        },
+      });
+      updated += 1;
+    } else {
+      await prisma.product.create({
+        data: {
+          sku: `wb-${item.vendorCode}`,
+          name: item.name,
+          costPrice: 0,
+          wbArticle: item.vendorCode,
+          wbNmId: item.nmId,
+        },
+      });
+      created += 1;
+    }
+  }
+
+  logger.info(`[Wildberries] Каталог синхронизирован: создано ${created}, обновлено ${updated}`);
+  return { created, updated };
+}

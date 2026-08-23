@@ -54,6 +54,7 @@ interface WbFinanceTotals {
 
 export class WbClient {
   private http: AxiosInstance;
+  private contentHttp: AxiosInstance;
 
   constructor() {
     this.http = axios.create({
@@ -61,10 +62,68 @@ export class WbClient {
       headers: { Authorization: env.wb.apiToken },
       timeout: 30000,
     });
+    // Карточки товаров живут на ДРУГОМ хосте WB API (Content API, не
+    // Statistics) — и токен для него должен быть с категорией доступа
+    // "Контент". Если используется токен только со статистикой — этот
+    // конкретный метод (fetchCatalog) вернёт ошибку авторизации, но
+    // синхронизация заказов (fetchOrders) продолжит работать как обычно,
+    // это не связанные между собой категории доступа.
+    this.contentHttp = axios.create({
+      baseURL: env.wb.contentBaseUrl,
+      headers: { Authorization: env.wb.apiToken },
+      timeout: 30000,
+    });
   }
 
   get isConfigured() {
     return env.wb.isConfigured;
+  }
+
+  /**
+   * Полный каталог карточек товаров — POST /content/v2/get/cards/list,
+   * с постраничной курсорной пагинацией (limit + cursor.updatedAt/nmID из
+   * предыдущего ответа). У каждой карточки: nmID (номер WB), vendorCode
+   * (= supplierArticle, наш wbArticle) и title (название).
+   */
+  async fetchCatalog(): Promise<Array<{ vendorCode: string; name: string; nmId: number }>> {
+    const catalog: Array<{ vendorCode: string; name: string; nmId: number }> = [];
+    let cursor: { limit: number; updatedAt?: string; nmID?: number } = { limit: 100 };
+
+    for (let page = 0; page < MAX_PAGES_SAFETY; page++) {
+      let data: any;
+      try {
+        const response = await this.contentHttp.post('/content/v2/get/cards/list', {
+          settings: { cursor, filter: { withPhoto: -1 } },
+        });
+        data = response.data;
+      } catch (err: any) {
+        const wbErrorBody = err?.response?.data;
+        logger.error(
+          { status: err?.response?.status, body: wbErrorBody },
+          '[Wildberries] Ошибка запроса карточек товаров (проверьте, что токен имеет категорию доступа "Контент")',
+        );
+        throw new Error(
+          `Wildberries API вернул ошибку ${err?.response?.status ?? ''} при запросе карточек товаров: ` +
+            `${JSON.stringify(wbErrorBody) || err?.message}`,
+        );
+      }
+
+      const cards: Array<{ nmID: number; vendorCode: string; title?: string }> = data.cards ?? [];
+      cards.forEach((card) => {
+        catalog.push({
+          vendorCode: card.vendorCode,
+          name: card.title?.trim() || `WB-товар ${card.vendorCode}`,
+          nmId: card.nmID,
+        });
+      });
+
+      const total = data.cursor?.total ?? 0;
+      if (total < cursor.limit || !data.cursor?.nmID) break;
+      cursor = { limit: 100, updatedAt: data.cursor.updatedAt, nmID: data.cursor.nmID };
+    }
+
+    logger.info(`[Wildberries] В каталоге карточек товаров: ${catalog.length}`);
+    return catalog;
   }
 
   async fetchOrders(params: { dateFrom: Date; dateTo: Date }): Promise<NormalizedOrder[]> {

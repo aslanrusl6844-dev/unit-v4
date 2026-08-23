@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import dayjs from 'dayjs';
 import { prisma } from '../db/prisma';
-import { syncKaspiOrders, syncOzonOrders, syncWbOrders } from '../services/sync.service';
+import { syncKaspiOrders, syncOzonOrders, syncWbOrders, syncOzonCatalog, syncWbCatalog } from '../services/sync.service';
 import { kaspiClient } from '../integrations/kaspi.client';
 import { ozonClient } from '../integrations/ozon.client';
 import { env } from '../config/env';
@@ -53,6 +53,32 @@ syncRouter.post('/wb', async (req, res) => {
     res.json({ ok: true, ...result });
   } catch (err: any) {
     logger.error({ err }, 'Ошибка ручной синхронизации Wildberries');
+    res.status(500).json({ ok: false, error: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * Синхронизация КАТАЛОГА (не заказов) — подтягивает список товаров,
+ * СЕЙЧАС стоящих на продаже, через собственный API площадки. У Kaspi
+ * такого метода нет (см. предупреждение в README и в разделе «Товары») —
+ * поэтому эндпоинт есть только для Ozon и Wildberries.
+ */
+syncRouter.post('/ozon-catalog', async (_req, res) => {
+  try {
+    const result = await syncOzonCatalog();
+    res.json({ ok: true, ...result });
+  } catch (err: any) {
+    logger.error({ err }, 'Ошибка синхронизации каталога Ozon');
+    res.status(500).json({ ok: false, error: String(err?.message ?? err) });
+  }
+});
+
+syncRouter.post('/wb-catalog', async (_req, res) => {
+  try {
+    const result = await syncWbCatalog();
+    res.json({ ok: true, ...result });
+  } catch (err: any) {
+    logger.error({ err }, 'Ошибка синхронизации каталога Wildberries');
     res.status(500).json({ ok: false, error: String(err?.message ?? err) });
   }
 });
