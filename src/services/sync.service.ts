@@ -146,9 +146,14 @@ function enrichKaspiFinancials(
     return commission;
   });
 
-  const logisticsCost = order.kaspiDelivery
-    ? calculateKaspiDeliveryCost(order.totalRevenue, totalWeight, env.kaspi.defaultDeliveryZone)
-    : 0;
+  // Логистика — тариф Kaspi Доставки, считаем ВСЕГДА (как и в прогнозе на
+  // странице «Товары», см. getProductForecasts в analytics.service.ts).
+  // Раньше здесь была проверка order.kaspiDelivery — но это поле ненадёжно
+  // приходит от Kaspi (часто пусто даже для настоящих доставок Kaspi
+  // Доставкой), из-за чего логистика в реальных продажах тихо обнулялась,
+  // хотя для того же товара в прогнозе каталога считалась верно. Теперь
+  // расчёт идентичен в обоих местах — прогноз и факт больше не расходятся.
+  const logisticsCost = calculateKaspiDeliveryCost(order.totalRevenue, totalWeight, env.kaspi.defaultDeliveryZone);
 
   // Шаг 2: логистика заказа делится между позициями ПО ВЕСУ (не по цене) —
   // тариф Kaspi Доставки зависит от веса посылки, поэтому это точнее, чем
