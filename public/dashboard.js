@@ -758,6 +758,54 @@ function renderForecastCells(p, marketplace) {
   `;
 }
 
+/** Какие площадки показывать в таблице — строго по фильтру вверху страницы.
+ *  Одна выбрана — одна широкая таблица. "Всё вместе" — все три (компромисс,
+ *  раз явного выбора нет). */
+function getVisibleMarketplaces() {
+  if (state.marketplace === 'KASPI') return ['KASPI'];
+  if (state.marketplace === 'OZON') return ['OZON'];
+  if (state.marketplace === 'WB') return ['WB'];
+  return ['KASPI', 'OZON', 'WB'];
+}
+
+function renderProductsTableHead(marketplaces) {
+  const thead = document.getElementById('productsAdminThead');
+  if (marketplaces.length === 1) {
+    // Одна площадка — шапка в один ряд, широкие понятные колонки, без group-заголовков.
+    const mp = marketplaces[0];
+    thead.innerHTML = `
+      <tr>
+        <th>SKU</th><th>Название</th><th>Артикул ${mpLabel(mp)}</th>
+        <th class="num">Себестоимость</th>
+        <th class="num">Цена</th>
+        <th class="num">Комиссия</th>
+        <th class="num">Логистика</th>
+        <th class="num">Прибыль/шт</th>
+        <th class="num">Маржа</th>
+        <th>Активен</th><th></th>
+      </tr>
+    `;
+  } else {
+    // "Всё вместе" — три компактных блока, как раньше (без единственно
+    // очевидного выбора площадки это разумный компромисс).
+    const groupHeaders = marketplaces.map((mp) => `<th colspan="5" style="text-align:center;border-left:2px solid var(--border)"><span class="dot dot--${mp.toLowerCase()}"></span> ${mpLabel(mp)}</th>`).join('');
+    const subHeaders = marketplaces.map(() => `
+      <th class="num" style="border-left:2px solid var(--border)">Цена</th>
+      <th class="num">Комиссия</th><th class="num">Логистика</th>
+      <th class="num">Прибыль/шт</th><th class="num">Маржа</th>
+    `).join('');
+    thead.innerHTML = `
+      <tr>
+        <th rowspan="2">SKU</th><th rowspan="2">Название</th><th rowspan="2">Артикулы</th>
+        <th rowspan="2" class="num">Себестоимость</th>
+        ${groupHeaders}
+        <th rowspan="2">Активен</th><th rowspan="2"></th>
+      </tr>
+      <tr>${subHeaders}</tr>
+    `;
+  }
+}
+
 function renderProductsAdminTable() {
   const filter = document.querySelector('#productStatusTabs button.is-active')?.dataset.filter || 'active';
   let products = allProductsCache;
@@ -766,14 +814,20 @@ function renderProductsAdminTable() {
 
   // Фильтр по площадке (кнопки Kaspi/Ozon/WB вверху страницы) — товар
   // считается "принадлежащим" площадке, если у него заполнен
-  // соответствующий артикул (kaspiSku / ozonOfferId / wbArticle).
+  // соответствующий артикул (kaspiSku / ozonOfferId / wbArticle). Тот же
+  // фильтр определяет, какую таблицу (широкую по одной площадке или все
+  // три компактно) сейчас показывать.
   if (state.marketplace === 'KASPI') products = products.filter((p) => p.kaspiSku);
   if (state.marketplace === 'OZON') products = products.filter((p) => p.ozonOfferId);
   if (state.marketplace === 'WB') products = products.filter((p) => p.wbArticle);
 
+  const marketplaces = getVisibleMarketplaces();
+  renderProductsTableHead(marketplaces);
+
   const tbody = document.querySelector('#productsAdminTable tbody');
+  const totalCols = 4 + marketplaces.length * 5 + 2;
   if (!products.length) {
-    tbody.innerHTML = `<tr><td colspan="22" style="color:var(--text-faint)">Товаров в этой категории нет</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="${totalCols}" style="color:var(--text-faint)">Товаров в этой категории нет</td></tr>`;
     return;
   }
   tbody.innerHTML = products.map((p) => {
@@ -784,21 +838,32 @@ function renderProductsAdminTable() {
           ? `<br><span style="color:var(--text-faint);font-size:11px">${p.kaspiLeafCategory ?? p.kaspiTopCategory}</span>`
           : `<br><span style="color:var(--warn);font-size:11px" title="Без категории точный тариф Kaspi не посчитать — прогноз (если есть) будет по истории продаж">⚠ нет категории</span>`)
       : '';
-    const articles = [
-      p.kaspiSku ? `<span title="Kaspi"><i class="dot dot--kaspi"></i> ${p.kaspiSku}</span>` : '',
-      p.ozonOfferId ? `<span title="Ozon"><i class="dot dot--ozon"></i> ${p.ozonOfferId}</span>` : '',
-      p.wbArticle ? `<span title="WB"><i class="dot dot--wb"></i> ${p.wbArticle}</span>` : '',
-    ].filter(Boolean).join('<br>');
+
+    // Одна площадка выбрана — в колонке "Артикул" показываем только его;
+    // "Всё вместе" — показываем все привязанные артикулы разом.
+    let articlesCell;
+    if (marketplaces.length === 1) {
+      const mp = marketplaces[0];
+      const value = mp === 'KASPI' ? p.kaspiSku : mp === 'OZON' ? p.ozonOfferId : p.wbArticle;
+      articlesCell = `${value ?? '—'}${mp === 'KASPI' ? kaspiHint : ''}`;
+    } else {
+      articlesCell = [
+        p.kaspiSku ? `<span title="Kaspi"><i class="dot dot--kaspi"></i> ${p.kaspiSku}</span>` : '',
+        p.ozonOfferId ? `<span title="Ozon"><i class="dot dot--ozon"></i> ${p.ozonOfferId}</span>` : '',
+        p.wbArticle ? `<span title="WB"><i class="dot dot--wb"></i> ${p.wbArticle}</span>` : '',
+      ].filter(Boolean).join('<br>') || '—';
+      articlesCell += kaspiHint;
+    }
+
+    const forecastCells = marketplaces.map((mp) => renderForecastCells(p, mp)).join('');
 
     return `
     <tr data-id="${p.id}">
       <td class="name-cell">${p.sku}</td>
       <td class="name-cell">${p.name}</td>
-      <td class="name-cell" style="font-size:11px">${articles || '—'}${kaspiHint}</td>
+      <td class="name-cell" style="font-size:11px">${articlesCell}</td>
       <td class="num"><input class="cost-input" type="number" step="0.01" value="${p.costPrice}" data-field="costPrice" /></td>
-      ${renderForecastCells(p, 'KASPI')}
-      ${renderForecastCells(p, 'OZON')}
-      ${renderForecastCells(p, 'WB')}
+      ${forecastCells}
       <td><input type="checkbox" data-field="active" ${p.active !== false ? 'checked' : ''} /></td>
       <td><button class="link-btn" data-action="delete">✕</button></td>
     </tr>

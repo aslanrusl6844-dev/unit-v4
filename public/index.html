@@ -236,38 +236,18 @@
           </div>
           <div class="table-wrap">
             <table class="table" id="productsAdminTable">
-              <thead>
-                <tr>
-                  <th rowspan="2">SKU</th><th rowspan="2">Название</th>
-                  <th rowspan="2">Артикулы</th>
-                  <th rowspan="2" class="num" style="min-width:100px">Себестоимость</th>
-                  <th colspan="5" style="text-align:center;border-left:2px solid var(--border)"><span class="dot dot--kaspi"></span> Kaspi</th>
-                  <th colspan="5" style="text-align:center;border-left:2px solid var(--border)"><span class="dot dot--ozon"></span> Ozon</th>
-                  <th colspan="5" style="text-align:center;border-left:2px solid var(--border)"><span class="dot dot--wb"></span> WB</th>
-                  <th rowspan="2">Активен</th><th rowspan="2"></th>
-                </tr>
-                <tr>
-                  <th class="num" style="border-left:2px solid var(--border)">Цена</th>
-                  <th class="num">Комиссия</th><th class="num">Логистика</th>
-                  <th class="num">Прибыль/шт</th><th class="num">Маржа</th>
-                  <th class="num" style="border-left:2px solid var(--border)">Цена</th>
-                  <th class="num">Комиссия</th><th class="num">Логистика</th>
-                  <th class="num">Прибыль/шт</th><th class="num">Маржа</th>
-                  <th class="num" style="border-left:2px solid var(--border)">Цена</th>
-                  <th class="num">Комиссия</th><th class="num">Логистика</th>
-                  <th class="num">Прибыль/шт</th><th class="num">Маржа</th>
-                </tr>
-              </thead>
+              <thead id="productsAdminThead"></thead>
               <tbody></tbody>
             </table>
           </div>
           <p class="panel__hint">
-            Прогноз по каждой площадке — отдельная цена, комиссия и логистика (своя у Kaspi, своя у Ozon,
-            своя у WB), считается по текущей цене прямо сейчас, даже без единой продажи на этой площадке.
-            Для Kaspi с указанной категорией — точный тариф. Для Ozon/WB (и Kaspi без категории) — средняя
-            ставка по прошлым продажам этого товара ИМЕННО на этой площадке (значок ≈); если продаж на ней
-            ещё не было — честно «—», без выдуманных чисел. «—» в столбце «Цена» означает, что товар не
-            привязан к этой площадке или для него ещё нет известной текущей цены.
+            Прогноз показывается по выбранной наверху площадке (кнопки Kaspi/Ozon/WB) — своя цена, комиссия
+            и логистика для каждой, считается по текущей цене прямо сейчас, даже без единой продажи на этой
+            площадке. При «Всё вместе» показываются все три сразу. Для Kaspi с указанной категорией — точный
+            тариф. Для Ozon/WB (и Kaspi без категории) — средняя ставка по прошлым продажам этого товара
+            ИМЕННО на этой площадке (значок ≈); если продаж на ней ещё не было — честно «—», без выдуманных
+            чисел. «—» в столбце «Цена» означает, что товар не привязан к этой площадке или для него ещё
+            нет известной текущей цены.
           </p>
         </div>
       </section>
