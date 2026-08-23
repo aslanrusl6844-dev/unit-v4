@@ -38,6 +38,12 @@ const productSchema = z.object({
   wbArticle: z.string().optional().nullable(),
   wbNmId: z.number().optional().nullable(),
   active: z.boolean().optional().default(true),
+  // Цена продажи по каждой площадке — можно вписать вручную прямо в
+  // каталоге (например, для ещё не проданного товара, чтобы сразу увидеть
+  // прогноз прибыли), не только автоматически из факта продажи/API.
+  kaspiReferencePrice: z.number().positive().optional().nullable(),
+  ozonReferencePrice: z.number().positive().optional().nullable(),
+  wbReferencePrice: z.number().positive().optional().nullable(),
 });
 
 productsRouter.post('/', async (req, res) => {
@@ -188,8 +194,15 @@ productsRouter.put('/:id', async (req, res) => {
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.flatten() });
   }
+  // Если цену по площадке вводят вручную — отмечаем её "свежей" (сейчас),
+  // чтобы синхронизация заказов её не перезаписала более старой датой, но
+  // реальная новая продажа всё равно сможет обновить эту цену дальше.
+  const data: Record<string, any> = { ...parsed.data };
+  if (data.kaspiReferencePrice != null) data.kaspiReferencePriceUpdatedAt = new Date();
+  if (data.ozonReferencePrice != null) data.ozonReferencePriceUpdatedAt = new Date();
+  if (data.wbReferencePrice != null) data.wbReferencePriceUpdatedAt = new Date();
   try {
-    const product = await prisma.product.update({ where: { id: req.params.id }, data: parsed.data });
+    const product = await prisma.product.update({ where: { id: req.params.id }, data });
     res.json(product);
   } catch (err: any) {
     if (err?.code === 'P2025') return res.status(404).json({ error: 'Товар не найден' });

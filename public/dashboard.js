@@ -740,22 +740,49 @@ async function loadProductsAdminTable() {
   renderProductsAdminTable();
 }
 
+function priceFieldName(marketplace) {
+  return marketplace === 'KASPI' ? 'kaspiReferencePrice' : marketplace === 'OZON' ? 'ozonReferencePrice' : 'wbReferencePrice';
+}
+
+function isLinkedToMarketplace(p, marketplace) {
+  return marketplace === 'KASPI' ? !!p.kaspiSku : marketplace === 'OZON' ? !!p.ozonOfferId : !!p.wbArticle;
+}
+
+/**
+ * Цена — теперь РЕДАКТИРУЕМОЕ поле. Kaspi (как и большинство площадок) не
+ * даёт узнать текущую цену товара, пока по нему не было продажи, а нужно
+ * видеть прогноз прибыли ДО того, как товар вообще выставлен на продажу —
+ * поэтому цену для прогноза можно просто вписать вручную, как и себестоимость.
+ */
 function renderForecastCells(p, marketplace) {
-  const fc = productsForecastCache.get(`${p.id}:${marketplace}`);
-  if (!fc) {
-    // Товар вообще не привязан к этой площадке (нет артикула).
+  if (!isLinkedToMarketplace(p, marketplace)) {
+    // Товар вообще не привязан к этой площадке (нет артикула) — редактировать нечего.
     return `<td class="num" style="border-left:2px solid var(--border);color:var(--text-faint)">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td>`;
   }
-  const badge = fc.source === 'historical-average'
+  const fc = productsForecastCache.get(`${p.id}:${marketplace}`);
+  const badge = fc?.source === 'historical-average'
     ? ` <span style="color:var(--text-faint);font-size:10px" title="Оценка по средней ставке из прошлых продаж этого товара на ${mpLabel(marketplace)}">≈</span>`
     : '';
+  const priceValue = fc?.referencePrice != null ? fc.referencePrice : '';
   return `
-    <td class="num" style="border-left:2px solid var(--border)">${fc.referencePrice != null ? fmtMoney(fc.referencePrice) : '—'}</td>
-    <td class="num">${fc.estCommission != null ? fmtMoney(fc.estCommission) + badge : '—'}</td>
-    <td class="num">${fc.estLogistics != null ? fmtMoney(fc.estLogistics) + badge : '—'}</td>
-    <td class="num ${fc.estProfit != null ? (fc.estProfit >= 0 ? 'pos' : 'neg') : ''}">${fc.estProfit != null ? fmtMoney(fc.estProfit) : '—'}</td>
-    <td class="num ${fc.estMarginPct != null ? (fc.estMarginPct >= 0 ? 'pos' : 'neg') : ''}">${fc.estMarginPct != null ? fmtPct(fc.estMarginPct) : '—'}</td>
+    <td class="num" style="border-left:2px solid var(--border)">
+      <input class="cost-input" type="number" step="1" placeholder="Цена" value="${priceValue}" data-price-field="${priceFieldName(marketplace)}" style="width:85px" />
+    </td>
+    <td class="num">${fc?.estCommission != null ? fmtMoney(fc.estCommission) + badge : '—'}</td>
+    <td class="num">${fc?.estLogistics != null ? fmtMoney(fc.estLogistics) + badge : '—'}</td>
+    <td class="num ${fc?.estProfit != null ? (fc.estProfit >= 0 ? 'pos' : 'neg') : ''}">${fc?.estProfit != null ? fmtMoney(fc.estProfit) : '—'}</td>
+    <td class="num ${fc?.estMarginPct != null ? (fc.estMarginPct >= 0 ? 'pos' : 'neg') : ''}">${fc?.estMarginPct != null ? fmtPct(fc.estMarginPct) : '—'}</td>
   `;
+}
+
+/** Выпадающий список категории Kaspi прямо в строке таблицы — без неё
+ *  точный тариф комиссии посчитать нельзя (см. ⚠ в интерфейсе). */
+function categorySelectHtml(selectedCategory) {
+  const options = kaspiRatesCache
+    ? Object.keys(kaspiRatesCache).sort((a, b) => a.localeCompare(b, 'ru')).map((name) => `<option value="${name}" ${name === selectedCategory ? 'selected' : ''}>${name} (${kaspiRatesCache[name]}%)</option>`).join('')
+    : '';
+  const placeholder = selectedCategory ? '' : `<option value="" selected>⚠ нет категории</option>`;
+  return `<select class="cost-input" data-field="kaspiTopCategory" style="font-size:11px;margin-top:4px;${selectedCategory ? '' : 'border-color:var(--warn)'}">${placeholder}${options}</select>`;
 }
 
 /** Какие площадки показывать в таблице — строго по фильтру вверху страницы.
@@ -824,6 +851,22 @@ function renderProductsAdminTable() {
   const marketplaces = getVisibleMarketplaces();
   renderProductsTableHead(marketplaces);
 
+  // Сортировка "убыточные — наверх": при одной выбранной площадке сортируем
+  // по прогнозной прибыли по возрастанию — самые большие убытки видны сразу,
+  // без прокрутки вниз. Товары без прогноза (нет данных) — в самый конец,
+  // они не "плохие", просто про них пока нечего сказать.
+  if (marketplaces.length === 1) {
+    const mp = marketplaces[0];
+    products = [...products].sort((a, b) => {
+      const pa = productsForecastCache.get(`${a.id}:${mp}`)?.estProfit;
+      const pb = productsForecastCache.get(`${b.id}:${mp}`)?.estProfit;
+      if (pa == null && pb == null) return 0;
+      if (pa == null) return 1;
+      if (pb == null) return -1;
+      return pa - pb;
+    });
+  }
+
   const tbody = document.querySelector('#productsAdminTable tbody');
   const totalCols = 4 + marketplaces.length * 5 + 2;
   if (!products.length) {
@@ -831,22 +874,22 @@ function renderProductsAdminTable() {
     return;
   }
   tbody.innerHTML = products.map((p) => {
-    // Есть категория Kaspi — показываем её; нет, но товар привязан к
-    // Kaspi — предупреждаем, что оценка там будет по истории, а не по тарифу.
-    const kaspiHint = p.kaspiSku
-      ? (p.kaspiTopCategory
-          ? `<br><span style="color:var(--text-faint);font-size:11px">${p.kaspiLeafCategory ?? p.kaspiTopCategory}</span>`
-          : `<br><span style="color:var(--warn);font-size:11px" title="Без категории точный тариф Kaspi не посчитать — прогноз (если есть) будет по истории продаж">⚠ нет категории</span>`)
-      : '';
-
-    // Одна площадка выбрана — в колонке "Артикул" показываем только его;
-    // "Всё вместе" — показываем все привязанные артикулы разом.
+    // Одна площадка выбрана — в колонке "Артикул" показываем только его,
+    // а для Kaspi ещё и редактируемый выбор категории (без неё точный
+    // тариф комиссии не посчитать). "Всё вместе" — показываем все
+    // привязанные артикулы разом, категорию там же текстом (не мешаем
+    // редактированию в узкой многоплощадочной шапке).
     let articlesCell;
     if (marketplaces.length === 1) {
       const mp = marketplaces[0];
       const value = mp === 'KASPI' ? p.kaspiSku : mp === 'OZON' ? p.ozonOfferId : p.wbArticle;
-      articlesCell = `${value ?? '—'}${mp === 'KASPI' ? kaspiHint : ''}`;
+      articlesCell = `${value ?? '—'}${mp === 'KASPI' ? categorySelectHtml(p.kaspiTopCategory) : ''}`;
     } else {
+      const kaspiHint = p.kaspiSku
+        ? (p.kaspiTopCategory
+            ? `<br><span style="color:var(--text-faint);font-size:11px">${p.kaspiLeafCategory ?? p.kaspiTopCategory}</span>`
+            : `<br><span style="color:var(--warn);font-size:11px" title="Без категории точный тариф Kaspi не посчитать — прогноз будет по истории продаж">⚠ нет категории</span>`)
+        : '';
       articlesCell = [
         p.kaspiSku ? `<span title="Kaspi"><i class="dot dot--kaspi"></i> ${p.kaspiSku}</span>` : '',
         p.ozonOfferId ? `<span title="Ozon"><i class="dot dot--ozon"></i> ${p.ozonOfferId}</span>` : '',
@@ -878,6 +921,32 @@ function renderProductsAdminTable() {
         await loadProductsAdminTable();
       } catch (err) {
         alert('Не удалось сохранить себестоимость: ' + err.message);
+      }
+    });
+  });
+  // Цена по площадке (для прогноза) — редактируется прямо в таблице.
+  tbody.querySelectorAll('input[data-price-field]').forEach((input) => {
+    input.addEventListener('change', async (e) => {
+      const id = e.target.closest('tr').dataset.id;
+      const field = e.target.dataset.priceField;
+      const value = e.target.value === '' ? null : Number(e.target.value);
+      try {
+        await api(`/products/${id}`, { method: 'PUT', body: JSON.stringify({ [field]: value }) });
+        await loadProductsAdminTable();
+      } catch (err) {
+        alert('Не удалось сохранить цену: ' + err.message);
+      }
+    });
+  });
+  // Категория Kaspi — редактируется прямо в таблице.
+  tbody.querySelectorAll('select[data-field="kaspiTopCategory"]').forEach((select) => {
+    select.addEventListener('change', async (e) => {
+      const id = e.target.closest('tr').dataset.id;
+      try {
+        await api(`/products/${id}`, { method: 'PUT', body: JSON.stringify({ kaspiTopCategory: e.target.value || null }) });
+        await loadProductsAdminTable();
+      } catch (err) {
+        alert('Не удалось сохранить категорию: ' + err.message);
       }
     });
   });
