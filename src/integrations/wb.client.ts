@@ -140,7 +140,10 @@ export class WbClient {
       });
 
       const total = data.cursor?.total ?? 0;
-      if (total < cursor.limit || !data.cursor?.nmID) break;
+      // ВАЖНО: 0 — легитимное значение nmID (а не "данных нет"), поэтому
+      // проверяем именно на undefined/null, а не через простое отрицание
+      // (!0 === true в JS сломало бы пагинацию на ровном месте).
+      if (total < cursor.limit || data.cursor?.nmID == null) break;
       cursor = { limit: 100, updatedAt: data.cursor.updatedAt, nmID: data.cursor.nmID };
     }
 

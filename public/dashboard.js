@@ -1838,13 +1838,30 @@ document.getElementById('syncWbBtn').addEventListener('click', async () => {
   const btn = document.getElementById('syncWbBtn');
   btn.textContent = '…'; btn.disabled = true;
   try {
-    const res = await api('/sync/wb?days=7', { method: 'POST' });
+    // Заказы и каталог у WB — это ДВА разных источника данных (Statistics
+    // API и Content API), поэтому один запрос не может дать оба сразу.
+    // Раньше эта кнопка тянула только заказы, а каталог нужно было
+    // синхронизировать отдельно на странице «Товары» — легко не заметить.
+    // Теперь одна кнопка запускает оба действия по очереди.
+    const ordersRes = await api('/sync/wb?days=7', { method: 'POST' });
+
+    let catalogMsg = '';
+    try {
+      const catalogRes = await api('/sync/wb-catalog', { method: 'POST' });
+      catalogMsg = ` Каталог: создано ${catalogRes.created}, обновлено ${catalogRes.updated}.`;
+    } catch (catalogErr) {
+      // Заказы могли синхронизироваться успешно, даже если с каталогом
+      // что-то не так (например, токен создан без категории доступа
+      // "Контент") — не превращаем это в общую "ошибку синхронизации".
+      catalogMsg = ` Каталог не удалось обновить: ${catalogErr.message}`;
+    }
+
     try {
       await reloadCurrentPage();
     } catch (renderErr) {
       console.warn('Синхронизация WB прошла успешно, но при обновлении страницы возникла ошибка:', renderErr);
     }
-    alert(`Синхронизация WB завершена. Обработано заказов: ${res.ordersProcessed ?? 0}.`);
+    alert(`Синхронизация WB завершена. Обработано заказов: ${ordersRes.ordersProcessed ?? 0}.${catalogMsg}`);
   } catch (err) {
     alert('Ошибка синхронизации WB: ' + err.message);
   } finally {
