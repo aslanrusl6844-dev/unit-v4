@@ -93,10 +93,17 @@ export class OzonClient {
   /**
    * Полный каталог товаров, СЕЙЧАС стоящих на продаже (не из заказов, а из
    * собственного метода Ozon "список товаров"):
-   *   POST /v2/product/list — постранично отдаёт {product_id, offer_id}
-   *   POST /v2/product/info/list — по списку id отдаёт name/archived и т.д.
-   * filter.visibility: "VISIBLE" — именно "сейчас видны покупателям", а не
-   * вообще все когда-либо созданные (включая давно снятые с продажи).
+   *   POST /v3/product/list — постранично отдаёт {product_id, offer_id}
+   *     (v2/product/list официально отключён Ozon 09.02.2025 — используем
+   *     актуальную v3-версию, иначе получаем "404 page not found")
+   *   POST /v3/product/info/list — по списку id отдаёт name/статус
+   *     (v2/product/info(/list) официально отключён Ozon 17.02.2025)
+   * filter.visibility — актуальный формат этого поля со временем менялся у
+   * Ozon (иногда строка, иногда массив строк); отправляем массивом
+   * ["VISIBLE"] — "сейчас видны покупателям", а не вообще все когда-либо
+   * созданные товары (включая давно снятые с продажи). Разбор ответа
+   * сделан устойчивым к обеим формам (data.result.items / data.items) —
+   * на случай мелких отличий структуры между версиями API.
    */
   async fetchCatalog(): Promise<Array<{ offerId: string; name: string; active: boolean }>> {
     const http = await this.getHttp();
@@ -107,8 +114,8 @@ export class OzonClient {
     while (true) {
       let data: any;
       try {
-        const response = await http.post('/v2/product/list', {
-          filter: { visibility: 'VISIBLE' },
+        const response = await http.post('/v3/product/list', {
+          filter: { visibility: ['VISIBLE'] },
           last_id: lastId,
           limit: 100,
         });
@@ -119,10 +126,11 @@ export class OzonClient {
         throw new Error(`Ozon API вернул ошибку ${err?.response?.status ?? ''} при запросе каталога: ${JSON.stringify(ozonErrorBody) || err?.message}`);
       }
 
-      const items: Array<{ product_id: number; offer_id: string }> = data.result?.items ?? [];
+      const result = data.result ?? data;
+      const items: Array<{ product_id: number; offer_id: string }> = result?.items ?? [];
       items.forEach((i) => idPairs.push({ productId: i.product_id, offerId: i.offer_id }));
 
-      lastId = data.result?.last_id ?? '';
+      lastId = result?.last_id ?? '';
       if (!items.length || !lastId) break;
     }
 
@@ -133,10 +141,11 @@ export class OzonClient {
     for (let i = 0; i < idPairs.length; i += 100) {
       const chunk = idPairs.slice(i, i + 100);
       try {
-        const { data } = await http.post('/v2/product/info/list', {
+        const { data } = await http.post('/v3/product/info/list', {
           offer_id: chunk.map((c) => c.offerId),
         });
-        const items: Array<{ offer_id: string; name?: string; archived?: boolean }> = data.result?.items ?? [];
+        const result = data.result ?? data;
+        const items: Array<{ offer_id: string; name?: string; archived?: boolean }> = result?.items ?? [];
         items.forEach((item) => {
           catalog.push({
             offerId: item.offer_id,
