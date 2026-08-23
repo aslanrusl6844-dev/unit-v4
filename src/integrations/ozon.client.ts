@@ -98,12 +98,14 @@ export class OzonClient {
    *     актуальную v3-версию, иначе получаем "404 page not found")
    *   POST /v3/product/info/list — по списку id отдаёт name/статус
    *     (v2/product/info(/list) официально отключён Ozon 17.02.2025)
-   * filter.visibility — актуальный формат этого поля со временем менялся у
-   * Ozon (иногда строка, иногда массив строк); отправляем массивом
-   * ["VISIBLE"] — "сейчас видны покупателям", а не вообще все когда-либо
-   * созданные товары (включая давно снятые с продажи). Разбор ответа
-   * сделан устойчивым к обеим формам (data.result.items / data.items) —
-   * на случай мелких отличий структуры между версиями API.
+   * filter.visibility — судя по точному тексту ошибки Ozon ("invalid value
+   * for enum field visibility: [" — ошибка ровно на символе "[") это
+   * ОБЫЧНАЯ СТРОКА (enum), а не массив, как я ошибочно поставил в прошлый
+   * раз. Отправляем строкой "VISIBLE" — "сейчас видны покупателям", а не
+   * вообще все когда-либо созданные товары (включая давно снятые с продажи).
+   * Разбор ответа сделан устойчивым к структуре — проверяет и
+   * data.result.items, и data.items — на случай мелких отличий между
+   * версиями API.
    */
   async fetchCatalog(): Promise<Array<{ offerId: string; name: string; active: boolean }>> {
     const http = await this.getHttp();
@@ -115,7 +117,7 @@ export class OzonClient {
       let data: any;
       try {
         const response = await http.post('/v3/product/list', {
-          filter: { visibility: ['VISIBLE'] },
+          filter: { visibility: 'VISIBLE' },
           last_id: lastId,
           limit: 100,
         });
