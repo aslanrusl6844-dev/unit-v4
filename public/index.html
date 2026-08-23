@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Юнит-экономика · Kaspi + Ozon + WB</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+
+<div class="app">
+
+  <!-- ===== Боковое меню ===== -->
+  <aside class="sidebar">
+    <div class="sidebar__brand">
+      <span class="brand-mark">UE</span>
+      <div class="brand-text">
+        <div class="brand-title">Юнит-экономика</div>
+        <div class="brand-sub">Kaspi · Ozon · WB</div>
+      </div>
+    </div>
+
+    <nav class="sidebar__nav">
+      <div class="nav-group-label">Магазин</div>
+      <button class="nav-item is-active" data-page="overview"><i class="ni">▤</i>Обзор</button>
+      <button class="nav-item" data-page="orders"><i class="ni">🛒</i>Заказы</button>
+      <button class="nav-item" data-page="products"><i class="ni">📦</i>Товары</button>
+      <button class="nav-item" data-page="finance"><i class="ni">💰</i>Финансы</button>
+      <button class="nav-item" data-page="reviews"><i class="ni">★</i>Отзывы</button>
+
+      <div class="nav-group-label">Инструменты</div>
+      <button class="nav-item" data-page="margin"><i class="ni">🧮</i>Калькулятор маржи</button>
+      <button class="nav-item" data-page="niches"><i class="ni">🎯</i>Ниши</button>
+      <button class="nav-item" data-page="demping"><i class="ni">🔥</i>Демпинг</button>
+
+      <div class="nav-group-label">Система</div>
+      <button class="nav-item" data-page="notifications"><i class="ni">🔔</i>Уведомления</button>
+      <button class="nav-item" data-page="settings"><i class="ni">⚙</i>Настройки</button>
+    </nav>
+
+    <div class="sidebar__foot" id="syncStatusMini">—</div>
+  </aside>
+
+  <!-- ===== Основной контент ===== -->
+  <main class="main">
+
+    <header class="topbar">
+      <div class="topbar__range">
+        <input type="date" id="dateFrom" />
+        <span class="range-dash">—</span>
+        <input type="date" id="dateTo" />
+        <div class="preset-group">
+          <button data-days="1">1д</button>
+          <button data-days="7">7д</button>
+          <button data-days="30" class="is-active">30д</button>
+          <button data-days="90">90д</button>
+        </div>
+      </div>
+
+      <nav class="mp-filter" id="mpFilter">
+        <button class="mp-filter__btn is-active" data-mp="">Всё вместе</button>
+        <button class="mp-filter__btn" data-mp="KASPI"><i class="dot dot--kaspi"></i>Kaspi</button>
+        <button class="mp-filter__btn" data-mp="OZON"><i class="dot dot--ozon"></i>Ozon</button>
+        <button class="mp-filter__btn" data-mp="WB"><i class="dot dot--wb"></i>WB</button>
+      </nav>
+
+      <div class="topbar__actions">
+        <select id="kaspiSyncDays" title="За сколько дней синхронизировать Kaspi" style="background:var(--bg);border:1px solid var(--border);border-radius:7px;padding:7px 8px;font-size:12px;color:var(--text)">
+          <option value="3">Kaspi: 3 дня</option>
+          <option value="7" selected>Kaspi: 7 дней</option>
+          <option value="14">Kaspi: 14 дней</option>
+          <option value="30">Kaspi: 30 дней</option>
+        </select>
+        <button class="btn btn--ghost" id="syncKaspiBtn">↻ Kaspi</button>
+        <button class="btn btn--ghost" id="syncOzonBtn">↻ Ozon</button>
+        <button class="btn btn--ghost" id="syncWbBtn">↻ WB</button>
+      </div>
+    </header>
+
+    <div id="syncProgressBanner" hidden style="position:sticky;top:60px;z-index:9;background:var(--accent-soft);border-bottom:1px solid rgba(22,163,74,0.3);padding:10px 28px;font-size:13px;color:var(--text)"></div>
+
+    <div class="pages">
+
+      <!-- ============ ОБЗОР ============ -->
+      <section class="page is-active" id="page-overview">
+        <div class="page__head"><h1>Обзор</h1><p>Ключевые метрики, динамика выручки и топ товаров.</p></div>
+
+        <div class="kpi-grid" id="overviewKpis"></div>
+
+        <div class="panel">
+          <div class="panel__head">
+            <h2>Динамика выручки</h2>
+            <div class="seg" id="groupBySeg">
+              <button class="is-active" data-group="day">По дням</button>
+              <button data-group="week">По неделям</button>
+              <button data-group="month">По месяцам</button>
+            </div>
+          </div>
+          <canvas id="trendChart" height="90"></canvas>
+        </div>
+
+        <div class="two-col">
+          <div class="panel">
+            <div class="panel__head"><h2>Топ товаров по прибыли</h2></div>
+            <div class="table-wrap">
+              <table class="table" id="popularProductsTable">
+                <thead><tr><th>Товар</th><th class="num">Продано</th><th class="num">Выручка</th><th class="num">Прибыль</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel__head"><h2>По категориям</h2></div>
+            <div class="table-wrap">
+              <table class="table" id="byCategoryTable">
+                <thead><tr><th>Категория</th><th class="num">Продано</th><th class="num">Выручка</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ ЗАКАЗЫ ============ -->
+      <section class="page" id="page-orders" hidden>
+        <div class="page__head"><h1>Заказы</h1><p>Список заказов со всех площадок с фильтрами.</p></div>
+
+        <div class="panel">
+          <div class="inline-form" id="ordersFilters">
+            <input name="search" type="text" placeholder="Номер заказа, товар..." style="flex:2 1 200px" />
+            <select name="city"><option value="">Все города</option></select>
+            <select name="deliveryType"><option value="">Тип доставки</option></select>
+          </div>
+          <div class="seg seg--wide" id="statusTabs">
+            <button class="is-active" data-status="">Все</button>
+            <button data-status="preorder">Предзаказ</button>
+            <button data-status="packing">Упаковка</button>
+            <button data-status="handover">Передача</button>
+            <button data-status="delivering">Переданы на доставку</button>
+            <button data-status="cancelled">Отменены при доставке</button>
+          </div>
+          <div class="inline-form" style="justify-content:space-between;align-items:center">
+            <span id="ordersSelectedCount" style="font-size:12.5px;color:var(--text-muted)">Выбрано: 0</span>
+            <div style="display:flex;gap:8px">
+              <button class="btn btn--ghost" id="bulkWaybillBtn">📄 Сформировать накладные</button>
+              <button class="btn btn--ghost" id="printWaybillsBtn">🖨 Распечатать выбранные</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="table" id="ordersTable">
+              <thead>
+                <tr><th><input type="checkbox" id="ordersSelectAll" /></th><th>№</th><th>Площадка</th><th>Дата</th><th>Статус</th><th class="num">Сумма</th><th>Накладная</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ ТОВАРЫ ============ -->
+      <section class="page" id="page-products" hidden>
+        <div class="page__head"><h1>Товары</h1><p>Себестоимость, категории и привязка SKU к площадкам.</p></div>
+
+        <div class="panel">
+          <div class="panel__head">
+            <h2>Массовая загрузка (Excel/CSV)</h2>
+          </div>
+          <p class="panel__hint">
+            Файл должен содержать колонки: <code>sku</code> (внутренний SKU, обязательно),
+            <code>name</code> (название, обязательно), <code>kaspiSku</code> (артикул Kaspi),
+            <code>costPrice</code> (себестоимость), <code>kaspiTopCategory</code> (категория Kaspi —
+            должна точно совпадать с одной из категорий в выпадающем списке ниже).
+            Товар с уже существующим SKU — обновится, новый — создастся. Поддерживает сотни и тысячи строк.
+          </p>
+          <div class="inline-form">
+            <input type="file" id="bulkUploadFile" accept=".csv,.xlsx,.xls" />
+            <button class="btn btn--accent" id="bulkUploadBtn">Загрузить файл</button>
+          </div>
+          <div id="bulkUploadProgress"></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel__head">
+            <h2>Добавить товар</h2>
+          </div>
+          <form class="inline-form" id="productForm">
+            <input name="sku" placeholder="Внутренний SKU" required />
+            <input name="name" placeholder="Название товара" required />
+            <input name="costPrice" type="number" step="0.01" placeholder="Себестоимость" required />
+            <input name="weightKg" type="number" step="0.01" placeholder="Вес, кг" value="0.5" />
+            <input name="kaspiSku" placeholder="Артикул Kaspi" />
+            <select name="kaspiTopCategory" id="kaspiTopCategorySelect">
+              <option value="">Категория Kaspi (для комиссии)</option>
+            </select>
+            <input name="kaspiLeafCategory" placeholder="Точная категория Kaspi (опц.)" />
+            <input name="ozonOfferId" placeholder="offer_id Ozon" />
+            <input name="wbArticle" placeholder="Артикул WB (supplierArticle)" />
+            <button class="btn btn--accent" type="submit">Добавить</button>
+          </form>
+        </div>
+
+        <div class="panel">
+          <div class="panel__head">
+            <h2>Каталог товаров</h2>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button class="btn btn--ghost" id="syncCatalogBtn">↻ Каталог Kaspi (из заказов)</button>
+              <button class="btn btn--ghost" id="syncOzonCatalogBtn">↻ Каталог Ozon</button>
+              <button class="btn btn--ghost" id="syncWbCatalogBtn">↻ Каталог WB</button>
+            </div>
+          </div>
+          <p class="panel__hint">
+            <strong>Kaspi:</strong> у Kaspi нет API-метода «отдай список всех моих товаров» (только методы
+            добавления новых) — поэтому каталог собирается из реальных заказов при синхронизации. Это значит,
+            что и статус «снят с продажи» Kaspi нам тоже не отдаёт — переключай вкладку «Активен» вручную,
+            когда снимаешь товар с продажи в самом кабинете Kaspi.<br>
+            <strong>Ozon:</strong> каталог подтягивается напрямую из «списка товаров» через API — попадают
+            только товары со статусом видимости <code>VISIBLE</code> («сейчас видны покупателям»), снятые
+            с продажи в каталог не попадают.<br>
+            <strong>WB:</strong> каталог подтягивается через Content API — по умолчанию он уже не отдаёт
+            карточки, отправленные в корзину (удалённые), но WB не даёт отдельного признака «временно снят с
+            продажи, но карточка ещё существует» — такие товары в каталог всё равно попадут, отключай вручную.<br>
+            Во всех случаях: новый товар создаётся с себестоимостью 0 — обязательно укажи её вручную
+            (или воспользуйся массовой загрузкой/проставлением ниже).
+          </p>
+          <div class="inline-form" style="align-items:center">
+            <span style="font-size:12.5px;color:var(--text-muted)">Быстро проставить себестоимость всем товарам с нулевой:</span>
+            <input id="bulkCostPriceInput" type="number" step="0.01" placeholder="Например, 1500" style="max-width:140px" />
+            <button class="btn btn--ghost" id="bulkCostPriceBtn">Проставить всем с себестоимостью 0</button>
+          </div>
+          <div class="seg" id="productStatusTabs">
+            <button class="is-active" data-filter="active">Активные</button>
+            <button data-filter="inactive">Сняты с продажи</button>
+            <button data-filter="all">Все</button>
+          </div>
+          <div class="table-wrap">
+            <table class="table" id="productsAdminTable">
+              <thead id="productsAdminThead"></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p class="panel__hint">
+            Прогноз показывается по выбранной наверху площадке (кнопки Kaspi/Ozon/WB) — своя цена, комиссия
+            и логистика для каждой, считается по текущей цене прямо сейчас, даже без единой продажи на этой
+            площадке. При «Всё вместе» показываются все три сразу. Для Kaspi с указанной категорией — точный
+            тариф. Для Ozon/WB (и Kaspi без категории) — средняя ставка по прошлым продажам этого товара
+            ИМЕННО на этой площадке (значок ≈); если продаж на ней ещё не было — честно «—», без выдуманных
+            чисел. «—» в столбце «Цена» означает, что товар не привязан к этой площадке или для него ещё
+            нет известной текущей цены.
+          </p>
+        </div>
+      </section>
+
+      <!-- ============ ФИНАНСЫ ============ -->
+      <section class="page" id="page-finance" hidden>
+        <div class="page__head"><h1>Финансы</h1><p>Настоящая прибыль: от выручки до чистого остатка, по товарам и площадкам.</p></div>
+
+        <div style="display:flex;gap:20px;align-items:stretch;flex-wrap:wrap;margin-bottom:20px">
+          <div class="panel" style="flex:2 1 480px;margin-bottom:0">
+            <div class="panel__head"><h2>От выручки к чистой прибыли</h2></div>
+            <div id="waterfall"><div class="waterfall__loading">Загрузка данных…</div></div>
+          </div>
+
+          <div class="panel" id="netProfitCard" style="flex:1 1 220px;margin-bottom:0;background:linear-gradient(160deg, var(--accent-soft), var(--surface));border-color:rgba(22,163,74,0.35);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:8px;padding:28px 20px">
+            <div style="font-size:12.5px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.04em;font-weight:600">Чистая прибыль</div>
+            <div id="netProfitCardValue" style="font-family:var(--font-mono);font-size:34px;font-weight:700;color:var(--accent);letter-spacing:-0.02em">—</div>
+            <div style="font-size:11.5px;color:var(--text-faint)">за выбранный период</div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel__head">
+            <h2>Прибыль по товарам</h2>
+            <span class="panel__hint">Себестоимость редактируется в разделе «Товары»</span>
+          </div>
+          <p class="panel__hint">
+            Реклама распределяется между товарами пропорционально их доле в выручке (не по штукам) —
+            так честнее: товар, принёсший больше денег, "несёт" и большую долю рекламного бюджета.
+          </p>
+          <div class="table-wrap">
+            <table class="table" id="productsTable">
+              <thead>
+                <tr>
+                  <th>Товар</th>
+                  <th class="num">Продано, шт</th>
+                  <th class="num">Цена (сред.)</th>
+                  <th class="num">Выручка</th>
+                  <th class="num">Себестоимость</th>
+                  <th class="num">Комиссия Kaspi</th>
+                  <th class="num">Логистика Kaspi</th>
+                  <th class="num">Реклама (доля)</th>
+                  <th class="num">Чистая прибыль</th>
+                  <th class="num">Маржа</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+              <tfoot></tfoot>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel__head"><h2>Реклама и прочие расходы</h2></div>
+          <form class="inline-form" id="expenseForm">
+            <select name="marketplace">
+              <option value="KASPI">Kaspi</option>
+              <option value="OZON">Ozon</option>
+              <option value="WB">WB</option>
+            </select>
+            <input name="date" type="date" required />
+            <input name="amount" type="number" step="0.01" placeholder="Сумма" required />
+            <input name="note" placeholder="Комментарий" />
+            <button class="btn btn--accent" type="submit">Добавить расход</button>
+          </form>
+          <div class="table-wrap">
+            <table class="table" id="expensesTable">
+              <thead><tr><th>Дата</th><th>Площадка</th><th class="num">Сумма</th><th>Комментарий</th><th></th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ ОТЗЫВЫ ============ -->
+      <section class="page" id="page-reviews" hidden>
+        <div class="page__head"><h1>Отзывы</h1><p>Рейтинг и число отзывов с публичных карточек товаров на Kaspi.</p></div>
+
+        <div class="panel">
+          <div class="panel__head">
+            <h2>Отзывы на Kaspi</h2>
+            <button class="btn btn--ghost" id="refreshReviewsBtn">↻ Обновить всё</button>
+          </div>
+          <p class="panel__hint">Данные читаются с публичной страницы товара (у Kaspi нет API отзывов для продавцов)</p>
+          <div class="table-wrap">
+            <table class="table" id="reviewsTable">
+              <thead><tr><th>Товар</th><th class="num">Рейтинг</th><th class="num">Отзывов</th><th>Обновлено</th><th></th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ КАЛЬКУЛЯТОР МАРЖИ ============ -->
+      <section class="page" id="page-margin" hidden>
+        <div class="page__head"><h1>Калькулятор маржи</h1><p>Вставь ссылку на товар Kaspi или заполни вручную — сразу увидишь вердикт и разбор прибыли.</p></div>
+
+        <div class="panel">
+          <div class="seg" id="marginModeSeg">
+            <button class="is-active" data-mode="link">По ссылке Kaspi</button>
+            <button data-mode="manual">Заполнить вручную</button>
+          </div>
+
+          <form class="inline-form" id="marginScrapeForm">
+            <input name="url" type="url" placeholder="https://kaspi.kz/shop/p/..." style="flex:2 1 300px" required />
+            <button class="btn btn--ghost" type="submit">Заполнить цену</button>
+          </form>
+
+          <form id="marginCalcForm">
+            <div class="inline-form">
+              <input name="price" type="number" step="1" placeholder="Цена продажи на Kaspi, ₸" required style="flex:1 1 200px" />
+              <select name="kaspiTopCategory" id="marginCategorySelect" required style="flex:1 1 200px">
+                <option value="">Категория Kaspi</option>
+              </select>
+              <select name="deliveryZone">
+                <option value="kazakhstan">По Казахстану</option>
+                <option value="city">По городу</option>
+                <option value="express">Express</option>
+              </select>
+            </div>
+            <div class="inline-form">
+              <input name="price1688" type="number" step="0.01" placeholder="Цена 1688, ₸" value="0" />
+              <input name="cargoRatePerKg" type="number" step="0.01" placeholder="Карго, ₸/кг" value="1500" />
+              <input name="weightKg" type="number" step="0.01" placeholder="Вес, кг" value="0.5" />
+              <input name="packagingCost" type="number" step="0.01" placeholder="Упаковка, ₸" value="0" />
+              <input name="targetMarginPct" type="number" step="1" placeholder="Цель по марже, %" value="20" style="max-width:140px" />
+            </div>
+            <button class="btn btn--accent" type="submit">Посчитать маржу</button>
+          </form>
+
+          <div id="marginCalcResult"></div>
+        </div>
+      </section>
+
+      <!-- ============ НИШИ ============ -->
+      <section class="page" id="page-niches" hidden>
+        <div class="page__head"><h1>Ниши</h1><p>Самые востребованные категории и трендовые товары.</p></div>
+
+        <div class="panel panel--placeholder">
+          <div class="placeholder-icon">🎯</div>
+          <h2>Раздел в разработке</h2>
+          <p>
+            Честно: рейтинг категорий и трендовые товары «по всему Kaspi» (как у Northline) —
+            это отдельная большая функция. Она требует регулярно обходить каталог Kaspi
+            по всем категориям и считать спрос по <em>чужим</em> товарам, а не только по твоим —
+            это совсем другая задача, чем учёт юнит-экономики твоего магазина, и пока не реализована.
+          </p>
+          <p>
+            Когда будешь готов — можно добавить отдельным этапом: обход публичных страниц
+            категорий Kaspi по расписанию и сохранение снимков популярности товаров.
+          </p>
+        </div>
+      </section>
+
+      <!-- ============ ДЕМПИНГ ============ -->
+      <section class="page" id="page-demping" hidden>
+        <div class="page__head"><h1>Демпинг</h1><p>Автоматическое снижение цены на Kaspi по выбранной стратегии, с защитой минимальной цены.</p></div>
+
+        <div class="kpi-grid" id="dempingStats"></div>
+
+        <div class="panel">
+          <div class="panel__head"><h2>Добавить правило</h2></div>
+          <form class="inline-form" id="repricerRuleForm">
+            <select name="productId" id="repricerProductSelect" required>
+              <option value="">Выбери товар (с артикулом Kaspi)...</option>
+            </select>
+            <input name="kaspiProductUrl" type="url" placeholder="Ссылка на карточку товара kaspi.kz" required style="flex:2 1 220px" />
+            <select name="repriceStrategy">
+              <option value="FIRST_PLACE">Быть на 1-м месте</option>
+              <option value="MATCH_FIRST">Цена конкурента на 1 месте</option>
+              <option value="STICK_TO_FIRST">Прижиматься к первому</option>
+              <option value="SECOND_PLACE">Быть 2-м</option>
+            </select>
+            <input name="minPrice" type="number" step="1" placeholder="Мин. цена" required />
+            <input name="maxPrice" type="number" step="1" placeholder="Макс. цена (опц.)" />
+            <input name="repriceStep" type="number" step="1" placeholder="Шаг" value="1" />
+            <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--text-muted)">
+              <input type="checkbox" name="autoRepriceEnabled" checked /> Активно
+            </label>
+            <button class="btn btn--accent" type="submit">Добавить правило</button>
+          </form>
+        </div>
+
+        <div class="panel">
+          <div class="panel__head">
+            <h2>Правила демпинга</h2>
+            <button class="btn btn--ghost" id="runRepricerBtn">▶ Применить сейчас</button>
+          </div>
+          <p class="panel__hint" id="priceFeedHint">
+            Ссылку для автозагрузки цен укажи в кабинете Kaspi (Товары → Загрузить прайс-лист → автоматическая загрузка):
+            <code id="priceFeedUrl">/api/kaspi/price-feed.xml?token=...</code>
+          </p>
+          <div class="table-wrap">
+            <table class="table" id="repricerTable">
+              <thead>
+                <tr>
+                  <th>Товар</th><th>Стратегия</th><th class="num">Мин</th><th class="num">Макс</th>
+                  <th class="num">Шаг</th><th class="num">Текущая цена</th><th>Активно</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ УВЕДОМЛЕНИЯ ============ -->
+      <section class="page" id="page-notifications" hidden>
+        <div class="page__head"><h1>Уведомления</h1><p>Журнал фоновых задач: синхронизация с площадками и автобот цены.</p></div>
+
+        <div class="panel">
+          <div class="panel__head">
+            <h2>Последние события</h2>
+            <button class="btn btn--ghost" id="refreshNotificationsBtn">↻ Обновить</button>
+          </div>
+          <div id="notificationsList"></div>
+        </div>
+      </section>
+
+      <!-- ============ НАСТРОЙКИ ============ -->
+      <section class="page" id="page-settings" hidden>
+        <div class="page__head"><h1>Настройки</h1><p>Подключение к Kaspi-магазину, статус площадок и служебные ссылки.</p></div>
+
+        <div class="panel">
+          <div class="panel__head"><h2>Магазин Kaspi</h2></div>
+          <div id="kaspiStoreCurrent" class="panel__hint" style="margin-bottom:12px">Магазин ещё не добавлен.</div>
+          <form class="inline-form" id="kaspiStoreForm">
+            <input name="name" placeholder="Название магазина" required />
+            <input name="bin" placeholder="БИН (необязательно)" />
+            <input name="contactPhone" placeholder="Телефон (необязательно)" />
+            <input name="contactEmail" type="email" placeholder="Email (необязательно)" />
+            <input name="apiToken" type="password" placeholder="Токен (X-Auth-Token) — обязательно" required style="flex:2 1 240px" />
+            <input name="merchantUid" placeholder="Merchant ID (необязательно)" />
+            <button class="btn btn--accent" type="submit">Сохранить магазин</button>
+          </form>
+          <p class="panel__hint">
+            Токен создаётся в кабинете Kaspi: Магазин на Kaspi.kz → Настройки → API.
+            После сохранения он используется для всех запросов к Kaspi Seller API вместо переменной окружения.
+          </p>
+        </div>
+
+        <div class="panel">
+          <div class="panel__head"><h2>Магазин Ozon</h2></div>
+          <div id="ozonStoreCurrent" class="panel__hint" style="margin-bottom:12px">Магазин ещё не добавлен.</div>
+          <form class="inline-form" id="ozonStoreForm">
+            <input name="clientId" placeholder="Client-Id — только цифры, обязательно" pattern="[0-9]+" title="Client-Id состоит только из цифр — это числовой ID из кабинета Ozon" required />
+            <input name="apiKey" type="password" placeholder="Api-Key — обязательно" required style="flex:2 1 240px" />
+            <button class="btn btn--accent" type="submit">Сохранить / Подключить Ozon</button>
+          </form>
+          <p class="panel__hint">
+            Client-Id и Api-Key создаются в кабинете продавца Ozon: Настройки → Seller API.
+            Client-Id — это <strong>числовой</strong> ID (например, 123456), а не email и не название магазина.
+            После сохранения они используются для всех запросов к Ozon Seller API вместо переменных окружения.
+          </p>
+        </div>
+
+        <div class="panel">
+          <div class="panel__head"><h2>Подключение к площадкам</h2></div>
+          <div class="table-wrap">
+            <table class="table" id="connectionsTable">
+              <thead><tr><th>Площадка</th><th>Статус</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel__head"><h2>Служебные ссылки</h2></div>
+          <div class="settings-links">
+            <div class="settings-links__row">
+              <span>Автообновление цен для Kaspi (прайс-лист)</span>
+              <code id="settingsPriceFeedUrl">—</code>
+            </div>
+            <div class="settings-links__row">
+              <span>Фоновая синхронизация (для внешнего планировщика)</span>
+              <code>/api/cron/sync?secret=ВАШ_CRON_SECRET</code>
+            </div>
+            <div class="settings-links__row">
+              <span>Автобот цены (для внешнего планировщика)</span>
+              <code>/api/cron/reprice?secret=ВАШ_CRON_SECRET</code>
+            </div>
+            <div class="settings-links__row">
+              <span>"Подогрев" базы данных (для внешнего планировщика)</span>
+              <code>/api/cron/warm?secret=ВАШ_CRON_SECRET</code>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel__head"><h2>Расписание фоновых задач</h2></div>
+          <p id="settingsCronInfo" class="panel__hint">—</p>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="/dashboard.js"></script>
+</body>
+</html>
