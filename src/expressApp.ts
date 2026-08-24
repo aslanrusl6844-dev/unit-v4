@@ -14,6 +14,7 @@ import { priceFeedRouter } from './routes/priceFeed.routes';
 import { reviewsRouter } from './routes/reviews.routes';
 import { marginCalculatorRouter } from './routes/marginCalculator.routes';
 import { settingsRouter } from './routes/settings.routes';
+import { nichesRouter } from './routes/niches.routes';
 
 /**
  * Собранное Express-приложение без вызова .listen(). Используется двумя
@@ -94,6 +95,7 @@ app.use('/api/kaspi', priceFeedRouter);
 app.use('/api/reviews', reviewsRouter);
 app.use('/api/margin-calculator', marginCalculatorRouter);
 app.use('/api/settings', settingsRouter);
+app.use('/api/niches', nichesRouter);
 
 // Дашборд (статика) — актуально только для локальной разработки, см. комментарий выше.
 app.use(express.static(path.join(__dirname, '..', 'public')));

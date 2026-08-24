@@ -61,7 +61,7 @@ const PAGE_LOADERS = {
   finance: loadFinancePage,
   reviews: loadReviewsPage,
   margin: loadMarginPage,
-  niches: () => {}, // статичная заглушка, грузить нечего
+  niches: loadNichesPage,
   demping: loadDempingPage,
   notifications: loadNotificationsPage,
   settings: loadSettingsPage,
@@ -1451,6 +1451,100 @@ function wireMarginFormOnce() {
 async function loadMarginPage() {
   wireMarginFormOnce();
   await loadKaspiCategoriesIntoSelect(document.getElementById('marginCategorySelect'));
+}
+
+// =====================================================================
+// НИШИ (только Kaspi — MVP)
+// =====================================================================
+let nicheFormWired = false;
+
+function nicheVerdictLabel(verdict) {
+  if (verdict === 'strong') return { text: '✓ Сильная ниша', color: 'var(--accent)' };
+  if (verdict === 'medium') return { text: '~ Средняя ниша', color: 'var(--warn)' };
+  if (verdict === 'weak') return { text: '✕ Слабая ниша', color: 'var(--loss)' };
+  return { text: '? Недостаточно данных', color: 'var(--text-faint)' };
+}
+
+function renderNicheResult(r) {
+  const v = nicheVerdictLabel(r.verdict);
+  const el = document.getElementById('nicheResult');
+
+  const ownBlock = r.isOwnProduct && r.ownProductExactData ? `
+    <div class="panel" style="border-color:rgba(22,163,74,0.35);background:var(--accent-soft)">
+      <div class="panel__head"><h2>✓ Этот артикул уже есть в твоём каталоге</h2></div>
+      <p class="panel__hint">Ниже — точные цифры из реальной юнит-экономики (не оценка).</p>
+      <div class="kpi-grid">
+        ${kpiCardsHtml([
+          { label: 'Твоя цена', value: r.ownProductExactData.referencePrice != null ? fmtMoney(r.ownProductExactData.referencePrice) : '—' },
+          { label: 'Комиссия', value: r.ownProductExactData.estCommission != null ? fmtMoney(r.ownProductExactData.estCommission) : '—' },
+          { label: 'Логистика', value: r.ownProductExactData.estLogistics != null ? fmtMoney(r.ownProductExactData.estLogistics) : '—' },
+          { label: 'Налог', value: r.ownProductExactData.estTax != null ? fmtMoney(r.ownProductExactData.estTax) : '—' },
+          { label: 'К выводу с 1 шт', value: r.ownProductExactData.estPayout != null ? fmtMoney(r.ownProductExactData.estPayout) : '—', cls: (r.ownProductExactData.estPayout ?? 0) >= 0 ? 'pos' : 'neg', accent: true },
+          { label: 'Маржа после налога', value: r.ownProductExactData.estMarginAfterTaxPct != null ? fmtPct(r.ownProductExactData.estMarginAfterTaxPct) : '—' },
+        ])}
+      </div>
+    </div>
+  ` : '';
+
+  el.innerHTML = `
+    ${ownBlock}
+    <div class="panel">
+      <div class="panel__head">
+        <h2>${r.productName || 'Товар не распознан'}</h2>
+        <span style="font-weight:700;color:${v.color}">${v.text}</span>
+      </div>
+      <p class="panel__hint">${r.verdictReason}</p>
+      <p class="panel__hint" style="color:var(--warn)">⚠ ${r.dataQualityWarning}</p>
+
+      <div class="kpi-grid">
+        ${kpiCardsHtml([
+          { label: 'Категория', value: r.category || '—' },
+          { label: 'Продавцов на карточке', value: r.sellerCount ?? '—' },
+          { label: 'Диапазон цен', value: (r.priceMin != null && r.priceMax != null) ? `${fmtMoney(r.priceMin)} – ${fmtMoney(r.priceMax)}` : '—' },
+          { label: 'Рейтинг / отзывов', value: r.ratingValue != null ? `${r.ratingValue} ⭐ (${r.reviewCount ?? 0})` : '—' },
+        ])}
+      </div>
+
+      <div class="panel__head" style="margin-top:20px"><h2>Оценка за 30 дней (ориентировочно)</h2></div>
+      <div class="kpi-grid">
+        ${kpiCardsHtml([
+          { label: 'Продано, шт (оценка)', value: r.estimatedMonthlySales ?? '—' },
+          { label: 'Выручка (оценка)', value: r.estimatedMonthlyRevenue != null ? fmtMoney(r.estimatedMonthlyRevenue) : '—' },
+          { label: `Комиссия (${r.commissionRatePct ?? '—'}%)`, value: r.estimatedMonthlyCommission != null ? fmtMoney(r.estimatedMonthlyCommission) : '—' },
+          { label: 'Логистика (оценка)', value: r.estimatedMonthlyLogistics != null ? fmtMoney(r.estimatedMonthlyLogistics) : '—' },
+          { label: `Налог ИП ${r.taxRatePct}%`, value: r.estimatedMonthlyTax != null ? fmtMoney(r.estimatedMonthlyTax) : '—' },
+          { label: 'Чистая прибыль (оценка)', value: r.estimatedMonthlyNetProfit != null ? fmtMoney(r.estimatedMonthlyNetProfit) : '—', cls: (r.estimatedMonthlyNetProfit ?? 0) >= 0 ? 'pos' : 'neg', accent: true },
+        ])}
+      </div>
+    </div>
+  `;
+}
+
+function wireNicheFormOnce() {
+  if (nicheFormWired) return;
+  nicheFormWired = true;
+
+  document.getElementById('nicheAnalyzeForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const input = new FormData(e.target).get('input');
+    const btn = e.target.querySelector('button[type="submit"]');
+    const originalText = btn.textContent;
+    btn.textContent = '…'; btn.disabled = true;
+    document.getElementById('nicheResult').innerHTML = `<p class="panel__hint">Читаю страницу товара на kaspi.kz…</p>`;
+    try {
+      const result = await api('/niches/analyze', { method: 'POST', body: JSON.stringify({ input }) });
+      renderNicheResult(result);
+    } catch (err) {
+      document.getElementById('nicheResult').innerHTML = '';
+      alert('Не удалось проанализировать: ' + err.message);
+    } finally {
+      btn.textContent = originalText; btn.disabled = false;
+    }
+  });
+}
+
+async function loadNichesPage() {
+  wireNicheFormOnce();
 }
 
 // =====================================================================
