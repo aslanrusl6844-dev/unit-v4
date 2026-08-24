@@ -2,13 +2,17 @@ import { Router } from 'express';
 import dayjs from 'dayjs';
 import { getByCategory, getByProduct, getSummary, getSummaryByMarketplace, getTimeseries, getProductForecasts } from '../services/analytics.service';
 import { getTaxRatePct } from '../handlers/taxSettings';
+import { almatyStartOfDay, almatyEndOfDay, almatyNow, ALMATY_TZ } from '../utils/timezone';
 import { MarketplaceName } from '../types';
 
 export const analyticsRouter = Router();
 
+// ВАЖНО: границы дня считаются по часовому поясу Алматы (см.
+// src/utils/timezone.ts), а не по часовому поясу сервера (на Vercel это
+// UTC) — иначе заказы вечера по Алматы попадали не в тот календарный день.
 function parseRange(query: Record<string, string>) {
-  const to = query.to ? dayjs(query.to).endOf('day').toDate() : dayjs().endOf('day').toDate();
-  const from = query.from ? dayjs(query.from).startOf('day').toDate() : dayjs(to).subtract(30, 'day').startOf('day').toDate();
+  const to = query.to ? almatyEndOfDay(query.to) : almatyNow().endOf('day').toDate();
+  const from = query.from ? almatyStartOfDay(query.from) : dayjs(to).tz(ALMATY_TZ).subtract(30, 'day').startOf('day').toDate();
   const marketplace = query.marketplace as MarketplaceName | undefined;
   return { from, to, marketplace };
 }

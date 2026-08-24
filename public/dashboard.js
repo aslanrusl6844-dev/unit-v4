@@ -13,16 +13,47 @@ const fmtMoney = (n) => fmt.format(Math.round(n || 0)) + ' ₸';
 const fmtPct = (n) => (n || 0).toFixed(1) + '%';
 const mpLabel = (mp) => (mp === 'KASPI' ? 'Kaspi' : mp === 'OZON' ? 'Ozon' : 'WB');
 
-function todayISO(d = new Date()) { return d.toISOString().slice(0, 10); }
+/** Точная дата и время заказа — явно в часовом поясе Алматы (не в часовом
+ *  поясе браузера пользователя), чтобы всегда совпадало с тем, что видно
+ *  в Kaspi Pay/кабинете, независимо от того, где физически открыт браузер. */
+function fmtOrderDateTime(isoDate) {
+  return new Intl.DateTimeFormat('ru-RU', {
+    timeZone: 'Asia/Almaty',
+    day: '2-digit', month: '2-digit', year: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  }).format(new Date(isoDate));
+}
+
+// ВАЖНО: "сегодня"/"N дней назад" всегда считаются по часовому поясу
+// Алматы (UTC+5) — явно через Intl API, а не через toISOString() (UTC) или
+// локальное время браузера (может отличаться от Алматы). Раньше здесь
+// стоял d.toISOString().slice(0,10) — с полуночи до ~5 утра по Алматы это
+// возвращало ВЧЕРАШНЮЮ дату вместо сегодняшней (UTC ещё не перевалил за
+// полночь), из-за чего "сегодня" в Обзоре могло не совпадать с тем, что
+// реально видно в Kaspi Pay.
+function todayISO(d = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Almaty', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+}
+
+/** Календарная дата "N дней назад" от сегодняшнего дня по Алматы. Считаем
+ *  через UTC-арифметику над самой строкой даты (не через локальное время
+ *  браузера) — так результат не зависит от часового пояса устройства
+ *  пользователя и не может "съехать" на день туда-сюда у полуночи. */
+function almatyDateDaysAgo(days, fromDate = new Date()) {
+  const todayStr = todayISO(fromDate);
+  const [y, m, day] = todayStr.split('-').map(Number);
+  const utcDate = new Date(Date.UTC(y, m - 1, day));
+  utcDate.setUTCDate(utcDate.getUTCDate() - days);
+  return utcDate.toISOString().slice(0, 10);
+}
 
 function initDateRange() {
-  const to = new Date();
-  const from = new Date();
-  from.setDate(from.getDate() - 30);
-  document.getElementById('dateTo').value = todayISO(to);
-  document.getElementById('dateFrom').value = todayISO(from);
-  state.from = todayISO(from);
-  state.to = todayISO(to);
+  const toStr = todayISO();
+  const fromStr = almatyDateDaysAgo(30);
+  document.getElementById('dateTo').value = toStr;
+  document.getElementById('dateFrom').value = fromStr;
+  state.from = fromStr;
+  state.to = toStr;
 }
 
 async function api(path, opts = {}) {
@@ -385,7 +416,7 @@ async function loadOrders() {
       <td><input type="checkbox" data-order-id="${o.id}" ${selectedOrderIds.has(o.id) ? 'checked' : ''} /></td>
       <td>${o.externalId}</td>
       <td><span class="mp-tag"><i class="dot dot--${o.marketplace.toLowerCase()}"></i>${mpLabel(o.marketplace)}</span></td>
-      <td>${new Date(o.orderDate).toLocaleDateString('ru-RU')}</td>
+      <td>${fmtOrderDateTime(o.orderDate)}</td>
       <td>${o.status}</td>
       <td class="num">${fmtMoney(o.totalRevenue)}</td>
       <td>${orderActionCell(o)}</td>
@@ -1909,13 +1940,12 @@ document.querySelectorAll('.preset-group button').forEach((btn) => {
     document.querySelectorAll('.preset-group button').forEach((b) => b.classList.remove('is-active'));
     btn.classList.add('is-active');
     const days = Number(btn.dataset.days);
-    const to = new Date();
-    const from = new Date();
-    from.setDate(from.getDate() - days);
-    document.getElementById('dateTo').value = todayISO(to);
-    document.getElementById('dateFrom').value = todayISO(from);
-    state.from = todayISO(from);
-    state.to = todayISO(to);
+    const toStr = todayISO();
+    const fromStr = almatyDateDaysAgo(days);
+    document.getElementById('dateTo').value = toStr;
+    document.getElementById('dateFrom').value = fromStr;
+    state.from = fromStr;
+    state.to = toStr;
     reloadCurrentPage();
   });
 });

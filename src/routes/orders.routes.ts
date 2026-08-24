@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../db/prisma';
 import { kaspiClient } from '../integrations/kaspi.client';
+import { almatyStartOfDay, almatyEndOfDay } from '../utils/timezone';
 import { MarketplaceName } from '../types';
 
 export const ordersRouter = Router();
@@ -33,9 +34,17 @@ ordersRouter.get('/', async (req, res) => {
 
   const where: any = {};
   if (from || to) {
+    // ВАЖНО: границы дня — по часовому поясу Алматы (см. src/utils/timezone.ts),
+    // и "to" обязательно доводится до КОНЦА дня (23:59:59.999), а не до его
+    // начала — раньше здесь стоял просто new Date(to), который для строки
+    // "2026-08-24" даёт 2026-08-24T00:00:00 UTC = фактически САМОЕ НАЧАЛО
+    // дня, из-за чего почти все заказы "сегодняшнего" дня отрезались этим
+    // фильтром. Это же и было причиной, почему «Заказы» и «Обзор» показывали
+    // разный состав заказов за один и тот же период — они считали границы
+    // дня по-разному.
     where.orderDate = {};
-    if (from) where.orderDate.gte = new Date(from);
-    if (to) where.orderDate.lte = new Date(to);
+    if (from) where.orderDate.gte = almatyStartOfDay(from);
+    if (to) where.orderDate.lte = almatyEndOfDay(to);
   }
   if (marketplace) where.marketplace = marketplace as MarketplaceName;
   if (city) where.city = city;
@@ -182,7 +191,7 @@ ordersRouter.get('/print/waybills', async (req, res) => {
           <header>
             <h1>Накладная — заказ №${escapeHtml(o.externalId)}</h1>
             <div class="meta">
-              <span>Дата заказа: ${new Date(o.orderDate).toLocaleDateString('ru-RU')}</span>
+              <span>Дата заказа: ${new Date(o.orderDate).toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty' })}</span>
               <span>Город: ${escapeHtml(o.city ?? '—')}</span>
               <span>Доставка: ${escapeHtml(o.deliveryType ?? 'Kaspi Доставка')}</span>
               <span>Мест: ${o.numberOfSpace ?? 1}</span>
