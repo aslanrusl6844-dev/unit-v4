@@ -315,7 +315,11 @@ export interface ProductForecast {
   estTax: number | null; // налог ИП — от referencePrice, не от прибыли
   estPayout: number | null; // "к выводу" после налога
   estMarginAfterTaxPct: number | null; // маржа С УЧЁТОМ налога
+<<<<<<< HEAD
   source: 'kaspi-tariff' | 'kaspi-tariff-default' | 'ozon-tariff' | 'historical-average' | 'no-data';
+=======
+  source: 'kaspi-tariff' | 'kaspi-tariff-default' | 'historical-average' | 'no-data';
+>>>>>>> e8486ef7f59a6dd0d6c494f5cde8fdb3434200ca
 }
 
 export async function getProductForecasts(taxRatePct = 4): Promise<ProductForecast[]> {
@@ -447,6 +451,7 @@ export async function getProductForecasts(taxRatePct = 4): Promise<ProductForeca
       const referencePrice = p.ozonReferencePrice ?? null;
       if (referencePrice == null) {
         forecasts.push({ productId: p.id, marketplace: 'OZON', referencePrice: null, estCommission: null, estCommissionRate: null, estLogistics: null, estProfit: null, estMarginPct: null, estTax: null, estPayout: null, estMarginAfterTaxPct: null, source: 'no-data' });
+<<<<<<< HEAD
       } else if (p.ozonCommissionRatePct != null) {
         // Точная тарифная сетка Ozon (см. fetchPrices в ozon.client.ts) —
         // та же цифра, что видна в кабинете Ozon → Цены и акции →
@@ -472,6 +477,9 @@ export async function getProductForecasts(taxRatePct = 4): Promise<ProductForeca
       } else {
         // Тариф ещё не синхронизирован (кнопка «Каталог Ozon» не нажималась
         // после появления этой функции) — запасной вариант, как раньше.
+=======
+      } else {
+>>>>>>> e8486ef7f59a6dd0d6c494f5cde8fdb3434200ca
         forecasts.push(historicalOrNoData(p.id, 'OZON', referencePrice, totalCost));
       }
     }

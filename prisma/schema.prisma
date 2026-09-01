@@ -102,6 +102,7 @@ model Product {
   ozonReferencePriceUpdatedAt  DateTime?
   wbReferencePrice             Float?
   wbReferencePriceUpdatedAt    DateTime?
+<<<<<<< HEAD
 
   // --- Предварительные расходы Ozon по тарифу (POST /v5/product/info/prices) ---
   // Это ТА ЖЕ тарифная сетка, что видна в кабинете Ozon → Цены и акции →
@@ -117,6 +118,8 @@ model Product {
   ozonAcquiringAmount       Float?   // acquiring — эквайринг, ₸
   ozonTariffsUpdatedAt      DateTime?
 
+=======
+>>>>>>> e8486ef7f59a6dd0d6c494f5cde8fdb3434200ca
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 

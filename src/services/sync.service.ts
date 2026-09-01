@@ -380,14 +380,18 @@ export async function syncOzonCatalog() {
   }
 
   const catalog = await ozonClient.fetchCatalog();
+<<<<<<< HEAD
   // Тарифы (комиссия/логистика) — отдельный запрос по всем найденным
   // offer_id разом, чтобы не делать по одному запросу на каждый товар.
   const prices = await ozonClient.fetchPrices(catalog.map((item) => item.offerId));
 
+=======
+>>>>>>> e8486ef7f59a6dd0d6c494f5cde8fdb3434200ca
   let created = 0;
   let updated = 0;
 
   for (const item of catalog) {
+<<<<<<< HEAD
     const tariff = prices.get(item.offerId);
     const tariffData = tariff
       ? {
@@ -403,6 +407,8 @@ export async function syncOzonCatalog() {
     // свежее, чем то, что вернул /v3/product/info/list в fetchCatalog).
     const referencePrice = tariff?.price ?? item.price;
 
+=======
+>>>>>>> e8486ef7f59a6dd0d6c494f5cde8fdb3434200ca
     const existing = await prisma.product.findFirst({ where: { ozonOfferId: item.offerId } });
     if (existing) {
       await prisma.product.update({
@@ -415,8 +421,12 @@ export async function syncOzonCatalog() {
           // Живая цена из API Ozon — самая надёжная referencePrice, какая
           // у нас есть (точнее, чем цена последней продажи, которая могла
           // устареть). Обновляем её всегда, если Ozon её прислал.
+<<<<<<< HEAD
           ...(referencePrice ? { ozonReferencePrice: referencePrice, ozonReferencePriceUpdatedAt: new Date() } : {}),
           ...tariffData,
+=======
+          ...(item.price ? { ozonReferencePrice: item.price, ozonReferencePriceUpdatedAt: new Date() } : {}),
+>>>>>>> e8486ef7f59a6dd0d6c494f5cde8fdb3434200ca
         },
       });
       updated += 1;
@@ -428,15 +438,23 @@ export async function syncOzonCatalog() {
           costPrice: 0,
           ozonOfferId: item.offerId,
           active: item.active,
+<<<<<<< HEAD
           ...(referencePrice ? { ozonReferencePrice: referencePrice, ozonReferencePriceUpdatedAt: new Date() } : {}),
           ...tariffData,
+=======
+          ...(item.price ? { ozonReferencePrice: item.price, ozonReferencePriceUpdatedAt: new Date() } : {}),
+>>>>>>> e8486ef7f59a6dd0d6c494f5cde8fdb3434200ca
         },
       });
       created += 1;
     }
   }
 
+<<<<<<< HEAD
   logger.info(`[Ozon] Каталог синхронизирован: создано ${created}, обновлено ${updated}, тарифы получены для ${prices.size} товаров`);
+=======
+  logger.info(`[Ozon] Каталог синхронизирован: создано ${created}, обновлено ${updated}`);
+>>>>>>> e8486ef7f59a6dd0d6c494f5cde8fdb3434200ca
   return { created, updated };
 }
 
