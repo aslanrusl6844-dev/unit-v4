@@ -1,5 +1,8 @@
 import { prisma } from '../db/prisma';
 import { MarketplaceName, UnitEconomicsSummary } from '../types';
+import { calcKaspiCommissionAmount, getKaspiCommissionRate } from '../integrations/kaspi.categories';
+import { calculateKaspiDeliveryCost } from '../integrations/kaspi.delivery';
+import { env } from '../config/env';
 
 interface RangeFilter {
   from: Date;
@@ -14,7 +17,7 @@ function whereClause(filter: RangeFilter) {
   };
 }
 
-export async function getSummary(filter: RangeFilter): Promise<UnitEconomicsSummary> {
+export async function getSummary(filter: RangeFilter, taxRatePct = 4): Promise<UnitEconomicsSummary> {
   const orders = await prisma.order.findMany({
     where: whereClause(filter),
     include: { items: true },
@@ -62,10 +65,16 @@ export async function getSummary(filter: RangeFilter): Promise<UnitEconomicsSumm
 
   const grossProfit = revenue - cogs;
   const totalExpenses = cogs + marketplaceCommission + logisticsCost + acquiringCost + otherFees + adSpend + manualExpenses;
-  const netProfit = revenue - totalExpenses;
+  const netProfit = revenue - totalExpenses; // "прибыль до налога" — считалась так и раньше, поле не переименовываю
   const marginPct = revenue > 0 ? (netProfit / revenue) * 100 : 0;
   const roiPct = totalExpenses > 0 ? (netProfit / totalExpenses) * 100 : 0;
   const aov = orders.length > 0 ? revenue / orders.length : 0;
+
+  // Налог ИП — от ВЫРУЧКИ (не от прибыли и не от суммы после комиссии),
+  // как явно попросил пользователь. Ставка настраивается в «Настройках»
+  // (по умолчанию 4%).
+  const taxAmount = revenue * (taxRatePct / 100);
+  const payout = netProfit - taxAmount; // "к выводу" — прибыль до налога минус налог
 
   return {
     ordersCount: orders.length,
@@ -83,29 +92,75 @@ export async function getSummary(filter: RangeFilter): Promise<UnitEconomicsSumm
     marginPct: round2(marginPct),
     roiPct: round2(roiPct),
     aov: round2(aov),
+    taxRatePct,
+    taxAmount: round2(taxAmount),
+    payout: round2(payout),
   };
 }
 
-export async function getSummaryByMarketplace(filter: Omit<RangeFilter, 'marketplace'>) {
+export async function getSummaryByMarketplace(filter: Omit<RangeFilter, 'marketplace'>, taxRatePct = 4) {
   const [kaspi, ozon, wb, total] = await Promise.all([
-    getSummary({ ...filter, marketplace: 'KASPI' }),
-    getSummary({ ...filter, marketplace: 'OZON' }),
-    getSummary({ ...filter, marketplace: 'WB' }),
-    getSummary(filter),
+    getSummary({ ...filter, marketplace: 'KASPI' }, taxRatePct),
+    getSummary({ ...filter, marketplace: 'OZON' }, taxRatePct),
+    getSummary({ ...filter, marketplace: 'WB' }, taxRatePct),
+    getSummary(filter, taxRatePct),
   ]);
   return { kaspi, ozon, wb, total };
 }
 
-export async function getByProduct(filter: RangeFilter) {
+export async function getByCategory(filter: RangeFilter) {
   const orders = await prisma.order.findMany({
     where: whereClause(filter),
     include: { items: { include: { product: true } } },
   });
 
+  const map = new Map<string, { category: string; quantity: number; revenue: number }>();
+
+  for (const order of orders) {
+    for (const item of order.items) {
+      const category = item.product?.kaspiTopCategory || 'Без категории';
+      const entry = map.get(category) ?? { category, quantity: 0, revenue: 0 };
+      entry.quantity += item.quantity;
+      entry.revenue += item.price * item.quantity;
+      map.set(category, entry);
+    }
+  }
+
+  return Array.from(map.values())
+    .map((e) => ({ ...e, revenue: round2(e.revenue) }))
+    .sort((a, b) => b.revenue - a.revenue);
+}
+
+export async function getByProduct(filter: RangeFilter, taxRatePct = 4) {
+  const orders = await prisma.order.findMany({
+    where: whereClause(filter),
+    include: { items: { include: { product: true } } },
+  });
+
+  const adSpendAgg = await prisma.adSpend.aggregate({
+    where: {
+      date: { gte: filter.from, lte: filter.to },
+      ...(filter.marketplace ? { marketplace: filter.marketplace } : {}),
+    },
+    _sum: { amount: true },
+  });
+  const totalAdSpend = adSpendAgg._sum.amount ?? 0;
+
   const map = new Map<
     string,
-    { sku: string; name: string; quantity: number; revenue: number; cogs: number; profit: number }
+    {
+      sku: string;
+      name: string;
+      quantity: number;
+      avgPrice: number;
+      revenue: number;
+      cogs: number;
+      commission: number;
+      logistics: number;
+    }
   >();
+
+  let grandTotalRevenue = 0;
 
   for (const order of orders) {
     for (const item of order.items) {
@@ -114,29 +169,72 @@ export async function getByProduct(filter: RangeFilter) {
         sku: item.product?.sku ?? item.externalSku,
         name: item.name,
         quantity: 0,
+        avgPrice: 0,
         revenue: 0,
         cogs: 0,
-        profit: 0,
+        commission: 0,
+        logistics: 0,
       };
       const itemRevenue = item.price * item.quantity;
       const itemCogs = item.costPrice * item.quantity;
+      // commission/itemLogistics уже точно посчитаны и сохранены на уровне
+      // позиции в момент синхронизации (см. sync.service.ts) — здесь просто
+      // суммируем готовые значения, никакой пропорции/восстановления задним
+      // числом больше не нужно.
       entry.quantity += item.quantity;
       entry.revenue += itemRevenue;
       entry.cogs += itemCogs;
-      entry.profit += itemRevenue - itemCogs;
+      entry.commission += item.commission;
+      entry.logistics += item.itemLogistics;
+      grandTotalRevenue += itemRevenue;
       map.set(key, entry);
     }
   }
 
+  // Реклама распределяется между товарами ПРОПОРЦИОНАЛЬНО ВЫРУЧКЕ (не
+  // количеству штук) — так честнее экономически: товар, который принёс
+  // больше денег, "нёс" на себе и больше рекламного бюджета, независимо от
+  // того, сколько единиц было продано. Дешёвый товар, проданный много раз
+  // на ту же сумму, что и дорогой — один раз, получит одинаковую долю
+  // рекламы, что и отражает реальный вклад в оборот.
   return Array.from(map.values())
-    .map((e) => ({
-      ...e,
-      revenue: round2(e.revenue),
-      cogs: round2(e.cogs),
-      profit: round2(e.profit),
-      marginPct: e.revenue > 0 ? round2((e.profit / e.revenue) * 100) : 0,
-    }))
-    .sort((a, b) => b.revenue - a.revenue);
+    .map((e) => {
+      const adSpendShare = grandTotalRevenue > 0 ? (e.revenue / grandTotalRevenue) * totalAdSpend : 0;
+      const netProfit = e.revenue - e.cogs - e.commission - e.logistics - adSpendShare; // прибыль ДО налога
+      // Налог ИП — от ВЫРУЧКИ этого товара (не от прибыли), та же ставка,
+      // что и в getSummary — поэтому сумма налога по всем товарам сходится
+      // с общим налогом в «Финансы» (обе функции считают его от одной и
+      // той же базы — суммы item.price*item.quantity).
+      const tax = e.revenue * (taxRatePct / 100);
+      const payout = netProfit - tax; // "к выводу" по этому товару
+      return {
+        sku: e.sku,
+        name: e.name,
+        quantity: e.quantity,
+        avgPrice: e.quantity > 0 ? round2(e.revenue / e.quantity) : 0,
+        revenue: round2(e.revenue),
+        cogs: round2(e.cogs),
+        commission: round2(e.commission),
+        // Эффективная ставка комиссии за период — % от выручки. Если в
+        // период попали продажи по разным ценам/категориям — это средняя
+        // фактическая ставка, не единая "official rate" (это нормально —
+        // именно так и есть, комиссия реально считается по факту).
+        commissionRate: e.revenue > 0 ? round2((e.commission / e.revenue) * 100) : 0,
+        logistics: round2(e.logistics),
+        adSpend: round2(adSpendShare),
+        netProfit: round2(netProfit),
+        // profit — оставлен для обратной совместимости с местами, которые
+        // уже используют это поле (Обзор, старая версия таблицы товаров);
+        // значение то же самое, что netProfit (прибыль ДО налога).
+        profit: round2(netProfit),
+        marginPct: e.revenue > 0 ? round2((netProfit / e.revenue) * 100) : 0,
+        tax: round2(tax),
+        taxRatePct,
+        payout: round2(payout),
+        marginAfterTaxPct: e.revenue > 0 ? round2((payout / e.revenue) * 100) : 0,
+      };
+    })
+    .sort((a, b) => b.netProfit - a.netProfit);
 }
 
 export async function getTimeseries(filter: RangeFilter, groupBy: 'day' | 'week' | 'month' = 'day') {
@@ -182,4 +280,212 @@ export async function getTimeseries(filter: RangeFilter, groupBy: 'day' | 'week'
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+/**
+ * ПРОГНОЗНАЯ юнит-экономика по каталогу — ОТДЕЛЬНО ПО КАЖДОЙ ПЛОЩАДКЕ,
+ * оценка "если продать по текущей цене прямо сейчас", даже если по
+ * товару на этой площадке ещё не было ни одной продажи.
+ *
+ * У каждой площадки — свои поля цены (kaspiReferencePrice/ozonReferencePrice/
+ * wbReferencePrice) и честно РАЗНЫЙ источник оценки комиссии/логистики,
+ * потому что у нас нет одинаково надёжных данных по всем трём:
+ *
+ *  - Kaspi (если указана категория): точный расчёт по официальной
+ *    тарифной таблице (та же формула, что при синхронизации заказов) —
+ *    это НАСТОЯЩАЯ оценка, не статистика по прошлым продажам, работает
+ *    даже с нуля продаж на Kaspi.
+ *  - Ozon / WB (и Kaspi без указанной категории): официальных тарифных
+ *    таблиц у нас для них нет — поэтому оценка строится по СРЕДНЕЙ
+ *    фактической ставке комиссии/логистики (% от цены) из уже
+ *    состоявшихся продаж ЭТОГО ЖЕ товара НА ЭТОЙ ЖЕ площадке (ставки не
+ *    смешиваются между площадками — у Ozon и WB разные комиссии). Если
+ *    продаж на этой площадке вообще не было — честно возвращаем
+ *    "нет данных", а не выдуманное число.
+ */
+export interface ProductForecast {
+  productId: string;
+  marketplace: MarketplaceName;
+  referencePrice: number | null;
+  estCommission: number | null;
+  estCommissionRate: number | null; // ставка комиссии в %, для отображения "сумма (ставка%)"
+  estLogistics: number | null;
+  estProfit: number | null; // прибыль ДО налога
+  estMarginPct: number | null; // маржа ДО налога
+  estTax: number | null; // налог ИП — от referencePrice, не от прибыли
+  estPayout: number | null; // "к выводу" после налога
+  estMarginAfterTaxPct: number | null; // маржа С УЧЁТОМ налога
+  source: 'kaspi-tariff' | 'kaspi-tariff-default' | 'ozon-tariff' | 'historical-average' | 'no-data';
+}
+
+export async function getProductForecasts(taxRatePct = 4): Promise<ProductForecast[]> {
+  const products = await prisma.product.findMany();
+
+  // Средняя фактическая ставка комиссии/логистики (доля от цены) по
+  // каждому товару, ОТДЕЛЬНО по каждой площадке — считаем один раз по
+  // всем позициям заказов сразу, а не отдельным запросом на каждый товар.
+  const items = await prisma.orderItem.findMany({
+    where: { productId: { not: null }, price: { gt: 0 } },
+    select: { productId: true, price: true, commission: true, itemLogistics: true, order: { select: { marketplace: true } } },
+  });
+  const rateStats = new Map<string, { commissionRateSum: number; logisticsRateSum: number; count: number }>();
+  for (const item of items) {
+    if (!item.productId) continue;
+    const key = `${item.productId}:${item.order.marketplace}`;
+    const entry = rateStats.get(key) ?? { commissionRateSum: 0, logisticsRateSum: 0, count: 0 };
+    entry.commissionRateSum += item.commission / item.price;
+    entry.logisticsRateSum += item.itemLogistics / item.price;
+    entry.count += 1;
+    rateStats.set(key, entry);
+  }
+
+  /** Налог ИП — от referencePrice (не от прибыли), плюс "к выводу" и маржа с учётом налога. */
+  function taxFields(referencePrice: number | null, estProfit: number | null) {
+    if (referencePrice == null || estProfit == null) {
+      return { estTax: null, estPayout: null, estMarginAfterTaxPct: null };
+    }
+    const estTax = referencePrice * (taxRatePct / 100);
+    const estPayout = estProfit - estTax;
+    return {
+      estTax: round2(estTax),
+      estPayout: round2(estPayout),
+      estMarginAfterTaxPct: referencePrice > 0 ? round2((estPayout / referencePrice) * 100) : 0,
+    };
+  }
+
+  function historicalOrNoData(
+    productId: string,
+    marketplace: MarketplaceName,
+    referencePrice: number,
+    totalCost: number,
+  ): ProductForecast {
+    const stats = rateStats.get(`${productId}:${marketplace}`);
+    if (stats && stats.count > 0) {
+      const avgCommissionRate = stats.commissionRateSum / stats.count;
+      const estCommission = referencePrice * avgCommissionRate;
+      const estLogistics = referencePrice * (stats.logisticsRateSum / stats.count);
+      const estProfit = referencePrice - totalCost - estCommission - estLogistics;
+      return {
+        productId,
+        marketplace,
+        referencePrice,
+        estCommission: round2(estCommission),
+        estCommissionRate: round2(avgCommissionRate * 100),
+        estLogistics: round2(estLogistics),
+        estProfit: round2(estProfit),
+        estMarginPct: referencePrice > 0 ? round2((estProfit / referencePrice) * 100) : 0,
+        ...taxFields(referencePrice, round2(estProfit)),
+        source: 'historical-average',
+      };
+    }
+    // Совсем нет данных для оценки комиссии/логистики на ЭТОЙ площадке
+    // (ни тарифа, ни истории продаж здесь) — честно показываем только
+    // цену и себестоимость, не выдумываем комиссию. Налог всё равно можно
+    // посчитать (он не зависит от комиссии), поэтому считаем его и тут.
+    const estProfitNoData = round2(referencePrice - totalCost);
+    return {
+      productId,
+      marketplace,
+      referencePrice,
+      estCommission: null,
+      estCommissionRate: null,
+      estLogistics: null,
+      estProfit: estProfitNoData,
+      estMarginPct: null,
+      ...taxFields(referencePrice, estProfitNoData),
+      source: 'no-data',
+    };
+  }
+
+  const forecasts: ProductForecast[] = [];
+
+  for (const p of products) {
+    const totalCost = p.costPrice + p.packagingCost;
+
+    // --- Kaspi ---
+    if (p.kaspiSku) {
+      const referencePrice = p.kaspiReferencePrice ?? null;
+      if (referencePrice == null) {
+        forecasts.push({ productId: p.id, marketplace: 'KASPI', referencePrice: null, estCommission: null, estCommissionRate: null, estLogistics: null, estProfit: null, estMarginPct: null, estTax: null, estPayout: null, estMarginAfterTaxPct: null, source: 'no-data' });
+      } else {
+        // Точный тариф Kaspi — не статистика, работает даже с нуля продаж.
+        // Верхняя категория не обязательна: если её нет, но есть leaf
+        // (например, автоматически подтянутая из данных заказа Kaspi),
+        // getKaspiCommissionRate сама найдёт точную ставку по leaf, а если
+        // вообще ничего не известно — применит безопасный дефолт 12.5%
+        // (это ставка у большинства категорий Kaspi, так что даже без
+        // категории оценка обычно верна, просто помечаем её иначе — ~).
+        const commissionRate = getKaspiCommissionRate({
+          topCategory: p.kaspiTopCategory ?? '',
+          leafCategory: p.kaspiLeafCategory ?? undefined,
+        });
+        const estCommission = calcKaspiCommissionAmount(referencePrice, {
+          topCategory: p.kaspiTopCategory ?? '',
+          leafCategory: p.kaspiLeafCategory ?? undefined,
+        });
+        // Для прогноза (ещё нет реального заказа) предполагаем доставку
+        // Kaspi Доставкой по умолчанию — это наиболее частый случай.
+        const estLogistics = calculateKaspiDeliveryCost(referencePrice, p.weightKg, env.kaspi.defaultDeliveryZone);
+        const estProfit = round2(referencePrice - totalCost - estCommission - estLogistics);
+        forecasts.push({
+          productId: p.id,
+          marketplace: 'KASPI',
+          referencePrice,
+          estCommission: round2(estCommission),
+          estCommissionRate: commissionRate,
+          estLogistics: round2(estLogistics),
+          estProfit,
+          estMarginPct: referencePrice > 0 ? round2((estProfit / referencePrice) * 100) : 0,
+          ...taxFields(referencePrice, estProfit),
+          source: (p.kaspiTopCategory || p.kaspiLeafCategory) ? 'kaspi-tariff' : 'kaspi-tariff-default',
+        });
+      }
+    }
+
+    // --- Ozon ---
+    if (p.ozonOfferId) {
+      const referencePrice = p.ozonReferencePrice ?? null;
+      if (referencePrice == null) {
+        forecasts.push({ productId: p.id, marketplace: 'OZON', referencePrice: null, estCommission: null, estCommissionRate: null, estLogistics: null, estProfit: null, estMarginPct: null, estTax: null, estPayout: null, estMarginAfterTaxPct: null, source: 'no-data' });
+      } else if (p.ozonCommissionRatePct != null) {
+        // Точная тарифная сетка Ozon (см. fetchPrices в ozon.client.ts) —
+        // та же цифра, что видна в кабинете Ozon → Цены и акции →
+        // Управление ценами. ПРЕДВАРИТЕЛЬНАЯ (не факт по продаже), но не
+        // статистика "в среднем по прошлым продажам", а актуальный тариф.
+        // Логистика = магистральная логистика + последняя миля (две строки
+        // кабинета Ozon объединены здесь в одну колонку).
+        const estCommission = referencePrice * (p.ozonCommissionRatePct / 100);
+        const estLogistics = (p.ozonLogisticsAmount ?? 0) + (p.ozonLastMileAmount ?? 0);
+        const estProfit = round2(referencePrice - totalCost - estCommission - estLogistics);
+        forecasts.push({
+          productId: p.id,
+          marketplace: 'OZON',
+          referencePrice,
+          estCommission: round2(estCommission),
+          estCommissionRate: round2(p.ozonCommissionRatePct),
+          estLogistics: round2(estLogistics),
+          estProfit,
+          estMarginPct: referencePrice > 0 ? round2((estProfit / referencePrice) * 100) : 0,
+          ...taxFields(referencePrice, estProfit),
+          source: 'ozon-tariff',
+        });
+      } else {
+        // Тариф ещё не синхронизирован (кнопка «Каталог Ozon» не нажималась
+        // после появления этой функции) — запасной вариант, как раньше.
+        forecasts.push(historicalOrNoData(p.id, 'OZON', referencePrice, totalCost));
+      }
+    }
+
+    // --- Wildberries ---
+    if (p.wbArticle) {
+      const referencePrice = p.wbReferencePrice ?? null;
+      if (referencePrice == null) {
+        forecasts.push({ productId: p.id, marketplace: 'WB', referencePrice: null, estCommission: null, estCommissionRate: null, estLogistics: null, estProfit: null, estMarginPct: null, estTax: null, estPayout: null, estMarginAfterTaxPct: null, source: 'no-data' });
+      } else {
+        forecasts.push(historicalOrNoData(p.id, 'WB', referencePrice, totalCost));
+      }
+    }
+  }
+
+  return forecasts;
 }

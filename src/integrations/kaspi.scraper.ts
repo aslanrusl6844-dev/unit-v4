@@ -27,6 +27,7 @@ export interface ProductPageInfo {
   price?: number;
   ratingValue?: number;
   reviewCount?: number;
+  category?: string;
 }
 
 /**
@@ -59,6 +60,22 @@ export async function fetchProductPageInfo(productUrl: string): Promise<ProductP
             if (item.aggregateRating) {
               result.ratingValue = Number(item.aggregateRating.ratingValue) || undefined;
               result.reviewCount = Number(item.aggregateRating.reviewCount ?? item.aggregateRating.ratingCount) || undefined;
+            }
+            if (item.category && typeof item.category === 'string') {
+              result.category = item.category;
+            }
+          }
+          // Хлебные крошки (BreadcrumbList) — часто более надёжный источник
+          // категории, чем поле category внутри Product (которое у Kaspi
+          // не всегда заполнено). Берём предпоследний уровень — последний
+          // обычно совпадает с названием самого товара, не категорией.
+          if (item['@type'] === 'BreadcrumbList' && Array.isArray(item.itemListElement)) {
+            const crumbs = item.itemListElement
+              .sort((a: any, b: any) => (a.position ?? 0) - (b.position ?? 0))
+              .map((c: any) => c.name || c.item?.name)
+              .filter(Boolean);
+            if (crumbs.length >= 2 && !result.category) {
+              result.category = crumbs[crumbs.length - 2];
             }
           }
         }

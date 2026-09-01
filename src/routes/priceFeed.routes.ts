@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { prisma } from '../db/prisma';
 import { env } from '../config/env';
+import { getKaspiCredentials } from '../integrations/kaspi.client';
 import { logger } from '../utils/logger';
 
 export const priceFeedRouter = Router();
@@ -28,6 +29,9 @@ priceFeedRouter.get('/price-feed.xml', async (req, res) => {
     where: { kaspiSku: { not: null }, currentKaspiPrice: { not: null }, active: true },
   });
 
+  const creds = await getKaspiCredentials();
+  const merchantUid = creds?.merchantUid || 'MyShop';
+
   const offers = products
     .map(
       (p) => `  <offer sku="${escapeXml(p.kaspiSku!)}">
@@ -38,8 +42,8 @@ priceFeedRouter.get('/price-feed.xml', async (req, res) => {
 
   const xml = `<?xml version="1.0" encoding="utf-8"?>
 <kaspi_catalog date="${new Date().toISOString()}" xmlns="kaspiShopping" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="kaspiShopping http://kaspi.kz/kaspishopping.xsd">
-  <company>${escapeXml(env.kaspi.merchantUid || 'MyShop')}</company>
-  <merchantid>${escapeXml(env.kaspi.merchantUid || '')}</merchantid>
+  <company>${escapeXml(merchantUid)}</company>
+  <merchantid>${escapeXml(merchantUid)}</merchantid>
   <offers>
 ${offers}
   </offers>

@@ -1,6 +1,7 @@
 import axios, { AxiosInstance } from 'axios';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
+import { prisma } from '../db/prisma';
 import { NormalizedOrder, NormalizedOrderItem } from '../types';
 
 /**
@@ -11,7 +12,29 @@ import { NormalizedOrder, NormalizedOrderItem } from '../types';
  * а реальные удержания (комиссия, логистика, эквайринг) — через
  * POST /v3/finance/transaction/list, т.к. в самом заказе комиссия не всегда
  * отражена финально (может меняться после начисления).
+ *
+ * Client-Id/Api-Key берутся ДИНАМИЧЕСКИ: сначала пробуем найти сохранённый
+ * магазин в базе (форма в разделе «Настройки»), и только если его нет —
+ * используем OZON_CLIENT_ID/OZON_API_KEY из переменных окружения (для
+ * обратной совместимости с тем, кто настраивал сервер до появления формы).
  */
+
+interface OzonCredentials {
+  clientId: string;
+  apiKey: string;
+  baseUrl: string;
+}
+
+async function getOzonCredentials(): Promise<OzonCredentials | null> {
+  const store = await prisma.ozonStore.findFirst({ orderBy: { updatedAt: 'desc' } });
+  if (store?.clientId && store?.apiKey) {
+    return { clientId: store.clientId, apiKey: store.apiKey, baseUrl: env.ozon.baseUrl };
+  }
+  if (env.ozon.clientId && env.ozon.apiKey) {
+    return { clientId: env.ozon.clientId, apiKey: env.ozon.apiKey, baseUrl: env.ozon.baseUrl };
+  }
+  return null;
+}
 
 interface OzonPostingProduct {
   sku: number;
@@ -46,27 +69,176 @@ interface OzonFinanceTransaction {
 }
 
 export class OzonClient {
-  private http: AxiosInstance;
+  async isConfigured(): Promise<boolean> {
+    const creds = await getOzonCredentials();
+    return Boolean(creds?.clientId && creds?.apiKey);
+  }
 
-  constructor() {
-    this.http = axios.create({
-      baseURL: env.ozon.baseUrl,
+  private async getHttp(): Promise<AxiosInstance> {
+    const creds = await getOzonCredentials();
+    if (!creds) {
+      throw new Error('Ozon API не настроен: добавьте магазин в разделе «Настройки» или задайте OZON_CLIENT_ID/OZON_API_KEY в .env');
+    }
+    return axios.create({
+      baseURL: creds.baseUrl,
       headers: {
-        'Client-Id': env.ozon.clientId,
-        'Api-Key': env.ozon.apiKey,
+        'Client-Id': creds.clientId,
+        'Api-Key': creds.apiKey,
         'Content-Type': 'application/json',
       },
       timeout: 20000,
     });
   }
 
-  get isConfigured() {
-    return env.ozon.isConfigured;
+  /**
+   * Полный каталог товаров, СЕЙЧАС стоящих на продаже (не из заказов, а из
+   * собственного метода Ozon "список товаров"):
+   *   POST /v3/product/list — постранично отдаёт {product_id, offer_id}
+   *     (v2/product/list официально отключён Ozon 09.02.2025 — используем
+   *     актуальную v3-версию, иначе получаем "404 page not found")
+   *   POST /v3/product/info/list — по списку id отдаёт name/статус
+   *     (v2/product/info(/list) официально отключён Ozon 17.02.2025)
+   * filter.visibility — судя по точному тексту ошибки Ozon ("invalid value
+   * for enum field visibility: [" — ошибка ровно на символе "[") это
+   * ОБЫЧНАЯ СТРОКА (enum), а не массив, как я ошибочно поставил в прошлый
+   * раз. Отправляем строкой "VISIBLE" — "сейчас видны покупателям", а не
+   * вообще все когда-либо созданные товары (включая давно снятые с продажи).
+   * Разбор ответа сделан устойчивым к структуре — проверяет и
+   * data.result.items, и data.items — на случай мелких отличий между
+   * версиями API.
+   */
+  async fetchCatalog(): Promise<Array<{ offerId: string; name: string; active: boolean; price?: number }>> {
+    const http = await this.getHttp();
+    const idPairs: Array<{ productId: number; offerId: string }> = [];
+    let lastId = '';
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      let data: any;
+      try {
+        const response = await http.post('/v3/product/list', {
+          filter: { visibility: 'VISIBLE' },
+          last_id: lastId,
+          limit: 100,
+        });
+        data = response.data;
+      } catch (err: any) {
+        const ozonErrorBody = err?.response?.data;
+        logger.error({ status: err?.response?.status, body: ozonErrorBody }, '[Ozon] Ошибка запроса списка товаров');
+        throw new Error(`Ozon API вернул ошибку ${err?.response?.status ?? ''} при запросе каталога: ${JSON.stringify(ozonErrorBody) || err?.message}`);
+      }
+
+      const result = data.result ?? data;
+      const items: Array<{ product_id: number; offer_id: string }> = result?.items ?? [];
+      items.forEach((i) => idPairs.push({ productId: i.product_id, offerId: i.offer_id }));
+
+      lastId = result?.last_id ?? '';
+      if (!items.length || !lastId) break;
+    }
+
+    logger.info(`[Ozon] В каталоге товаров (visibility=VISIBLE): ${idPairs.length}`);
+
+    // Название и точный статус (archived) добираем пачками по 100 через info/list.
+    const catalog: Array<{ offerId: string; name: string; active: boolean; price?: number }> = [];
+    for (let i = 0; i < idPairs.length; i += 100) {
+      const chunk = idPairs.slice(i, i + 100);
+      try {
+        const { data } = await http.post('/v3/product/info/list', {
+          offer_id: chunk.map((c) => c.offerId),
+        });
+        const result = data.result ?? data;
+        const items: Array<{ offer_id: string; name?: string; archived?: boolean; price?: string }> = result?.items ?? [];
+        items.forEach((item) => {
+          catalog.push({
+            offerId: item.offer_id,
+            name: item.name?.trim() || `Ozon-товар ${item.offer_id}`,
+            // Если поле archived не пришло — считаем товар активным (лучше
+            // показать лишний товар, чем незаметно потерять настоящий).
+            active: item.archived !== true,
+            // Ozon отдаёт price строкой — переводим в число для расчётов.
+            price: item.price ? Number(item.price) : undefined,
+          });
+        });
+      } catch (err: any) {
+        const ozonErrorBody = err?.response?.data;
+        logger.error({ status: err?.response?.status, body: ozonErrorBody }, '[Ozon] Ошибка запроса деталей товаров');
+        // Не прерываем всю синхронизацию из-за одной неудачной пачки — просто
+        // пропускаем эти offer_id, остальные всё равно синхронизируются.
+      }
+    }
+
+    return catalog;
+  }
+
+  /**
+   * Тарифная сетка расходов Ozon по каждому товару — POST /v5/product/info/prices.
+   * Это ТА ЖЕ информация, что видна в кабинете Ozon → Цены и акции →
+   * Управление ценами → "Расходы": вознаграждение Ozon (в %), логистика,
+   * последняя миля, обратная логистика, эквайринг.
+   *
+   * ВАЖНО: это ПРЕДВАРИТЕЛЬНАЯ тарифная сетка "если продать по текущей
+   * цене прямо сейчас", а не факт по уже состоявшейся продаже (факт даётся
+   * отдельно — см. fetchFinanceByPosting, уже используется при синхронизации
+   * заказов). Подтверждённый формат ответа (проверено по официальной
+   * документации Ozon и рабочим примерам интеграторов):
+   *   commissions.sales_percent_fbs — ставка вознаграждения Ozon по схеме
+   *     FBS, в процентах КАК ЕСТЬ (27.5 значит 27.5%, без домножения/деления).
+   *   commissions.fbs_direct_flow_trans_min_amount — магистральная логистика, ₸.
+   *   commissions.fbs_deliv_to_customer_amount — последняя миля, ₸.
+   *   commissions.fbs_return_flow_amount — обратная логистика (справочно,
+   *     это стоимость ПРИ ВОЗВРАТЕ — условная, не считаем её в детерминированный
+   *     прогноз прибыли по проданной единице, у нас нет вероятности возврата).
+   *   acquiring — эквайринг, ₸ (верхний уровень ответа, не внутри commissions).
+   * Схема FBS выбрана как основная — самая частая для обычных продавцов.
+   * "Обработка отправления" из кабинета Ozon в этом ответе отдельным полем
+   * НЕ приходит — не выдумываем цифру, просто не показываем эту строку.
+   */
+  async fetchPrices(offerIds: string[]): Promise<Map<string, {
+    price?: number;
+    commissionRatePct?: number;
+    logisticsAmount?: number;
+    lastMileAmount?: number;
+    returnLogisticsAmount?: number;
+    acquiringAmount?: number;
+  }>> {
+    const http = await this.getHttp();
+    const result = new Map<string, any>();
+
+    for (let i = 0; i < offerIds.length; i += 100) {
+      const chunk = offerIds.slice(i, i + 100);
+      try {
+        const { data } = await http.post('/v5/product/info/prices', {
+          filter: { offer_id: chunk, visibility: 'ALL' },
+          limit: 100,
+          cursor: '',
+        });
+        const items: any[] = data.items ?? data.result?.items ?? [];
+        items.forEach((item) => {
+          const c = item.commissions ?? {};
+          result.set(item.offer_id, {
+            price: item.price?.price ? Number(item.price.price) : undefined,
+            commissionRatePct: c.sales_percent_fbs != null ? Number(c.sales_percent_fbs) : undefined,
+            logisticsAmount: c.fbs_direct_flow_trans_min_amount != null ? Number(c.fbs_direct_flow_trans_min_amount) : undefined,
+            lastMileAmount: c.fbs_deliv_to_customer_amount != null ? Number(c.fbs_deliv_to_customer_amount) : undefined,
+            returnLogisticsAmount: c.fbs_return_flow_amount != null ? Number(c.fbs_return_flow_amount) : undefined,
+            acquiringAmount: item.acquiring != null ? Number(item.acquiring) : undefined,
+          });
+        });
+      } catch (err: any) {
+        const ozonErrorBody = err?.response?.data;
+        logger.error({ status: err?.response?.status, body: ozonErrorBody }, '[Ozon] Ошибка запроса тарифов (/v5/product/info/prices)');
+        // Не прерываем всю синхронизацию из-за одной неудачной пачки — просто
+        // пропускаем эти offer_id, остальные всё равно синхронизируются.
+      }
+    }
+
+    return result;
   }
 
   async fetchOrders(params: { dateFrom: Date; dateTo: Date }): Promise<NormalizedOrder[]> {
-    const postings = await this.fetchAllFbsPostings(params.dateFrom, params.dateTo);
-    const financeByPosting = await this.fetchFinanceByPosting(params.dateFrom, params.dateTo);
+    const http = await this.getHttp();
+    const postings = await this.fetchAllFbsPostings(http, params.dateFrom, params.dateTo);
+    const financeByPosting = await this.fetchFinanceByPosting(http, params.dateFrom, params.dateTo);
 
     const orders = postings.map((posting) => this.toNormalizedOrder(posting, financeByPosting.get(posting.posting_number)));
 
@@ -74,14 +246,31 @@ export class OzonClient {
     return orders;
   }
 
-  private async fetchAllFbsPostings(dateFrom: Date, dateTo: Date): Promise<OzonPosting[]> {
+  /**
+   * Точная форма запроса к Ozon (для диагностики — см. п.1 вопроса):
+   *
+   *   POST {OZON_API_BASE_URL}/v3/posting/fbs/list
+   *   Headers:
+   *     Client-Id: <из формы в Настройках или OZON_CLIENT_ID>
+   *     Api-Key:   <из формы в Настройках или OZON_API_KEY>
+   *     Content-Type: application/json
+   *   Body:
+   *     {
+   *       "dir": "asc",
+   *       "filter": { "since": "<ISO-дата>", "to": "<ISO-дата>" },
+   *       "limit": 100,
+   *       "offset": 0,
+   *       "with": { "analytics_data": true, "financial_data": false }
+   *     }
+   */
+  private async fetchAllFbsPostings(http: AxiosInstance, dateFrom: Date, dateTo: Date): Promise<OzonPosting[]> {
     const limit = 100;
     let offset = 0;
     const all: OzonPosting[] = [];
 
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const { data } = await this.http.post('/v3/posting/fbs/list', {
+      const requestBody = {
         dir: 'asc',
         filter: {
           since: dateFrom.toISOString(),
@@ -90,7 +279,26 @@ export class OzonClient {
         limit,
         offset,
         with: { analytics_data: true, financial_data: false },
-      });
+      };
+
+      let data: any;
+      try {
+        const response = await http.post('/v3/posting/fbs/list', requestBody);
+        data = response.data;
+      } catch (err: any) {
+        // Логируем ТОЧНОЕ тело ответа Ozon при ошибке — по одному коду
+        // статуса (400/401/403) не понять причину, а тело обычно содержит
+        // понятное описание (например "wrong client-id format" и т.п.).
+        const ozonErrorBody = err?.response?.data;
+        logger.error(
+          { status: err?.response?.status, body: ozonErrorBody, requestBody },
+          '[Ozon] Ошибка запроса заказов (fbs/list)',
+        );
+        throw new Error(
+          `Ozon API вернул ошибку ${err?.response?.status ?? ''} при запросе заказов: ` +
+            `${JSON.stringify(ozonErrorBody) || err?.message || err}`,
+        );
+      }
 
       const postings: OzonPosting[] = data.result?.postings ?? [];
       all.push(...postings);
@@ -108,6 +316,7 @@ export class OzonClient {
    * эквайринг и т.д.), сгруппированные по posting_number.
    */
   private async fetchFinanceByPosting(
+    http: AxiosInstance,
     dateFrom: Date,
     dateTo: Date,
   ): Promise<Map<string, { commission: number; logistics: number; other: number }>> {
@@ -117,14 +326,30 @@ export class OzonClient {
 
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const { data } = await this.http.post('/v3/finance/transaction/list', {
+      const requestBody = {
         filter: {
           date: { from: dateFrom.toISOString(), to: dateTo.toISOString() },
           transaction_type: 'all',
         },
         page,
         page_size: pageSize,
-      });
+      };
+
+      let data: any;
+      try {
+        const response = await http.post('/v3/finance/transaction/list', requestBody);
+        data = response.data;
+      } catch (err: any) {
+        const ozonErrorBody = err?.response?.data;
+        logger.error(
+          { status: err?.response?.status, body: ozonErrorBody, requestBody },
+          '[Ozon] Ошибка запроса финансовых транзакций',
+        );
+        throw new Error(
+          `Ozon API вернул ошибку ${err?.response?.status ?? ''} при запросе финансовых транзакций: ` +
+            `${JSON.stringify(ozonErrorBody) || err?.message || err}`,
+        );
+      }
 
       const operations: OzonFinanceTransaction[] = data.result?.operations ?? [];
       for (const op of operations) {

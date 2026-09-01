@@ -9,7 +9,9 @@ const settingsSchema = z.object({
   kaspiProductUrl: z.string().url().optional().nullable(),
   autoRepriceEnabled: z.boolean().optional(),
   minPrice: z.number().positive().optional().nullable(),
+  maxPrice: z.number().positive().optional().nullable(),
   repriceStep: z.number().nonnegative().optional(),
+  repriceStrategy: z.enum(['FIRST_PLACE', 'MATCH_FIRST', 'STICK_TO_FIRST', 'SECOND_PLACE']).optional(),
 });
 
 // Настроить автобот для конкретного товара.

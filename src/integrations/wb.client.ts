@@ -1,11 +1,16 @@
 import axios, { AxiosInstance } from 'axios';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
+import { prisma } from '../db/prisma';
 import { NormalizedOrder, NormalizedOrderItem } from '../types';
 
 /**
- * Клиент для Wildberries Statistics API.
+ * Клиент для Wildberries Statistics API + Content API.
  * Документация: https://dev.wildberries.ru/en/docs/openapi/reports
+ *
+ * Токен берётся ДИНАМИЧЕСКИ: сначала пробуем найти сохранённый магазин в
+ * базе (форма в разделе «Настройки»), и только если его нет — используем
+ * WB_API_TOKEN из переменных окружения (для обратной совместимости).
  *
  * Устроено иначе, чем у Kaspi/Ozon:
  * - Заказы отдаются построчно, 1 строка = 1 заказ = 1 товар (без вложенных
@@ -20,6 +25,13 @@ import { NormalizedOrder, NormalizedOrderItem } from '../types';
  */
 
 const MAX_PAGES_SAFETY = 50; // защита от случайного бесконечного цикла пагинации
+
+async function getWbToken(): Promise<string | null> {
+  const store = await prisma.wbStore.findFirst({ orderBy: { updatedAt: 'desc' } });
+  if (store?.apiToken) return store.apiToken;
+  if (env.wb.apiToken) return env.wb.apiToken;
+  return null;
+}
 
 interface WbOrderRow {
   date: string;
@@ -53,23 +65,96 @@ interface WbFinanceTotals {
 }
 
 export class WbClient {
-  private http: AxiosInstance;
+  async isConfigured(): Promise<boolean> {
+    const token = await getWbToken();
+    return Boolean(token);
+  }
 
-  constructor() {
-    this.http = axios.create({
+  private async getHttp(): Promise<AxiosInstance> {
+    const token = await getWbToken();
+    if (!token) {
+      throw new Error('Wildberries API не настроен: добавьте магазин в разделе «Настройки» или задайте WB_API_TOKEN в .env');
+    }
+    return axios.create({
       baseURL: env.wb.statsBaseUrl,
-      headers: { Authorization: env.wb.apiToken },
+      headers: { Authorization: token },
       timeout: 30000,
     });
   }
 
-  get isConfigured() {
-    return env.wb.isConfigured;
+  // Карточки товаров живут на ДРУГОМ хосте WB API (Content API, не
+  // Statistics) — и токен для него должен быть с категорией доступа
+  // "Контент". Если используется токен только со статистикой — этот
+  // конкретный метод (fetchCatalog) вернёт ошибку авторизации, но
+  // синхронизация заказов (fetchOrders) продолжит работать как обычно,
+  // это не связанные между собой категории доступа.
+  private async getContentHttp(): Promise<AxiosInstance> {
+    const token = await getWbToken();
+    if (!token) {
+      throw new Error('Wildberries API не настроен: добавьте магазин в разделе «Настройки» или задайте WB_API_TOKEN в .env');
+    }
+    return axios.create({
+      baseURL: env.wb.contentBaseUrl,
+      headers: { Authorization: token },
+      timeout: 30000,
+    });
+  }
+
+  /**
+   * Полный каталог карточек товаров — POST /content/v2/get/cards/list,
+   * с постраничной курсорной пагинацией (limit + cursor.updatedAt/nmID из
+   * предыдущего ответа). У каждой карточки: nmID (номер WB), vendorCode
+   * (= supplierArticle, наш wbArticle) и title (название).
+   */
+  async fetchCatalog(): Promise<Array<{ vendorCode: string; name: string; nmId: number }>> {
+    const contentHttp = await this.getContentHttp();
+    const catalog: Array<{ vendorCode: string; name: string; nmId: number }> = [];
+    let cursor: { limit: number; updatedAt?: string; nmID?: number } = { limit: 100 };
+
+    for (let page = 0; page < MAX_PAGES_SAFETY; page++) {
+      let data: any;
+      try {
+        const response = await contentHttp.post('/content/v2/get/cards/list', {
+          settings: { cursor, filter: { withPhoto: -1 } },
+        });
+        data = response.data;
+      } catch (err: any) {
+        const wbErrorBody = err?.response?.data;
+        logger.error(
+          { status: err?.response?.status, body: wbErrorBody },
+          '[Wildberries] Ошибка запроса карточек товаров (проверьте, что токен имеет категорию доступа "Контент")',
+        );
+        throw new Error(
+          `Wildberries API вернул ошибку ${err?.response?.status ?? ''} при запросе карточек товаров: ` +
+            `${JSON.stringify(wbErrorBody) || err?.message}`,
+        );
+      }
+
+      const cards: Array<{ nmID: number; vendorCode: string; title?: string }> = data.cards ?? [];
+      cards.forEach((card) => {
+        catalog.push({
+          vendorCode: card.vendorCode,
+          name: card.title?.trim() || `WB-товар ${card.vendorCode}`,
+          nmId: card.nmID,
+        });
+      });
+
+      const total = data.cursor?.total ?? 0;
+      // ВАЖНО: 0 — легитимное значение nmID (а не "данных нет"), поэтому
+      // проверяем именно на undefined/null, а не через простое отрицание
+      // (!0 === true в JS сломало бы пагинацию на ровном месте).
+      if (total < cursor.limit || data.cursor?.nmID == null) break;
+      cursor = { limit: 100, updatedAt: data.cursor.updatedAt, nmID: data.cursor.nmID };
+    }
+
+    logger.info(`[Wildberries] В каталоге карточек товаров: ${catalog.length}`);
+    return catalog;
   }
 
   async fetchOrders(params: { dateFrom: Date; dateTo: Date }): Promise<NormalizedOrder[]> {
-    const rows = await this.fetchOrderRows(params.dateFrom);
-    const financeMap = await this.fetchFinanceBySrid(params.dateFrom, params.dateTo);
+    const http = await this.getHttp();
+    const rows = await this.fetchOrderRows(http, params.dateFrom);
+    const financeMap = await this.fetchFinanceBySrid(http, params.dateFrom, params.dateTo);
 
     const filtered = rows.filter((r) => {
       const d = new Date(r.date);
@@ -82,12 +167,12 @@ export class WbClient {
   }
 
   /** Постранично тянет /api/v1/supplier/orders, используя lastChangeDate для пагинации. */
-  private async fetchOrderRows(dateFrom: Date): Promise<WbOrderRow[]> {
+  private async fetchOrderRows(http: AxiosInstance, dateFrom: Date): Promise<WbOrderRow[]> {
     const all: WbOrderRow[] = [];
     let cursor = dateFrom.toISOString();
 
     for (let page = 0; page < MAX_PAGES_SAFETY; page++) {
-      const { data } = await this.http.get<WbOrderRow[]>('/api/v1/supplier/orders', {
+      const { data } = await http.get<WbOrderRow[]>('/api/v1/supplier/orders', {
         params: { dateFrom: cursor, flag: 0 },
       });
 
@@ -105,13 +190,13 @@ export class WbClient {
   }
 
   /** Тянет отчёт о реализации и суммирует комиссию/логистику/эквайринг по каждому srid. */
-  private async fetchFinanceBySrid(dateFrom: Date, dateTo: Date): Promise<Map<string, WbFinanceTotals>> {
+  private async fetchFinanceBySrid(http: AxiosInstance, dateFrom: Date, dateTo: Date): Promise<Map<string, WbFinanceTotals>> {
     const map = new Map<string, WbFinanceTotals>();
     const limit = 100000;
     let rrdId = 0;
 
     for (let page = 0; page < MAX_PAGES_SAFETY; page++) {
-      const { data } = await this.http.get<WbRealizationRow[]>('/api/v5/supplier/reportDetailByPeriod', {
+      const { data } = await http.get<WbRealizationRow[]>('/api/v5/supplier/reportDetailByPeriod', {
         params: {
           dateFrom: dateFrom.toISOString().slice(0, 10),
           dateTo: dateTo.toISOString().slice(0, 10),
