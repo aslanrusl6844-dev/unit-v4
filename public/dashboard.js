@@ -902,13 +902,10 @@ function getVisibleMarketplaces() {
 function renderProductsTableHead(marketplaces) {
   const thead = document.getElementById('productsAdminThead');
   const selectAllCb = `<th rowspan="${marketplaces.length === 1 ? 1 : 2}"><input type="checkbox" id="productsSelectAllOnPage" title="Выбрать все на этой странице" /></th>`;
-<<<<<<< HEAD
   // Подпись колонок "Комиссия"/"Логистика" явно поясняет, что это значит на
   // выбранной площадке (Kaspi/Ozon/WB считают и называют это по-разному).
   const commissionTitle = (mp) => mp === 'OZON' ? 'Вознаграждение Ozon (комиссия площадки)' : mp === 'KASPI' ? 'Комиссия Kaspi по официальному тарифу категории' : 'Комиссия площадки';
   const logisticsTitle = (mp) => mp === 'OZON' ? 'Логистика Ozon: магистральная логистика + последняя миля' : mp === 'KASPI' ? 'Логистика Kaspi Доставки по официальному тарифу' : 'Логистика площадки';
-=======
->>>>>>> e8486ef7f59a6dd0d6c494f5cde8fdb3434200ca
   if (marketplaces.length === 1) {
     // Одна площадка — шапка в один ряд, широкие понятные колонки, без group-заголовков.
     const mp = marketplaces[0];
@@ -918,13 +915,8 @@ function renderProductsTableHead(marketplaces) {
         <th>SKU</th><th>Название</th><th>Артикул ${mpLabel(mp)}</th>
         <th class="num">Себестоимость</th>
         <th class="num">Цена</th>
-<<<<<<< HEAD
         <th class="num" title="${commissionTitle(mp)}">Комиссия</th>
         <th class="num" title="${logisticsTitle(mp)}">Логистика</th>
-=======
-        <th class="num">Комиссия</th>
-        <th class="num">Логистика</th>
->>>>>>> e8486ef7f59a6dd0d6c494f5cde8fdb3434200ca
         <th class="num">Налог</th>
         <th class="num" title="С учётом налога ИП">Прибыль/шт</th>
         <th class="num" title="С учётом налога ИП">Маржа</th>
@@ -935,15 +927,9 @@ function renderProductsTableHead(marketplaces) {
     // "Всё вместе" — три компактных блока, как раньше (без единственно
     // очевидного выбора площадки это разумный компромисс).
     const groupHeaders = marketplaces.map((mp) => `<th colspan="6" style="text-align:center;border-left:2px solid var(--border)"><span class="dot dot--${mp.toLowerCase()}"></span> ${mpLabel(mp)}</th>`).join('');
-<<<<<<< HEAD
     const subHeaders = marketplaces.map((mp) => `
       <th class="num" style="border-left:2px solid var(--border)">Цена</th>
       <th class="num" title="${commissionTitle(mp)}">Комиссия</th><th class="num" title="${logisticsTitle(mp)}">Логистика</th><th class="num">Налог</th>
-=======
-    const subHeaders = marketplaces.map(() => `
-      <th class="num" style="border-left:2px solid var(--border)">Цена</th>
-      <th class="num">Комиссия</th><th class="num">Логистика</th><th class="num">Налог</th>
->>>>>>> e8486ef7f59a6dd0d6c494f5cde8fdb3434200ca
       <th class="num" title="С учётом налога ИП">Прибыль/шт</th><th class="num" title="С учётом налога ИП">Маржа</th>
     `).join('');
     thead.innerHTML = `

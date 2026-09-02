@@ -168,7 +168,6 @@ export class OzonClient {
     }
 
     return catalog;
-<<<<<<< HEAD
   }
 
   /**
@@ -234,8 +233,6 @@ export class OzonClient {
     }
 
     return result;
-=======
->>>>>>> e8486ef7f59a6dd0d6c494f5cde8fdb3434200ca
   }
 
   async fetchOrders(params: { dateFrom: Date; dateTo: Date }): Promise<NormalizedOrder[]> {
