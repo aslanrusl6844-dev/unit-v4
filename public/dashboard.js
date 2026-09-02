@@ -1954,10 +1954,36 @@ document.querySelectorAll('.preset-group button').forEach((btn) => {
   });
 });
 
+/**
+ * Автообновление периода «Сегодня» после полуночи (по Алматы) — без этого
+ * пользователь, оставивший вкладку открытой на ночь, продолжал бы видеть
+ * вчерашний день как «сегодня», пока сам не обновит страницу. Проверяем
+ * раз в минуту: если активна кнопка «Сегодня» (data-days="0") и
+ * календарная дата по Алматы уже сменилась — пересчитываем диапазон и
+ * перезагружаем текущую страницу.
+ */
+setInterval(() => {
+  const activeBtn = document.querySelector('.preset-group button.is-active');
+  if (!activeBtn || activeBtn.dataset.days !== '0') return;
+  const freshToday = todayISO();
+  if (freshToday !== state.to) {
+    document.getElementById('dateTo').value = freshToday;
+    document.getElementById('dateFrom').value = freshToday;
+    state.from = freshToday;
+    state.to = freshToday;
+    reloadCurrentPage();
+  }
+}, 60 * 1000);
+
 ['dateFrom', 'dateTo'].forEach((id) => {
   document.getElementById(id).addEventListener('change', () => {
     state.from = document.getElementById('dateFrom').value;
     state.to = document.getElementById('dateTo').value;
+    // Ручной ввод даты — это осознанный выбор пользователя, отличный от
+    // пресетов. Снимаем подсветку "активного" пресета (включая «Сегодня»),
+    // иначе автообновление в полночь могло бы неожиданно перезаписать то,
+    // что человек только что ввёл вручную.
+    document.querySelectorAll('.preset-group button').forEach((b) => b.classList.remove('is-active'));
     reloadCurrentPage();
   });
 });
