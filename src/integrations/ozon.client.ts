@@ -263,7 +263,21 @@ export class OzonClient {
   async fetchOrders(params: { dateFrom: Date; dateTo: Date }): Promise<NormalizedOrder[]> {
     const http = await this.getHttp();
     const postings = await this.fetchAllFbsPostings(http, params.dateFrom, params.dateTo);
-    const financeByPosting = await this.fetchFinanceByPosting(http, params.dateFrom, params.dateTo);
+
+    // ВАЖНО: /v1/finance/accrual/postings принимает posting_numbers
+    // (от 1 до 200 штук за раз, НЕ диапазон дат) — Ozon явно вернул ошибку
+    // валидации на пустой/слишком большой список. Поэтому сначала получаем
+    // сами отправления (уже сделано выше), собираем их номера, и только
+    // если список не пуст — идём в финансовый метод, пачками по 200.
+    const postingNumbers = postings.map((p) => p.posting_number).filter(Boolean);
+    const financeByPosting = postingNumbers.length > 0
+      ? await this.fetchFinanceByPosting(http, postingNumbers)
+      : new Map<string, { commission: number; logistics: number; other: number }>();
+
+    if (financeByPosting.size > 0) {
+      const ourCommissionTotal = Array.from(financeByPosting.values()).reduce((sum, v) => sum + v.commission, 0);
+      await this.logByDayReconciliation(http, params.dateFrom, params.dateTo, ourCommissionTotal);
+    }
 
     const orders = postings.map((posting) => this.toNormalizedOrder(posting, financeByPosting.get(posting.posting_number)));
 
@@ -339,95 +353,107 @@ export class OzonClient {
    * Финансовые транзакции содержат фактическую комиссию за продажу,
    * стоимость логистики/обратной логистики и доп. услуги (упаковка,
    * эквайринг и т.д.), сгруппированные по posting_number.
+   *
+   * ВАЖНО (уточнено по точной ошибке валидации от самого Ozon):
+   * /v1/finance/accrual/postings принимает поле "posting_numbers" —
+   * СПИСОК номеров отправлений, а не диапазон дат. Ограничение — от 1 до
+   * 200 номеров за один запрос. Если список пуст (заказов за период нет) —
+   * метод вызывать вообще не нужно, Ozon в любом случае откажет с ошибкой
+   * валидации на пустом массиве.
    */
   private async fetchFinanceByPosting(
     http: AxiosInstance,
-    dateFrom: Date,
-    dateTo: Date,
+    postingNumbers: string[],
   ): Promise<Map<string, { commission: number; logistics: number; other: number }>> {
     const result = new Map<string, { commission: number; logistics: number; other: number }>();
+    if (postingNumbers.length === 0) return result; // нечего запрашивать — не дёргаем API вообще
 
-    // Новый API принимает не больше ~30 дней за один запрос — режем период
-    // на куски (тот же принцип, что уже используется для лимита Kaspi).
-    const chunks: Array<{ from: Date; to: Date }> = [];
-    let chunkStart = dateFrom.getTime();
-    const endMs = dateTo.getTime();
-    const maxMs = 30 * 24 * 60 * 60 * 1000;
-    while (chunkStart < endMs) {
-      const chunkEnd = Math.min(chunkStart + maxMs, endMs);
-      chunks.push({ from: new Date(chunkStart), to: new Date(chunkEnd) });
-      chunkStart = chunkEnd;
-    }
-    if (chunks.length === 0) chunks.push({ from: dateFrom, to: dateTo });
+    const BATCH_SIZE = 200; // официальный лимит Ozon для этого метода
 
-    for (const chunk of chunks) {
-      const pageSize = 1000;
-      let page = 1;
+    for (let i = 0; i < postingNumbers.length; i += BATCH_SIZE) {
+      const batch = postingNumbers.slice(i, i + BATCH_SIZE);
+      const requestBody = { posting_numbers: batch };
 
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const requestBody = {
-          date: { from: chunk.from.toISOString(), to: chunk.to.toISOString() },
-          page,
-          page_size: pageSize,
-        };
+      let data: any;
+      try {
+        const response = await http.post('/v1/finance/accrual/postings', requestBody);
+        data = response.data;
+      } catch (err: any) {
+        const ozonErrorBody = err?.response?.data;
+        logger.error(
+          { status: err?.response?.status, body: ozonErrorBody, batchSize: batch.length },
+          '[Ozon] Ошибка запроса начислений (/v1/finance/accrual/postings)',
+        );
+        throw new Error(
+          `Ozon API вернул ошибку ${err?.response?.status ?? ''} при запросе начислений: ` +
+            `${JSON.stringify(ozonErrorBody) || err?.message || err}. ` +
+            `Учтите: старый метод /v3/finance/transaction/list отключён Ozon с 8 сентября 2026 — используется новый.`,
+        );
+      }
 
-        let data: any;
-        try {
-          const response = await http.post('/v1/finance/accrual/postings', requestBody);
-          data = response.data;
-        } catch (err: any) {
-          const ozonErrorBody = err?.response?.data;
-          logger.error(
-            { status: err?.response?.status, body: ozonErrorBody, requestBody },
-            '[Ozon] Ошибка запроса начислений (/v1/finance/accrual/postings)',
-          );
-          throw new Error(
-            `Ozon API вернул ошибку ${err?.response?.status ?? ''} при запросе начислений: ` +
-              `${JSON.stringify(ozonErrorBody) || err?.message || err}. ` +
-              `Учтите: старый метод /v3/finance/transaction/list отключён Ozon с 8 сентября 2026 — используется новый.`,
-          );
-        }
+      // Терпимый разбор — новый метод официально ещё дорабатывается Ozon,
+      // точная структура полей не задокументирована так же подробно, как
+      // была у старого метода. Пробуем несколько вероятных путей к списку
+      // отправлений и суммам, логируем сырой ответ при первой неудаче.
+      const postings: any[] = data.postings ?? data.result?.postings ?? data.items ?? data.result?.items ?? [];
+      if (postings.length === 0) {
+        logger.info({ batchSize: batch.length, sampleResponse: data }, '[Ozon] /accrual/postings вернул пустой список (или неожиданную структуру) — см. sampleResponse');
+      }
 
-        // Терпимый разбор — новый метод официально ещё дорабатывается Ozon,
-        // точная структура полей не задокументирована так же подробно, как
-        // была у старого метода. Пробуем несколько вероятных путей к списку
-        // отправлений и суммам, логируем сырой ответ при первой неудаче.
-        const postings: any[] = data.postings ?? data.result?.postings ?? data.items ?? data.result?.items ?? [];
-        if (postings.length === 0 && page === 1) {
-          logger.info({ chunk, sampleResponse: data }, '[Ozon] /accrual/postings вернул пустой список (или неожиданную структуру) — см. sampleResponse');
-        }
+      for (const posting of postings) {
+        const postingNumber = posting.posting_number ?? posting.posting?.posting_number ?? posting.number;
+        if (!postingNumber) continue;
 
-        for (const posting of postings) {
-          const postingNumber = posting.posting_number ?? posting.posting?.posting_number ?? posting.number;
-          if (!postingNumber) continue;
-
-          const entry = result.get(postingNumber) ?? { commission: 0, logistics: 0, other: 0 };
-          // Начисления по отправлению могут прийти списком (accruals/items)
-          // или как плоские поля прямо на самом posting — поддерживаем оба варианта.
-          const accruals: any[] = posting.accruals ?? posting.items ?? [posting];
-          for (const acc of accruals) {
-            const amount = Math.abs(Number(acc.amount ?? acc.accrual_amount ?? acc.sum ?? acc.sale_commission ?? acc.delivery_charge ?? 0));
-            if (!amount) continue;
-            const typeLabel = String(acc.type ?? acc.accrual_type ?? acc.name ?? acc.operation_type_name ?? '').toLowerCase();
-            if (typeLabel.includes('comm') || typeLabel.includes('комисс') || acc.sale_commission != null) {
-              entry.commission += Math.abs(Number(acc.sale_commission ?? amount));
-            } else if (typeLabel.includes('log') || typeLabel.includes('deliver') || typeLabel.includes('логист') || typeLabel.includes('доставк') || acc.delivery_charge != null) {
-              entry.logistics += Math.abs(Number(acc.delivery_charge ?? amount));
-            } else {
-              entry.other += amount;
-            }
+        const entry = result.get(postingNumber) ?? { commission: 0, logistics: 0, other: 0 };
+        // Начисления по отправлению могут прийти списком (accruals/items)
+        // или как плоские поля прямо на самом posting — поддерживаем оба варианта.
+        const accruals: any[] = posting.accruals ?? posting.items ?? [posting];
+        for (const acc of accruals) {
+          const amount = Math.abs(Number(acc.amount ?? acc.accrual_amount ?? acc.sum ?? acc.sale_commission ?? acc.delivery_charge ?? 0));
+          if (!amount) continue;
+          const typeLabel = String(acc.type ?? acc.accrual_type ?? acc.name ?? acc.operation_type_name ?? '').toLowerCase();
+          if (typeLabel.includes('comm') || typeLabel.includes('комисс') || acc.sale_commission != null) {
+            entry.commission += Math.abs(Number(acc.sale_commission ?? amount));
+          } else if (typeLabel.includes('log') || typeLabel.includes('deliver') || typeLabel.includes('логист') || typeLabel.includes('доставк') || acc.delivery_charge != null) {
+            entry.logistics += Math.abs(Number(acc.delivery_charge ?? amount));
+          } else {
+            entry.other += amount;
           }
-          result.set(postingNumber, entry);
         }
-
-        const hasMore = postings.length >= pageSize; // новый метод не отдаёт явный total — идём, пока страница полная
-        if (!hasMore) break;
-        page += 1;
+        result.set(postingNumber, entry);
       }
     }
 
     return result;
+  }
+
+  /**
+   * Агрегаты по дням — /v1/finance/accrual/by-day. Используем как СВЕРКУ
+   * (не как основной источник данных): сравниваем сумму комиссии, которую
+   * насчитали по отдельным отправлениям, с тем, что Ozon агрегирует сам по
+   * дням за тот же период. Если сильно расходится — это подтверждает
+   * официальную оговорку самого Ozon ("данные могут не соответствовать
+   * личному кабинету") и стоит записать в лог, но НЕ должно ронять всю
+   * синхронизацию — это диагностика, а не обязательный шаг.
+   */
+  private async logByDayReconciliation(http: AxiosInstance, dateFrom: Date, dateTo: Date, ourCommissionTotal: number): Promise<void> {
+    try {
+      const { data } = await http.post('/v1/finance/accrual/by-day', {
+        date: { from: dateFrom.toISOString().slice(0, 10), to: dateTo.toISOString().slice(0, 10) },
+      });
+      const days: any[] = data.days ?? data.result?.days ?? data.items ?? [];
+      const byDayTotal = days.reduce((sum, d) => sum + Math.abs(Number(d.sale_commission ?? d.commission ?? d.amount ?? 0)), 0);
+      if (byDayTotal > 0 && Math.abs(byDayTotal - ourCommissionTotal) / byDayTotal > 0.05) {
+        logger.warn(
+          { byDayTotal, ourCommissionTotal },
+          '[Ozon] Сумма комиссии по отправлениям заметно отличается от агрегата /accrual/by-day за тот же период — это ожидаемо (Ozon сам предупреждает, что данные API могут не совпадать с личным кабинетом)',
+        );
+      }
+    } catch (err: any) {
+      // Это сверка, а не обязательный шаг — не роняем синхронизацию, если
+      // by-day недоступен или вернул неожиданный формат.
+      logger.warn({ status: err?.response?.status }, '[Ozon] Не удалось сверить итоги по /accrual/by-day (не критично)');
+    }
   }
 
   private toNormalizedOrder(
