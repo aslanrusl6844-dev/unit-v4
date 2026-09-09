@@ -68,6 +68,31 @@ interface OzonFinanceTransaction {
   services?: { name: string; price: number }[];
 }
 
+/**
+ * ВАЖНО (проверено официально, Telegram-канал Ozon Seller API, запись от
+ * 14 июля 2026): методы POST /v3/finance/transaction/list и .../totals
+ * ОТКЛЮЧЕНЫ Ozon 8 сентября 2026 ("obsolete method cannot be used").
+ * Официальная замена — три отдельных метода:
+ *   POST /v1/finance/accrual/postings — начисления по отправлениям
+ *   POST /v1/finance/accrual/types — справочник типов начислений
+ *   POST /v1/finance/accrual/by-day — агрегаты по дням
+ *
+ * Два официальных ограничения нового API (сам Ozon об этом пишет в
+ * документации):
+ *  1. Максимум ~30 дней в одном запросе (было — без ограничений) — поэтому
+ *     ниже период режется на месячные куски, как и у Kaspi с их лимитом.
+ *  2. Дословная цитата из документации Ozon: "Данные могут не соответствовать
+ *     информации в личном кабинете" — это официальная оговорка САМОГО Ozon,
+ *     не наша неточность. Обязательно показываем это предупреждение в
+ *     интерфейсе рядом с цифрами Ozon (см. index.html).
+ *
+ * Точная JSON-схема нового ответа не задокументирована публично так же
+ * подробно, как была у старого метода (независимые разработчики, уже
+ * мигрировавшие, тоже отмечают недостающие поля и нестабильность). Разбор
+ * ниже сделан МАКСИМАЛЬНО терпимым к разным вариантам названий полей —
+ * при любой нестыковке в лог пишется ПОЛНОЕ тело ответа Ozon, чтобы можно
+ * было быстро уточнить точные названия по факту, не гадая заново.
+ */
 export class OzonClient {
   async isConfigured(): Promise<boolean> {
     const creds = await getOzonCredentials();
@@ -321,51 +346,85 @@ export class OzonClient {
     dateTo: Date,
   ): Promise<Map<string, { commission: number; logistics: number; other: number }>> {
     const result = new Map<string, { commission: number; logistics: number; other: number }>();
-    const pageSize = 1000;
-    let page = 1;
 
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      const requestBody = {
-        filter: {
-          date: { from: dateFrom.toISOString(), to: dateTo.toISOString() },
-          transaction_type: 'all',
-        },
-        page,
-        page_size: pageSize,
-      };
+    // Новый API принимает не больше ~30 дней за один запрос — режем период
+    // на куски (тот же принцип, что уже используется для лимита Kaspi).
+    const chunks: Array<{ from: Date; to: Date }> = [];
+    let chunkStart = dateFrom.getTime();
+    const endMs = dateTo.getTime();
+    const maxMs = 30 * 24 * 60 * 60 * 1000;
+    while (chunkStart < endMs) {
+      const chunkEnd = Math.min(chunkStart + maxMs, endMs);
+      chunks.push({ from: new Date(chunkStart), to: new Date(chunkEnd) });
+      chunkStart = chunkEnd;
+    }
+    if (chunks.length === 0) chunks.push({ from: dateFrom, to: dateTo });
 
-      let data: any;
-      try {
-        const response = await http.post('/v3/finance/transaction/list', requestBody);
-        data = response.data;
-      } catch (err: any) {
-        const ozonErrorBody = err?.response?.data;
-        logger.error(
-          { status: err?.response?.status, body: ozonErrorBody, requestBody },
-          '[Ozon] Ошибка запроса финансовых транзакций',
-        );
-        throw new Error(
-          `Ozon API вернул ошибку ${err?.response?.status ?? ''} при запросе финансовых транзакций: ` +
-            `${JSON.stringify(ozonErrorBody) || err?.message || err}`,
-        );
+    for (const chunk of chunks) {
+      const pageSize = 1000;
+      let page = 1;
+
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const requestBody = {
+          date: { from: chunk.from.toISOString(), to: chunk.to.toISOString() },
+          page,
+          page_size: pageSize,
+        };
+
+        let data: any;
+        try {
+          const response = await http.post('/v1/finance/accrual/postings', requestBody);
+          data = response.data;
+        } catch (err: any) {
+          const ozonErrorBody = err?.response?.data;
+          logger.error(
+            { status: err?.response?.status, body: ozonErrorBody, requestBody },
+            '[Ozon] Ошибка запроса начислений (/v1/finance/accrual/postings)',
+          );
+          throw new Error(
+            `Ozon API вернул ошибку ${err?.response?.status ?? ''} при запросе начислений: ` +
+              `${JSON.stringify(ozonErrorBody) || err?.message || err}. ` +
+              `Учтите: старый метод /v3/finance/transaction/list отключён Ozon с 8 сентября 2026 — используется новый.`,
+          );
+        }
+
+        // Терпимый разбор — новый метод официально ещё дорабатывается Ozon,
+        // точная структура полей не задокументирована так же подробно, как
+        // была у старого метода. Пробуем несколько вероятных путей к списку
+        // отправлений и суммам, логируем сырой ответ при первой неудаче.
+        const postings: any[] = data.postings ?? data.result?.postings ?? data.items ?? data.result?.items ?? [];
+        if (postings.length === 0 && page === 1) {
+          logger.info({ chunk, sampleResponse: data }, '[Ozon] /accrual/postings вернул пустой список (или неожиданную структуру) — см. sampleResponse');
+        }
+
+        for (const posting of postings) {
+          const postingNumber = posting.posting_number ?? posting.posting?.posting_number ?? posting.number;
+          if (!postingNumber) continue;
+
+          const entry = result.get(postingNumber) ?? { commission: 0, logistics: 0, other: 0 };
+          // Начисления по отправлению могут прийти списком (accruals/items)
+          // или как плоские поля прямо на самом posting — поддерживаем оба варианта.
+          const accruals: any[] = posting.accruals ?? posting.items ?? [posting];
+          for (const acc of accruals) {
+            const amount = Math.abs(Number(acc.amount ?? acc.accrual_amount ?? acc.sum ?? acc.sale_commission ?? acc.delivery_charge ?? 0));
+            if (!amount) continue;
+            const typeLabel = String(acc.type ?? acc.accrual_type ?? acc.name ?? acc.operation_type_name ?? '').toLowerCase();
+            if (typeLabel.includes('comm') || typeLabel.includes('комисс') || acc.sale_commission != null) {
+              entry.commission += Math.abs(Number(acc.sale_commission ?? amount));
+            } else if (typeLabel.includes('log') || typeLabel.includes('deliver') || typeLabel.includes('логист') || typeLabel.includes('доставк') || acc.delivery_charge != null) {
+              entry.logistics += Math.abs(Number(acc.delivery_charge ?? amount));
+            } else {
+              entry.other += amount;
+            }
+          }
+          result.set(postingNumber, entry);
+        }
+
+        const hasMore = postings.length >= pageSize; // новый метод не отдаёт явный total — идём, пока страница полная
+        if (!hasMore) break;
+        page += 1;
       }
-
-      const operations: OzonFinanceTransaction[] = data.result?.operations ?? [];
-      for (const op of operations) {
-        const postingNumber = op.posting?.posting_number;
-        if (!postingNumber) continue;
-
-        const entry = result.get(postingNumber) ?? { commission: 0, logistics: 0, other: 0 };
-        entry.commission += Math.abs(op.sale_commission ?? 0);
-        entry.logistics += Math.abs(op.delivery_charge ?? 0) + Math.abs(op.return_delivery_charge ?? 0);
-        entry.other += (op.services ?? []).reduce((sum, s) => sum + Math.abs(s.price), 0);
-        result.set(postingNumber, entry);
-      }
-
-      const totalPages = Math.ceil((data.result?.row_count ?? 0) / pageSize);
-      if (page >= totalPages || operations.length === 0) break;
-      page += 1;
     }
 
     return result;

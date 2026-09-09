@@ -25,6 +25,42 @@ import { NormalizedOrder, NormalizedOrderItem } from '../types';
  */
 
 const MAX_PAGES_SAFETY = 50; // защита от случайного бесконечного цикла пагинации
+const MAX_429_RETRIES = 3;
+const PACING_DELAY_MS = 350; // небольшая пауза между запросами подряд — снижает риск упереться в лимит вообще
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Обёртка вокруг любого запроса к WB API: при 429 (Too Many Requests)
+ * читает заголовок X-Ratelimit-Retry (сколько секунд ждать — так советует
+ * официальная документация WB), ждёт и повторяет запрос — до
+ * MAX_429_RETRIES раз. Если лимит так и не снялся — кидает понятную
+ * ошибку на русском, а не сырой "Request failed with status code 429".
+ */
+async function withRetryOn429<T>(fn: () => Promise<T>, context: string): Promise<T> {
+  for (let attempt = 0; attempt <= MAX_429_RETRIES; attempt++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      if (err?.response?.status !== 429) throw err;
+
+      if (attempt >= MAX_429_RETRIES) {
+        logger.error({ context }, '[Wildberries] 429 — попытки повтора исчерпаны');
+        throw new Error('WB временно ограничил запросы, подождите минуту и попробуйте синхронизацию ещё раз.');
+      }
+
+      const headers = err.response?.headers ?? {};
+      const retryHeader = headers['x-ratelimit-retry'] ?? headers['retry-after'];
+      const waitSec = Number(retryHeader) > 0 ? Number(retryHeader) : 20; // разумный дефолт, если заголовка нет
+      logger.warn(`[Wildberries] 429 Too Many Requests (${context}) — жду ${waitSec}с, попытка ${attempt + 1}/${MAX_429_RETRIES}`);
+      await sleep(waitSec * 1000);
+    }
+  }
+  // Формально недостижимо (цикл либо возвращает, либо кидает выше), но нужно для типов.
+  throw new Error('WB временно ограничил запросы, подождите минуту и попробуйте синхронизацию ещё раз.');
+}
 
 async function getWbToken(): Promise<string | null> {
   const store = await prisma.wbStore.findFirst({ orderBy: { updatedAt: 'desc' } });
@@ -112,13 +148,16 @@ export class WbClient {
     let cursor: { limit: number; updatedAt?: string; nmID?: number } = { limit: 100 };
 
     for (let page = 0; page < MAX_PAGES_SAFETY; page++) {
+      if (page > 0) await sleep(PACING_DELAY_MS); // пауза между страницами — снижает риск 429
       let data: any;
       try {
-        const response = await contentHttp.post('/content/v2/get/cards/list', {
-          settings: { cursor, filter: { withPhoto: -1 } },
-        });
+        const response = await withRetryOn429(
+          () => contentHttp.post('/content/v2/get/cards/list', { settings: { cursor, filter: { withPhoto: -1 } } }),
+          'каталог карточек',
+        );
         data = response.data;
       } catch (err: any) {
+        if (err.message?.includes('WB временно ограничил')) throw err; // уже понятное сообщение, прокидываем как есть
         const wbErrorBody = err?.response?.data;
         logger.error(
           { status: err?.response?.status, body: wbErrorBody },
@@ -154,6 +193,7 @@ export class WbClient {
   async fetchOrders(params: { dateFrom: Date; dateTo: Date }): Promise<NormalizedOrder[]> {
     const http = await this.getHttp();
     const rows = await this.fetchOrderRows(http, params.dateFrom);
+    await sleep(PACING_DELAY_MS); // пауза перед вторым тяжёлым запросом подряд
     const financeMap = await this.fetchFinanceBySrid(http, params.dateFrom, params.dateTo);
 
     const filtered = rows.filter((r) => {
@@ -172,9 +212,11 @@ export class WbClient {
     let cursor = dateFrom.toISOString();
 
     for (let page = 0; page < MAX_PAGES_SAFETY; page++) {
-      const { data } = await http.get<WbOrderRow[]>('/api/v1/supplier/orders', {
-        params: { dateFrom: cursor, flag: 0 },
-      });
+      if (page > 0) await sleep(PACING_DELAY_MS);
+      const { data } = await withRetryOn429(
+        () => http.get<WbOrderRow[]>('/api/v1/supplier/orders', { params: { dateFrom: cursor, flag: 0 } }),
+        'список заказов',
+      );
 
       if (!data?.length) break;
       all.push(...data);
@@ -196,14 +238,18 @@ export class WbClient {
     let rrdId = 0;
 
     for (let page = 0; page < MAX_PAGES_SAFETY; page++) {
-      const { data } = await http.get<WbRealizationRow[]>('/api/v5/supplier/reportDetailByPeriod', {
-        params: {
-          dateFrom: dateFrom.toISOString().slice(0, 10),
-          dateTo: dateTo.toISOString().slice(0, 10),
-          limit,
-          rrdid: rrdId,
-        },
-      });
+      if (page > 0) await sleep(PACING_DELAY_MS);
+      const { data } = await withRetryOn429(
+        () => http.get<WbRealizationRow[]>('/api/v5/supplier/reportDetailByPeriod', {
+          params: {
+            dateFrom: dateFrom.toISOString().slice(0, 10),
+            dateTo: dateTo.toISOString().slice(0, 10),
+            limit,
+            rrdid: rrdId,
+          },
+        }),
+        'отчёт о реализации',
+      );
 
       if (!data?.length) break;
 
