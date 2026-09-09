@@ -14,6 +14,10 @@ export interface NormalizedOrderItem {
   // kaspiLeafCategory, для более точного расчёта комиссии (LEAF_OVERRIDES).
   kaspiLeafCategory?: string;
   weightG?: number; // вес в граммах, если известен
+  // "Предмет" WB и схема продажи (FBS/FBW) — для точного расчёта комиссии
+  // по справочнику wb.categories.ts (загружен из официальной таблицы тарифов).
+  wbSubject?: string;
+  wbScheme?: 'FBS' | 'FBW';
 }
 
 export interface NormalizedOrder {

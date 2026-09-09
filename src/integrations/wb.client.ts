@@ -142,9 +142,9 @@ export class WbClient {
    * предыдущего ответа). У каждой карточки: nmID (номер WB), vendorCode
    * (= supplierArticle, наш wbArticle) и title (название).
    */
-  async fetchCatalog(): Promise<Array<{ vendorCode: string; name: string; nmId: number }>> {
+  async fetchCatalog(): Promise<Array<{ vendorCode: string; name: string; nmId: number; subject?: string }>> {
     const contentHttp = await this.getContentHttp();
-    const catalog: Array<{ vendorCode: string; name: string; nmId: number }> = [];
+    const catalog: Array<{ vendorCode: string; name: string; nmId: number; subject?: string }> = [];
     let cursor: { limit: number; updatedAt?: string; nmID?: number } = { limit: 100 };
 
     for (let page = 0; page < MAX_PAGES_SAFETY; page++) {
@@ -169,12 +169,19 @@ export class WbClient {
         );
       }
 
-      const cards: Array<{ nmID: number; vendorCode: string; title?: string }> = data.cards ?? [];
+      // "Предмет" WB (subjectName) — ключ для поиска комиссии в справочнике
+      // (см. wb.categories.ts). Нужен именно ТЕКСТ предмета, как в таблице
+      // тарифов, не subjectID (числовой внутренний идентификатор WB).
+      // Точное имя поля в Content API документировано не так подробно, как
+      // у Statistics API (где мы уже уверенно используем row.subject) —
+      // пробуем несколько вероятных вариантов, а не полагаемся на одно имя.
+      const cards: Array<{ nmID: number; vendorCode: string; title?: string; subjectName?: string; subject?: string; object?: string }> = data.cards ?? [];
       cards.forEach((card) => {
         catalog.push({
           vendorCode: card.vendorCode,
           name: card.title?.trim() || `WB-товар ${card.vendorCode}`,
           nmId: card.nmID,
+          subject: card.subjectName ?? card.subject ?? card.object,
         });
       });
 
@@ -272,12 +279,19 @@ export class WbClient {
 
   private toNormalizedOrder(row: WbOrderRow, finance?: WbFinanceTotals): NormalizedOrder {
     const price = row.priceWithDisc ?? row.finishedPrice ?? row.totalPrice ?? 0;
+    // Схема продажи — WB не отдаёт её отдельным явным полем, определяем по
+    // типу склада: если склад принадлежит самому WB — это FBW (продажа со
+    // склада WB), иначе — FBS (продажа со своего склада). Эвристика, а не
+    // официально документированное поле — помечено как предположение в UI.
+    const wbScheme: 'FBS' | 'FBW' = /wb|wildberries|склад wb/i.test(row.warehouseType || row.warehouseName || '') ? 'FBW' : 'FBS';
     const items: NormalizedOrderItem[] = [
       {
         externalSku: row.supplierArticle || String(row.nmId),
         name: row.subject || row.supplierArticle || `Товар WB ${row.nmId}`,
         quantity: 1,
         price,
+        wbSubject: row.subject,
+        wbScheme,
       },
     ];
 

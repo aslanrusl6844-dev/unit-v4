@@ -1,6 +1,7 @@
 import { prisma } from '../db/prisma';
 import { MarketplaceName, UnitEconomicsSummary } from '../types';
 import { calcKaspiCommissionAmount, getKaspiCommissionRate } from '../integrations/kaspi.categories';
+import { getWbCommissionRate, WbScheme } from '../integrations/wb.categories';
 import { calculateKaspiDeliveryCost } from '../integrations/kaspi.delivery';
 import { env } from '../config/env';
 
@@ -315,7 +316,7 @@ export interface ProductForecast {
   estTax: number | null; // налог ИП — от referencePrice, не от прибыли
   estPayout: number | null; // "к выводу" после налога
   estMarginAfterTaxPct: number | null; // маржа С УЧЁТОМ налога
-  source: 'kaspi-tariff' | 'kaspi-tariff-default' | 'ozon-tariff' | 'historical-average' | 'no-data';
+  source: 'kaspi-tariff' | 'kaspi-tariff-default' | 'ozon-tariff' | 'wb-tariff' | 'historical-average' | 'no-data';
 }
 
 export async function getProductForecasts(taxRatePct = 4): Promise<ProductForecast[]> {
@@ -480,9 +481,42 @@ export async function getProductForecasts(taxRatePct = 4): Promise<ProductForeca
     if (p.wbArticle) {
       const referencePrice = p.wbReferencePrice ?? null;
       if (referencePrice == null) {
+        // Цены нет — честно "—", не выдумываем (п.5 запроса).
         forecasts.push({ productId: p.id, marketplace: 'WB', referencePrice: null, estCommission: null, estCommissionRate: null, estLogistics: null, estProfit: null, estMarginPct: null, estTax: null, estPayout: null, estMarginAfterTaxPct: null, source: 'no-data' });
       } else {
-        forecasts.push(historicalOrNoData(p.id, 'WB', referencePrice, totalCost));
+        // Точный тариф из справочника комиссий WB (загружен из официальной
+        // таблицы, см. src/data/wbCommissionRates.json). Схема продажи
+        // (FBS/FBW) — по последнему заказу; если заказов ещё не было и
+        // схема неизвестна, по умолчанию берём FBS (самая частая схема у
+        // обычных продавцов) — это предположение, а не факт, помечено в UI.
+        const scheme: WbScheme = p.wbScheme === 'FBW' ? 'FBW' : 'FBS';
+        const rate = getWbCommissionRate(p.wbSubject, scheme);
+
+        if (rate == null) {
+          // Предмет не найден в справочнике (или не определён) — комиссию
+          // НЕ выдумываем, честно "—" (п.4 запроса).
+          forecasts.push({ productId: p.id, marketplace: 'WB', referencePrice, estCommission: null, estCommissionRate: null, estLogistics: null, estProfit: null, estMarginPct: null, estTax: null, estPayout: null, estMarginAfterTaxPct: null, source: 'no-data' });
+        } else {
+          // Логистику WB отдельного официального тарифа у нас пока нет —
+          // берём среднюю фактическую ставку из прошлых продаж этого
+          // товара на WB, если они были (0, если продаж ещё не было).
+          const stats = rateStats.get(`${p.id}:WB`);
+          const estLogistics = stats && stats.count > 0 ? referencePrice * (stats.logisticsRateSum / stats.count) : 0;
+          const estCommission = referencePrice * (rate / 100);
+          const estProfit = round2(referencePrice - totalCost - estCommission - estLogistics);
+          forecasts.push({
+            productId: p.id,
+            marketplace: 'WB',
+            referencePrice,
+            estCommission: round2(estCommission),
+            estCommissionRate: rate,
+            estLogistics: round2(estLogistics),
+            estProfit,
+            estMarginPct: referencePrice > 0 ? round2((estProfit / referencePrice) * 100) : 0,
+            ...taxFields(referencePrice, estProfit),
+            source: 'wb-tariff',
+          });
+        }
       }
     }
   }

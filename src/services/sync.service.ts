@@ -23,6 +23,8 @@ async function resolveProductInfo(
   stats: { productsCreated: number },
   kaspiLeafCategoryFromApi?: string,
   weightGFromApi?: number,
+  wbSubjectFromApi?: string,
+  wbSchemeFromApi?: 'FBS' | 'FBW',
 ): Promise<ResolvedProductInfo> {
   const where =
     marketplace === 'KASPI'
@@ -62,6 +64,10 @@ async function resolveProductInfo(
           // висела "нет категории" до ручного заполнения.
           ...(kaspiLeafCategoryFromApi ? { kaspiLeafCategory: kaspiLeafCategoryFromApi } : {}),
           ...(weightGFromApi ? { weightKg: round2(weightGFromApi / 1000) } : {}),
+          // "Предмет" WB и схема (FBS/FBW) — для точного расчёта комиссии по
+          // справочнику (см. src/integrations/wb.categories.ts).
+          ...(wbSubjectFromApi ? { wbSubject: wbSubjectFromApi } : {}),
+          ...(wbSchemeFromApi ? { wbScheme: wbSchemeFromApi } : {}),
         },
       });
       stats.productsCreated += 1;
@@ -98,6 +104,16 @@ async function resolveProductInfo(
   }
   if (weightGFromApi && (!product.weightKg || product.weightKg === 0.5)) {
     updateData.weightKg = round2(weightGFromApi / 1000);
+  }
+  if (wbSubjectFromApi && !product.wbSubject) {
+    updateData.wbSubject = wbSubjectFromApi;
+  }
+  // Схему (FBS/FBW) обновляем ВСЕГДА при новом заказе (не только если её
+  // раньше не было) — в отличие от категории/веса, схема продажи товара
+  // МОЖЕТ меняться со временем (продавец может переключить FBS/FBW), и
+  // последний заказ — самый достоверный источник актуальной схемы.
+  if (wbSchemeFromApi) {
+    updateData.wbScheme = wbSchemeFromApi;
   }
   if (Object.keys(updateData).length > 0) {
     await prisma.product.update({ where: { id: product.id }, data: updateData });
@@ -173,7 +189,7 @@ function enrichKaspiFinancials(
 async function persistOrder(order: NormalizedOrder, stats: { productsCreated: number }): Promise<void> {
   const itemsWithCost = await Promise.all(
     order.items.map(async (item) => {
-      const info = await resolveProductInfo(order.marketplace, item.externalSku, item.name, stats, item.kaspiLeafCategory, item.weightG);
+      const info = await resolveProductInfo(order.marketplace, item.externalSku, item.name, stats, item.kaspiLeafCategory, item.weightG, item.wbSubject, item.wbScheme);
       return { ...item, ...info };
     }),
   );
@@ -458,6 +474,9 @@ export async function syncWbCatalog() {
         data: {
           wbNmId: item.nmId,
           ...(existing.name.startsWith('WB-товар') ? { name: item.name } : {}),
+          // "Предмет" — только если его ещё нет (не перезатираем то, что
+          // могло прийти точнее из данных заказа).
+          ...(item.subject && !existing.wbSubject ? { wbSubject: item.subject } : {}),
         },
       });
       updated += 1;
@@ -469,6 +488,7 @@ export async function syncWbCatalog() {
           costPrice: 0,
           wbArticle: item.vendorCode,
           wbNmId: item.nmId,
+          ...(item.subject ? { wbSubject: item.subject } : {}),
         },
       });
       created += 1;
