@@ -136,6 +136,59 @@ export class WbClient {
     });
   }
 
+  // Цены живут на ТРЕТЬЕМ хосте WB API (Prices/discounts, отдельно от
+  // Statistics и Content) — токен должен иметь категорию доступа "Цены и
+  // скидки". Официальная документация: https://openapi.wb.ru/prices/api/en/
+  private async getPricesHttp(): Promise<AxiosInstance> {
+    const token = await getWbToken();
+    if (!token) {
+      throw new Error('Wildberries API не настроен: добавьте магазин в разделе «Настройки» или задайте WB_API_TOKEN в .env');
+    }
+    return axios.create({
+      baseURL: env.wb.pricesBaseUrl,
+      headers: { Authorization: token },
+      timeout: 30000,
+    });
+  }
+
+  /**
+   * Текущие цены товаров — GET /api/v2/list/goods/filter (без указания
+   * артикула — отдаёт по ВСЕМ товарам сразу, так рекомендует официальная
+   * документация). Подтверждённый формат ответа:
+   *   { data: { listGoods: [ { nmID, vendorCode, sizes: [{ price, discountedPrice }], ... } ] } }
+   * Берём discountedPrice — это реальная цена, которую платит покупатель
+   * (с учётом скидки продавца), а не список price без скидки.
+   */
+  async fetchPrices(): Promise<Map<number, number>> {
+    const pricesHttp = await this.getPricesHttp();
+    const result = new Map<number, number>();
+
+    try {
+      const response = await withRetryOn429(() => pricesHttp.get('/api/v2/list/goods/filter'), 'цены товаров');
+      const goods: Array<{ nmID: number; sizes?: Array<{ price?: number; discountedPrice?: number }> }> =
+        response.data?.data?.listGoods ?? [];
+      goods.forEach((item) => {
+        const size = item.sizes?.[0];
+        const price = size?.discountedPrice ?? size?.price;
+        if (item.nmID && price != null) result.set(item.nmID, price);
+      });
+    } catch (err: any) {
+      if (err.message?.includes('WB временно ограничил')) throw err;
+      const wbErrorBody = err?.response?.data;
+      logger.error(
+        { status: err?.response?.status, body: wbErrorBody },
+        '[Wildberries] Ошибка запроса цен (/api/v2/list/goods/filter, проверьте категорию доступа токена "Цены и скидки")',
+      );
+      throw new Error(
+        `Wildberries API вернул ошибку ${err?.response?.status ?? ''} при запросе цен: ` +
+          `${JSON.stringify(wbErrorBody) || err?.message}`,
+      );
+    }
+
+    logger.info(`[Wildberries] Получено цен: ${result.size}`);
+    return result;
+  }
+
   /**
    * Полный каталог карточек товаров — POST /content/v2/get/cards/list,
    * с постраничной курсорной пагинацией (limit + cursor.updatedAt/nmID из

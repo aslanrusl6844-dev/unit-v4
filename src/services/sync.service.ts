@@ -463,10 +463,26 @@ export async function syncWbCatalog() {
   }
 
   const catalog = await wbClient.fetchCatalog();
+  // Живые цены — отдельный запрос по всем товарам разом (см. fetchPrices
+  // в wb.client.ts). Без этого поле "Цена" остаётся пустым для товаров,
+  // по которым ещё не было ни одной продажи — а без цены прогноз
+  // юнит-экономики не может посчитать вообще ничего, даже если справочник
+  // комиссий работает правильно.
+  let prices = new Map<number, number>();
+  try {
+    prices = await wbClient.fetchPrices();
+  } catch (err: any) {
+    // Не роняем всю синхронизацию каталога, если именно цены не удалось
+    // получить (например, у токена нет категории доступа "Цены и скидки") —
+    // каталог (названия/предметы) всё равно стоит сохранить.
+    logger.warn({ err: err?.message }, '[Wildberries] Не удалось получить цены — каталог синхронизируется без них');
+  }
+
   let created = 0;
   let updated = 0;
 
   for (const item of catalog) {
+    const price = prices.get(item.nmId);
     const existing = await prisma.product.findFirst({ where: { wbArticle: item.vendorCode } });
     if (existing) {
       await prisma.product.update({
@@ -477,6 +493,10 @@ export async function syncWbCatalog() {
           // "Предмет" — только если его ещё нет (не перезатираем то, что
           // могло прийти точнее из данных заказа).
           ...(item.subject && !existing.wbSubject ? { wbSubject: item.subject } : {}),
+          // Живая цена — обновляем всегда, если WB её прислал (это самая
+          // надёжная referencePrice для WB, точнее устаревшей цены
+          // последней продажи).
+          ...(price != null ? { wbReferencePrice: price, wbReferencePriceUpdatedAt: new Date() } : {}),
         },
       });
       updated += 1;
@@ -489,12 +509,13 @@ export async function syncWbCatalog() {
           wbArticle: item.vendorCode,
           wbNmId: item.nmId,
           ...(item.subject ? { wbSubject: item.subject } : {}),
+          ...(price != null ? { wbReferencePrice: price, wbReferencePriceUpdatedAt: new Date() } : {}),
         },
       });
       created += 1;
     }
   }
 
-  logger.info(`[Wildberries] Каталог синхронизирован: создано ${created}, обновлено ${updated}`);
+  logger.info(`[Wildberries] Каталог синхронизирован: создано ${created}, обновлено ${updated}, цены получены для ${prices.size} товаров`);
   return { created, updated };
 }
