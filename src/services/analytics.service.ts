@@ -2,6 +2,7 @@ import { prisma } from '../db/prisma';
 import { MarketplaceName, UnitEconomicsSummary } from '../types';
 import { calcKaspiCommissionAmount, getKaspiCommissionRate } from '../integrations/kaspi.categories';
 import { getWbCommissionRate, WbScheme } from '../integrations/wb.categories';
+import { calculateWbLogisticsCost, calculateWbReturnCost } from '../integrations/wb.logistics';
 import { calculateKaspiDeliveryCost } from '../integrations/kaspi.delivery';
 import { env } from '../config/env';
 
@@ -316,6 +317,10 @@ export interface ProductForecast {
   estTax: number | null; // налог ИП — от referencePrice, не от прибыли
   estPayout: number | null; // "к выводу" после налога
   estMarginAfterTaxPct: number | null; // маржа С УЧЁТОМ налога
+  // Справочная стоимость возможного возврата (только WB) — НЕ входит в
+  // estProfit/estPayout (возврат не гарантирован для каждой продажи),
+  // показывается отдельной колонкой.
+  estReturnCost: number | null;
   source: 'kaspi-tariff' | 'kaspi-tariff-default' | 'ozon-tariff' | 'wb-tariff' | 'historical-average' | 'no-data';
 }
 
@@ -376,6 +381,7 @@ export async function getProductForecasts(taxRatePct = 4): Promise<ProductForeca
         estProfit: round2(estProfit),
         estMarginPct: referencePrice > 0 ? round2((estProfit / referencePrice) * 100) : 0,
         ...taxFields(referencePrice, round2(estProfit)),
+        estReturnCost: null, // справочная стоимость возврата считается только для WB (см. wb.logistics.ts)
         source: 'historical-average',
       };
     }
@@ -394,6 +400,7 @@ export async function getProductForecasts(taxRatePct = 4): Promise<ProductForeca
       estProfit: estProfitNoData,
       estMarginPct: null,
       ...taxFields(referencePrice, estProfitNoData),
+      estReturnCost: null,
       source: 'no-data',
     };
   }
@@ -407,7 +414,7 @@ export async function getProductForecasts(taxRatePct = 4): Promise<ProductForeca
     if (p.kaspiSku) {
       const referencePrice = p.kaspiReferencePrice ?? null;
       if (referencePrice == null) {
-        forecasts.push({ productId: p.id, marketplace: 'KASPI', referencePrice: null, estCommission: null, estCommissionRate: null, estLogistics: null, estProfit: null, estMarginPct: null, estTax: null, estPayout: null, estMarginAfterTaxPct: null, source: 'no-data' });
+        forecasts.push({ productId: p.id, marketplace: 'KASPI', referencePrice: null, estCommission: null, estCommissionRate: null, estLogistics: null, estProfit: null, estMarginPct: null, estTax: null, estPayout: null, estMarginAfterTaxPct: null, estReturnCost: null, source: 'no-data' });
       } else {
         // Точный тариф Kaspi — не статистика, работает даже с нуля продаж.
         // Верхняя категория не обязательна: если её нет, но есть leaf
@@ -438,6 +445,7 @@ export async function getProductForecasts(taxRatePct = 4): Promise<ProductForeca
           estProfit,
           estMarginPct: referencePrice > 0 ? round2((estProfit / referencePrice) * 100) : 0,
           ...taxFields(referencePrice, estProfit),
+          estReturnCost: null,
           source: (p.kaspiTopCategory || p.kaspiLeafCategory) ? 'kaspi-tariff' : 'kaspi-tariff-default',
         });
       }
@@ -447,7 +455,7 @@ export async function getProductForecasts(taxRatePct = 4): Promise<ProductForeca
     if (p.ozonOfferId) {
       const referencePrice = p.ozonReferencePrice ?? null;
       if (referencePrice == null) {
-        forecasts.push({ productId: p.id, marketplace: 'OZON', referencePrice: null, estCommission: null, estCommissionRate: null, estLogistics: null, estProfit: null, estMarginPct: null, estTax: null, estPayout: null, estMarginAfterTaxPct: null, source: 'no-data' });
+        forecasts.push({ productId: p.id, marketplace: 'OZON', referencePrice: null, estCommission: null, estCommissionRate: null, estLogistics: null, estProfit: null, estMarginPct: null, estTax: null, estPayout: null, estMarginAfterTaxPct: null, estReturnCost: null, source: 'no-data' });
       } else if (p.ozonCommissionRatePct != null) {
         // Точная тарифная сетка Ozon (см. fetchPrices в ozon.client.ts) —
         // та же цифра, что видна в кабинете Ozon → Цены и акции →
@@ -468,6 +476,7 @@ export async function getProductForecasts(taxRatePct = 4): Promise<ProductForeca
           estProfit,
           estMarginPct: referencePrice > 0 ? round2((estProfit / referencePrice) * 100) : 0,
           ...taxFields(referencePrice, estProfit),
+          estReturnCost: null,
           source: 'ozon-tariff',
         });
       } else {
@@ -482,7 +491,7 @@ export async function getProductForecasts(taxRatePct = 4): Promise<ProductForeca
       const referencePrice = p.wbReferencePrice ?? null;
       if (referencePrice == null) {
         // Цены нет — честно "—", не выдумываем (п.5 запроса).
-        forecasts.push({ productId: p.id, marketplace: 'WB', referencePrice: null, estCommission: null, estCommissionRate: null, estLogistics: null, estProfit: null, estMarginPct: null, estTax: null, estPayout: null, estMarginAfterTaxPct: null, source: 'no-data' });
+        forecasts.push({ productId: p.id, marketplace: 'WB', referencePrice: null, estCommission: null, estCommissionRate: null, estLogistics: null, estProfit: null, estMarginPct: null, estTax: null, estPayout: null, estMarginAfterTaxPct: null, estReturnCost: null, source: 'no-data' });
       } else {
         // Точный тариф из справочника комиссий WB (загружен из официальной
         // таблицы, см. src/data/wbCommissionRates.json). Схема продажи
@@ -495,13 +504,15 @@ export async function getProductForecasts(taxRatePct = 4): Promise<ProductForeca
         if (rate == null) {
           // Предмет не найден в справочнике (или не определён) — комиссию
           // НЕ выдумываем, честно "—" (п.4 запроса).
-          forecasts.push({ productId: p.id, marketplace: 'WB', referencePrice, estCommission: null, estCommissionRate: null, estLogistics: null, estProfit: null, estMarginPct: null, estTax: null, estPayout: null, estMarginAfterTaxPct: null, source: 'no-data' });
+          forecasts.push({ productId: p.id, marketplace: 'WB', referencePrice, estCommission: null, estCommissionRate: null, estLogistics: null, estProfit: null, estMarginPct: null, estTax: null, estPayout: null, estMarginAfterTaxPct: null, estReturnCost: null, source: 'no-data' });
         } else {
-          // Логистику WB отдельного официального тарифа у нас пока нет —
-          // берём среднюю фактическую ставку из прошлых продаж этого
-          // товара на WB, если они были (0, если продаж ещё не было).
-          const stats = rateStats.get(`${p.id}:WB`);
-          const estLogistics = stats && stats.count > 0 ? referencePrice * (stats.logisticsRateSum / stats.count) : 0;
+          // Логистика WB — ПО ЛИТРАМ ОБЪЁМА (не процентом от цены, как у
+          // Kaspi/Ozon), по тарифу конкретного склада (см. wb.logistics.ts —
+          // тариф зафиксирован из кабинета пользователя, склад Алматы
+          // Атакент, коэффициент 145%). Если объём товара не указан — берём
+          // 1 литр (первый литр включён почти во все тарифы WB).
+          const estLogistics = calculateWbLogisticsCost(p.wbVolumeLiters);
+          const estReturnCost = calculateWbReturnCost(p.wbVolumeLiters); // справочно, НЕ вычитается из прибыли
           const estCommission = referencePrice * (rate / 100);
           const estProfit = round2(referencePrice - totalCost - estCommission - estLogistics);
           forecasts.push({
@@ -514,6 +525,7 @@ export async function getProductForecasts(taxRatePct = 4): Promise<ProductForeca
             estProfit,
             estMarginPct: referencePrice > 0 ? round2((estProfit / referencePrice) * 100) : 0,
             ...taxFields(referencePrice, estProfit),
+            estReturnCost,
             source: 'wb-tariff',
           });
         }

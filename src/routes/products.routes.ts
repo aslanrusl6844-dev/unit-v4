@@ -44,6 +44,9 @@ const productSchema = z.object({
   kaspiReferencePrice: z.number().positive().optional().nullable(),
   ozonReferencePrice: z.number().positive().optional().nullable(),
   wbReferencePrice: z.number().positive().optional().nullable(),
+  // Объём товара в литрах — для расчёта логистики WB по литрам (см.
+  // src/integrations/wb.logistics.ts). Если не указан, по умолчанию 1 литр.
+  wbVolumeLiters: z.number().positive().optional().nullable(),
 });
 
 productsRouter.post('/', async (req, res) => {

@@ -855,21 +855,33 @@ function isLinkedToMarketplace(p, marketplace) {
  * поэтому цену для прогноза можно просто вписать вручную, как и себестоимость.
  */
 function renderForecastCells(p, marketplace) {
+  const colsForMp = marketplace === 'WB' ? 7 : 6;
   if (!isLinkedToMarketplace(p, marketplace)) {
     // Товар вообще не привязан к этой площадке (нет артикула) — редактировать нечего.
-    return `<td class="num" style="border-left:2px solid var(--border);color:var(--text-faint)">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td>`;
+    return `<td class="num" style="border-left:2px solid var(--border);color:var(--text-faint)">—</td>` + '<td class="num">—</td>'.repeat(colsForMp - 1);
   }
   const fc = productsForecastCache.get(`${p.id}:${marketplace}`);
   const badge = (fc?.source === 'historical-average' || fc?.source === 'kaspi-tariff-default')
     ? ` <span style="color:var(--text-faint);font-size:10px" title="${fc.source === 'kaspi-tariff-default' ? 'Категория неизвестна — применена усреднённая ставка комиссии Kaspi (12.5%), укажи категорию для точного расчёта' : `Оценка по средней ставке из прошлых продаж этого товара на ${mpLabel(marketplace)}`}">≈</span>`
     : '';
   const priceValue = fc?.referencePrice != null ? fc.referencePrice : '';
+  // "Возврат" — только для WB, справочная колонка (не входит в прибыль
+  // ниже, специально приглушённым цветом, чтобы не путать с реальными расходами).
+  const returnCell = marketplace === 'WB'
+    ? `<td class="num" style="color:var(--text-faint)" title="Справочно: возможная стоимость возврата (на ПВЗ), НЕ вычитается из прибыли — возврат случается не по каждой продаже">${fc?.estReturnCost != null ? fmtMoney(fc.estReturnCost) : '—'}</td>`
+    : '';
+  // Логистика WB считается по литрам объёма — даём возможность уточнить
+  // объём товара прямо тут (по умолчанию 1 литр, если не указано).
+  const logisticsCellContent = marketplace === 'WB'
+    ? `${fc?.estLogistics != null ? fmtMoney(fc.estLogistics) : '—'}<br><input type="number" step="0.1" min="0.1" placeholder="1 л" value="${p.wbVolumeLiters ?? ''}" data-volume-field="wbVolumeLiters" style="width:55px;font-size:10px;margin-top:2px" title="Объём в литрах (по умолчанию 1 л)" />`
+    : (fc?.estLogistics != null ? fmtMoney(fc.estLogistics) + badge : '—');
   return `
     <td class="num" style="border-left:2px solid var(--border)">
       <input class="cost-input" type="number" step="1" placeholder="Цена" value="${priceValue}" data-price-field="${priceFieldName(marketplace)}" style="width:85px" />
     </td>
     <td class="num">${fc?.estCommission != null ? `${fmtMoney(fc.estCommission)}${fc.estCommissionRate != null ? ` <span style="color:var(--text-faint);font-size:10px">(${fc.estCommissionRate}%)</span>` : ''}` + badge : '—'}</td>
-    <td class="num">${fc?.estLogistics != null ? fmtMoney(fc.estLogistics) + badge : '—'}</td>
+    <td class="num">${logisticsCellContent}</td>
+    ${returnCell}
     <td class="num">${fc?.estTax != null ? fmtMoney(fc.estTax) : '—'}</td>
     <td class="num ${fc?.estPayout != null ? (fc.estPayout >= 0 ? 'pos' : 'neg') : ''}" title="С учётом налога ИП">${fc?.estPayout != null ? fmtMoney(fc.estPayout) : '—'}</td>
     <td class="num ${fc?.estMarginAfterTaxPct != null ? (fc.estMarginAfterTaxPct >= 0 ? 'pos' : 'neg') : ''}" title="С учётом налога ИП">${fc?.estMarginAfterTaxPct != null ? fmtPct(fc.estMarginAfterTaxPct) : '—'}</td>
@@ -922,6 +934,7 @@ function renderProductsTableHead(marketplaces) {
   if (marketplaces.length === 1) {
     // Одна площадка — шапка в один ряд, широкие понятные колонки, без group-заголовков.
     const mp = marketplaces[0];
+    const returnHeader = mp === 'WB' ? `<th class="num" title="Справочно: НЕ входит в расчёт прибыли">Возврат</th>` : '';
     thead.innerHTML = `
       <tr>
         ${selectAllCb}
@@ -930,6 +943,7 @@ function renderProductsTableHead(marketplaces) {
         <th class="num">Цена</th>
         <th class="num" title="${commissionTitle(mp)}">Комиссия</th>
         <th class="num" title="${logisticsTitle(mp)}">Логистика</th>
+        ${returnHeader}
         <th class="num">Налог</th>
         <th class="num" title="С учётом налога ИП">Прибыль/шт</th>
         <th class="num" title="С учётом налога ИП">Маржа</th>
@@ -938,11 +952,15 @@ function renderProductsTableHead(marketplaces) {
     `;
   } else {
     // "Всё вместе" — три компактных блока, как раньше (без единственно
-    // очевидного выбора площадки это разумный компромисс).
-    const groupHeaders = marketplaces.map((mp) => `<th colspan="6" style="text-align:center;border-left:2px solid var(--border)"><span class="dot dot--${mp.toLowerCase()}"></span> ${mpLabel(mp)}</th>`).join('');
+    // очевидного выбора площадки это разумный компромисс). У WB на одну
+    // колонку больше ("Возврат") — это нормально, колонки не обязаны
+    // совпадать между блоками разных площадок.
+    const groupHeaders = marketplaces.map((mp) => `<th colspan="${mp === 'WB' ? 7 : 6}" style="text-align:center;border-left:2px solid var(--border)"><span class="dot dot--${mp.toLowerCase()}"></span> ${mpLabel(mp)}</th>`).join('');
     const subHeaders = marketplaces.map((mp) => `
       <th class="num" style="border-left:2px solid var(--border)">Цена</th>
-      <th class="num" title="${commissionTitle(mp)}">Комиссия</th><th class="num" title="${logisticsTitle(mp)}">Логистика</th><th class="num">Налог</th>
+      <th class="num" title="${commissionTitle(mp)}">Комиссия</th><th class="num" title="${logisticsTitle(mp)}">Логистика</th>
+      ${mp === 'WB' ? `<th class="num" title="Справочно: НЕ входит в расчёт прибыли">Возврат</th>` : ''}
+      <th class="num">Налог</th>
       <th class="num" title="С учётом налога ИП">Прибыль/шт</th><th class="num" title="С учётом налога ИП">Маржа</th>
     `).join('');
     thead.innerHTML = `
@@ -994,7 +1012,7 @@ function renderProductsAdminTable() {
   }
 
   const tbody = document.querySelector('#productsAdminTable tbody');
-  const totalCols = 5 + marketplaces.length * 6 + 2; // +1 за колонку чекбокса, 6 колонок на площадку (цена/комиссия/логистика/налог/прибыль/маржа)
+  const totalCols = 5 + marketplaces.reduce((sum, mp) => sum + (mp === 'WB' ? 7 : 6), 0) + 2; // +1 за колонку чекбокса, 6 колонок на площадку (7 у WB — добавлена "Возврат")
 
   // Пагинация — по PRODUCTS_PAGE_SIZE карточек на страницу, чтобы даже при
   // тысяче с лишним товаров список оставался удобным.
@@ -1099,6 +1117,20 @@ function renderProductsAdminTable() {
         await loadProductsAdminTable();
       } catch (err) {
         alert('Не удалось сохранить цену: ' + err.message);
+      }
+    });
+  });
+  // Объём товара (WB, для расчёта логистики по литрам) — редактируется прямо в таблице.
+  tbody.querySelectorAll('input[data-volume-field]').forEach((input) => {
+    input.addEventListener('change', async (e) => {
+      const id = e.target.closest('tr').dataset.id;
+      const field = e.target.dataset.volumeField;
+      const value = e.target.value === '' ? null : Number(e.target.value);
+      try {
+        await api(`/products/${id}`, { method: 'PUT', body: JSON.stringify({ [field]: value }) });
+        await loadProductsAdminTable();
+      } catch (err) {
+        alert('Не удалось сохранить объём: ' + err.message);
       }
     });
   });
