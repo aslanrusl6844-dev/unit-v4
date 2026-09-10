@@ -469,20 +469,26 @@ export async function syncWbCatalog() {
   // юнит-экономики не может посчитать вообще ничего, даже если справочник
   // комиссий работает правильно.
   let prices = new Map<number, number>();
+  let priceError: string | null = null;
   try {
     prices = await wbClient.fetchPrices();
   } catch (err: any) {
     // Не роняем всю синхронизацию каталога, если именно цены не удалось
     // получить (например, у токена нет категории доступа "Цены и скидки") —
-    // каталог (названия/предметы) всё равно стоит сохранить.
-    logger.warn({ err: err?.message }, '[Wildberries] Не удалось получить цены — каталог синхронизируется без них');
+    // каталог (названия/предметы) всё равно стоит сохранить. Но саму
+    // причину обязательно возвращаем наружу — иначе пользователь видит
+    // "обновлено N товаров" и не понимает, почему цена всё равно пустая.
+    priceError = String(err?.message ?? err);
+    logger.warn({ err: priceError }, '[Wildberries] Не удалось получить цены — каталог синхронизируется без них');
   }
 
   let created = 0;
   let updated = 0;
+  let subjectMissingCount = 0;
 
   for (const item of catalog) {
     const price = prices.get(item.nmId);
+    if (!item.subject) subjectMissingCount += 1;
     const existing = await prisma.product.findFirst({ where: { wbArticle: item.vendorCode } });
     if (existing) {
       await prisma.product.update({
@@ -516,6 +522,12 @@ export async function syncWbCatalog() {
     }
   }
 
-  logger.info(`[Wildberries] Каталог синхронизирован: создано ${created}, обновлено ${updated}, цены получены для ${prices.size} товаров`);
-  return { created, updated };
+  logger.info(`[Wildberries] Каталог синхронизирован: создано ${created}, обновлено ${updated}, цены получены для ${prices.size} товаров, предмет не пришёл у ${subjectMissingCount}`);
+  return {
+    created,
+    updated,
+    pricesFetched: prices.size,
+    priceError,
+    subjectMissingCount,
+  };
 }

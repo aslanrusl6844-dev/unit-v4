@@ -642,7 +642,20 @@ function wireProductsFormOnce() {
     btn.textContent = '…'; btn.disabled = true;
     try {
       const res = await api('/sync/wb-catalog', { method: 'POST' });
-      alert(`Каталог WB синхронизирован. Создано товаров: ${res.created}. Обновлено: ${res.updated}.`);
+      // Явно показываем диагностику цен — раньше при сбое получения цен
+      // (например, у токена нет категории доступа "Цены и скидки") ошибка
+      // тихо терялась в логах сервера, и было видно только "обновлено N",
+      // без объяснения, почему цена/комиссия всё равно пустые.
+      let msg = `Каталог WB синхронизирован. Создано товаров: ${res.created}. Обновлено: ${res.updated}.`;
+      if (res.priceError) {
+        msg += `\n\n⚠ Цены получить не удалось: ${res.priceError}\nПроверь, что токен WB создан с категорией доступа «Цены и скидки».`;
+      } else {
+        msg += ` Цены получены: ${res.pricesFetched}.`;
+      }
+      if (res.subjectMissingCount > 0) {
+        msg += `\n⚠ У ${res.subjectMissingCount} товаров WB не прислал "предмет" — для них комиссия останется "—", пока предмет не появится (обычно подтягивается из данных заказа).`;
+      }
+      alert(msg);
       try {
         await loadProductsAdminTable();
       } catch (renderErr) {
@@ -2053,30 +2066,19 @@ document.getElementById('syncWbBtn').addEventListener('click', async () => {
   const btn = document.getElementById('syncWbBtn');
   btn.textContent = '…'; btn.disabled = true;
   try {
-    // Заказы и каталог у WB — это ДВА разных источника данных (Statistics
-    // API и Content API), поэтому один запрос не может дать оба сразу.
-    // Раньше эта кнопка тянула только заказы, а каталог нужно было
-    // синхронизировать отдельно на странице «Товары» — легко не заметить.
-    // Теперь одна кнопка запускает оба действия по очереди.
+    // ВАЖНО: раньше эта кнопка запускала ЕЩЁ и синхронизацию каталога сразу
+    // следом — из-за этого общее время могло превышать лимит serverless-
+    // функции (таймаут >55с), и каталог с ценами/комиссией даже не успевал
+    // запуститься. Теперь кнопка делает только заказы — каталог (цены,
+    // комиссия по справочнику WB) синхронизируется отдельно кнопкой
+    // «Каталог WB» на странице «Товары», без риска общего таймаута.
     const ordersRes = await api('/sync/wb?days=7', { method: 'POST' });
-
-    let catalogMsg = '';
-    try {
-      const catalogRes = await api('/sync/wb-catalog', { method: 'POST' });
-      catalogMsg = ` Каталог: создано ${catalogRes.created}, обновлено ${catalogRes.updated}.`;
-    } catch (catalogErr) {
-      // Заказы могли синхронизироваться успешно, даже если с каталогом
-      // что-то не так (например, токен создан без категории доступа
-      // "Контент") — не превращаем это в общую "ошибку синхронизации".
-      catalogMsg = ` Каталог не удалось обновить: ${catalogErr.message}`;
-    }
-
     try {
       await reloadCurrentPage();
     } catch (renderErr) {
       console.warn('Синхронизация WB прошла успешно, но при обновлении страницы возникла ошибка:', renderErr);
     }
-    alert(`Синхронизация WB завершена. Обработано заказов: ${ordersRes.ordersProcessed ?? 0}.${catalogMsg}`);
+    alert(`Синхронизация заказов WB завершена. Обработано заказов: ${ordersRes.ordersProcessed ?? 0}.\nДля цен и комиссии по каталогу используй кнопку «Каталог WB» на странице «Товары».`);
   } catch (err) {
     alert('Ошибка синхронизации WB: ' + err.message);
   } finally {

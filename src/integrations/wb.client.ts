@@ -165,8 +165,15 @@ export class WbClient {
 
     try {
       const response = await withRetryOn429(() => pricesHttp.get('/api/v2/list/goods/filter'), 'цены товаров');
+      // Терпимый разбор — пробуем несколько вероятных путей к списку, на
+      // случай если структура чуть отличается от задокументированной.
       const goods: Array<{ nmID: number; sizes?: Array<{ price?: number; discountedPrice?: number }> }> =
-        response.data?.data?.listGoods ?? [];
+        response.data?.data?.listGoods ?? response.data?.listGoods ?? [];
+      if (goods.length === 0) {
+        // Ничего не нашли — логируем СЫРОЙ ответ целиком, чтобы при следующей
+        // проблеме сразу было видно точную структуру, а не гадать заново.
+        logger.warn({ sampleResponse: response.data }, '[Wildberries] /api/v2/list/goods/filter вернул пустой список товаров — см. sampleResponse');
+      }
       goods.forEach((item) => {
         const size = item.sizes?.[0];
         const price = size?.discountedPrice ?? size?.price;
