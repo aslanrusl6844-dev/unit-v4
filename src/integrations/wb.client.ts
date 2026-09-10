@@ -163,22 +163,45 @@ export class WbClient {
     const pricesHttp = await this.getPricesHttp();
     const result = new Map<number, number>();
 
+    // ВАЖНО (подтверждено официальной документацией dev.wildberries.ru):
+    // "To get data for all products, do not set the article, set
+    // limit=1000, and use the offset field to set the data offset." — без
+    // этих параметров запрос, судя по всему, отвечает 200 OK с пустым
+    // списком (без ошибки), из-за чего цены молча не подтягивались. Теперь
+    // передаём limit явно и постранично идём через offset, пока не
+    // получим страницу короче limit.
+    const limit = 1000;
+    let offset = 0;
+
     try {
-      const response = await withRetryOn429(() => pricesHttp.get('/api/v2/list/goods/filter'), 'цены товаров');
-      // Терпимый разбор — пробуем несколько вероятных путей к списку, на
-      // случай если структура чуть отличается от задокументированной.
-      const goods: Array<{ nmID: number; sizes?: Array<{ price?: number; discountedPrice?: number }> }> =
-        response.data?.data?.listGoods ?? response.data?.listGoods ?? [];
-      if (goods.length === 0) {
-        // Ничего не нашли — логируем СЫРОЙ ответ целиком, чтобы при следующей
-        // проблеме сразу было видно точную структуру, а не гадать заново.
-        logger.warn({ sampleResponse: response.data }, '[Wildberries] /api/v2/list/goods/filter вернул пустой список товаров — см. sampleResponse');
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const response = await withRetryOn429(
+          () => pricesHttp.get('/api/v2/list/goods/filter', { params: { limit, offset } }),
+          'цены товаров',
+        );
+        // Терпимый разбор — пробуем несколько вероятных путей к списку, на
+        // случай если структура чуть отличается от задокументированной.
+        const goods: Array<{ nmID: number; sizes?: Array<{ price?: number; discountedPrice?: number }> }> =
+          response.data?.data?.listGoods ?? response.data?.listGoods ?? [];
+
+        if (goods.length === 0 && offset === 0) {
+          // Ничего не нашли даже на первой странице — логируем СЫРОЙ ответ
+          // целиком, чтобы при следующей проблеме сразу было видно точную
+          // структуру, а не гадать заново.
+          logger.warn({ sampleResponse: response.data }, '[Wildberries] /api/v2/list/goods/filter вернул пустой список товаров — см. sampleResponse');
+        }
+
+        goods.forEach((item) => {
+          const size = item.sizes?.[0];
+          const price = size?.discountedPrice ?? size?.price;
+          if (item.nmID && price != null) result.set(item.nmID, price);
+        });
+
+        if (goods.length < limit) break; // последняя страница
+        offset += limit;
+        await sleep(PACING_DELAY_MS);
       }
-      goods.forEach((item) => {
-        const size = item.sizes?.[0];
-        const price = size?.discountedPrice ?? size?.price;
-        if (item.nmID && price != null) result.set(item.nmID, price);
-      });
     } catch (err: any) {
       if (err.message?.includes('WB временно ограничил')) throw err;
       const wbErrorBody = err?.response?.data;

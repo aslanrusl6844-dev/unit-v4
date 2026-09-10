@@ -489,46 +489,58 @@ export async function getProductForecasts(taxRatePct = 4): Promise<ProductForeca
     // --- Wildberries ---
     if (p.wbArticle) {
       const referencePrice = p.wbReferencePrice ?? null;
-      if (referencePrice == null) {
-        // Цены нет — честно "—", не выдумываем (п.5 запроса).
-        forecasts.push({ productId: p.id, marketplace: 'WB', referencePrice: null, estCommission: null, estCommissionRate: null, estLogistics: null, estProfit: null, estMarginPct: null, estTax: null, estPayout: null, estMarginAfterTaxPct: null, estReturnCost: null, source: 'no-data' });
+      // Логистика и возврат считаются ПО ОБЪЁМУ (литрам), а не от цены —
+      // поэтому их можно и нужно показать, даже если цена ещё не пришла
+      // (используется дефолт 1 литр, если объём не указан). Раньше это было
+      // ошибочно завязано на наличие цены — товар без цены показывал "—"
+      // вообще по всем колонкам, хотя логистика/возврат от цены не зависят.
+      const estLogistics = calculateWbLogisticsCost(p.wbVolumeLiters);
+      const estReturnCost = calculateWbReturnCost(p.wbVolumeLiters);
+
+      const scheme: WbScheme = p.wbScheme === 'FBW' ? 'FBW' : 'FBS';
+      const rate = getWbCommissionRate(p.wbSubject, scheme);
+
+      if (referencePrice == null || rate == null) {
+        // Цены нет (п.5) ИЛИ предмет не найден в справочнике (п.4) —
+        // комиссию/прибыль/налог НЕ выдумываем, честно "—". Но логистику и
+        // возврат всё равно показываем — это не зависит ни от цены, ни от
+        // предмета/справочника комиссий.
+        forecasts.push({
+          productId: p.id,
+          marketplace: 'WB',
+          referencePrice,
+          estCommission: null,
+          estCommissionRate: rate,
+          estLogistics: round2(estLogistics),
+          estProfit: null,
+          estMarginPct: null,
+          estTax: null,
+          estPayout: null,
+          estMarginAfterTaxPct: null,
+          estReturnCost: round2(estReturnCost),
+          source: 'no-data',
+        });
       } else {
         // Точный тариф из справочника комиссий WB (загружен из официальной
         // таблицы, см. src/data/wbCommissionRates.json). Схема продажи
         // (FBS/FBW) — по последнему заказу; если заказов ещё не было и
         // схема неизвестна, по умолчанию берём FBS (самая частая схема у
         // обычных продавцов) — это предположение, а не факт, помечено в UI.
-        const scheme: WbScheme = p.wbScheme === 'FBW' ? 'FBW' : 'FBS';
-        const rate = getWbCommissionRate(p.wbSubject, scheme);
-
-        if (rate == null) {
-          // Предмет не найден в справочнике (или не определён) — комиссию
-          // НЕ выдумываем, честно "—" (п.4 запроса).
-          forecasts.push({ productId: p.id, marketplace: 'WB', referencePrice, estCommission: null, estCommissionRate: null, estLogistics: null, estProfit: null, estMarginPct: null, estTax: null, estPayout: null, estMarginAfterTaxPct: null, estReturnCost: null, source: 'no-data' });
-        } else {
-          // Логистика WB — ПО ЛИТРАМ ОБЪЁМА (не процентом от цены, как у
-          // Kaspi/Ozon), по тарифу конкретного склада (см. wb.logistics.ts —
-          // тариф зафиксирован из кабинета пользователя, склад Алматы
-          // Атакент, коэффициент 145%). Если объём товара не указан — берём
-          // 1 литр (первый литр включён почти во все тарифы WB).
-          const estLogistics = calculateWbLogisticsCost(p.wbVolumeLiters);
-          const estReturnCost = calculateWbReturnCost(p.wbVolumeLiters); // справочно, НЕ вычитается из прибыли
-          const estCommission = referencePrice * (rate / 100);
-          const estProfit = round2(referencePrice - totalCost - estCommission - estLogistics);
-          forecasts.push({
-            productId: p.id,
-            marketplace: 'WB',
-            referencePrice,
-            estCommission: round2(estCommission),
-            estCommissionRate: rate,
-            estLogistics: round2(estLogistics),
-            estProfit,
-            estMarginPct: referencePrice > 0 ? round2((estProfit / referencePrice) * 100) : 0,
-            ...taxFields(referencePrice, estProfit),
-            estReturnCost,
-            source: 'wb-tariff',
-          });
-        }
+        const estCommission = referencePrice * (rate / 100);
+        const estProfit = round2(referencePrice - totalCost - estCommission - estLogistics);
+        forecasts.push({
+          productId: p.id,
+          marketplace: 'WB',
+          referencePrice,
+          estCommission: round2(estCommission),
+          estCommissionRate: rate,
+          estLogistics: round2(estLogistics),
+          estProfit,
+          estMarginPct: referencePrice > 0 ? round2((estProfit / referencePrice) * 100) : 0,
+          ...taxFields(referencePrice, estProfit),
+          estReturnCost: round2(estReturnCost),
+          source: 'wb-tariff',
+        });
       }
     }
   }
