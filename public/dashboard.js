@@ -748,7 +748,11 @@ async function handleBulkUpload() {
   try {
     const rows = await parseSpreadsheetFile(file);
     if (!rows.length) {
-      progressEl.innerHTML = `<p style="color:var(--loss);font-size:12.5px">Не удалось найти ни одной строки с обязательными колонками sku/name.</p>`;
+      progressEl.innerHTML = `<p style="color:var(--loss);font-size:12.5px">
+        Не удалось найти шапку с колонками SKU и Название среди первых 5 строк файла.
+        Проверь, что в файле есть колонка с артикулом (sku / Артикул / Код / Код товара / vendorCode / Артикул продавца)
+        и колонка с названием (name / Название / Наименование / Товар / Название товара).
+      </p>`;
       return;
     }
 
@@ -779,26 +783,74 @@ async function handleBulkUpload() {
   }
 }
 
+/**
+ * Псевдонимы колонок — сопоставляем любой из этих вариантов заголовка
+ * (регистр и пробелы не важны) с нужным полем товара. Так принимаем файл
+ * "как есть" — например, выгрузку из кабинета Kaspi с русскими заголовками,
+ * а не только англоязычный формат sku/name.
+ */
+const BULK_UPLOAD_COLUMN_ALIASES = {
+  sku: ['sku', 'артикул', 'код', 'код товара', 'vendorcode', 'артикул продавца'],
+  name: ['name', 'название', 'наименование', 'товар', 'название товара', 'title', 'productname'],
+  kaspiSku: ['kaspisku', 'артикул kaspi', 'артикул магазина'],
+  costPrice: ['costprice', 'себестоимость', 'закуп', 'цена закупки', 'закупочная цена'],
+  kaspiTopCategory: ['kaspitopcategory', 'категория', 'категория kaspi'],
+};
+
+/**
+ * Ищет строку-шапку среди первых maxRows строк (не только в первой — в
+ * реальных выгрузках перед заголовком часто есть титульная строка или
+ * пустая строка) — строка считается шапкой, если среди её ячеек находится
+ * хотя бы один псевдоним SKU И хотя бы один псевдоним названия.
+ * Возвращает { headerRowIndex, columnIndex } или null, если не нашли.
+ */
+function findBulkUploadHeaderRow(aoa, maxRows = 5) {
+  for (let r = 0; r < Math.min(maxRows, aoa.length); r++) {
+    const row = aoa[r] || [];
+    const normalizedCells = row.map((cell) => String(cell ?? '').trim().toLowerCase());
+
+    const columnIndex = {};
+    for (const [field, aliases] of Object.entries(BULK_UPLOAD_COLUMN_ALIASES)) {
+      const idx = normalizedCells.findIndex((cell) => aliases.includes(cell));
+      if (idx !== -1) columnIndex[field] = idx;
+    }
+
+    if (columnIndex.sku !== undefined && columnIndex.name !== undefined) {
+      return { headerRowIndex: r, columnIndex };
+    }
+  }
+  return null;
+}
+
+/** Превращает "сырые" строки (массив массивов, как есть в файле) в массив
+ *  товаров для bulk-upsert, используя найденную шапку. */
+function extractBulkUploadRows(aoa) {
+  const found = findBulkUploadHeaderRow(aoa);
+  if (!found) return [];
+  const { headerRowIndex, columnIndex } = found;
+
+  const rows = [];
+  for (let r = headerRowIndex + 1; r < aoa.length; r++) {
+    const row = aoa[r] || [];
+    const sku = String(row[columnIndex.sku] ?? '').trim();
+    const name = String(row[columnIndex.name] ?? '').trim();
+    if (!sku || !name) continue; // лишние/пустые строки — пропускаем, не выдумываем данные
+
+    rows.push({
+      sku,
+      name,
+      kaspiSku: columnIndex.kaspiSku !== undefined ? (String(row[columnIndex.kaspiSku] ?? '').trim() || null) : null,
+      costPrice: columnIndex.costPrice !== undefined ? (Number(String(row[columnIndex.costPrice] ?? '').replace(',', '.')) || 0) : 0,
+      kaspiTopCategory: columnIndex.kaspiTopCategory !== undefined ? (String(row[columnIndex.kaspiTopCategory] ?? '').trim() || null) : null,
+    });
+  }
+  return rows;
+}
+
 /** Разбирает CSV (PapaParse) или Excel (SheetJS) в массив строк для bulk-upsert. */
 function parseSpreadsheetFile(file) {
   return new Promise((resolve, reject) => {
     const isExcel = /\.xlsx?$/i.test(file.name);
-
-    const normalizeRow = (row) => {
-      // Ключи колонок могут быть с разным регистром/пробелами — приводим к единому виду.
-      const norm = {};
-      Object.keys(row).forEach((k) => { norm[k.trim().toLowerCase()] = row[k]; });
-      const sku = String(norm.sku ?? '').trim();
-      const name = String(norm.name ?? norm['название'] ?? '').trim();
-      if (!sku || !name) return null;
-      return {
-        sku,
-        name,
-        kaspiSku: norm.kaspisku ? String(norm.kaspisku).trim() : null,
-        costPrice: Number(norm.costprice ?? norm['себестоимость'] ?? 0) || 0,
-        kaspiTopCategory: norm.kaspitopcategory ? String(norm.kaspitopcategory).trim() : null,
-      };
-    };
 
     if (isExcel) {
       const reader = new FileReader();
@@ -806,17 +858,20 @@ function parseSpreadsheetFile(file) {
         try {
           const wb = XLSX.read(e.target.result, { type: 'array' });
           const sheet = wb.Sheets[wb.SheetNames[0]];
-          const json = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-          resolve(json.map(normalizeRow).filter(Boolean));
+          // header: 1 — получаем "сырые" строки (массив массивов), а не
+          // объекты по заголовку первой строки — так можно самим найти
+          // шапку среди первых 5 строк, а не полагаться на строку 1.
+          const aoa = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+          resolve(extractBulkUploadRows(aoa));
         } catch (err) { reject(err); }
       };
       reader.onerror = () => reject(new Error('Не удалось прочитать файл'));
       reader.readAsArrayBuffer(file);
     } else {
       Papa.parse(file, {
-        header: true,
+        header: false, // тоже без заголовка — ищем шапку сами среди первых строк
         skipEmptyLines: true,
-        complete: (res) => resolve(res.data.map(normalizeRow).filter(Boolean)),
+        complete: (res) => resolve(extractBulkUploadRows(res.data)),
         error: (err) => reject(err),
       });
     }
