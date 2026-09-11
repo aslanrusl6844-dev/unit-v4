@@ -85,6 +85,10 @@ const bulkRowSchema = z.object({
   kaspiSku: z.string().optional().nullable(),
   costPrice: z.number().nonnegative().default(0),
   kaspiTopCategory: z.string().optional().nullable(),
+  // Цена витрины из файла (например, колонка "price" в выгрузке Kaspi) —
+  // используется как referencePrice для прогноза юнит-экономики Kaspi,
+  // если у товара ещё нет цены из реальной продажи.
+  kaspiReferencePrice: z.number().positive().optional().nullable(),
 });
 
 const BULK_CHUNK_SIZE = 200;
@@ -113,6 +117,7 @@ productsRouter.post('/bulk-upsert', async (req, res) => {
               costPrice: row.costPrice,
               ...(row.kaspiSku ? { kaspiSku: row.kaspiSku } : {}),
               ...(row.kaspiTopCategory ? { kaspiTopCategory: row.kaspiTopCategory } : {}),
+              ...(row.kaspiReferencePrice ? { kaspiReferencePrice: row.kaspiReferencePrice, kaspiReferencePriceUpdatedAt: new Date() } : {}),
             },
             create: {
               sku: row.sku,
@@ -120,6 +125,7 @@ productsRouter.post('/bulk-upsert', async (req, res) => {
               costPrice: row.costPrice,
               kaspiSku: row.kaspiSku || null,
               kaspiTopCategory: row.kaspiTopCategory || null,
+              ...(row.kaspiReferencePrice ? { kaspiReferencePrice: row.kaspiReferencePrice, kaspiReferencePriceUpdatedAt: new Date() } : {}),
             },
           }),
         ),
@@ -144,6 +150,7 @@ productsRouter.post('/bulk-upsert', async (req, res) => {
                 costPrice: row.costPrice,
                 ...(row.kaspiSku ? { kaspiSku: row.kaspiSku } : {}),
                 ...(row.kaspiTopCategory ? { kaspiTopCategory: row.kaspiTopCategory } : {}),
+                ...(row.kaspiReferencePrice ? { kaspiReferencePrice: row.kaspiReferencePrice, kaspiReferencePriceUpdatedAt: new Date() } : {}),
               },
             });
             updated += 1;
@@ -155,6 +162,7 @@ productsRouter.post('/bulk-upsert', async (req, res) => {
                 costPrice: row.costPrice,
                 kaspiSku: row.kaspiSku || null,
                 kaspiTopCategory: row.kaspiTopCategory || null,
+                ...(row.kaspiReferencePrice ? { kaspiReferencePrice: row.kaspiReferencePrice, kaspiReferencePriceUpdatedAt: new Date() } : {}),
               },
             });
             created += 1;

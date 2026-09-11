@@ -749,12 +749,15 @@ async function handleBulkUpload() {
     const parsed = await parseSpreadsheetFile(file);
     const rows = parsed.rows;
     if (!rows.length) {
-      // Показываем, что реально нашли в файле — пример: "Нашёл колонки:
-      // Артикул товара, Название на витрине, Цена. Не хватает SKU/Название."
-      // (если совсем ничего не нашли — так и пишем, без выдуманного списка).
-      const found = parsed.diagnostic?.foundHeaders ?? [];
-      const foundText = found.length
-        ? `Нашёл колонки: ${found.join(', ')}. Не хватает SKU/Название.`
+      // Показываем ТОЧНО, чего не хватает — раньше писали одинаковый текст
+      // "не хватает SKU/Название" независимо от того, что реально нашлось,
+      // это вводило в заблуждение, если один из двух на самом деле был найден.
+      const d = parsed.diagnostic ?? { foundHeaders: [], hasSku: false, hasName: false };
+      const missing = [];
+      if (!d.hasSku) missing.push('SKU');
+      if (!d.hasName) missing.push('Название');
+      const foundText = d.foundHeaders.length
+        ? `Нашёл колонки: ${d.foundHeaders.join(', ')}. ${missing.length ? `Не хватает: ${missing.join(', ')}.` : ''}`
         : `В первых ${BULK_UPLOAD_MAX_HEADER_ROWS} строках ни одного листа не нашёл вообще ни одной узнаваемой колонки.`;
       progressEl.innerHTML = `<p style="color:var(--loss);font-size:12.5px">
         Не удалось найти шапку с колонками SKU и Название среди первых ${BULK_UPLOAD_MAX_HEADER_ROWS} строк
@@ -762,7 +765,7 @@ async function handleBulkUpload() {
         Нужна колонка с артикулом (sku / Артикул / Код / Код товара / vendorCode / Артикул продавца / Артикул товара /
         Артикул на витрине / SKU продавца / Код продавца / Merchant SKU / nmId / Баркод / Штрихкод)
         и колонка с названием (name / Название / Наименование / Товар / Название товара / Название на витрине /
-        Название модели / Модель / Product name / Title).
+        Название модели / Модель / model / Product name / Title).
       </p>`;
       return;
     }
@@ -809,10 +812,14 @@ const BULK_UPLOAD_COLUMN_ALIASES = {
   name: [
     'name', 'название', 'наименование', 'товар', 'название товара', 'title', 'productname',
     'название на витрине', 'название модели', 'модель', 'product name',
+    'model', // англ. "модель" без приставки — так называется колонка в выгрузке Kaspi (ACTIVE.xlsx)
   ],
   kaspiSku: ['kaspisku', 'артикул kaspi', 'артикул магазина'],
   costPrice: ['costprice', 'себестоимость', 'закуп', 'цена закупки', 'закупочная цена'],
   kaspiTopCategory: ['kaspitopcategory', 'категория', 'категория kaspi'],
+  // Цена витрины — используется как referencePrice для прогноза Kaspi,
+  // если у товара ещё нет цены из реальной продажи (см. ACTIVE.xlsx: price).
+  kaspiReferencePrice: ['price', 'цена', 'цена витрины'],
 };
 
 const BULK_UPLOAD_MAX_HEADER_ROWS = 30;
@@ -839,14 +846,14 @@ function scanRowsForHeader(aoa, maxRows) {
       if (idx !== -1) columnIndex[field] = idx;
     }
 
-    const matchedCount = Object.keys(columnIndex).length;
+    const matchedFields = Object.keys(columnIndex);
     const rawHeaders = row.map((c) => String(c ?? '').trim()).filter(Boolean);
 
     if (columnIndex.sku !== undefined && columnIndex.name !== undefined) {
       return { headerRowIndex: r, columnIndex, rawHeaders };
     }
-    if (matchedCount > 0 && (!bestCandidate || matchedCount > bestCandidate.matchedCount)) {
-      bestCandidate = { matchedCount, rawHeaders };
+    if (matchedFields.length > 0 && (!bestCandidate || matchedFields.length > bestCandidate.matchedFields.length)) {
+      bestCandidate = { matchedFields, rawHeaders, hasSku: columnIndex.sku !== undefined, hasName: columnIndex.name !== undefined };
     }
   }
   return { headerRowIndex: -1, columnIndex: null, bestCandidate };
@@ -862,12 +869,24 @@ function extractRowsUsingHeader(aoa, headerRowIndex, columnIndex) {
     const name = String(row[columnIndex.name] ?? '').trim();
     if (!sku || !name) continue; // лишние/пустые строки — пропускаем, не выдумываем данные
 
+    // kaspiSku: если отдельной колонки "Артикул Kaspi" нет — используем ту
+    // же колонку SKU (так в выгрузке Kaspi ACTIVE.xlsx: там один и тот же
+    // артикул и служит внутренним SKU, и является артикулом Kaspi).
+    const kaspiSku = columnIndex.kaspiSku !== undefined
+      ? (String(row[columnIndex.kaspiSku] ?? '').trim() || null)
+      : sku;
+
+    const priceRaw = columnIndex.kaspiReferencePrice !== undefined
+      ? Number(String(row[columnIndex.kaspiReferencePrice] ?? '').replace(',', '.'))
+      : null;
+
     rows.push({
       sku,
       name,
-      kaspiSku: columnIndex.kaspiSku !== undefined ? (String(row[columnIndex.kaspiSku] ?? '').trim() || null) : null,
+      kaspiSku,
       costPrice: columnIndex.costPrice !== undefined ? (Number(String(row[columnIndex.costPrice] ?? '').replace(',', '.')) || 0) : 0,
       kaspiTopCategory: columnIndex.kaspiTopCategory !== undefined ? (String(row[columnIndex.kaspiTopCategory] ?? '').trim() || null) : null,
+      kaspiReferencePrice: priceRaw && priceRaw > 0 ? priceRaw : null,
     });
   }
   return rows;
@@ -887,11 +906,18 @@ function findBulkUploadHeaderAnywhere(sheetsAoa) {
     if (found.headerRowIndex !== -1) {
       return { rows: extractRowsUsingHeader(aoa, found.headerRowIndex, found.columnIndex) };
     }
-    if (found.bestCandidate && (!bestDiagnostic || found.bestCandidate.matchedCount > bestDiagnostic.matchedCount)) {
+    if (found.bestCandidate && (!bestDiagnostic || found.bestCandidate.matchedFields.length > bestDiagnostic.matchedFields.length)) {
       bestDiagnostic = found.bestCandidate;
     }
   }
-  return { rows: [], diagnostic: { foundHeaders: bestDiagnostic ? bestDiagnostic.rawHeaders : [] } };
+  return {
+    rows: [],
+    diagnostic: {
+      foundHeaders: bestDiagnostic ? bestDiagnostic.rawHeaders : [],
+      hasSku: bestDiagnostic ? bestDiagnostic.hasSku : false,
+      hasName: bestDiagnostic ? bestDiagnostic.hasName : false,
+    },
+  };
 }
 
 /** Разбирает CSV (PapaParse) или Excel (SheetJS, ВСЕ листы) в массив строк
