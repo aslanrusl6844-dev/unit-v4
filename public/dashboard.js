@@ -495,7 +495,6 @@ async function loadKaspiCategoriesIntoSelect(selectEl) {
     kaspiRatesCache = {};
     categories.forEach((c) => { kaspiRatesCache[c.name] = c.ratePct; });
   }
-  fillKaspiCategoriesDatalist();
   if (!selectEl || selectEl.dataset.loaded) return;
   categories
     .sort((a, b) => a.name.localeCompare(b.name, 'ru'))
@@ -506,21 +505,6 @@ async function loadKaspiCategoriesIntoSelect(selectEl) {
       selectEl.appendChild(opt);
     });
   selectEl.dataset.loaded = '1';
-}
-
-/** Заполняет общий <datalist> (см. index.html) ПОЛНЫМ списком категорий —
- *  используется полем поиска категории прямо в строке таблицы «Товары»
- *  (см. categorySelectHtml). Заполняется один раз, независимо от того,
- *  сколько раз перерисовывается таблица. */
-function fillKaspiCategoriesDatalist() {
-  const datalist = document.getElementById('kaspiCategoriesDatalist');
-  if (!datalist || datalist.dataset.loaded || !kaspiCategoryOptionsCache) return;
-  datalist.innerHTML = kaspiCategoryOptionsCache
-    .slice()
-    .sort((a, b) => a.name.localeCompare(b.name, 'ru'))
-    .map((c) => `<option value="${c.name}">${c.name} (${c.ratePct}%)${c.level === 'leaf' ? ' — точная подкатегория' : ''}</option>`)
-    .join('');
-  datalist.dataset.loaded = '1';
 }
 
 /** По введённому названию находит точную запись в справочнике категорий
@@ -574,23 +558,21 @@ function wireProductsFormOnce() {
     renderProductsAdminTable();
   });
 
-  document.getElementById('bulkCategoryBtn').addEventListener('click', async () => {
+  document.getElementById('bulkCategoryBtn').addEventListener('click', (e) => {
     if (!selectedProductIds.size) { alert('Сначала выбери товары (чекбоксы слева)'); return; }
-    const input = document.getElementById('bulkCategoryInput');
-    const categoryName = input.value.trim();
-    if (!categoryName) { alert('Впиши категорию (или выбери из списка)'); return; }
     const btn = document.getElementById('bulkCategoryBtn');
-    btn.disabled = true;
-    try {
-      const res = await api('/products/bulk-set-category', { method: 'POST', body: JSON.stringify({ ids: Array.from(selectedProductIds), categoryName }) });
-      alert(`Категория проставлена: ${res.updated} товар(ов).`);
-      input.value = '';
-      await loadProductsAdminTable();
-    } catch (err) {
-      alert('Не удалось проставить категорию: ' + err.message);
-    } finally {
-      btn.disabled = false;
-    }
+    openCategoryPicker(btn, async (categoryName) => {
+      btn.disabled = true;
+      try {
+        const res = await api('/products/bulk-set-category', { method: 'POST', body: JSON.stringify({ ids: Array.from(selectedProductIds), categoryName }) });
+        alert(`Категория «${categoryName}» проставлена: ${res.updated} товар(ов).`);
+        await loadProductsAdminTable();
+      } catch (err) {
+        alert('Не удалось проставить категорию: ' + err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    });
   });
 
   document.getElementById('productsArchiveBtn').addEventListener('click', async () => {
@@ -1164,30 +1146,171 @@ function renderForecastCells(p, marketplace) {
  * (см. getAllKaspiCategoriesWithRates на сервере), а не только 15-20 верхних
  * разделов, как было раньше.
  */
-function categorySelectHtml(topCategory, leafCategory) {
-  let currentValue;
-  let borderColor;
+/**
+ * Кнопка выбора категории Kaspi прямо в строке таблицы — открывает
+ * всплывающую панель (см. openCategoryPicker) с ОТДЕЛЬНЫМ полем поиска
+ * сверху и прокручиваемым списком ВСЕХ категорий снизу. Никакого
+ * встроенного в браузер datalist — он даёт нечёткие/непредсказуемые
+ * совпадения и мешает менять уже выбранное значение.
+ */
+function categorySelectHtml(topCategory, leafCategory, productId, productName) {
+  let label, borderColor;
   if (topCategory) {
-    currentValue = topCategory;
+    label = topCategory;
     borderColor = '';
   } else if (leafCategory) {
     // Реальная категория от Kaspi есть, просто не сопоставлена вручную —
     // комиссия всё равно уже считается (по leaf-исключению или безопасному
-    // дефолту, см. ≈ у цифр). Поле поиска открыто и на неё — можно уточнить.
-    currentValue = leafCategory;
+    // дефолту, см. ≈ у цифр). Кнопка открывает тот же поиск — можно уточнить.
+    label = leafCategory;
     borderColor = 'border-color:var(--text-faint)';
   } else {
-    currentValue = '';
+    label = '⚠ нет категории';
     borderColor = 'border-color:var(--warn)';
   }
-  return `<input
-      class="cost-input kaspi-category-input"
-      list="kaspiCategoriesDatalist"
-      data-field="kaspiCategory"
-      placeholder="⚠ нет категории — начни печатать для поиска"
-      value="${currentValue}"
-      style="font-size:11px;margin-top:4px;${borderColor}"
-      title="${leafCategory ? `Категория от Kaspi: ${leafCategory}. ` : ''}Начни печатать, например «скреб» или «зубн» — список отфильтруется. Комиссия посчитается по точной ставке этой категории." />`;
+  return `<button
+      type="button"
+      class="cost-input kaspi-category-btn"
+      data-product-id="${productId}"
+      data-product-name="${(productName || '').replace(/"/g, '&quot;')}"
+      style="font-size:11px;margin-top:4px;text-align:left;cursor:pointer;width:100%;${borderColor}"
+      title="${leafCategory ? `Категория от Kaspi: ${leafCategory}. ` : ''}Нажми, чтобы выбрать категорию из полного списка (поиск + прокрутка)">${label}</button>`;
+}
+
+let categoryPickerState = { productId: null, popupEl: null };
+
+function closeCategoryPicker() {
+  if (categoryPickerState.popupEl) {
+    categoryPickerState.popupEl.remove();
+    document.removeEventListener('mousedown', handleCategoryPickerOutsideClick, true);
+    document.removeEventListener('keydown', handleCategoryPickerEscape);
+  }
+  categoryPickerState = { productId: null, popupEl: null };
+}
+
+function handleCategoryPickerOutsideClick(e) {
+  if (categoryPickerState.popupEl && !categoryPickerState.popupEl.contains(e.target)) {
+    closeCategoryPicker();
+  }
+}
+function handleCategoryPickerEscape(e) {
+  if (e.key === 'Escape') closeCategoryPicker();
+}
+
+/**
+ * Открывает панель выбора категории. onSelect(categoryName, option) —
+ * вызывается при клике по категории в списке; сама панель ничего не
+ * сохраняет — это делает вызывающий код (либо PUT одного товара, либо
+ * массовое проставление выбранным).
+ */
+/**
+ * Подбирает слово из названия товара для подсказки в поиске — берёт самое
+ * длинное значимое слово (длиннее стоп-слов вроде "для"/"с"/"и"), которое
+ * реально даёт хотя бы одно совпадение в справочнике. Если ни одно слово
+ * не дало совпадений — возвращает пустую строку (открываем с полным
+ * списком, ничего не подставляем силой).
+ */
+function suggestCategorySearchQuery(productName) {
+  if (!productName || !kaspiCategoryOptionsCache) return '';
+  const stopWords = new Set(['для', 'с', 'и', 'от', 'в', 'на', 'без', 'по', 'из', 'не', 'мл', 'шт', 'гр', 'кг']);
+  const words = productName
+    .toLowerCase()
+    .replace(/[^а-яёa-z0-9\s]/gi, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length > 2 && !stopWords.has(w))
+    .reverse(); // с конца фразы: в русском последнее слово обычно самое
+  // конкретное существительное ("очиститель ДЛЯ ЯЗЫКА" — суть в "языка",
+  // а не в общем слове "очиститель", которое совпадёт с чем угодно).
+
+  for (const word of words) {
+    const hasMatch = kaspiCategoryOptionsCache.some((c) => c.name.toLowerCase().includes(word));
+    if (hasMatch) return word;
+  }
+  return '';
+}
+
+function openCategoryPicker(anchorEl, onSelect, productName) {
+  closeCategoryPicker();
+
+  const popup = document.createElement('div');
+  popup.style.cssText = `
+    position: absolute; z-index: 1000; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); width: 340px; max-height: 380px;
+    display: flex; flex-direction: column; padding: 8px;
+  `;
+  popup.innerHTML = `
+    <input type="text" placeholder="Поиск категории…" class="category-picker-search"
+      style="margin-bottom:8px;padding:7px 9px;border:1px solid var(--border);border-radius:6px;font-size:13px;background:var(--bg);color:var(--text)" />
+    <div class="category-picker-list" style="overflow-y:auto;flex:1"></div>
+  `;
+  document.body.appendChild(popup);
+
+  const rect = anchorEl.getBoundingClientRect();
+  const top = window.scrollY + rect.bottom + 4;
+  let left = window.scrollX + rect.left;
+  // Не даём панели вылезти за правый край экрана.
+  if (left + 340 > window.scrollX + window.innerWidth) left = window.scrollX + window.innerWidth - 350;
+  popup.style.top = `${top}px`;
+  popup.style.left = `${Math.max(8, left)}px`;
+
+  const searchInput = popup.querySelector('.category-picker-search');
+  const listEl = popup.querySelector('.category-picker-list');
+
+  function renderList(query) {
+    const q = query.trim().toLowerCase();
+    // Строго подстрока в названии — никакой "похожести"/нечёткого поиска
+    // (п.6 запроса: не подставлять по похожим словам вроде аккумулятор/авто).
+    const all = kaspiCategoryOptionsCache || [];
+    const items = q ? all.filter((c) => c.name.toLowerCase().includes(q)) : all;
+    listEl.innerHTML = items.length
+      ? items.map((c) => `
+          <div class="category-picker-item" data-name="${c.name.replace(/"/g, '&quot;')}"
+            style="padding:7px 9px;cursor:pointer;border-radius:5px;font-size:12.5px;display:flex;justify-content:space-between;gap:8px">
+            <span>${c.name}${c.level === 'leaf' ? ` <span style="color:var(--text-faint);font-size:10px">(${c.topCategory || 'точная'})</span>` : ''}</span>
+            <span style="color:var(--text-faint);white-space:nowrap">${c.ratePct}%</span>
+          </div>
+        `).join('')
+      : `<div style="padding:10px;color:var(--text-faint);font-size:12.5px">Ничего не найдено</div>`;
+
+    listEl.querySelectorAll('.category-picker-item').forEach((item) => {
+      item.addEventListener('mouseenter', () => { item.style.background = 'var(--bg)'; });
+      item.addEventListener('mouseleave', () => { item.style.background = ''; });
+      item.addEventListener('click', () => {
+        const name = item.dataset.name;
+        closeCategoryPicker();
+        onSelect(name, findKaspiCategoryOption(name));
+      });
+    });
+  }
+
+  // Подсказка по названию товара — ТОЛЬКО подставляет запрос в поиск,
+  // список фильтруется как обычно, и ничего не выбирается автоматически:
+  // нужен явный клик пользователя, чтобы категория сохранилась.
+  const suggested = suggestCategorySearchQuery(productName);
+  searchInput.value = suggested;
+  renderList(suggested);
+  searchInput.addEventListener('input', () => renderList(searchInput.value));
+  searchInput.focus();
+  if (suggested) searchInput.select(); // выделяем подсказку, чтобы легко было стереть и напечатать своё
+
+  categoryPickerState = { popupEl: popup };
+  // Небольшая задержка перед подпиской на "клик вне панели" — иначе тот же
+  // клик, которым открыли панель, сразу же её закрыл бы.
+  setTimeout(() => {
+    document.addEventListener('mousedown', handleCategoryPickerOutsideClick, true);
+    document.addEventListener('keydown', handleCategoryPickerEscape);
+  }, 0);
+}
+
+async function saveCategorySelection(productId, categoryName) {
+  const option = findKaspiCategoryOption(categoryName);
+  const payload = option?.level === 'leaf' ? { kaspiLeafCategory: categoryName } : { kaspiTopCategory: categoryName };
+  try {
+    await api(`/products/${productId}`, { method: 'PUT', body: JSON.stringify(payload) });
+    await loadProductsAdminTable();
+  } catch (err) {
+    alert('Не удалось сохранить категорию: ' + err.message);
+  }
 }
 
 /** Какие площадки показывать в таблице — строго по фильтру вверху страницы.
@@ -1315,7 +1438,7 @@ function renderProductsAdminTable() {
     if (marketplaces.length === 1) {
       const mp = marketplaces[0];
       const value = mp === 'KASPI' ? p.kaspiSku : mp === 'OZON' ? p.ozonOfferId : p.wbArticle;
-      articlesCell = `${value ?? '—'}${mp === 'KASPI' ? categorySelectHtml(p.kaspiTopCategory, p.kaspiLeafCategory) : ''}`;
+      articlesCell = `${value ?? '—'}${mp === 'KASPI' ? categorySelectHtml(p.kaspiTopCategory, p.kaspiLeafCategory, p.id, p.name) : ''}`;
     } else {
       const kaspiHint = p.kaspiSku
         ? (p.kaspiTopCategory || p.kaspiLeafCategory
@@ -1410,27 +1533,12 @@ function renderProductsAdminTable() {
       }
     });
   });
-  // Категория Kaspi — редактируется прямо в таблице.
-  // Категория Kaspi — поле поиска (см. categorySelectHtml). По введённому
-  // названию определяем уровень (верхний раздел или точная подкатегория) и
-  // сохраняем в правильное поле — так комиссия считается по самой точной
-  // из доступных ставок.
-  tbody.querySelectorAll('input[data-field="kaspiCategory"]').forEach((input) => {
-    input.addEventListener('change', async (e) => {
-      const id = e.target.closest('tr').dataset.id;
-      const typed = e.target.value.trim();
-      const option = findKaspiCategoryOption(typed);
-      const payload = !typed
-        ? { kaspiTopCategory: null, kaspiLeafCategory: null }
-        : option?.level === 'leaf'
-          ? { kaspiLeafCategory: typed }
-          : { kaspiTopCategory: typed }; // top-уровня ИЛИ вообще не найдено в справочнике — как раньше, кладём в верхнюю категорию
-      try {
-        await api(`/products/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
-        await loadProductsAdminTable();
-      } catch (err) {
-        alert('Не удалось сохранить категорию: ' + err.message);
-      }
+  // Категория Kaspi — кнопка открывает панель поиска (см. openCategoryPicker).
+  tbody.querySelectorAll('button.kaspi-category-btn').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      const productId = btn.dataset.productId;
+      openCategoryPicker(btn, (categoryName) => saveCategorySelection(productId, categoryName), btn.dataset.productName);
     });
   });
   tbody.querySelectorAll('input[data-field="active"]').forEach((input) => {
