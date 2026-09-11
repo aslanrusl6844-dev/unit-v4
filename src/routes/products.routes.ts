@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../db/prisma';
 import { logger } from '../utils/logger';
-import { KASPI_TOP_CATEGORY_RATE } from '../integrations/kaspi.categories';
+import { getAllKaspiCategoriesWithRates } from '../integrations/kaspi.categories';
 
 export const productsRouter = Router();
 
@@ -18,10 +18,13 @@ productsRouter.get('/', async (_req, res) => {
   }
 });
 
-// Список категорий 1-го уровня Kaspi со ставками — для выпадающего списка в форме товара.
+// ПОЛНЫЙ список категорий Kaspi со ставками — и верхнего уровня, и точных
+// leaf-исключений (см. getAllKaspiCategoriesWithRates) — для выпадающего
+// списка с поиском в разделе «Товары». Раньше отдавались только 20 верхних
+// разделов — теперь плюс ~40 точных подкатегорий, тот же источник, что
+// реально используется при расчёте комиссии.
 productsRouter.get('/kaspi-categories', (_req, res) => {
-  const categories = Object.entries(KASPI_TOP_CATEGORY_RATE).map(([name, rate]) => ({ name, rate }));
-  res.json(categories);
+  res.json(getAllKaspiCategoriesWithRates());
 });
 
 const productSchema = z.object({
@@ -227,6 +230,35 @@ productsRouter.post('/bulk-archive', async (req, res) => {
     res.json({ ok: true, archived: result.count });
   } catch (err: any) {
     res.status(500).json({ error: 'Не удалось архивировать товары', details: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * Массовое проставление категории Kaspi выбранным товарам — для очистки
+ * пачки "нет категории" за один раз. Категория должна ТОЧНО совпадать с
+ * одной из категорий в справочнике (getAllKaspiCategoriesWithRates) — не
+ * принимаем произвольный текст, иначе комиссия потом посчитается по
+ * безопасному дефолту, а не по реальной ставке (то же самое "не
+ * выдумывать проценты", что и везде в проекте). Сервер сам решает, в
+ * kaspiTopCategory или kaspiLeafCategory положить значение — по уровню
+ * найденной категории, не полагаясь на то, что прислал фронтенд.
+ */
+productsRouter.post('/bulk-set-category', async (req, res) => {
+  const schema = z.object({ ids: z.array(z.string()).min(1).max(2000), categoryName: z.string().min(1) });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+
+  const option = getAllKaspiCategoriesWithRates().find((c) => c.name === parsed.data.categoryName);
+  if (!option) {
+    return res.status(400).json({ error: `Категория «${parsed.data.categoryName}» не найдена в справочнике Kaspi — выберите точное совпадение из списка` });
+  }
+
+  try {
+    const data = option.level === 'leaf' ? { kaspiLeafCategory: option.name } : { kaspiTopCategory: option.name };
+    const result = await prisma.product.updateMany({ where: { id: { in: parsed.data.ids } }, data });
+    res.json({ ok: true, updated: result.count });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Не удалось проставить категорию', details: String(err?.message ?? err) });
   }
 });
 

@@ -52,7 +52,11 @@ export const KASPI_TOP_CATEGORY_RATE: Record<string, number> = {
 // Точечные исключения — leaf-категория (5-й уровень, как указано в таблице
 // Kaspi), для которой ставка отличается от базовой по категории 1-го уровня.
 // Ключ — точное название leaf-категории из карточки товара в Kaspi.
-const LEAF_OVERRIDES: Record<string, number> = {
+// Экспортирован (не только используется внутри файла) — нужен для полного
+// списка категорий в выпадающем списке на странице «Товары» (см. ниже
+// getAllKaspiCategoriesWithRates), чтобы там были не только 20 верхних
+// разделов, а вообще все категории, по которым у нас есть точная ставка.
+export const LEAF_OVERRIDES: Record<string, number> = {
   // --- Аптека: рецептурные/безрецептурные лекарства идут по льготной ставке ---
   'Противомикробные препараты': KASPI_RATE_FOOD_PHARMACY,
   'Простуда, насморк, боль в горле': KASPI_RATE_FOOD_PHARMACY,
@@ -148,4 +152,28 @@ export function getKaspiCommissionRate(input: KaspiCommissionInput): number {
 export function calcKaspiCommissionAmount(revenue: number, input: KaspiCommissionInput): number {
   const rate = getKaspiCommissionRate(input);
   return Math.round((revenue * rate) / 100 * 100) / 100;
+}
+
+export interface KaspiCategoryOption {
+  name: string;
+  ratePct: number;
+  level: 'top' | 'leaf'; // top — категория 1-го уровня (кладём в kaspiTopCategory); leaf — точная подкатегория (кладём в kaspiLeafCategory)
+}
+
+/**
+ * ПОЛНЫЙ список всех категорий Kaspi, для которых у нас есть точная ставка
+ * комиссии — и верхнего уровня (KASPI_TOP_CATEGORY_RATE, 20 разделов), и
+ * точных leaf-исключений (LEAF_OVERRIDES, ~40 наименований). Не выдумываем
+ * категории сверх этого — источник ровно тот же справочник, что уже
+ * используется для самого расчёта комиссии (calcKaspiCommissionAmount).
+ */
+export function getAllKaspiCategoriesWithRates(): KaspiCategoryOption[] {
+  const result: KaspiCategoryOption[] = [];
+  for (const [name, ratePct] of Object.entries(KASPI_TOP_CATEGORY_RATE)) {
+    result.push({ name, ratePct, level: 'top' });
+  }
+  for (const [name, ratePct] of Object.entries(LEAF_OVERRIDES)) {
+    result.push({ name, ratePct, level: 'leaf' });
+  }
+  return result.sort((a, b) => a.name.localeCompare(b.name, 'ru'));
 }

@@ -481,7 +481,8 @@ function orderActionCell(o) {
 // =====================================================================
 let productsFormWired = false;
 let allProductsCache = [];
-let kaspiRatesCache = null; // { "Категория": 10.9, ... } — для валидации файла при массовой загрузке
+let kaspiRatesCache = null; // { "Категория": 12.5, ... } — плоский список название->ставка, для существующих select'ов и валидации файла
+let kaspiCategoryOptionsCache = null; // [{name, ratePct, level}] — ПОЛНЫЙ список (top+leaf), для поиска в таблице «Товары»
 let productsForecastCache = new Map(); // "productId:MARKETPLACE" -> прогноз "если продать по текущей цене сейчас" (см. getProductForecasts)
 let selectedProductIds = new Set(); // выбранные чекбоксами товары — сохраняется между страницами пагинации, сбрасывается при смене фильтра/площадки
 let productsCurrentPage = 1;
@@ -489,20 +490,46 @@ const PRODUCTS_PAGE_SIZE = 15;
 
 async function loadKaspiCategoriesIntoSelect(selectEl) {
   const categories = await api('/products/kaspi-categories');
+  if (!kaspiCategoryOptionsCache) kaspiCategoryOptionsCache = categories;
   if (!kaspiRatesCache) {
     kaspiRatesCache = {};
-    categories.forEach((c) => { kaspiRatesCache[c.name] = c.rate; });
+    categories.forEach((c) => { kaspiRatesCache[c.name] = c.ratePct; });
   }
+  fillKaspiCategoriesDatalist();
   if (!selectEl || selectEl.dataset.loaded) return;
   categories
     .sort((a, b) => a.name.localeCompare(b.name, 'ru'))
     .forEach((c) => {
       const opt = document.createElement('option');
       opt.value = c.name;
-      opt.textContent = `${c.name} (${c.rate}%)`;
+      opt.textContent = `${c.name} (${c.ratePct}%)`;
       selectEl.appendChild(opt);
     });
   selectEl.dataset.loaded = '1';
+}
+
+/** Заполняет общий <datalist> (см. index.html) ПОЛНЫМ списком категорий —
+ *  используется полем поиска категории прямо в строке таблицы «Товары»
+ *  (см. categorySelectHtml). Заполняется один раз, независимо от того,
+ *  сколько раз перерисовывается таблица. */
+function fillKaspiCategoriesDatalist() {
+  const datalist = document.getElementById('kaspiCategoriesDatalist');
+  if (!datalist || datalist.dataset.loaded || !kaspiCategoryOptionsCache) return;
+  datalist.innerHTML = kaspiCategoryOptionsCache
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name, 'ru'))
+    .map((c) => `<option value="${c.name}">${c.name} (${c.ratePct}%)${c.level === 'leaf' ? ' — точная подкатегория' : ''}</option>`)
+    .join('');
+  datalist.dataset.loaded = '1';
+}
+
+/** По введённому названию находит точную запись в справочнике категорий
+ *  (с уровнем top/leaf) — используется, чтобы понять, в какое поле товара
+ *  сохранять выбор (kaspiTopCategory для верхнего уровня, kaspiLeafCategory
+ *  для точной подкатегории). */
+function findKaspiCategoryOption(name) {
+  if (!kaspiCategoryOptionsCache) return null;
+  return kaspiCategoryOptionsCache.find((c) => c.name === name) || null;
 }
 
 function wireProductsFormOnce() {
@@ -545,6 +572,25 @@ function wireProductsFormOnce() {
     productsCurrentPage = 1;
     selectedProductIds.clear();
     renderProductsAdminTable();
+  });
+
+  document.getElementById('bulkCategoryBtn').addEventListener('click', async () => {
+    if (!selectedProductIds.size) { alert('Сначала выбери товары (чекбоксы слева)'); return; }
+    const input = document.getElementById('bulkCategoryInput');
+    const categoryName = input.value.trim();
+    if (!categoryName) { alert('Впиши категорию (или выбери из списка)'); return; }
+    const btn = document.getElementById('bulkCategoryBtn');
+    btn.disabled = true;
+    try {
+      const res = await api('/products/bulk-set-category', { method: 'POST', body: JSON.stringify({ ids: Array.from(selectedProductIds), categoryName }) });
+      alert(`Категория проставлена: ${res.updated} товар(ов).`);
+      input.value = '';
+      await loadProductsAdminTable();
+    } catch (err) {
+      alert('Не удалось проставить категорию: ' + err.message);
+    } finally {
+      btn.disabled = false;
+    }
   });
 
   document.getElementById('productsArchiveBtn').addEventListener('click', async () => {
@@ -1110,26 +1156,38 @@ function renderForecastCells(p, marketplace) {
  *  верхней категории нет, но Kaspi прислал leaf-категорию (например,
  *  "Зонты") — показываем её как есть, это уже реальные данные, а не
  *  "нет категории". Предупреждение — только когда неизвестно вообще всё. */
+/**
+ * Поле выбора категории Kaspi прямо в строке таблицы — теперь поле поиска
+ * (не <select>) с общим <datalist> на всю страницу: начинаешь печатать —
+ * браузер сам фильтрует список по подстроке. Список включает ВСЕ категории,
+ * по которым у нас есть точная ставка — и верхнего уровня, и leaf-исключения
+ * (см. getAllKaspiCategoriesWithRates на сервере), а не только 15-20 верхних
+ * разделов, как было раньше.
+ */
 function categorySelectHtml(topCategory, leafCategory) {
-  const options = kaspiRatesCache
-    ? Object.keys(kaspiRatesCache).sort((a, b) => a.localeCompare(b, 'ru')).map((name) => `<option value="${name}" ${name === topCategory ? 'selected' : ''}>${name} (${kaspiRatesCache[name]}%)</option>`).join('')
-    : '';
-  let placeholderText;
+  let currentValue;
   let borderColor;
   if (topCategory) {
-    placeholderText = '';
+    currentValue = topCategory;
     borderColor = '';
   } else if (leafCategory) {
-    // Реальная категория от Kaspi есть, просто не сопоставлена с нашей
-    // верхнеуровневой таблицей ставок — комиссия всё равно уже считается
-    // (по leaf-исключению или безопасному дефолту, см. ≈ у цифр).
-    placeholderText = `<option value="" selected>${leafCategory}</option>`;
+    // Реальная категория от Kaspi есть, просто не сопоставлена вручную —
+    // комиссия всё равно уже считается (по leaf-исключению или безопасному
+    // дефолту, см. ≈ у цифр). Поле поиска открыто и на неё — можно уточнить.
+    currentValue = leafCategory;
     borderColor = 'border-color:var(--text-faint)';
   } else {
-    placeholderText = `<option value="" selected>⚠ нет категории</option>`;
+    currentValue = '';
     borderColor = 'border-color:var(--warn)';
   }
-  return `<select class="cost-input" data-field="kaspiTopCategory" style="font-size:11px;margin-top:4px;${borderColor}" title="${leafCategory ? `Категория от Kaspi: ${leafCategory}. ` : ''}Выбери верхнюю категорию для точного тарифа комиссии">${placeholderText}${options}</select>`;
+  return `<input
+      class="cost-input kaspi-category-input"
+      list="kaspiCategoriesDatalist"
+      data-field="kaspiCategory"
+      placeholder="⚠ нет категории — начни печатать для поиска"
+      value="${currentValue}"
+      style="font-size:11px;margin-top:4px;${borderColor}"
+      title="${leafCategory ? `Категория от Kaspi: ${leafCategory}. ` : ''}Начни печатать, например «скреб» или «зубн» — список отфильтруется. Комиссия посчитается по точной ставке этой категории." />`;
 }
 
 /** Какие площадки показывать в таблице — строго по фильтру вверху страницы.
@@ -1353,11 +1411,22 @@ function renderProductsAdminTable() {
     });
   });
   // Категория Kaspi — редактируется прямо в таблице.
-  tbody.querySelectorAll('select[data-field="kaspiTopCategory"]').forEach((select) => {
-    select.addEventListener('change', async (e) => {
+  // Категория Kaspi — поле поиска (см. categorySelectHtml). По введённому
+  // названию определяем уровень (верхний раздел или точная подкатегория) и
+  // сохраняем в правильное поле — так комиссия считается по самой точной
+  // из доступных ставок.
+  tbody.querySelectorAll('input[data-field="kaspiCategory"]').forEach((input) => {
+    input.addEventListener('change', async (e) => {
       const id = e.target.closest('tr').dataset.id;
+      const typed = e.target.value.trim();
+      const option = findKaspiCategoryOption(typed);
+      const payload = !typed
+        ? { kaspiTopCategory: null, kaspiLeafCategory: null }
+        : option?.level === 'leaf'
+          ? { kaspiLeafCategory: typed }
+          : { kaspiTopCategory: typed }; // top-уровня ИЛИ вообще не найдено в справочнике — как раньше, кладём в верхнюю категорию
       try {
-        await api(`/products/${id}`, { method: 'PUT', body: JSON.stringify({ kaspiTopCategory: e.target.value || null }) });
+        await api(`/products/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
         await loadProductsAdminTable();
       } catch (err) {
         alert('Не удалось сохранить категорию: ' + err.message);
