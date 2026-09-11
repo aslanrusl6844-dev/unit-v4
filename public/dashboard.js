@@ -734,6 +734,8 @@ async function runChunkedKaspiSync(totalDays) {
  * ни один отдельный запрос не упирался в таймаут serverless-функции, даже
  * если файл на тысячи строк.
  */
+let bulkUploadPreviewState = null; // { newRows, duplicateRows } — между показом предпросмотра и нажатием одной из кнопок
+
 async function handleBulkUpload() {
   const fileInput = document.getElementById('bulkUploadFile');
   const file = fileInput.files[0];
@@ -770,13 +772,104 @@ async function handleBulkUpload() {
       return;
     }
 
+    // ВАЖНО: файл больше НЕ пишется в базу сразу — сначала показываем
+    // предпросмотр (что новое, что уже есть), и ждём явного решения
+    // пользователя (одна из двух кнопок ниже). Сверяем и по sku, и по
+    // kaspiSku — товар может уже существовать под тем же артикулом Kaspi,
+    // даже если внутренний SKU в файле отличается.
+    progressEl.innerHTML = `<p style="color:var(--text-faint);font-size:12.5px">Сверяю с уже существующими товарами…</p>`;
+    const existingProducts = await api('/products');
+    const existingBySku = new Map(existingProducts.map((p) => [p.sku, p]));
+    const existingByKaspiSku = new Map(existingProducts.filter((p) => p.kaspiSku).map((p) => [p.kaspiSku, p]));
+
+    const duplicateRows = [];
+    const newRows = [];
+    for (const row of rows) {
+      const existing = existingBySku.get(row.sku) || (row.kaspiSku ? existingByKaspiSku.get(row.kaspiSku) : null);
+      if (existing) duplicateRows.push({ row, existing });
+      else newRows.push(row);
+    }
+
+    bulkUploadPreviewState = { newRows, duplicateRows };
+    renderBulkUploadPreview(rows.length, newRows, duplicateRows);
+  } catch (err) {
+    progressEl.innerHTML = `<p style="color:var(--loss);font-size:12.5px">Ошибка: ${err.message}</p>`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderBulkUploadPreview(totalCount, newRows, duplicateRows) {
+  const progressEl = document.getElementById('bulkUploadProgress');
+
+  const newRowsHtml = newRows.length
+    ? newRows.slice(0, 300).map((r) => `<tr><td class="name-cell">${r.sku}</td><td class="name-cell">${r.name}</td></tr>`).join('')
+    : `<tr><td colspan="2" style="color:var(--text-faint)">Нет новых товаров</td></tr>`;
+
+  const duplicatesHtml = duplicateRows.length
+    ? duplicateRows.slice(0, 300).map(({ row, existing }) => `
+        <tr>
+          <td class="name-cell">${row.sku}</td>
+          <td class="name-cell">${row.name}</td>
+          <td class="name-cell" style="font-size:11px;color:var(--text-faint)">
+            ${existing.name !== row.name ? `название: «${existing.name}» → «${row.name}»` : ''}
+            ${existing.costPrice !== row.costPrice ? `${existing.name !== row.name ? '; ' : ''}себестоимость: ${existing.costPrice} → ${row.costPrice}` : ''}
+            ${(existing.name === row.name && existing.costPrice === row.costPrice) ? 'без изменений' : ''}
+          </td>
+        </tr>
+      `).join('')
+    : `<tr><td colspan="3" style="color:var(--text-faint)">Совпадений не найдено</td></tr>`;
+
+  progressEl.innerHTML = `
+    <div class="panel" style="margin:12px 0;background:var(--bg)">
+      <div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:12px;font-size:13px">
+        <span>Всего в файле: <strong>${totalCount}</strong></span>
+        <span style="color:var(--warn)">Повторы: <strong>${duplicateRows.length}</strong></span>
+        <span style="color:var(--accent)">Новых: <strong>${newRows.length}</strong></span>
+      </div>
+
+      <div style="display:flex;gap:10px;margin-bottom:16px">
+        <button class="btn btn--accent" id="bulkUploadConfirmNewBtn">Загрузить только новые (${newRows.length})</button>
+        <button class="btn btn--ghost" id="bulkUploadConfirmAllBtn">Обновить повторы тоже (${totalCount})</button>
+      </div>
+
+      <div style="font-size:12.5px;font-weight:600;margin-bottom:6px">🆕 Новые, которых нет в каталоге (${newRows.length})</div>
+      <div class="table-wrap" style="max-height:220px;overflow-y:auto;margin-bottom:16px">
+        <table class="table"><thead><tr><th>SKU</th><th>Название</th></tr></thead><tbody>${newRowsHtml}</tbody></table>
+      </div>
+
+      <div style="font-size:12.5px;font-weight:600;margin-bottom:6px">🔁 Уже есть в каталоге — повторы (${duplicateRows.length})</div>
+      <div class="table-wrap" style="max-height:220px;overflow-y:auto">
+        <table class="table"><thead><tr><th>SKU</th><th>Название (из файла)</th><th>Что изменится при обновлении</th></tr></thead><tbody>${duplicatesHtml}</tbody></table>
+      </div>
+      ${(newRows.length > 300 || duplicateRows.length > 300) ? `<p class="panel__hint">Показаны первые 300 строк каждого списка — при загрузке обработаются все.</p>` : ''}
+    </div>
+  `;
+
+  document.getElementById('bulkUploadConfirmNewBtn').addEventListener('click', () => runBulkUpload(bulkUploadPreviewState.newRows));
+  document.getElementById('bulkUploadConfirmAllBtn').addEventListener('click', () => {
+    if (!confirm(`Обновить ${bulkUploadPreviewState.duplicateRows.length} уже существующих товаров данными из файла?`)) return;
+    runBulkUpload([...bulkUploadPreviewState.newRows, ...bulkUploadPreviewState.duplicateRows.map((d) => d.row)]);
+  });
+}
+
+async function runBulkUpload(rowsToUpload) {
+  const fileInput = document.getElementById('bulkUploadFile');
+  const progressEl = document.getElementById('bulkUploadProgress');
+
+  if (!rowsToUpload.length) {
+    progressEl.innerHTML = `<p style="color:var(--text-faint);font-size:12.5px">Нечего загружать — список пуст.</p>`;
+    return;
+  }
+
+  try {
     const CHUNK = 150;
     let created = 0, updated = 0;
     const allErrors = [];
 
-    for (let i = 0; i < rows.length; i += CHUNK) {
-      const chunk = rows.slice(i, i + CHUNK);
-      progressEl.innerHTML = `<p style="color:var(--text-muted);font-size:12.5px">Загружено ${i} из ${rows.length}…</p>`;
+    for (let i = 0; i < rowsToUpload.length; i += CHUNK) {
+      const chunk = rowsToUpload.slice(i, i + CHUNK);
+      progressEl.innerHTML = `<p style="color:var(--text-muted);font-size:12.5px">Загружено ${i} из ${rowsToUpload.length}…</p>`;
       const res = await api('/products/bulk-upsert', { method: 'POST', body: JSON.stringify({ products: chunk }) });
       created += res.created;
       updated += res.updated;
@@ -785,15 +878,14 @@ async function handleBulkUpload() {
 
     progressEl.innerHTML = `
       <p style="color:var(--accent);font-size:12.5px">
-        Готово: создано ${created}, обновлено ${updated} из ${rows.length}.
+        Готово: создано ${created}, обновлено ${updated} из ${rowsToUpload.length}.
         ${allErrors.length ? `Ошибок: ${allErrors.length} (первые: ${allErrors.slice(0, 5).join('; ')})` : ''}
       </p>`;
     fileInput.value = '';
+    bulkUploadPreviewState = null;
     await loadProductsAdminTable();
   } catch (err) {
     progressEl.innerHTML = `<p style="color:var(--loss);font-size:12.5px">Ошибка: ${err.message}</p>`;
-  } finally {
-    btn.disabled = false;
   }
 }
 
