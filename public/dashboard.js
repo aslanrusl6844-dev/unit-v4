@@ -746,12 +746,23 @@ async function handleBulkUpload() {
   btn.disabled = true;
 
   try {
-    const rows = await parseSpreadsheetFile(file);
+    const parsed = await parseSpreadsheetFile(file);
+    const rows = parsed.rows;
     if (!rows.length) {
+      // Показываем, что реально нашли в файле — пример: "Нашёл колонки:
+      // Артикул товара, Название на витрине, Цена. Не хватает SKU/Название."
+      // (если совсем ничего не нашли — так и пишем, без выдуманного списка).
+      const found = parsed.diagnostic?.foundHeaders ?? [];
+      const foundText = found.length
+        ? `Нашёл колонки: ${found.join(', ')}. Не хватает SKU/Название.`
+        : `В первых ${BULK_UPLOAD_MAX_HEADER_ROWS} строках ни одного листа не нашёл вообще ни одной узнаваемой колонки.`;
       progressEl.innerHTML = `<p style="color:var(--loss);font-size:12.5px">
-        Не удалось найти шапку с колонками SKU и Название среди первых 5 строк файла.
-        Проверь, что в файле есть колонка с артикулом (sku / Артикул / Код / Код товара / vendorCode / Артикул продавца)
-        и колонка с названием (name / Название / Наименование / Товар / Название товара).
+        Не удалось найти шапку с колонками SKU и Название среди первых ${BULK_UPLOAD_MAX_HEADER_ROWS} строк
+        (проверены все листы файла). ${foundText}<br>
+        Нужна колонка с артикулом (sku / Артикул / Код / Код товара / vendorCode / Артикул продавца / Артикул товара /
+        Артикул на витрине / SKU продавца / Код продавца / Merchant SKU / nmId / Баркод / Штрихкод)
+        и колонка с названием (name / Название / Наименование / Товар / Название товара / Название на витрине /
+        Название модели / Модель / Product name / Title).
       </p>`;
       return;
     }
@@ -790,21 +801,34 @@ async function handleBulkUpload() {
  * а не только англоязычный формат sku/name.
  */
 const BULK_UPLOAD_COLUMN_ALIASES = {
-  sku: ['sku', 'артикул', 'код', 'код товара', 'vendorcode', 'артикул продавца'],
-  name: ['name', 'название', 'наименование', 'товар', 'название товара', 'title', 'productname'],
+  sku: [
+    'sku', 'артикул', 'код', 'код товара', 'vendorcode', 'артикул продавца',
+    'артикул товара', 'артикул на витрине', 'sku продавца', 'код продавца',
+    'merchant sku', 'nmid', 'баркод', 'штрихкод',
+  ],
+  name: [
+    'name', 'название', 'наименование', 'товар', 'название товара', 'title', 'productname',
+    'название на витрине', 'название модели', 'модель', 'product name',
+  ],
   kaspiSku: ['kaspisku', 'артикул kaspi', 'артикул магазина'],
   costPrice: ['costprice', 'себестоимость', 'закуп', 'цена закупки', 'закупочная цена'],
   kaspiTopCategory: ['kaspitopcategory', 'категория', 'категория kaspi'],
 };
 
+const BULK_UPLOAD_MAX_HEADER_ROWS = 30;
+
 /**
  * Ищет строку-шапку среди первых maxRows строк (не только в первой — в
- * реальных выгрузках перед заголовком часто есть титульная строка или
- * пустая строка) — строка считается шапкой, если среди её ячеек находится
- * хотя бы один псевдоним SKU И хотя бы один псевдоним названия.
- * Возвращает { headerRowIndex, columnIndex } или null, если не нашли.
+ * реальных выгрузках перед заголовком часто есть титульные/пустые строки)
+ * — строка считается шапкой, если среди её ячеек находится хотя бы один
+ * псевдоним SKU И хотя бы один псевдоним названия.
+ * Возвращает { headerRowIndex, columnIndex, rawHeaders } или null, если не нашли.
+ * rawHeaders — исходные (не нормализованные) непустые ячейки строки с
+ * наибольшим числом узнанных колонок — нужны для диагностики, если шапку
+ * найти не удалось нигде (см. findBulkUploadHeaderAnywhere).
  */
-function findBulkUploadHeaderRow(aoa, maxRows = 5) {
+function scanRowsForHeader(aoa, maxRows) {
+  let bestCandidate = null; // строка с максимальным числом узнанных (но не обязательно полным набором) колонок
   for (let r = 0; r < Math.min(maxRows, aoa.length); r++) {
     const row = aoa[r] || [];
     const normalizedCells = row.map((cell) => String(cell ?? '').trim().toLowerCase());
@@ -815,20 +839,22 @@ function findBulkUploadHeaderRow(aoa, maxRows = 5) {
       if (idx !== -1) columnIndex[field] = idx;
     }
 
+    const matchedCount = Object.keys(columnIndex).length;
+    const rawHeaders = row.map((c) => String(c ?? '').trim()).filter(Boolean);
+
     if (columnIndex.sku !== undefined && columnIndex.name !== undefined) {
-      return { headerRowIndex: r, columnIndex };
+      return { headerRowIndex: r, columnIndex, rawHeaders };
+    }
+    if (matchedCount > 0 && (!bestCandidate || matchedCount > bestCandidate.matchedCount)) {
+      bestCandidate = { matchedCount, rawHeaders };
     }
   }
-  return null;
+  return { headerRowIndex: -1, columnIndex: null, bestCandidate };
 }
 
 /** Превращает "сырые" строки (массив массивов, как есть в файле) в массив
  *  товаров для bulk-upsert, используя найденную шапку. */
-function extractBulkUploadRows(aoa) {
-  const found = findBulkUploadHeaderRow(aoa);
-  if (!found) return [];
-  const { headerRowIndex, columnIndex } = found;
-
+function extractRowsUsingHeader(aoa, headerRowIndex, columnIndex) {
   const rows = [];
   for (let r = headerRowIndex + 1; r < aoa.length; r++) {
     const row = aoa[r] || [];
@@ -847,7 +873,29 @@ function extractBulkUploadRows(aoa) {
   return rows;
 }
 
-/** Разбирает CSV (PapaParse) или Excel (SheetJS) в массив строк для bulk-upsert. */
+/**
+ * Ищет шапку по ВСЕМ листам (sheets) файла — не только по первому, у
+ * некоторых выгрузок данные лежат на втором/третьем листе. Возвращает
+ * либо { rows }, либо { rows: [], diagnostic: { foundHeaders } } с тем,
+ * что реально нашли (лучший кандидат среди всех просмотренных строк/листов),
+ * чтобы показать пользователю точную причину вместо немой ошибки.
+ */
+function findBulkUploadHeaderAnywhere(sheetsAoa) {
+  let bestDiagnostic = null;
+  for (const aoa of sheetsAoa) {
+    const found = scanRowsForHeader(aoa, BULK_UPLOAD_MAX_HEADER_ROWS);
+    if (found.headerRowIndex !== -1) {
+      return { rows: extractRowsUsingHeader(aoa, found.headerRowIndex, found.columnIndex) };
+    }
+    if (found.bestCandidate && (!bestDiagnostic || found.bestCandidate.matchedCount > bestDiagnostic.matchedCount)) {
+      bestDiagnostic = found.bestCandidate;
+    }
+  }
+  return { rows: [], diagnostic: { foundHeaders: bestDiagnostic ? bestDiagnostic.rawHeaders : [] } };
+}
+
+/** Разбирает CSV (PapaParse) или Excel (SheetJS, ВСЕ листы) в массив строк
+ *  для bulk-upsert. Возвращает { rows, diagnostic? }. */
 function parseSpreadsheetFile(file) {
   return new Promise((resolve, reject) => {
     const isExcel = /\.xlsx?$/i.test(file.name);
@@ -857,21 +905,18 @@ function parseSpreadsheetFile(file) {
       reader.onload = (e) => {
         try {
           const wb = XLSX.read(e.target.result, { type: 'array' });
-          const sheet = wb.Sheets[wb.SheetNames[0]];
-          // header: 1 — получаем "сырые" строки (массив массивов), а не
-          // объекты по заголовку первой строки — так можно самим найти
-          // шапку среди первых 5 строк, а не полагаться на строку 1.
-          const aoa = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
-          resolve(extractBulkUploadRows(aoa));
+          // Смотрим ВСЕ листы, не только первый — шапка может быть на любом.
+          const sheetsAoa = wb.SheetNames.map((name) => XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: '' }));
+          resolve(findBulkUploadHeaderAnywhere(sheetsAoa));
         } catch (err) { reject(err); }
       };
       reader.onerror = () => reject(new Error('Не удалось прочитать файл'));
       reader.readAsArrayBuffer(file);
     } else {
       Papa.parse(file, {
-        header: false, // тоже без заголовка — ищем шапку сами среди первых строк
+        header: false, // без заголовка — ищем шапку сами среди первых строк
         skipEmptyLines: true,
-        complete: (res) => resolve(extractBulkUploadRows(res.data)),
+        complete: (res) => resolve(findBulkUploadHeaderAnywhere([res.data])), // у CSV один "лист"
         error: (err) => reject(err),
       });
     }
