@@ -193,9 +193,25 @@ const shopBulkRowSchema = z.object({
 });
 
 shopAdminRouter.post('/bulk-upsert', async (req, res) => {
-  const bodySchema = z.object({ products: z.array(z.record(z.any())).min(1).max(2000) });
+  const bodySchema = z.object({ products: z.array(z.record(z.any())).min(1).max(20) });
   const parsed = bodySchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Неверный формат данных', details: parsed.error.flatten() });
+
+  // ВАЖНО (иначе рвётся 504 на Vercel Hobby): раньше на каждую строку было
+  // ДВА последовательных обращения к БД (findFirst + create/update) — для
+  // 42 товаров это до 84 обращений подряд, легко выходит за ~10 секунд,
+  // которые Vercel Hobby реально даёт функции. Теперь: ОДИН groupped-запрос
+  // (findMany по всем sku пачки разом), чтобы узнать, кто уже есть, плюс
+  // upsert на строку (одно обращение вместо потенциальных двух). Пачка
+  // здесь и так небольшая (см. лимит .max(20) выше — фронт шлёт по 8-10 за
+  // раз), так что и без этой оптимизации стало бы лучше, но вместе — с
+  // хорошим запасом.
+  const bodySkus = parsed.data.products.map((r: any) => r?.sku).filter((s: any): s is string => typeof s === 'string' && s.length > 0);
+  const existingSkus = new Set(
+    bodySkus.length
+      ? (await prisma.product.findMany({ where: { sku: { in: bodySkus } }, select: { sku: true } })).map((p) => p.sku)
+      : [],
+  );
 
   let created = 0;
   let updated = 0;
@@ -210,7 +226,6 @@ shopAdminRouter.post('/bulk-upsert', async (req, res) => {
       continue;
     }
     try {
-      const existing = await prisma.product.findFirst({ where: { sku: row.data.sku } });
       const data = {
         name: row.data.name,
         category: row.data.category,
@@ -225,13 +240,13 @@ shopAdminRouter.post('/bulk-upsert', async (req, res) => {
         shopDelivery: row.data.shopDelivery || null,
         shopActive: row.data.shopActive,
       };
-      if (existing) {
-        await prisma.product.update({ where: { id: existing.id }, data });
-        updated += 1;
-      } else {
-        await prisma.product.create({ data: { sku: row.data.sku, costPrice: 0, ...data } });
-        created += 1;
-      }
+      const wasExisting = existingSkus.has(row.data.sku);
+      await prisma.product.upsert({
+        where: { sku: row.data.sku },
+        update: data,
+        create: { sku: row.data.sku, costPrice: 0, ...data },
+      });
+      if (wasExisting) updated += 1; else created += 1;
     } catch (err: any) {
       errors.push(`${row.data.sku}: ${String(err?.message ?? err)}`);
     }

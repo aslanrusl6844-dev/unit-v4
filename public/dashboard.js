@@ -3108,37 +3108,97 @@ function resetMmUploadScreen() {
 
 /** Единственное место, которое реально пишет в базу — по нажатию
  *  «Загрузить принятые». До этого момента ничего не отправлялось на сервер. */
+const MM_BULK_UPLOAD_CHUNK_SIZE = 8; // согласовано с сервером (см. .max(20) в shopAdmin.routes.ts — с запасом)
+const MM_BULK_UPLOAD_TIMEOUT_MS = 60000;
+
+/**
+ * Отправляет одну пачку с таймаутом (AbortController) — если сервер не
+ * ответит за 60с, запрос обрывается сам, не виснет бесконечно, и в отчёте
+ * будет видно, какая именно пачка не прошла, а не общее "не удалось".
+ */
+async function postMmBulkUploadChunk(products) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), MM_BULK_UPLOAD_TIMEOUT_MS);
+  try {
+    const res = await fetch('/api/shop-admin/bulk-upsert', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ products }),
+      signal: controller.signal,
+    });
+    let body = null;
+    try { body = await res.json(); } catch { /* тело не JSON — обработаем через res.ok ниже */ }
+    if (!res.ok) {
+      const errText = body?.error ?? `HTTP ${res.status}`;
+      throw new Error(errText);
+    }
+    return body;
+  } catch (err) {
+    if (err.name === 'AbortError') throw new Error('таймаут 60 сек — сервер не ответил вовремя');
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+/**
+ * Единственное место, которое реально пишет в базу — по нажатию
+ * «Загрузить принятые». До этого момента ничего не отправлялось на сервер.
+ * Пачками по MM_BULK_UPLOAD_CHUNK_SIZE — так каждый отдельный запрос
+ * успевает уложиться в ограничение по времени выполнения на Vercel Hobby,
+ * даже если строк много. Картинки в этом запросе не передаются вообще —
+ * только текстовые поля товара (сами файлы фото загружаются отдельно,
+ * через карточку товара, см. /api/shop/admin/upload).
+ */
 async function confirmMmUpload() {
   const btn = document.getElementById('mmPreviewConfirmBtn');
   if (!mmUploadAccepted.length) { alert('Нет принятых строк для загрузки'); return; }
   btn.disabled = true;
-  btn.textContent = 'Загружаю…';
-  try {
-    const res = await api('/shop-admin/bulk-upsert', { method: 'POST', body: JSON.stringify({ products: mmUploadAccepted }) });
-    document.getElementById('mmUploadPreview').hidden = true;
-    document.getElementById('mmUploadReport').innerHTML = `
-      <div class="panel">
-        <p style="color:var(--accent);font-size:13.5px">
-          Готово: принято <strong>${res.created + res.updated}</strong>
-          (создано ${res.created}, обновлено ${res.updated}), отклонено <strong>${mmUploadRejected.length}</strong>.
-          ${res.errors.length ? `<br><span style="color:var(--loss)">Ошибок при записи: ${res.errors.length}<br>${res.errors.slice(0, 10).map((e) => `— ${e}`).join('<br>')}</span>` : ''}
-        </p>
-        <button class="btn btn--ghost" id="mmUploadAnotherBtn">Загрузить ещё файл</button>
-      </div>
-    `;
-    document.getElementById('mmUploadAnotherBtn').addEventListener('click', () => {
-      resetMmUploadScreen();
-      document.getElementById('mmUploadReport').innerHTML = '';
-    });
-    mmUploadAccepted = [];
-    mmUploadRejected = [];
-    await loadMyMarketProducts();
-  } catch (err) {
-    alert('Не удалось загрузить: ' + err.message);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Загрузить принятые';
+
+  const chunks = [];
+  for (let i = 0; i < mmUploadAccepted.length; i += MM_BULK_UPLOAD_CHUNK_SIZE) {
+    chunks.push(mmUploadAccepted.slice(i, i + MM_BULK_UPLOAD_CHUNK_SIZE));
   }
+
+  let created = 0;
+  let updated = 0;
+  const errors = [];
+
+  for (let i = 0; i < chunks.length; i++) {
+    btn.textContent = `Загружаю… пачка ${i + 1} из ${chunks.length}`;
+    try {
+      const res = await postMmBulkUploadChunk(chunks[i]);
+      created += res.created;
+      updated += res.updated;
+      if (res.errors?.length) errors.push(...res.errors);
+    } catch (err) {
+      // Одна пачка упала — не бросаем всё, продолжаем со следующей, но
+      // честно фиксируем, какая именно и почему.
+      errors.push(`Пачка ${i + 1} (${chunks[i].length} тов.): ${err.message}`);
+    }
+  }
+
+  document.getElementById('mmUploadPreview').hidden = true;
+  document.getElementById('mmUploadReport').innerHTML = `
+    <div class="panel">
+      <p style="color:var(--accent);font-size:13.5px">
+        Готово: принято <strong>${created + updated}</strong>
+        (создано ${created}, обновлено ${updated}), отклонено <strong>${mmUploadRejected.length}</strong>.
+        ${errors.length ? `<br><span style="color:var(--loss)">Ошибок при записи: ${errors.length}<br>${errors.slice(0, 10).map((e) => `— ${e}`).join('<br>')}</span>` : ''}
+      </p>
+      <button class="btn btn--ghost" id="mmUploadAnotherBtn">Загрузить ещё файл</button>
+    </div>
+  `;
+  document.getElementById('mmUploadAnotherBtn').addEventListener('click', () => {
+    resetMmUploadScreen();
+    document.getElementById('mmUploadReport').innerHTML = '';
+  });
+  mmUploadAccepted = [];
+  mmUploadRejected = [];
+  await loadMyMarketProducts();
+
+  btn.disabled = false;
+  btn.textContent = 'Загрузить принятые';
 }
 
 
