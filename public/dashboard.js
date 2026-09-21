@@ -2341,6 +2341,7 @@ function openMyMarketProductCard(id) {
   form.elements.name.value = p.name;
   form.elements.shopPrice.value = p.shopPrice ?? '';
   form.elements.shopOldPrice.value = p.shopOldPrice ?? '';
+  form.elements.shopCost.value = p.shopCost ?? '';
   form.elements.shopStock.value = p.shopStock ?? 0;
   form.elements.shopDelivery.value = p.shopDelivery ?? '';
   form.elements.category.value = p.category ?? '';
@@ -2530,6 +2531,7 @@ async function saveMyMarketProductCard(e) {
     name: form.elements.name.value.trim(),
     shopPrice: form.elements.shopPrice.value === '' ? null : Number(form.elements.shopPrice.value),
     shopOldPrice: form.elements.shopOldPrice.value === '' ? null : Number(form.elements.shopOldPrice.value),
+    shopCost: form.elements.shopCost.value === '' ? null : Number(form.elements.shopCost.value),
     shopStock: form.elements.shopStock.value === '' ? 0 : Number(form.elements.shopStock.value),
     shopDelivery: form.elements.shopDelivery.value || null,
     category,
@@ -2594,11 +2596,15 @@ async function loadMyMarketPrices() {
         <td class="num"><input class="cost-input" type="number" step="1" data-field="shopPrice" value="${p.shopPrice ?? ''}" placeholder="—" style="width:90px" /></td>
         <td class="num"><input class="cost-input" type="number" step="1" data-field="shopOldPrice" value="${p.shopOldPrice ?? ''}" placeholder="—" style="width:90px" /></td>
         <td class="num"><input class="cost-input" type="number" step="1" data-field="shopStock" value="${p.shopStock ?? 0}" style="width:70px" /></td>
+        <td class="num"><input class="cost-input" type="number" step="1" data-field="shopCost" value="${p.shopCost ?? ''}" placeholder="нет закупа" style="width:90px" /></td>
+        <td class="num" data-profit-cell>—</td>
+        <td class="num" data-margin-cell>—</td>
       </tr>
     `).join('');
 
     // Сохранение по blur (уход с поля), а не по каждому "change" —
     // ровно как просили, ведёт себя чуть мягче при быстром табе между полями.
+    // Себестоимость сохраняется точно так же, как цена (тот же путь).
     tbody.querySelectorAll('[data-field]').forEach((el) => {
       el.addEventListener('blur', async () => {
         const id = el.closest('tr').dataset.id;
@@ -2610,10 +2616,59 @@ async function loadMyMarketPrices() {
           alert('Не удалось сохранить: ' + err.message);
         }
       });
+      // Живой пересчёт прибыли/маржи при вводе — не дожидаясь сохранения,
+      // чтобы продавец сразу видел эффект от цены/себестоимости.
+      el.addEventListener('input', () => recalcMyMarketPriceRow(el.closest('tr')));
     });
+
+    // Первичный расчёт при отрисовке таблицы.
+    tbody.querySelectorAll('tr').forEach((tr) => recalcMyMarketPriceRow(tr));
   }
 
   await renderMyMarketBannerSlots();
+}
+
+// Логистика APP пока фиксированная — 2000 ₸ с единицы (позже можно брать
+// ShopOrder.logisticsCost по факту заказа). Налог APP — фиксированные 4%,
+// не общая настраиваемая ставка (та же, что и на бэкенде в getSummary/
+// getSummaryByMarketplace для marketplace=APP, см. analytics.routes.ts).
+const MM_APP_LOGISTICS_PER_UNIT = 2000;
+const MM_APP_TAX_RATE = 0.04;
+
+/**
+ * Прибыль = цена − себестоимость − налог(4%) − логистика(2000 фикс).
+ * Пока себестоимость не заполнена — честно показываем "нет закупа", а не
+ * считаем её нулём (иначе прибыль/маржа выглядели бы завышенными).
+ */
+function recalcMyMarketPriceRow(tr) {
+  const priceInput = tr.querySelector('[data-field="shopPrice"]');
+  const costInput = tr.querySelector('[data-field="shopCost"]');
+  const profitCell = tr.querySelector('[data-profit-cell]');
+  const marginCell = tr.querySelector('[data-margin-cell]');
+
+  const price = priceInput.value === '' ? null : Number(priceInput.value);
+  const cost = costInput.value === '' ? null : Number(costInput.value);
+
+  if (price == null) {
+    profitCell.textContent = '—';
+    marginCell.textContent = '—';
+    return;
+  }
+  if (cost == null) {
+    profitCell.textContent = 'нет закупа';
+    profitCell.style.color = 'var(--text-faint)';
+    marginCell.textContent = '—';
+    return;
+  }
+
+  const tax = price * MM_APP_TAX_RATE;
+  const profit = price - cost - tax - MM_APP_LOGISTICS_PER_UNIT;
+  const marginPct = price > 0 ? (profit / price) * 100 : 0;
+
+  profitCell.textContent = fmtMoney(profit);
+  profitCell.style.color = profit >= 0 ? 'var(--accent)' : 'var(--loss)';
+  marginCell.textContent = fmtPct(marginPct);
+  marginCell.style.color = marginPct >= 0 ? 'var(--accent)' : 'var(--loss)';
 }
 
 /**
@@ -2770,12 +2825,12 @@ async function loadMyMarketFinance() {
   ]);
 
   document.getElementById('mymarketFinanceKpis').innerHTML = kpiCardsHtml([
-    { label: 'Выручка (30д)', value: fmtMoney(summary.revenue) },
-    { label: 'Себестоимость', value: fmtMoney(summary.cogs) },
-    { label: 'Комиссия площадки', value: fmtMoney(summary.marketplaceCommission) + ' (всегда 0 — свой канал)' },
-    { label: 'Логистика (ручная)', value: fmtMoney(summary.logisticsCost) },
-    { label: 'Прибыль до налога', value: fmtMoney(summary.netProfit), cls: summary.netProfit >= 0 ? 'pos' : 'neg' },
-    { label: 'К выводу', value: fmtMoney(summary.payout ?? summary.netProfit), cls: (summary.payout ?? summary.netProfit) >= 0 ? 'pos' : 'neg', accent: true },
+    { label: 'Выручка APP (30д)', value: fmtMoney(summary.revenue) },
+    { label: '− Налог 4%', value: fmtMoney(summary.taxAmount) },
+    { label: '− Логистика', value: fmtMoney(summary.logisticsCost) },
+    { label: '− Себестоимость проданных', value: fmtMoney(summary.cogs) },
+    { label: '= Прибыль APP', value: fmtMoney(summary.payout), cls: summary.payout >= 0 ? 'pos' : 'neg', accent: true },
+    { label: 'Маржа %', value: summary.revenue > 0 ? fmtPct((summary.payout / summary.revenue) * 100) : '—', cls: summary.payout >= 0 ? 'pos' : 'neg' },
   ]);
 
   const tbody = document.querySelector('#mymarketFinanceTable tbody');

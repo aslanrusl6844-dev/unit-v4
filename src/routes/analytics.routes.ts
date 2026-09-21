@@ -17,16 +17,21 @@ function parseRange(query: Record<string, string>) {
   return { from, to, marketplace };
 }
 
+// Канал APP (My Market) — налог ВСЕГДА 4%, независимо от общей настройки
+// ставки налога (которая в Настройках может быть изменена для Kaspi/Ozon/
+// WB) — это отдельный канал со своим фиксированным правилом, не "чужой %".
+const APP_TAX_RATE_PCT = 4;
+
 analyticsRouter.get('/summary', async (req, res) => {
   const range = parseRange(req.query as Record<string, string>);
-  const taxRatePct = await getTaxRatePct();
+  const taxRatePct = range.marketplace === 'APP' ? APP_TAX_RATE_PCT : await getTaxRatePct();
   const summary = range.marketplace ? await getSummary(range, taxRatePct) : await getSummaryByMarketplace(range, taxRatePct);
   res.json(summary);
 });
 
 analyticsRouter.get('/by-product', async (req, res) => {
   const range = parseRange(req.query as Record<string, string>);
-  const taxRatePct = await getTaxRatePct();
+  const taxRatePct = range.marketplace === 'APP' ? APP_TAX_RATE_PCT : await getTaxRatePct();
   const data = await getByProduct(range, taxRatePct);
   res.json(data);
 });

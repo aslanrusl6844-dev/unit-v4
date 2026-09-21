@@ -254,7 +254,9 @@ shopRouter.post('/orders/:id/paid', async (req, res) => {
         name: item.name,
         quantity: item.quantity,
         price: item.price,
-        costPrice: product?.costPrice ?? 0,
+        // Себестоимость для канала APP — приоритетно shopCost (своя цена
+        // закупа для витрины), иначе общая costPrice, иначе 0.
+        costPrice: product?.shopCost ?? product?.costPrice ?? 0,
         commission: 0, // канал APP — своя витрина, комиссии площадки нет
         itemLogistics: Math.round(itemLogistics * 100) / 100,
       };

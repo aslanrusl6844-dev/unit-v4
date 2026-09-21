@@ -101,11 +101,15 @@ export async function getSummary(filter: RangeFilter, taxRatePct = 4): Promise<U
 }
 
 export async function getSummaryByMarketplace(filter: Omit<RangeFilter, 'marketplace'>, taxRatePct = 4) {
+  // APP (My Market) — налог фиксирован на 4% независимо от общей
+  // настраиваемой ставки (которая приходит в taxRatePct для остальных
+  // площадок) — свой канал, своё правило, не "чужой %".
+  const APP_TAX_RATE_PCT = 4;
   const [kaspi, ozon, wb, app, total] = await Promise.all([
     getSummary({ ...filter, marketplace: 'KASPI' }, taxRatePct),
     getSummary({ ...filter, marketplace: 'OZON' }, taxRatePct),
     getSummary({ ...filter, marketplace: 'WB' }, taxRatePct),
-    getSummary({ ...filter, marketplace: 'APP' }, taxRatePct),
+    getSummary({ ...filter, marketplace: 'APP' }, APP_TAX_RATE_PCT),
     getSummary(filter, taxRatePct),
   ]);
   return { kaspi, ozon, wb, app, total };

@@ -148,6 +148,12 @@ model Product {
   images          String?   // JSON-массив URL строкой, напр. ["https://...","https://..."]
   shopDelivery    String?   // "rocket" | "truck"
   shopVideo       String?   // URL видео товара (Vercel Blob или внешняя ссылка)
+  // Себестоимость именно для витрины My Market — отдельно от общей
+  // costPrice (которая используется Kaspi/Ozon/WB), т.к. закупочная цена
+  // товара для этого канала может отличаться. Пока пусто — прибыль этого
+  // товара в юнит-экономике APP не считается как 0, а честно помечается
+  // "нет закупа" (см. public/dashboard.js).
+  shopCost        Float?
   banner          Boolean   @default(false) // товар участвует в баннерах на главной приложения
   bannerTitle     String?
   bannerSubtitle  String?

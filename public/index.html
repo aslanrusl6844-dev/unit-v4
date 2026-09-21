@@ -515,6 +515,7 @@
                   <label>Название<input type="text" name="name" /></label>
                   <label>Цена на витрине<input type="number" step="1" name="shopPrice" /></label>
                   <label>Старая цена<input type="number" step="1" name="shopOldPrice" /></label>
+                  <label>Себестоимость<input type="number" step="1" name="shopCost" placeholder="нет закупа" /></label>
                   <label>Остаток<input type="number" step="1" name="shopStock" /></label>
                   <label>Доставка
                     <select name="shopDelivery">
@@ -594,11 +595,11 @@
           </div>
           <div class="panel">
             <div class="panel__head"><h2>Быстрое редактирование цен — только товары «В продаже»</h2></div>
-            <p class="panel__hint">Показаны только товары с включённым «В продаже» (shopActive) — не весь каталог Kaspi/Ozon/WB. Сохранение — при уходе с поля (blur).</p>
+            <p class="panel__hint">Показаны только товары с включённым «В продаже» (shopActive) — не весь каталог Kaspi/Ozon/WB. Сохранение — при уходе с поля (blur). Прибыль/шт и маржа считаются сразу при вводе: цена − себестоимость − налог 4% − логистика 2000 ₸/шт (пока фикс). Пока себестоимость не заполнена — «нет закупа», не 0.</p>
             <div id="mymarketPricesEmpty" hidden></div>
             <div class="table-wrap" id="mymarketPricesTableWrap">
               <table class="table" id="mymarketPricesTable">
-                <thead><tr><th>SKU</th><th>Название</th><th class="num">Цена</th><th class="num">Старая цена</th><th class="num">Остаток</th></tr></thead>
+                <thead><tr><th>SKU</th><th>Название</th><th class="num">Цена</th><th class="num">Старая цена</th><th class="num">Остаток</th><th class="num">Себестоимость</th><th class="num" title="Цена − себестоимость − налог 4% − логистика 2000 ₸">Прибыль/шт</th><th class="num">Маржа</th></tr></thead>
                 <tbody></tbody>
               </table>
             </div>
