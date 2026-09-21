@@ -2020,10 +2020,17 @@ function wireNicheFormOnce() {
 }
 
 // =====================================================================
-// MY MARKET (канал APP) — своя витрина, свои заказы, отдельная выгрузка
+// MY MARKET (канал APP) — кабинет продавца: Главная / Товары / Цены и
+// акции / Заказы / Финансы / Загрузка Excel. Везде — ТОЛЬКО данные
+// ShopOrder/Product.shop* (канал APP), никогда не подмешиваются цифры
+// Kaspi/Ozon/WB.
 // =====================================================================
 let myMarketTabWired = false;
 let myMarketProductsCache = [];
+let myMarketChartInstance = null;
+let myMarketEditingProductId = null;
+
+const MY_MARKET_TABS = ['home', 'products', 'prices', 'orders', 'finance', 'upload'];
 
 function wireMyMarketTabsOnce() {
   if (myMarketTabWired) return;
@@ -2032,14 +2039,7 @@ function wireMyMarketTabsOnce() {
   document.getElementById('mymarketTabs').addEventListener('click', (e) => {
     const btn = e.target.closest('button');
     if (!btn) return;
-    document.querySelectorAll('#mymarketTabs button').forEach((b) => b.classList.remove('is-active'));
-    btn.classList.add('is-active');
-    const tab = btn.dataset.tab;
-    document.getElementById('mymarketProductsTab').hidden = tab !== 'products';
-    document.getElementById('mymarketOrdersTab').hidden = tab !== 'orders';
-    document.getElementById('mymarketUploadTab').hidden = tab !== 'upload';
-    if (tab === 'products') loadMyMarketProducts();
-    if (tab === 'orders') loadMyMarketOrders();
+    switchMyMarketTab(btn.dataset.tab);
   });
 
   document.getElementById('mymarketOrderStatusTabs').addEventListener('click', (e) => {
@@ -2050,14 +2050,100 @@ function wireMyMarketTabsOnce() {
     loadMyMarketOrders();
   });
 
+  document.getElementById('mymarketProductFilterTabs').addEventListener('click', (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    document.querySelectorAll('#mymarketProductFilterTabs button').forEach((b) => b.classList.remove('is-active'));
+    btn.classList.add('is-active');
+    renderMyMarketProductsTable();
+  });
+
+  document.getElementById('mymarketProductsSearch').addEventListener('input', () => renderMyMarketProductsTable());
+
+  document.getElementById('mymarketDownloadTemplateBtn').addEventListener('click', downloadMyMarketTemplate);
+  document.getElementById('mymarketDownloadTemplateBtn2').addEventListener('click', downloadMyMarketTemplate);
+  document.getElementById('mymarketGoUploadBtn').addEventListener('click', () => switchMyMarketTab('upload'));
+
   document.getElementById('mymarketUploadBtn').addEventListener('click', handleMyMarketUpload);
+
+  // Карточка товара — модальное окно
+  document.getElementById('mymarketProductCardClose').addEventListener('click', closeMyMarketProductCard);
+  document.getElementById('mymarketProductCardCancel').addEventListener('click', closeMyMarketProductCard);
+  document.getElementById('mymarketProductCardOverlay').addEventListener('click', (e) => {
+    if (e.target.id === 'mymarketProductCardOverlay') closeMyMarketProductCard();
+  });
+  document.getElementById('mymarketProductCardForm').addEventListener('submit', saveMyMarketProductCard);
+}
+
+function switchMyMarketTab(tab) {
+  document.querySelectorAll('#mymarketTabs button').forEach((b) => b.classList.remove('is-active'));
+  document.querySelector(`#mymarketTabs button[data-tab="${tab}"]`)?.classList.add('is-active');
+  MY_MARKET_TABS.forEach((t) => {
+    const el = document.getElementById(`mymarket${t.charAt(0).toUpperCase() + t.slice(1)}Tab`);
+    if (el) el.hidden = t !== tab;
+  });
+  if (tab === 'home') loadMyMarketHome();
+  if (tab === 'products') loadMyMarketProducts();
+  if (tab === 'prices') loadMyMarketPrices();
+  if (tab === 'orders') loadMyMarketOrders();
+  if (tab === 'finance') loadMyMarketFinance();
 }
 
 async function loadMyMarketPage() {
   wireMyMarketTabsOnce();
-  await loadMyMarketProducts();
+  await loadMyMarketHome();
 }
 
+// ---------------------------------------------------------------------
+// Главная — KPI + график за 14 дней (только ShopOrder)
+// ---------------------------------------------------------------------
+async function loadMyMarketHome() {
+  const stats = await api('/shop-admin/dashboard');
+
+  document.getElementById('mymarketKpis').innerHTML = kpiCardsHtml([
+    { label: 'Заказано', value: fmtMoney(stats.totalRevenue) },
+    { label: 'Заказано, шт', value: fmt.format(stats.totalItems) },
+    { label: 'Ждут сборки', value: fmt.format(stats.awaitingAssembly) },
+    { label: 'В доставке', value: fmt.format(stats.inDelivery) },
+    { label: 'Доставлены', value: fmt.format(stats.delivered), cls: 'pos' },
+    { label: 'Отменены/возвраты', value: fmt.format(stats.cancelled), cls: stats.cancelled > 0 ? 'neg' : '' },
+  ]);
+
+  const canvas = document.getElementById('mymarketChartCanvas');
+  if (typeof Chart === 'undefined' || !canvas) {
+    console.warn('Chart.js не загрузился — график My Market временно недоступен.');
+    return;
+  }
+  const labels = stats.chart.map((d) => d.date.slice(5)); // MM-DD
+  const counts = stats.chart.map((d) => d.count);
+  const revenues = stats.chart.map((d) => d.revenue);
+
+  if (myMarketChartInstance) myMarketChartInstance.destroy();
+  myMarketChartInstance = new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { type: 'line', label: 'Выручка', data: revenues, borderColor: '#9AA1AC', backgroundColor: 'transparent', tension: 0.3, pointRadius: 0, borderWidth: 1.5, yAxisID: 'y1' },
+        { type: 'bar', label: 'Заказов, шт', data: counts, backgroundColor: 'rgba(59,130,246,0.6)', borderRadius: 3, maxBarThickness: 28 },
+      ],
+    },
+    options: {
+      responsive: true,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { labels: { color: '#6B7280', font: { family: 'Inter', size: 11 } } } },
+      scales: {
+        x: { ticks: { color: '#9AA1AC', font: { family: 'IBM Plex Mono', size: 10 } }, grid: { color: '#EEF0F3' } },
+        y: { ticks: { color: '#9AA1AC', font: { family: 'IBM Plex Mono', size: 10 } }, grid: { color: '#EEF0F3' } },
+        y1: { position: 'right', ticks: { color: '#9AA1AC', font: { family: 'IBM Plex Mono', size: 10 } }, grid: { display: false } },
+      },
+    },
+  });
+}
+
+// ---------------------------------------------------------------------
+// Товары — список в стиле «Список товаров» Ozon Seller
+// ---------------------------------------------------------------------
 function myMarketFirstImage(imagesJson) {
   try {
     const arr = imagesJson ? JSON.parse(imagesJson) : [];
@@ -2068,62 +2154,239 @@ function myMarketFirstImage(imagesJson) {
 }
 
 async function loadMyMarketProducts() {
-  const products = await api('/products');
-  myMarketProductsCache = products;
+  myMarketProductsCache = await api('/products');
   renderMyMarketProductsTable();
 }
 
+function myMarketStatusOf(p) {
+  if (!p.category || !p.type) return 'nocat';
+  return p.shopActive ? 'active' : 'hidden';
+}
+
 function renderMyMarketProductsTable() {
+  const filter = document.querySelector('#mymarketProductFilterTabs button.is-active')?.dataset.filter || 'all';
+  const search = document.getElementById('mymarketProductsSearch').value.trim().toLowerCase();
+
+  let rows = myMarketProductsCache;
+  if (filter !== 'all') rows = rows.filter((p) => myMarketStatusOf(p) === filter);
+  if (search) rows = rows.filter((p) => p.name.toLowerCase().includes(search) || p.sku.toLowerCase().includes(search));
+
   const tbody = document.querySelector('#mymarketProductsTable tbody');
-  if (!myMarketProductsCache.length) {
-    tbody.innerHTML = `<tr><td colspan="11" style="color:var(--text-faint)">Товаров нет</td></tr>`;
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="10" style="color:var(--text-faint)">Товаров нет</td></tr>`;
     return;
   }
-  tbody.innerHTML = myMarketProductsCache.map((p) => {
+
+  tbody.innerHTML = rows.map((p) => {
     const img = myMarketFirstImage(p.images);
+    const status = myMarketStatusOf(p);
+    const statusHtml = status === 'nocat'
+      ? `<span class="mm-status--nocat" title="Нет category или type — нельзя включить «В продаже»">⚠ Без категории</span>`
+      : status === 'active'
+        ? `<span class="mm-status--active">● В продаже</span>`
+        : `<span class="mm-status--hidden">○ Скрыт</span>`;
     return `
-    <tr data-id="${p.id}">
+    <tr>
       <td>${img ? `<img src="${img}" alt="" style="width:36px;height:36px;object-fit:cover;border-radius:6px" />` : '<span style="color:var(--text-faint);font-size:11px">—</span>'}</td>
       <td class="name-cell">${p.sku}</td>
-      <td class="name-cell">${p.name}</td>
-      <td><input class="cost-input" data-field="category" value="${p.category ?? ''}" placeholder="—" style="width:110px" /></td>
-      <td><input class="cost-input" data-field="subcategory" value="${p.subcategory ?? ''}" placeholder="—" style="width:110px" /></td>
-      <td><input class="cost-input" data-field="type" value="${p.type ?? ''}" placeholder="—" style="width:100px" /></td>
-      <td class="num"><input class="cost-input" type="number" step="1" data-field="shopPrice" value="${p.shopPrice ?? ''}" placeholder="—" style="width:85px" /></td>
-      <td class="num"><input class="cost-input" type="number" step="1" data-field="shopOldPrice" value="${p.shopOldPrice ?? ''}" placeholder="—" style="width:85px" /></td>
-      <td class="num"><input class="cost-input" type="number" step="1" data-field="shopStock" value="${p.shopStock ?? 0}" style="width:70px" /></td>
-      <td>
-        <select class="cost-input" data-field="shopDelivery" style="width:90px">
-          <option value="" ${!p.shopDelivery ? 'selected' : ''}>—</option>
-          <option value="rocket" ${p.shopDelivery === 'rocket' ? 'selected' : ''}>🚀 rocket</option>
-          <option value="truck" ${p.shopDelivery === 'truck' ? 'selected' : ''}>🚚 truck</option>
-        </select>
-      </td>
-      <td><input type="checkbox" data-field="shopActive" ${p.shopActive ? 'checked' : ''} /></td>
+      <td class="name-cell">${p.name}<br><span style="font-size:10.5px;color:var(--text-faint)">${p.category ?? '—'}${p.type ? ` / ${p.type}` : ''}</span></td>
+      <td>${statusHtml}</td>
+      <td class="num">${p.shopPrice != null ? fmtMoney(p.shopPrice) : '—'}</td>
+      <td class="num">${p.shopOldPrice != null ? fmtMoney(p.shopOldPrice) : '—'}</td>
+      <td class="num">${p.shopStock ?? 0}</td>
+      <td>${p.shopDelivery === 'rocket' ? '🚀' : p.shopDelivery === 'truck' ? '🚚' : '—'}</td>
+      <td class="num" id="mm-reviews-${p.sku}">…</td>
+      <td><button class="link-btn" data-action="edit" data-id="${p.id}">✎</button></td>
     </tr>
   `;
   }).join('');
 
-  tbody.querySelectorAll('tr').forEach((row) => {
-    const id = row.dataset.id;
-    row.querySelectorAll('[data-field]').forEach((el) => {
-      const eventName = el.type === 'checkbox' || el.tagName === 'SELECT' ? 'change' : 'change';
-      el.addEventListener(eventName, async () => {
-        const field = el.dataset.field;
-        let value;
-        if (el.type === 'checkbox') value = el.checked;
-        else if (el.type === 'number') value = el.value === '' ? null : Number(el.value);
-        else value = el.value.trim() || null;
+  tbody.querySelectorAll('button[data-action="edit"]').forEach((btn) => {
+    btn.addEventListener('click', () => openMyMarketProductCard(btn.dataset.id));
+  });
+
+  // Число отзывов — один общий запрос по всем sku сразу (не по одному на
+  // строку), через отдельный админский эндпоинт без x-app-key.
+  loadMyMarketReviewCounts(rows.map((p) => p.sku));
+}
+
+async function loadMyMarketReviewCounts(skus) {
+  try {
+    const counts = await api(`/shop-admin/reviews-count?${qs({ skus: skus.join(',') })}`);
+    Object.entries(counts).forEach(([sku, count]) => {
+      const el = document.getElementById(`mm-reviews-${sku}`);
+      if (el) el.textContent = String(count);
+    });
+    skus.forEach((sku) => {
+      const el = document.getElementById(`mm-reviews-${sku}`);
+      if (el && el.textContent === '…') el.textContent = '0';
+    });
+  } catch {
+    document.querySelectorAll('[id^="mm-reviews-"]').forEach((el) => { el.textContent = '—'; });
+  }
+}
+
+function openMyMarketProductCard(id) {
+  const p = myMarketProductsCache.find((x) => x.id === id);
+  if (!p) return;
+  myMarketEditingProductId = id;
+  const form = document.getElementById('mymarketProductCardForm');
+  form.elements.id.value = p.id;
+  form.elements.sku.value = p.sku;
+  form.elements.name.value = p.name;
+  form.elements.shopPrice.value = p.shopPrice ?? '';
+  form.elements.shopOldPrice.value = p.shopOldPrice ?? '';
+  form.elements.shopStock.value = p.shopStock ?? 0;
+  form.elements.shopDelivery.value = p.shopDelivery ?? '';
+  form.elements.category.value = p.category ?? '';
+  form.elements.subcategory.value = p.subcategory ?? '';
+  form.elements.type.value = p.type ?? '';
+  form.elements.description.value = p.description ?? '';
+  form.elements.composition.value = p.composition ?? '';
+  let images = [];
+  try { images = p.images ? JSON.parse(p.images) : []; } catch { images = []; }
+  form.elements.imagesText.value = images.join('\n');
+  form.elements.shopActive.checked = !!p.shopActive;
+  document.getElementById('mymarketCardWarning').textContent = (!p.category || !p.type)
+    ? 'Без category и type нельзя включить «В продаже».'
+    : '';
+  document.getElementById('mymarketProductCardOverlay').hidden = false;
+}
+
+function closeMyMarketProductCard() {
+  document.getElementById('mymarketProductCardOverlay').hidden = true;
+  myMarketEditingProductId = null;
+}
+
+async function saveMyMarketProductCard(e) {
+  e.preventDefault();
+  const form = e.target;
+  const id = form.elements.id.value;
+  const category = form.elements.category.value.trim() || null;
+  const type = form.elements.type.value.trim() || null;
+  const shopActive = form.elements.shopActive.checked;
+
+  if (shopActive && (!category || !type)) {
+    document.getElementById('mymarketCardWarning').textContent = 'Нельзя включить «В продаже» без category и type — заполни оба поля.';
+    return;
+  }
+
+  const imagesArr = form.elements.imagesText.value.split('\n').map((s) => s.trim()).filter(Boolean);
+  const payload = {
+    name: form.elements.name.value.trim(),
+    shopPrice: form.elements.shopPrice.value === '' ? null : Number(form.elements.shopPrice.value),
+    shopOldPrice: form.elements.shopOldPrice.value === '' ? null : Number(form.elements.shopOldPrice.value),
+    shopStock: form.elements.shopStock.value === '' ? 0 : Number(form.elements.shopStock.value),
+    shopDelivery: form.elements.shopDelivery.value || null,
+    category,
+    subcategory: form.elements.subcategory.value.trim() || null,
+    type,
+    description: form.elements.description.value.trim() || null,
+    composition: form.elements.composition.value.trim() || null,
+    images: imagesArr.length ? JSON.stringify(imagesArr) : null,
+    shopActive,
+  };
+
+  try {
+    await api(`/products/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+    closeMyMarketProductCard();
+    await loadMyMarketProducts();
+  } catch (err) {
+    document.getElementById('mymarketCardWarning').textContent = 'Не удалось сохранить: ' + err.message;
+  }
+}
+
+// ---------------------------------------------------------------------
+// Цены и акции — быстрая таблица + баннеры (4 слота)
+// ---------------------------------------------------------------------
+async function loadMyMarketPrices() {
+  const products = await api('/products');
+  myMarketProductsCache = products;
+
+  const tbody = document.querySelector('#mymarketPricesTable tbody');
+  const shopProducts = products.filter((p) => p.category || p.shopActive || p.shopPrice != null);
+  const rows = shopProducts.length ? shopProducts : products; // если ничего не заведено под витрину — не оставляем таблицу пустой без объяснения
+  tbody.innerHTML = rows.map((p) => `
+    <tr data-id="${p.id}">
+      <td class="name-cell">${p.sku}</td>
+      <td class="name-cell">${p.name}</td>
+      <td class="num"><input class="cost-input" type="number" step="1" data-field="shopPrice" value="${p.shopPrice ?? ''}" placeholder="—" style="width:90px" /></td>
+      <td class="num"><input class="cost-input" type="number" step="1" data-field="shopOldPrice" value="${p.shopOldPrice ?? ''}" placeholder="—" style="width:90px" /></td>
+      <td class="num"><input class="cost-input" type="number" step="1" data-field="shopStock" value="${p.shopStock ?? 0}" style="width:70px" /></td>
+    </tr>
+  `).join('');
+
+  tbody.querySelectorAll('[data-field]').forEach((el) => {
+    el.addEventListener('change', async () => {
+      const id = el.closest('tr').dataset.id;
+      const field = el.dataset.field;
+      const value = el.value === '' ? null : Number(el.value);
+      try {
+        await api(`/products/${id}`, { method: 'PUT', body: JSON.stringify({ [field]: value }) });
+      } catch (err) {
+        alert('Не удалось сохранить: ' + err.message);
+      }
+    });
+  });
+
+  renderMyMarketBannerSlots(products);
+}
+
+function renderMyMarketBannerSlots(products) {
+  const container = document.getElementById('mymarketBannerSlots');
+  const bannerProducts = products.filter((p) => p.banner);
+  const slots = [0, 1, 2, 3];
+  container.innerHTML = slots.map((i) => {
+    const p = bannerProducts[i];
+    const img = p ? myMarketFirstImage(p.images) : null;
+    return `
+      <div class="banner-slot" data-slot="${i}">
+        ${img ? `<img src="${img}" alt="" />` : `<div style="width:100%;height:90px;background:var(--bg);border-radius:6px;display:flex;align-items:center;justify-content:center;color:var(--text-faint);font-size:11px">нет фото</div>`}
+        <input type="text" placeholder="SKU товара для баннера" class="cost-input mm-banner-sku" value="${p ? p.sku : ''}" />
+        <input type="text" placeholder="Заголовок баннера" class="cost-input mm-banner-title" value="${p ? (p.bannerTitle ?? '') : ''}" />
+        <input type="text" placeholder="Подзаголовок" class="cost-input mm-banner-subtitle" value="${p ? (p.bannerSubtitle ?? '') : ''}" />
+        <div style="display:flex;gap:6px">
+          <button class="btn btn--ghost mm-banner-save" style="flex:1;font-size:12px">Сохранить</button>
+          ${p ? `<button class="btn btn--ghost mm-banner-clear" style="color:var(--loss);font-size:12px">Убрать</button>` : ''}
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  container.querySelectorAll('.banner-slot').forEach((slotEl) => {
+    slotEl.querySelector('.mm-banner-save').addEventListener('click', async () => {
+      const sku = slotEl.querySelector('.mm-banner-sku').value.trim();
+      const title = slotEl.querySelector('.mm-banner-title').value.trim();
+      const subtitle = slotEl.querySelector('.mm-banner-subtitle').value.trim();
+      const product = myMarketProductsCache.find((p) => p.sku === sku);
+      if (!product) { alert('Товар с таким SKU не найден'); return; }
+      try {
+        await api(`/products/${product.id}`, { method: 'PUT', body: JSON.stringify({ banner: true, bannerTitle: title || null, bannerSubtitle: subtitle || null }) });
+        await loadMyMarketPrices();
+      } catch (err) {
+        alert('Не удалось сохранить баннер: ' + err.message);
+      }
+    });
+    const clearBtn = slotEl.querySelector('.mm-banner-clear');
+    if (clearBtn) {
+      clearBtn.addEventListener('click', async () => {
+        const sku = slotEl.querySelector('.mm-banner-sku').value.trim();
+        const product = myMarketProductsCache.find((p) => p.sku === sku);
+        if (!product) return;
         try {
-          await api(`/products/${id}`, { method: 'PUT', body: JSON.stringify({ [field]: value }) });
+          await api(`/products/${product.id}`, { method: 'PUT', body: JSON.stringify({ banner: false, bannerTitle: null, bannerSubtitle: null }) });
+          await loadMyMarketPrices();
         } catch (err) {
-          alert('Не удалось сохранить: ' + err.message);
+          alert('Не удалось убрать баннер: ' + err.message);
         }
       });
-    });
+    }
   });
 }
 
+// ---------------------------------------------------------------------
+// Заказы — ShopOrder, статусы, печать накладной
+// ---------------------------------------------------------------------
 const MY_MARKET_STATUS_LABELS = {
   pending_payment: 'Ожидает оплаты',
   paid: 'Оплачен',
@@ -2212,11 +2475,57 @@ async function printMyMarketInvoice(orderId) {
   win.document.close();
 }
 
-/** Массовая загрузка витрины My Market — жёсткие английские названия
- *  колонок (не алиасы, как в общей загрузке каталога), строго по
- *  заголовку первой строки: sku, name, category, subcategory, type,
- *  shopPrice, shopOldPrice, shopStock, description, composition, images,
- *  shopDelivery, shopActive. Строку без category/type сервер отклонит сам. */
+// ---------------------------------------------------------------------
+// Финансы APP — только канал APP, не смешивается с Ozon/Kaspi/WB
+// ---------------------------------------------------------------------
+async function loadMyMarketFinance() {
+  const to = todayISO();
+  const from = almatyDateDaysAgo(30);
+  const [summary, byProduct] = await Promise.all([
+    api(`/analytics/summary?${qs({ from, to, marketplace: 'APP' })}`),
+    api(`/analytics/by-product?${qs({ from, to, marketplace: 'APP' })}`),
+  ]);
+
+  document.getElementById('mymarketFinanceKpis').innerHTML = kpiCardsHtml([
+    { label: 'Выручка (30д)', value: fmtMoney(summary.revenue) },
+    { label: 'Себестоимость', value: fmtMoney(summary.cogs) },
+    { label: 'Комиссия площадки', value: fmtMoney(summary.marketplaceCommission) + ' (всегда 0 — свой канал)' },
+    { label: 'Логистика (ручная)', value: fmtMoney(summary.logisticsCost) },
+    { label: 'Прибыль до налога', value: fmtMoney(summary.netProfit), cls: summary.netProfit >= 0 ? 'pos' : 'neg' },
+    { label: 'К выводу', value: fmtMoney(summary.payout ?? summary.netProfit), cls: (summary.payout ?? summary.netProfit) >= 0 ? 'pos' : 'neg', accent: true },
+  ]);
+
+  const tbody = document.querySelector('#mymarketFinanceTable tbody');
+  if (!byProduct.length) {
+    tbody.innerHTML = `<tr><td colspan="8" style="color:var(--text-faint)">Продаж через My Market за последние 30 дней нет</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = byProduct.map((p) => `
+    <tr>
+      <td class="name-cell">${p.name}</td>
+      <td class="num">${fmt.format(p.quantity)}</td>
+      <td class="num">${fmtMoney(p.revenue)}</td>
+      <td class="num">${fmtMoney(p.cogs)}</td>
+      <td class="num">${fmtMoney(p.commission)}</td>
+      <td class="num">${fmtMoney(p.logistics)}</td>
+      <td class="num ${p.netProfit >= 0 ? 'pos' : 'neg'}">${fmtMoney(p.netProfit)}</td>
+      <td class="num ${p.marginPct >= 0 ? 'pos' : 'neg'}">${fmtPct(p.marginPct)}</td>
+    </tr>
+  `).join('');
+}
+
+// ---------------------------------------------------------------------
+// Загрузка Excel — только My Market, жёсткие английские названия колонок
+// ---------------------------------------------------------------------
+function downloadMyMarketTemplate() {
+  const headers = ['sku', 'name', 'category', 'subcategory', 'type', 'shopPrice', 'shopOldPrice', 'shopStock', 'description', 'composition', 'images', 'shopDelivery', 'shopActive'];
+  const exampleRow = ['SKU-001', 'Пример товара', 'Красота', 'Уход за лицом', 'Крем', 4990, 6990, 25, 'Описание товара', 'Состав товара', 'https://example.com/photo1.jpg', 'rocket', 'true'];
+  const ws = XLSX.utils.aoa_to_sheet([headers, exampleRow]);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'My Market');
+  XLSX.writeFile(wb, 'my-market-template.xlsx');
+}
+
 async function handleMyMarketUpload() {
   const fileInput = document.getElementById('mymarketUploadFile');
   const file = fileInput.files[0];
@@ -2285,13 +2594,13 @@ async function handleMyMarketUpload() {
         ${res.errors.length ? `<br>Отклонено (нет category/type или другая ошибка): ${res.errors.length}<br>${res.errors.slice(0, 10).map((e) => `— ${e}`).join('<br>')}` : ''}
       </p>`;
     fileInput.value = '';
-    await loadMyMarketProducts();
   } catch (err) {
     progressEl.innerHTML = `<p style="color:var(--loss);font-size:12.5px">Ошибка: ${err.message}</p>`;
   } finally {
     btn.disabled = false;
   }
 }
+
 
 async function loadNichesPage() {
   wireNicheFormOnce();

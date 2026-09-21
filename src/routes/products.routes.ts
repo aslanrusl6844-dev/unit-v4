@@ -289,6 +289,21 @@ productsRouter.put('/:id', async (req, res) => {
   if (data.kaspiReferencePrice != null) data.kaspiReferencePriceUpdatedAt = new Date();
   if (data.ozonReferencePrice != null) data.ozonReferencePriceUpdatedAt = new Date();
   if (data.wbReferencePrice != null) data.wbReferencePriceUpdatedAt = new Date();
+
+  // My Market (APP): нельзя включить "В продаже" (shopActive=true) без
+  // category И type — карточка без них не может корректно попасть в
+  // категории приложения. Проверяем ОБЕ версии (то, что уже сохранено, и
+  // то, что пришло в этом же запросе), чтобы не заблокировать случай
+  // "включаю И одновременно проставляю категорию одним запросом".
+  if (data.shopActive === true) {
+    const existing = await prisma.product.findUnique({ where: { id: req.params.id } });
+    const category = data.category !== undefined ? data.category : existing?.category;
+    const type = data.type !== undefined ? data.type : existing?.type;
+    if (!category || !type) {
+      return res.status(400).json({ error: 'Нельзя включить «В продаже» без заполненных category и type' });
+    }
+  }
+
   try {
     const product = await prisma.product.update({ where: { id: req.params.id }, data });
     res.json(product);

@@ -5,7 +5,81 @@ import { logger } from '../utils/logger';
 
 export const shopAdminRouter = Router();
 
+/**
+ * Статистика для вкладки «Главная» My Market — ТОЛЬКО данные ShopOrder
+ * (канал APP), никогда не подмешивает заказы Kaspi/Ozon/WB. Возврат
+ * пока считается по статусу "cancelled" на уровне ShopOrder — отдельной
+ * модели возвратов в этой версии нет, честно так и считаем (не выдумываем
+ * более сложную модель возвратов сверх того, что реально есть).
+ */
+shopAdminRouter.get('/dashboard', async (_req, res) => {
+  try {
+    const since = new Date();
+    since.setDate(since.getDate() - 13); // включая сегодня — 14 дней
+    since.setHours(0, 0, 0, 0);
+
+    const orders = await prisma.shopOrder.findMany({ where: { createdAt: { gte: since } } });
+
+    // График по дням — считаем по дате СОЗДАНИЯ заказа (это ближе к "заказано",
+    // а не к дате оплаты/выдачи).
+    const byDay = new Map<string, { count: number; revenue: number }>();
+    for (let i = 0; i < 14; i++) {
+      const d = new Date(since);
+      d.setDate(d.getDate() + i);
+      byDay.set(d.toISOString().slice(0, 10), { count: 0, revenue: 0 });
+    }
+    for (const o of orders) {
+      const key = o.createdAt.toISOString().slice(0, 10);
+      const bucket = byDay.get(key);
+      if (bucket) {
+        bucket.count += 1;
+        bucket.revenue += o.total;
+      }
+    }
+
+    const allOrders = await prisma.shopOrder.findMany();
+    const totalRevenue = allOrders.reduce((sum, o) => sum + o.total, 0);
+    const totalItems = allOrders.reduce((sum, o) => {
+      try {
+        const items = JSON.parse(o.items) as Array<{ quantity: number }>;
+        return sum + items.reduce((s, i) => s + i.quantity, 0);
+      } catch {
+        return sum;
+      }
+    }, 0);
+
+    res.json({
+      chart: Array.from(byDay.entries()).map(([date, v]) => ({ date, ...v })),
+      totalRevenue,
+      totalItems,
+      awaitingAssembly: allOrders.filter((o) => o.status === 'paid').length,
+      inDelivery: allOrders.filter((o) => o.status === 'assembled').length,
+      delivered: allOrders.filter((o) => o.status === 'delivered').length,
+      cancelled: allOrders.filter((o) => o.status === 'cancelled').length,
+    });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] GET /dashboard упал');
+    res.status(500).json({ error: 'Не удалось получить статистику', details: String(err?.message ?? err) });
+  }
+});
+
 // Список заказов приложения — для вкладки «My Market» в админке.
+// Число отзывов по списку sku разом — для колонки "Отзывы" в таблице
+// товаров My Market (без x-app-key, это админский путь).
+shopAdminRouter.get('/reviews-count', async (req, res) => {
+  try {
+    const skusParam = String(req.query.skus ?? '');
+    const skus = skusParam.split(',').map((s) => s.trim()).filter(Boolean);
+    if (!skus.length) return res.json({});
+    const grouped = await prisma.shopReview.groupBy({ by: ['sku'], where: { sku: { in: skus } }, _count: { sku: true } });
+    const result: Record<string, number> = {};
+    grouped.forEach((g) => { result[g.sku] = g._count.sku; });
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Не удалось получить число отзывов', details: String(err?.message ?? err) });
+  }
+});
+
 shopAdminRouter.get('/orders', async (req, res) => {
   try {
     const status = req.query.status as string | undefined;
