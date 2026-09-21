@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../db/prisma';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
+import { generateWaybillPdf, WaybillAddressError, WaybillOrderItem } from '../services/waybill.service';
 
 export const shopRouter = Router();
 
@@ -157,7 +158,9 @@ const createOrderSchema = z.object({
 
 function generateOrderNumber(): string {
   const d = new Date();
-  const datePart = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+  // Формат MM-ГГММДД-XXXX (2 цифры года, не 4).
+  const yy = String(d.getFullYear()).slice(-2);
+  const datePart = `${yy}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
   const randPart = String(Math.floor(Math.random() * 10000)).padStart(4, '0');
   return `MM-${datePart}-${randPart}`;
 }
@@ -282,5 +285,89 @@ shopRouter.post('/orders/:id/paid', async (req, res) => {
   } catch (err: any) {
     logger.error({ err }, '[Shop API] Ошибка подтверждения оплаты');
     res.status(500).json({ error: 'Не удалось подтвердить оплату', details: String(err?.message ?? err) });
+  }
+});
+
+/** Сравнение телефонов только по цифрам (последние 10) — терпимо к
+ *  разным форматам записи (+7 xxx, 8xxx, пробелы/дефисы и т.п.). */
+function phonesMatch(a: string, b: string): boolean {
+  const digitsA = a.replace(/\D/g, '').slice(-10);
+  const digitsB = b.replace(/\D/g, '').slice(-10);
+  return digitsA.length === 10 && digitsA === digitsB;
+}
+
+/**
+ * Заказ "как есть" для приложения — только СВОЙ заказ: номер телефона в
+ * query должен совпадать с телефоном в заказе (простая, но реальная
+ * проверка "это точно тот же покупатель", без отдельной системы токенов).
+ * Код выдачи (4 цифры) здесь ЕСТЬ — приложение показывает его в "Мои
+ * заказы", это НЕ то же самое, что накладная (там код печатать нельзя).
+ */
+shopRouter.get('/orders/:id', async (req, res) => {
+  try {
+    const order = await prisma.shopOrder.findUnique({ where: { id: req.params.id } });
+    if (!order) return res.status(404).json({ error: 'Заказ не найден' });
+    const phone = String(req.query.phone ?? '');
+    if (!phone || !phonesMatch(phone, order.phone)) {
+      return res.status(403).json({ error: 'Номер телефона не совпадает с заказом' });
+    }
+    res.json({
+      number: order.number,
+      status: order.status,
+      pickupCode: order.pickupCode,
+      total: order.total,
+      items: JSON.parse(order.items),
+      createdAt: order.createdAt,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Не удалось получить заказ', details: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * Та же накладная, что и в админке (см. shopMedia.routes.ts), но с
+ * авторизацией под конкретного покупателя — x-app-key (уже проверен общим
+ * middleware выше) ПЛЮС номер телефона должен совпадать с заказом.
+ */
+shopRouter.get('/orders/:id/waybill', async (req, res) => {
+  try {
+    const order = await prisma.shopOrder.findUnique({ where: { id: req.params.id } });
+    if (!order) return res.status(404).json({ error: 'Заказ не найден' });
+    const phone = String(req.query.phone ?? '');
+    if (!phone || !phonesMatch(phone, order.phone)) {
+      return res.status(403).json({ error: 'Номер телефона не совпадает с заказом' });
+    }
+
+    let items: WaybillOrderItem[] = [];
+    try {
+      items = (JSON.parse(order.items) as Array<{ sku: string; name: string; quantity: number }>)
+        .map((i) => ({ sku: i.sku, name: i.name, quantity: i.quantity }));
+    } catch {
+      items = [];
+    }
+
+    const pdfBuffer = await generateWaybillPdf({
+      number: order.number,
+      customerName: order.customerName,
+      phone: order.phone,
+      city: order.city,
+      street: order.street,
+      house: order.house,
+      apartment: order.apartment,
+      entrance: order.entrance,
+      floor: order.floor,
+      intercom: order.intercom,
+      items,
+    });
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="waybill-${order.number}.pdf"`);
+    res.send(pdfBuffer);
+  } catch (err: any) {
+    if (err instanceof WaybillAddressError) {
+      return res.status(400).json({ error: 'не заполнен адрес' });
+    }
+    logger.error({ err }, '[Shop API] Ошибка генерации накладной (клиент)');
+    res.status(500).json({ error: 'Не удалось сформировать накладную', details: String(err?.message ?? err) });
   }
 });

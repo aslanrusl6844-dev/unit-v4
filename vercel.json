@@ -5,7 +5,7 @@
   "functions": {
     "api/index.ts": {
       "maxDuration": 60,
-      "includeFiles": "node_modules/.prisma/client/**"
+      "includeFiles": "{node_modules/.prisma/client/**,dist/assets/fonts/**}"
     },
     "api/cron/sync.ts": {
       "maxDuration": 60,

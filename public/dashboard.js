@@ -2759,58 +2759,18 @@ async function loadMyMarketOrders() {
   }).join('');
 
   tbody.querySelectorAll('button[data-action="print"]').forEach((btn) => {
-    btn.addEventListener('click', () => printMyMarketInvoice(btn.dataset.id));
+    btn.addEventListener('click', () => downloadMyMarketWaybill(btn.dataset.id));
   });
 }
 
-async function printMyMarketInvoice(orderId) {
-  const order = await api(`/shop-admin/orders/${orderId}`);
-  const address = [order.city, `ул. ${order.street}`, `д. ${order.house}`,
-    order.apartment ? `кв. ${order.apartment}` : '', order.entrance ? `подъезд ${order.entrance}` : '',
-    order.floor ? `этаж ${order.floor}` : '', order.intercom ? `домофон ${order.intercom}` : '']
-    .filter(Boolean).join(', ');
-  const itemsRows = order.items.map((i) => `
-    <tr><td>${i.name}</td><td style="text-align:center">${i.quantity}</td><td style="text-align:right">${fmtMoney(i.price)}</td><td style="text-align:right">${fmtMoney(i.price * i.quantity)}</td></tr>
-  `).join('');
-  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(address)}`;
-
-  const win = window.open('', '_blank', 'width=700,height=900');
-  win.document.write(`
-    <html><head><title>Накладная ${order.number}</title>
-    <style>
-      body { font-family: Arial, sans-serif; padding: 24px; color: #111; }
-      h1 { font-size: 20px; margin-bottom: 4px; }
-      .row { display: flex; justify-content: space-between; margin: 16px 0; }
-      table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-      th, td { border: 1px solid #ccc; padding: 6px 8px; font-size: 13px; }
-      th { background: #f2f2f2; text-align: left; }
-      .code { font-size: 28px; font-weight: 700; letter-spacing: 4px; border: 2px dashed #333; padding: 8px 16px; display: inline-block; }
-      .total { font-size: 16px; font-weight: 700; text-align: right; margin-top: 8px; }
-      @media print { button { display: none; } }
-    </style></head><body>
-      <h1>Накладная ${order.number}</h1>
-      <div class="row">
-        <div>
-          <div><strong>Клиент:</strong> ${order.customerName}</div>
-          <div><strong>Телефон:</strong> ${order.phone}</div>
-          <div><strong>Адрес:</strong> ${address}</div>
-          ${order.comment ? `<div><strong>Комментарий:</strong> ${order.comment}</div>` : ''}
-        </div>
-        <img src="${qrUrl}" alt="QR адреса" width="140" height="140" />
-      </div>
-      <table>
-        <thead><tr><th>Товар</th><th>Кол-во</th><th>Цена</th><th>Сумма</th></tr></thead>
-        <tbody>${itemsRows}</tbody>
-      </table>
-      <div class="total">Итого: ${fmtMoney(order.total)}</div>
-      <div class="row" style="align-items:center;margin-top:24px">
-        <div>Код выдачи покупателю:</div>
-        <div class="code">${order.pickupCode}</div>
-      </div>
-      <button onclick="window.print()" style="margin-top:24px;padding:8px 16px">Печать</button>
-    </body></html>
-  `);
-  win.document.close();
+/**
+ * Кнопка «Накладная» — качает PDF-наклейку 75×120мм с сервера
+ * (GET /api/shop/admin/orders/:id/waybill, без x-app-key — это админский
+ * путь). Никакого HTML-окна с ценой/суммой/кодом выдачи больше нет — та
+ * версия показывала то, что на наклейке печатать нельзя.
+ */
+function downloadMyMarketWaybill(orderId) {
+  window.open(`/api/shop/admin/orders/${orderId}/waybill`, '_blank');
 }
 
 // ---------------------------------------------------------------------

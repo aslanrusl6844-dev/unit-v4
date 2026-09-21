@@ -3,8 +3,55 @@ import { z } from 'zod';
 import { put } from '@vercel/blob';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
+import { prisma } from '../db/prisma';
+import { generateWaybillPdf, WaybillAddressError, WaybillOrderItem } from '../services/waybill.service';
 
 export const shopMediaRouter = Router();
+
+/**
+ * Накладная-наклейка (75×120 мм) для заказа My Market — админский путь,
+ * без x-app-key (см. общий комментарий про /api/shop/admin выше в этом
+ * файле — тот же порядок подключения роутов в expressApp.ts гарантирует,
+ * что этот путь не попадает под x-app-key основного /api/shop).
+ */
+shopMediaRouter.get('/orders/:id/waybill', async (req, res) => {
+  try {
+    const order = await prisma.shopOrder.findUnique({ where: { id: req.params.id } });
+    if (!order) return res.status(404).json({ error: 'Заказ не найден' });
+
+    let items: WaybillOrderItem[] = [];
+    try {
+      items = (JSON.parse(order.items) as Array<{ sku: string; name: string; quantity: number }>)
+        .map((i) => ({ sku: i.sku, name: i.name, quantity: i.quantity }));
+    } catch {
+      items = [];
+    }
+
+    const pdfBuffer = await generateWaybillPdf({
+      number: order.number,
+      customerName: order.customerName,
+      phone: order.phone,
+      city: order.city,
+      street: order.street,
+      house: order.house,
+      apartment: order.apartment,
+      entrance: order.entrance,
+      floor: order.floor,
+      intercom: order.intercom,
+      items,
+    });
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="waybill-${order.number}.pdf"`);
+    res.send(pdfBuffer);
+  } catch (err: any) {
+    if (err instanceof WaybillAddressError) {
+      return res.status(400).json({ error: 'не заполнен адрес' });
+    }
+    logger.error({ err }, '[Shop Media] Ошибка генерации накладной');
+    res.status(500).json({ error: 'Не удалось сформировать накладную', details: String(err?.message ?? err) });
+  }
+});
 
 /**
  * Загрузка фото товара My Market — ТОЛЬКО из админки (не защищено x-app-key
