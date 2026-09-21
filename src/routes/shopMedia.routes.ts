@@ -1,5 +1,4 @@
 import { Router } from 'express';
-import express from 'express';
 import { z } from 'zod';
 import { put } from '@vercel/blob';
 import { env } from '../config/env';
@@ -8,26 +7,34 @@ import { logger } from '../utils/logger';
 export const shopMediaRouter = Router();
 
 /**
- * Загрузка фото/видео товара My Market — ТОЛЬКО из админки (не защищено
- * x-app-key приложения). Важно про порядок подключения роутов: этот роут
+ * Загрузка фото товара My Market — ТОЛЬКО из админки (не защищено x-app-key
+ * приложения). Важно про порядок подключения роутов: этот роут
  * зарегистрирован в expressApp.ts ПОД ПУТЁМ /api/shop/admin, и подключён
  * РАНЬШЕ основного /api/shop (у которого есть общий x-app-key middleware
  * на весь путь) — поэтому запрос сюда не попадает под ту проверку.
  *
- * Файл приходит как base64 в теле JSON-запроса (не multipart/form-data —
- * так не нужна новая зависимость вроде multer, укладывается в уже
- * существующий express.json() подход всего проекта). Для этого пути
- * увеличен лимит тела запроса — видео до 50 МБ в base64 это ~67 МБ текста.
+ * ВИДЕО ФАЙЛОМ НЕ ПРИНИМАЕТСЯ — только ссылка (поле URL на фронте).
+ * Причина: Vercel режет тело запроса на своей стороне примерно на 4.5 МБ,
+ * независимо от любых наших настроек Express — видео такого размера
+ * практически никогда не бывает, а честно показать "файл не поместится"
+ * до отправки нельзя, поэтому проще и честнее вообще не предлагать этот
+ * путь для видео.
+ *
+ * Фото — тоже ограничены не изначально заявленными 10 МБ, а куда меньшим
+ * реальным пределом (см. MAX_IMAGE_BYTES ниже) — тоже из-за того же
+ * ограничения Vercel на размер тела запроса (см. также глобальный лимит
+ * express.json() в expressApp.ts, который должен быть согласован с этим
+ * числом).
  */
-shopMediaRouter.use(express.json({ limit: '80mb' }));
 
 const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
-const ALLOWED_VIDEO_TYPES = ['video/mp4', 'video/webm'];
-const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10 МБ
-const MAX_VIDEO_BYTES = 50 * 1024 * 1024; // 50 МБ
+// 2.5 МБ исходного файла → в base64 это ~3.3 МБ текста — укладывается в
+// глобальный лимит express.json() 4мб (см. expressApp.ts) с запасом на
+// JSON-обёртку, и держится ниже жёсткого предела самого Vercel (~4.5 МБ).
+const MAX_IMAGE_BYTES = 2.5 * 1024 * 1024;
 
 const uploadSchema = z.object({
-  kind: z.enum(['image', 'video']),
+  kind: z.literal('image'),
   filename: z.string().min(1),
   contentType: z.string().min(1),
   dataBase64: z.string().min(1),
@@ -38,34 +45,35 @@ shopMediaRouter.post('/upload', async (req, res) => {
   if (!parsed.success) {
     return res.status(400).json({ error: 'Неверные данные загрузки', details: parsed.error.flatten() });
   }
-  const { kind, filename, contentType, dataBase64 } = parsed.data;
+  const { filename, contentType, dataBase64 } = parsed.data;
 
-  // Честно отказываем, если Blob не настроен — не пытаемся "как-то иначе"
-  // сохранить файл, просто говорим прямо. Вставка URL при этом продолжает
-  // работать (это отдельное, независимое от загрузки файлом поле на фронте).
+  // Честно отказываем, если Blob не настроен — НЕ 500, конкретный текст,
+  // как договорились. Проверяем ДО декодирования/обращения к Blob, чтобы
+  // не тратить время на файл, который всё равно некуда сохранить.
   if (!env.blobToken) {
     return res.status(501).json({ error: 'добавьте Blob', details: 'BLOB_READ_WRITE_TOKEN не задан в переменных окружения — загрузка файлом недоступна, используйте поле URL.' });
   }
 
-  const allowedTypes = kind === 'image' ? ALLOWED_IMAGE_TYPES : ALLOWED_VIDEO_TYPES;
-  if (!allowedTypes.includes(contentType)) {
-    return res.status(400).json({ error: `Недопустимый формат файла: ${contentType}. Разрешено: ${allowedTypes.join(', ')}` });
+  if (!ALLOWED_IMAGE_TYPES.includes(contentType)) {
+    return res.status(400).json({ error: `Недопустимый формат файла: ${contentType}. Разрешено: ${ALLOWED_IMAGE_TYPES.join(', ')}` });
   }
 
   let buffer: Buffer;
   try {
     buffer = Buffer.from(dataBase64, 'base64');
-  } catch {
-    return res.status(400).json({ error: 'Не удалось декодировать файл' });
+  } catch (err: any) {
+    return res.status(400).json({ error: 'Не удалось декодировать файл', details: String(err?.message ?? err) });
   }
 
-  const maxBytes = kind === 'image' ? MAX_IMAGE_BYTES : MAX_VIDEO_BYTES;
-  if (buffer.length > maxBytes) {
-    return res.status(400).json({ error: `Файл слишком большой: ${(buffer.length / 1024 / 1024).toFixed(1)} МБ, максимум ${maxBytes / 1024 / 1024} МБ` });
+  if (buffer.length > MAX_IMAGE_BYTES) {
+    return res.status(413).json({
+      error: `Файл слишком большой: ${(buffer.length / 1024 / 1024).toFixed(1)} МБ, максимум ${(MAX_IMAGE_BYTES / 1024 / 1024).toFixed(1)} МБ`,
+      details: 'Ограничение ниже, чем изначально заявленные 10 МБ, из-за предела Vercel на размер тела запроса (~4.5 МБ) — большой файл в base64 в него не помещается.',
+    });
   }
 
   try {
-    const pathname = `shop/${kind}/${Date.now()}-${filename.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+    const pathname = `shop/image/${Date.now()}-${filename.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
     const blob = await put(pathname, buffer, {
       access: 'public',
       contentType,

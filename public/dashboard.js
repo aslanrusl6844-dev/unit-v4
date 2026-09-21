@@ -2115,13 +2115,9 @@ function wireMyMarketTabsOnce() {
     input.value = '';
   });
 
-  // --- Видео: выбор файла ---
-  document.getElementById('mmChooseVideoBtn').addEventListener('click', () => document.getElementById('mmVideoFileInput').click());
-  document.getElementById('mmVideoFileInput').addEventListener('change', (e) => {
-    if (e.target.files[0]) handleMyMarketVideoFile(e.target.files[0]);
-    e.target.value = '';
-  });
-  // --- Видео: вставка URL ---
+  // Видео — ТОЛЬКО ссылка, файл не принимается (Vercel режет тело запроса
+  // на своей стороне примерно на 4.5 МБ — видео такого размера практически
+  // никогда не бывает, поэтому файловую загрузку для видео убрали совсем).
   document.getElementById('mmAddVideoUrlBtn').addEventListener('click', () => {
     const input = document.getElementById('mmVideoUrlInput');
     const url = input.value.trim();
@@ -2422,25 +2418,41 @@ function readFileAsBase64(file) {
 }
 
 const MM_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
-const MM_VIDEO_TYPES = ['video/mp4', 'video/webm'];
-const MM_IMAGE_MAX_MB = 10;
-const MM_VIDEO_MAX_MB = 50;
+// Согласовано с сервером (src/routes/shopMedia.routes.ts) — 2.5 МБ, а не
+// изначально заявленные 10, из-за предела Vercel на размер тела запроса.
+const MM_IMAGE_MAX_MB = 2.5;
 
-async function uploadMyMarketFile(file, kind) {
-  const allowed = kind === 'image' ? MM_IMAGE_TYPES : MM_VIDEO_TYPES;
-  const maxMb = kind === 'image' ? MM_IMAGE_MAX_MB : MM_VIDEO_MAX_MB;
-  if (!allowed.includes(file.type)) {
-    throw new Error(`Формат ${file.type || '(неизвестен)'} не поддерживается — нужен ${kind === 'image' ? 'JPEG/PNG/WEBP' : 'mp4/webm'}`);
+/**
+ * Прямой fetch (не через общий хелпер api()) — специально, чтобы показать
+ * в статусе загрузки РЕАЛЬНЫЙ текст ошибки от сервера (error + details),
+ * а не общее "API error 500", которое раньше скрывало настоящую причину
+ * (например, PayloadTooLargeError, замаскированный под "внутреннюю ошибку").
+ */
+async function uploadMyMarketFile(file) {
+  if (!MM_IMAGE_TYPES.includes(file.type)) {
+    throw new Error(`Формат ${file.type || '(неизвестен)'} не поддерживается — нужен JPEG/PNG/WEBP`);
   }
-  if (file.size > maxMb * 1024 * 1024) {
-    throw new Error(`Файл слишком большой: ${(file.size / 1024 / 1024).toFixed(1)} МБ, максимум ${maxMb} МБ`);
+  if (file.size > MM_IMAGE_MAX_MB * 1024 * 1024) {
+    throw new Error(`Файл слишком большой: ${(file.size / 1024 / 1024).toFixed(1)} МБ, максимум ${MM_IMAGE_MAX_MB} МБ`);
   }
   const dataBase64 = await readFileAsBase64(file);
-  const res = await api('/shop/admin/upload', {
+  const res = await fetch('/api/shop/admin/upload', {
     method: 'POST',
-    body: JSON.stringify({ kind, filename: file.name, contentType: file.type, dataBase64 }),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind: 'image', filename: file.name, contentType: file.type, dataBase64 }),
   });
-  return res.url;
+  let body = null;
+  try { body = await res.json(); } catch { /* тело не JSON — обработаем ниже по res.ok/статусу */ }
+  if (!res.ok) {
+    // Показываем ИМЕННО то, что прислал сервер — error и details как есть,
+    // а не завёрнутое/урезанное сообщение.
+    const errText = body?.error ?? `HTTP ${res.status}`;
+    const detailsText = body?.details ? ` — ${typeof body.details === 'string' ? body.details : JSON.stringify(body.details)}` : '';
+    const err = new Error(errText + detailsText);
+    err.isBlobMissing = body?.error === 'добавьте Blob';
+    throw err;
+  }
+  return body.url;
 }
 
 async function handleMyMarketPhotoFiles(files) {
@@ -2455,29 +2467,14 @@ async function handleMyMarketPhotoFiles(files) {
     statusEl.textContent = `Загружаю ${file.name}…`;
     statusEl.style.color = 'var(--text-faint)';
     try {
-      const url = await uploadMyMarketFile(file, 'image');
+      const url = await uploadMyMarketFile(file);
       myMarketCardImages.push(url);
       renderMyMarketMediaGrid();
       statusEl.textContent = '';
     } catch (err) {
       statusEl.textContent = err.message;
-      statusEl.style.color = err.message === 'добавьте Blob' || /Blob/.test(err.message) ? 'var(--warn)' : 'var(--loss)';
+      statusEl.style.color = err.isBlobMissing ? 'var(--warn)' : 'var(--loss)';
     }
-  }
-}
-
-async function handleMyMarketVideoFile(file) {
-  const statusEl = document.getElementById('mmVideoUploadStatus');
-  statusEl.textContent = `Загружаю ${file.name}…`;
-  statusEl.style.color = 'var(--text-faint)';
-  try {
-    const url = await uploadMyMarketFile(file, 'video');
-    myMarketCardVideo = url;
-    renderMyMarketVideoPreview();
-    statusEl.textContent = '';
-  } catch (err) {
-    statusEl.textContent = err.message;
-    statusEl.style.color = 'var(--loss)';
   }
 }
 

@@ -542,7 +542,7 @@
 
               <!-- ---- Медиа ---- -->
               <div class="mm-cardtab" data-cardtab-panel="media" hidden>
-                <p class="panel__hint" style="margin-top:0">Первое фото — главное, показывается на главной приложения. JPEG/PNG/WEBP, до 10 МБ, до 10 фото. Перетащи миниатюру, чтобы изменить порядок.</p>
+                <p class="panel__hint" style="margin-top:0">Первое фото — главное, показывается на главной приложения. JPEG/PNG/WEBP, до 2.5 МБ (ограничение Vercel на размер запроса), до 10 фото. Перетащи миниатюру, чтобы изменить порядок.</p>
                 <div id="mmMediaGrid" class="mm-media-grid"></div>
 
                 <div id="mmPhotoDropzone" class="mm-dropzone">
@@ -561,12 +561,9 @@
                 <div class="panel__head" style="margin-top:18px"><h2 style="font-size:14px">Видео</h2></div>
                 <div id="mmVideoPreview"></div>
                 <div class="mm-dropzone">
-                  <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center">
-                    <button type="button" class="btn btn--ghost" id="mmChooseVideoBtn">Загрузить видео (mp4/webm, до 50 МБ)</button>
-                    <input type="file" id="mmVideoFileInput" accept="video/mp4,video/webm" hidden />
-                  </div>
-                  <div style="display:flex;gap:6px;margin-top:10px;align-items:center;justify-content:center">
-                    <input type="text" id="mmVideoUrlInput" placeholder="или вставь URL видео" style="max-width:280px" />
+                  <p class="panel__hint" style="margin:0 0 8px">Только ссылка — Vercel не тянет видео больше 4 МБ, вставь ссылку (например, на YouTube, облако или CDN).</p>
+                  <div style="display:flex;gap:6px;align-items:center;justify-content:center">
+                    <input type="text" id="mmVideoUrlInput" placeholder="URL видео" style="max-width:280px" />
                     <button type="button" class="btn btn--ghost" id="mmAddVideoUrlBtn">Добавить</button>
                   </div>
                   <div id="mmVideoUploadStatus" class="panel__hint"></div>

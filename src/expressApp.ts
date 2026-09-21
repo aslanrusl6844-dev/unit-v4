@@ -33,7 +33,14 @@ import { shopMediaRouter } from './routes/shopMedia.routes';
 const app = express();
 
 app.use(cors());
-app.use(express.json());
+// ВАЖНО: лимит увеличен с дефолтного (~100кб) — иначе он падал раньше,
+// чем доходило до роута загрузки медиа (см. shopMedia.routes.ts), даже
+// раньше собственного лимита этого роута, потому что этот middleware
+// глобальный и применяется первым. Vercel на своей стороне режет тело
+// запроса примерно на 4.5 МБ независимо от наших настроек — 4мб здесь
+// нужен, чтобы НАША ошибка (понятная, в JSON) сработала раньше, чем
+// голый обрыв от инфраструктуры Vercel.
+app.use(express.json({ limit: '4mb' }));
 
 app.use((req, _res, next) => {
   logger.debug(`${req.method} ${req.url}`);
@@ -117,10 +124,17 @@ app.get('*', (req, res, next) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
 });
 
-// Обработчик ошибок
+// Обработчик ошибок — ВАЖНО: реальный текст ошибки должен быть виден в
+// ответе (details), а не спрятан за общим "Внутренняя ошибка сервера".
+// Раньше это маскировало настоящую причину (например, PayloadTooLargeError
+// от слишком большого тела запроса) — теперь видно, что произошло на самом деле.
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   logger.error({ err }, 'Необработанная ошибка');
-  res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  const isPayloadTooLarge = err?.type === 'entity.too.large' || err?.status === 413;
+  res.status(isPayloadTooLarge ? 413 : 500).json({
+    error: isPayloadTooLarge ? 'Файл слишком большой для тела запроса' : 'Внутренняя ошибка сервера',
+    details: String(err?.message ?? err),
+  });
 });
 
 export default app;
