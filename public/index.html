@@ -29,6 +29,7 @@
       <button class="nav-item" data-page="products"><i class="ni">📦</i>Товары</button>
       <button class="nav-item" data-page="finance"><i class="ni">💰</i>Финансы</button>
       <button class="nav-item" data-page="reviews"><i class="ni">★</i>Отзывы</button>
+      <button class="nav-item" data-page="mymarket"><i class="ni">🏪</i>My Market</button>
 
       <div class="nav-group-label">Инструменты</div>
       <button class="nav-item" data-page="margin"><i class="ni">🧮</i>Калькулятор маржи</button>
@@ -431,6 +432,83 @@
           </form>
 
           <div id="marginCalcResult"></div>
+        </div>
+      </section>
+
+      <!-- ============ MY MARKET (канал APP) ============ -->
+      <section class="page" id="page-mymarket" hidden>
+        <div class="page__head"><h1>My Market</h1><p>Витрина приложения — товары, заказы, накладные. Отдельный канал APP.</p></div>
+
+        <div class="seg" id="mymarketTabs">
+          <button class="is-active" data-tab="products">Товары витрины</button>
+          <button data-tab="orders">Заказы APP</button>
+          <button data-tab="upload">Загрузка Excel</button>
+        </div>
+
+        <div id="mymarketProductsTab">
+          <div class="panel">
+            <p class="panel__hint">
+              Отдельная витрина от Kaspi/Ozon/WB — свои цена, остаток, категория. Показывается в приложении
+              только когда включён переключатель «Активен». Редактирование любого поля сохраняется сразу.
+            </p>
+            <div class="table-wrap">
+              <table class="table" id="mymarketProductsTable">
+                <thead>
+                  <tr>
+                    <th>Фото</th><th>SKU</th><th>Название</th><th>Категория</th><th>Подкатегория</th><th>Тип</th>
+                    <th class="num">Цена</th><th class="num">Старая цена</th><th class="num">Остаток</th>
+                    <th>Доставка</th><th>Активен</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div id="mymarketOrdersTab" hidden>
+          <div class="panel">
+            <div class="seg" id="mymarketOrderStatusTabs">
+              <button class="is-active" data-status="">Все</button>
+              <button data-status="pending_payment">Ожидает оплаты</button>
+              <button data-status="paid">Оплачен</button>
+              <button data-status="assembled">Собран</button>
+              <button data-status="delivered">Выдан</button>
+              <button data-status="cancelled">Отменён</button>
+            </div>
+            <div class="table-wrap">
+              <table class="table" id="mymarketOrdersTable">
+                <thead>
+                  <tr>
+                    <th>№ заказа</th><th>Дата</th><th>Клиент</th><th>Телефон</th><th>Адрес</th>
+                    <th class="num">Сумма</th><th>Статус</th><th>Код выдачи</th><th></th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div id="mymarketUploadTab" hidden>
+          <div class="panel">
+            <div class="panel__head"><h2>Массовая загрузка витрины (Excel/CSV)</h2></div>
+            <p class="panel__hint">
+              Отдельная загрузка только для My Market (не влияет на Kaspi/Ozon/WB). Обязательные колонки:
+              <code>sku</code>, <code>name</code>, <code>category</code>, <code>type</code> — строка без
+              <code>category</code> или <code>type</code> не загрузится (отклоняется, не «чинится» ничем по умолчанию).
+              Остальные колонки: <code>subcategory</code>, <code>shopPrice</code>, <code>shopOldPrice</code>,
+              <code>shopStock</code>, <code>description</code>, <code>composition</code>, <code>images</code>
+              (JSON-массив URL строкой), <code>shopDelivery</code> (<code>rocket</code> или <code>truck</code>),
+              <code>shopActive</code> (true/false, по умолчанию — включено).
+              Товар с уже существующим SKU — обновится, новый — создастся.
+            </p>
+            <div class="inline-form">
+              <input type="file" id="mymarketUploadFile" accept=".csv,.xlsx,.xls" />
+              <button class="btn btn--accent" id="mymarketUploadBtn">Загрузить</button>
+            </div>
+            <div id="mymarketUploadProgress"></div>
+          </div>
         </div>
       </section>
 

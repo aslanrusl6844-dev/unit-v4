@@ -101,13 +101,14 @@ export async function getSummary(filter: RangeFilter, taxRatePct = 4): Promise<U
 }
 
 export async function getSummaryByMarketplace(filter: Omit<RangeFilter, 'marketplace'>, taxRatePct = 4) {
-  const [kaspi, ozon, wb, total] = await Promise.all([
+  const [kaspi, ozon, wb, app, total] = await Promise.all([
     getSummary({ ...filter, marketplace: 'KASPI' }, taxRatePct),
     getSummary({ ...filter, marketplace: 'OZON' }, taxRatePct),
     getSummary({ ...filter, marketplace: 'WB' }, taxRatePct),
+    getSummary({ ...filter, marketplace: 'APP' }, taxRatePct),
     getSummary(filter, taxRatePct),
   ]);
-  return { kaspi, ozon, wb, total };
+  return { kaspi, ozon, wb, app, total };
 }
 
 export async function getByCategory(filter: RangeFilter) {

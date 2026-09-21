@@ -69,6 +69,9 @@ const envSchema = z.object({
   // Автобот снижения цены на Kaspi
   REPRICER_CRON: z.preprocess(cleanEnvString, z.string().default('*/15 * * * *')),
   PRICE_FEED_SECRET: z.preprocess(cleanEnvString, z.string().optional().default('')),
+  // Ключ авторизации для приложения My Market (канал APP) — приложение
+  // передаёт его в заголовке x-app-key на каждый запрос к /api/shop/*.
+  SHOP_APP_KEY: z.preprocess(cleanEnvString, z.string().optional().default('')),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -143,4 +146,5 @@ export const env = {
 
   repricerCron: safeData.REPRICER_CRON ?? '*/15 * * * *',
   priceFeedSecret: safeData.PRICE_FEED_SECRET ?? '',
+  shopAppKey: safeData.SHOP_APP_KEY ?? '',
 };

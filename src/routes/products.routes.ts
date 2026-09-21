@@ -50,6 +50,21 @@ const productSchema = z.object({
   // Объём товара в литрах — для расчёта логистики WB по литрам (см.
   // src/integrations/wb.logistics.ts). Если не указан, по умолчанию 1 литр.
   wbVolumeLiters: z.number().positive().optional().nullable(),
+  // --- Витрина приложения My Market (канал APP) ---
+  shopActive: z.boolean().optional(),
+  shopPrice: z.number().nonnegative().optional().nullable(),
+  shopOldPrice: z.number().nonnegative().optional().nullable(),
+  shopStock: z.number().int().nonnegative().optional(),
+  category: z.string().optional().nullable(),
+  subcategory: z.string().optional().nullable(),
+  type: z.string().optional().nullable(),
+  description: z.string().optional().nullable(),
+  composition: z.string().optional().nullable(),
+  images: z.string().optional().nullable(), // JSON-массив URL строкой
+  shopDelivery: z.string().optional().nullable(),
+  banner: z.boolean().optional(),
+  bannerTitle: z.string().optional().nullable(),
+  bannerSubtitle: z.string().optional().nullable(),
 });
 
 productsRouter.post('/', async (req, res) => {

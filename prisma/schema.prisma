@@ -15,6 +15,7 @@ enum Marketplace {
   KASPI
   OZON
   WB
+  APP
 }
 
 enum RepriceStrategy {
@@ -132,6 +133,23 @@ model Product {
 
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+
+  // --- Витрина приложения My Market (канал APP) ---
+  // Независимо от Kaspi/Ozon/WB — свой набор полей, свои цена/остаток/статус.
+  shopActive      Boolean   @default(false) // показывать ли товар в приложении
+  shopPrice       Float?
+  shopOldPrice    Float?    // "старая" цена, для зачёркнутой скидки в карточке
+  shopStock       Int       @default(0)
+  category        String?   // НЕ угадывается автоматически — только то, что явно проставлено (форма/Excel)
+  subcategory     String?
+  type            String?
+  description     String?
+  composition     String?
+  images          String?   // JSON-массив URL строкой, напр. ["https://...","https://..."]
+  shopDelivery    String?   // "rocket" | "truck"
+  banner          Boolean   @default(false) // товар участвует в баннерах на главной приложения
+  bannerTitle     String?
+  bannerSubtitle  String?
 
   // --- Автобот снижения цены на Kaspi ---
   kaspiProductUrl    String?  // ссылка на карточку товара на kaspi.kz (откуда читаем цены конкурентов)
@@ -265,4 +283,53 @@ model SyncLog {
   ordersProcessed Int         @default(0)
   startedAt       DateTime    @default(now())
   finishedAt      DateTime?
+}
+
+// --- Канал APP (витрина приложения My Market) ---
+
+// Заказ, оформленный в приложении My Market — отдельно от Order (который
+// используется для реальных заказов Kaspi/Ozon/WB, синхронизируемых через
+// их API). ShopOrder создаётся напрямую нашим же API по запросу приложения.
+model ShopOrder {
+  id            String   @id @default(cuid())
+  number        String   @unique // человекочитаемый номер заказа
+  pickupCode    String   // 4-значный код выдачи, сообщается курьеру/на ПВЗ
+  status        String   @default("pending_payment") // pending_payment | paid | assembled | delivered | cancelled
+
+  city          String
+  street        String
+  house         String
+  apartment     String?
+  entrance      String?
+  floor         String?
+  intercom      String?
+  comment       String?
+
+  customerName  String
+  phone         String
+
+  total         Float
+  items         String   // JSON: [{ sku, name, price, quantity }, ...]
+  // Логистика по заказу APP — комиссии площадки тут нет (это свой канал),
+  // а логистику по умолчанию считаем 0, но админ может проставить вручную
+  // (например, стоимость доставки курьером) — тогда именно эта сумма
+  // попадёт в юнит-экономику по этому заказу.
+  logisticsCost Float    @default(0)
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  paidAt        DateTime?
+  deliveredAt   DateTime?
+}
+
+// Отзыв в приложении — оставляется ТОЛЬКО после того, как заказ, включавший
+// этот товар, получил статус delivered (проверяется на уровне API, не здесь).
+model ShopReview {
+  id        String   @id @default(cuid())
+  sku       String
+  name      String   // имя автора отзыва
+  rating    Int      // 1..5
+  text      String?
+  variant   String?  // если товар продаётся в вариантах (объём/цвет и т.п.)
+  date      DateTime @default(now())
 }

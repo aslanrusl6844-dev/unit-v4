@@ -15,6 +15,9 @@ import { reviewsRouter } from './routes/reviews.routes';
 import { marginCalculatorRouter } from './routes/marginCalculator.routes';
 import { settingsRouter } from './routes/settings.routes';
 import { nichesRouter } from './routes/niches.routes';
+import { shopRouter } from './routes/shop.routes';
+import { courierRouter } from './routes/courier.routes';
+import { shopAdminRouter } from './routes/shopAdmin.routes';
 
 /**
  * Собранное Express-приложение без вызова .listen(). Используется двумя
@@ -96,6 +99,9 @@ app.use('/api/reviews', reviewsRouter);
 app.use('/api/margin-calculator', marginCalculatorRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/niches', nichesRouter);
+app.use('/api/shop', shopRouter);
+app.use('/api/courier', courierRouter);
+app.use('/api/shop-admin', shopAdminRouter);
 
 // Дашборд (статика) — актуально только для локальной разработки, см. комментарий выше.
 app.use(express.static(path.join(__dirname, '..', 'public')));

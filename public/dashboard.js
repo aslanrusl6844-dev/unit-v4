@@ -91,6 +91,7 @@ const PAGE_LOADERS = {
   products: loadProductsPage,
   finance: loadFinancePage,
   reviews: loadReviewsPage,
+  mymarket: loadMyMarketPage,
   margin: loadMarginPage,
   niches: loadNichesPage,
   demping: loadDempingPage,
@@ -2016,6 +2017,280 @@ function wireNicheFormOnce() {
       btn.textContent = originalText; btn.disabled = false;
     }
   });
+}
+
+// =====================================================================
+// MY MARKET (канал APP) — своя витрина, свои заказы, отдельная выгрузка
+// =====================================================================
+let myMarketTabWired = false;
+let myMarketProductsCache = [];
+
+function wireMyMarketTabsOnce() {
+  if (myMarketTabWired) return;
+  myMarketTabWired = true;
+
+  document.getElementById('mymarketTabs').addEventListener('click', (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    document.querySelectorAll('#mymarketTabs button').forEach((b) => b.classList.remove('is-active'));
+    btn.classList.add('is-active');
+    const tab = btn.dataset.tab;
+    document.getElementById('mymarketProductsTab').hidden = tab !== 'products';
+    document.getElementById('mymarketOrdersTab').hidden = tab !== 'orders';
+    document.getElementById('mymarketUploadTab').hidden = tab !== 'upload';
+    if (tab === 'products') loadMyMarketProducts();
+    if (tab === 'orders') loadMyMarketOrders();
+  });
+
+  document.getElementById('mymarketOrderStatusTabs').addEventListener('click', (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    document.querySelectorAll('#mymarketOrderStatusTabs button').forEach((b) => b.classList.remove('is-active'));
+    btn.classList.add('is-active');
+    loadMyMarketOrders();
+  });
+
+  document.getElementById('mymarketUploadBtn').addEventListener('click', handleMyMarketUpload);
+}
+
+async function loadMyMarketPage() {
+  wireMyMarketTabsOnce();
+  await loadMyMarketProducts();
+}
+
+function myMarketFirstImage(imagesJson) {
+  try {
+    const arr = imagesJson ? JSON.parse(imagesJson) : [];
+    return Array.isArray(arr) && arr[0] ? arr[0] : null;
+  } catch {
+    return null;
+  }
+}
+
+async function loadMyMarketProducts() {
+  const products = await api('/products');
+  myMarketProductsCache = products;
+  renderMyMarketProductsTable();
+}
+
+function renderMyMarketProductsTable() {
+  const tbody = document.querySelector('#mymarketProductsTable tbody');
+  if (!myMarketProductsCache.length) {
+    tbody.innerHTML = `<tr><td colspan="11" style="color:var(--text-faint)">Товаров нет</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = myMarketProductsCache.map((p) => {
+    const img = myMarketFirstImage(p.images);
+    return `
+    <tr data-id="${p.id}">
+      <td>${img ? `<img src="${img}" alt="" style="width:36px;height:36px;object-fit:cover;border-radius:6px" />` : '<span style="color:var(--text-faint);font-size:11px">—</span>'}</td>
+      <td class="name-cell">${p.sku}</td>
+      <td class="name-cell">${p.name}</td>
+      <td><input class="cost-input" data-field="category" value="${p.category ?? ''}" placeholder="—" style="width:110px" /></td>
+      <td><input class="cost-input" data-field="subcategory" value="${p.subcategory ?? ''}" placeholder="—" style="width:110px" /></td>
+      <td><input class="cost-input" data-field="type" value="${p.type ?? ''}" placeholder="—" style="width:100px" /></td>
+      <td class="num"><input class="cost-input" type="number" step="1" data-field="shopPrice" value="${p.shopPrice ?? ''}" placeholder="—" style="width:85px" /></td>
+      <td class="num"><input class="cost-input" type="number" step="1" data-field="shopOldPrice" value="${p.shopOldPrice ?? ''}" placeholder="—" style="width:85px" /></td>
+      <td class="num"><input class="cost-input" type="number" step="1" data-field="shopStock" value="${p.shopStock ?? 0}" style="width:70px" /></td>
+      <td>
+        <select class="cost-input" data-field="shopDelivery" style="width:90px">
+          <option value="" ${!p.shopDelivery ? 'selected' : ''}>—</option>
+          <option value="rocket" ${p.shopDelivery === 'rocket' ? 'selected' : ''}>🚀 rocket</option>
+          <option value="truck" ${p.shopDelivery === 'truck' ? 'selected' : ''}>🚚 truck</option>
+        </select>
+      </td>
+      <td><input type="checkbox" data-field="shopActive" ${p.shopActive ? 'checked' : ''} /></td>
+    </tr>
+  `;
+  }).join('');
+
+  tbody.querySelectorAll('tr').forEach((row) => {
+    const id = row.dataset.id;
+    row.querySelectorAll('[data-field]').forEach((el) => {
+      const eventName = el.type === 'checkbox' || el.tagName === 'SELECT' ? 'change' : 'change';
+      el.addEventListener(eventName, async () => {
+        const field = el.dataset.field;
+        let value;
+        if (el.type === 'checkbox') value = el.checked;
+        else if (el.type === 'number') value = el.value === '' ? null : Number(el.value);
+        else value = el.value.trim() || null;
+        try {
+          await api(`/products/${id}`, { method: 'PUT', body: JSON.stringify({ [field]: value }) });
+        } catch (err) {
+          alert('Не удалось сохранить: ' + err.message);
+        }
+      });
+    });
+  });
+}
+
+const MY_MARKET_STATUS_LABELS = {
+  pending_payment: 'Ожидает оплаты',
+  paid: 'Оплачен',
+  assembled: 'Собран',
+  delivered: 'Выдан',
+  cancelled: 'Отменён',
+};
+
+async function loadMyMarketOrders() {
+  const status = document.querySelector('#mymarketOrderStatusTabs button.is-active')?.dataset.status || '';
+  const orders = await api(`/shop-admin/orders${status ? `?status=${status}` : ''}`);
+  const tbody = document.querySelector('#mymarketOrdersTable tbody');
+  if (!orders.length) {
+    tbody.innerHTML = `<tr><td colspan="9" style="color:var(--text-faint)">Заказов нет</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = orders.map((o) => {
+    const address = [o.city, o.street, o.house, o.apartment ? `кв. ${o.apartment}` : ''].filter(Boolean).join(', ');
+    return `
+    <tr>
+      <td class="name-cell">${o.number}</td>
+      <td>${fmtOrderDateTime(o.createdAt)}</td>
+      <td class="name-cell">${o.customerName}</td>
+      <td>${o.phone}</td>
+      <td class="name-cell" style="font-size:11px">${address}</td>
+      <td class="num">${fmtMoney(o.total)}</td>
+      <td>${MY_MARKET_STATUS_LABELS[o.status] ?? o.status}</td>
+      <td>${o.pickupCode}</td>
+      <td><button class="link-btn" data-action="print" data-id="${o.id}">🖨 Накладная</button></td>
+    </tr>
+  `;
+  }).join('');
+
+  tbody.querySelectorAll('button[data-action="print"]').forEach((btn) => {
+    btn.addEventListener('click', () => printMyMarketInvoice(btn.dataset.id));
+  });
+}
+
+async function printMyMarketInvoice(orderId) {
+  const order = await api(`/shop-admin/orders/${orderId}`);
+  const address = [order.city, `ул. ${order.street}`, `д. ${order.house}`,
+    order.apartment ? `кв. ${order.apartment}` : '', order.entrance ? `подъезд ${order.entrance}` : '',
+    order.floor ? `этаж ${order.floor}` : '', order.intercom ? `домофон ${order.intercom}` : '']
+    .filter(Boolean).join(', ');
+  const itemsRows = order.items.map((i) => `
+    <tr><td>${i.name}</td><td style="text-align:center">${i.quantity}</td><td style="text-align:right">${fmtMoney(i.price)}</td><td style="text-align:right">${fmtMoney(i.price * i.quantity)}</td></tr>
+  `).join('');
+  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(address)}`;
+
+  const win = window.open('', '_blank', 'width=700,height=900');
+  win.document.write(`
+    <html><head><title>Накладная ${order.number}</title>
+    <style>
+      body { font-family: Arial, sans-serif; padding: 24px; color: #111; }
+      h1 { font-size: 20px; margin-bottom: 4px; }
+      .row { display: flex; justify-content: space-between; margin: 16px 0; }
+      table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+      th, td { border: 1px solid #ccc; padding: 6px 8px; font-size: 13px; }
+      th { background: #f2f2f2; text-align: left; }
+      .code { font-size: 28px; font-weight: 700; letter-spacing: 4px; border: 2px dashed #333; padding: 8px 16px; display: inline-block; }
+      .total { font-size: 16px; font-weight: 700; text-align: right; margin-top: 8px; }
+      @media print { button { display: none; } }
+    </style></head><body>
+      <h1>Накладная ${order.number}</h1>
+      <div class="row">
+        <div>
+          <div><strong>Клиент:</strong> ${order.customerName}</div>
+          <div><strong>Телефон:</strong> ${order.phone}</div>
+          <div><strong>Адрес:</strong> ${address}</div>
+          ${order.comment ? `<div><strong>Комментарий:</strong> ${order.comment}</div>` : ''}
+        </div>
+        <img src="${qrUrl}" alt="QR адреса" width="140" height="140" />
+      </div>
+      <table>
+        <thead><tr><th>Товар</th><th>Кол-во</th><th>Цена</th><th>Сумма</th></tr></thead>
+        <tbody>${itemsRows}</tbody>
+      </table>
+      <div class="total">Итого: ${fmtMoney(order.total)}</div>
+      <div class="row" style="align-items:center;margin-top:24px">
+        <div>Код выдачи покупателю:</div>
+        <div class="code">${order.pickupCode}</div>
+      </div>
+      <button onclick="window.print()" style="margin-top:24px;padding:8px 16px">Печать</button>
+    </body></html>
+  `);
+  win.document.close();
+}
+
+/** Массовая загрузка витрины My Market — жёсткие английские названия
+ *  колонок (не алиасы, как в общей загрузке каталога), строго по
+ *  заголовку первой строки: sku, name, category, subcategory, type,
+ *  shopPrice, shopOldPrice, shopStock, description, composition, images,
+ *  shopDelivery, shopActive. Строку без category/type сервер отклонит сам. */
+async function handleMyMarketUpload() {
+  const fileInput = document.getElementById('mymarketUploadFile');
+  const file = fileInput.files[0];
+  const progressEl = document.getElementById('mymarketUploadProgress');
+  const btn = document.getElementById('mymarketUploadBtn');
+  if (!file) { alert('Сначала выбери файл'); return; }
+
+  progressEl.innerHTML = `<p style="color:var(--text-faint);font-size:12.5px">Читаю файл…</p>`;
+  btn.disabled = true;
+
+  try {
+    const rows = await new Promise((resolve, reject) => {
+      const isExcel = /\.xlsx?$/i.test(file.name);
+      const toBool = (v) => v === true || String(v).trim().toLowerCase() === 'true' || String(v).trim() === '1';
+      const toNum = (v) => (v === '' || v == null ? null : Number(String(v).replace(',', '.')));
+      const normalizeRow = (row) => {
+        const norm = {};
+        Object.keys(row).forEach((k) => { norm[k.trim()] = row[k]; });
+        if (!norm.sku || !norm.name) return null;
+        return {
+          sku: String(norm.sku).trim(),
+          name: String(norm.name).trim(),
+          category: norm.category ? String(norm.category).trim() : '',
+          subcategory: norm.subcategory ? String(norm.subcategory).trim() : null,
+          type: norm.type ? String(norm.type).trim() : '',
+          shopPrice: toNum(norm.shopPrice),
+          shopOldPrice: toNum(norm.shopOldPrice),
+          shopStock: toNum(norm.shopStock) ?? 0,
+          description: norm.description ? String(norm.description).trim() : null,
+          composition: norm.composition ? String(norm.composition).trim() : null,
+          images: norm.images ? String(norm.images).trim() : null,
+          shopDelivery: norm.shopDelivery ? String(norm.shopDelivery).trim() : null,
+          shopActive: norm.shopActive === undefined || norm.shopActive === '' ? true : toBool(norm.shopActive),
+        };
+      };
+      if (isExcel) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          try {
+            const wb = XLSX.read(e.target.result, { type: 'array' });
+            const json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
+            resolve(json.map(normalizeRow).filter(Boolean));
+          } catch (err) { reject(err); }
+        };
+        reader.onerror = () => reject(new Error('Не удалось прочитать файл'));
+        reader.readAsArrayBuffer(file);
+      } else {
+        Papa.parse(file, {
+          header: true,
+          skipEmptyLines: true,
+          complete: (res) => resolve(res.data.map(normalizeRow).filter(Boolean)),
+          error: (err) => reject(err),
+        });
+      }
+    });
+
+    if (!rows.length) {
+      progressEl.innerHTML = `<p style="color:var(--loss);font-size:12.5px">Не нашёл ни одной строки с обязательными колонками sku и name.</p>`;
+      return;
+    }
+
+    const res = await api('/shop-admin/bulk-upsert', { method: 'POST', body: JSON.stringify({ products: rows }) });
+    progressEl.innerHTML = `
+      <p style="color:var(--accent);font-size:12.5px">
+        Готово: создано ${res.created}, обновлено ${res.updated} из ${rows.length}.
+        ${res.errors.length ? `<br>Отклонено (нет category/type или другая ошибка): ${res.errors.length}<br>${res.errors.slice(0, 10).map((e) => `— ${e}`).join('<br>')}` : ''}
+      </p>`;
+    fileInput.value = '';
+    await loadMyMarketProducts();
+  } catch (err) {
+    progressEl.innerHTML = `<p style="color:var(--loss);font-size:12.5px">Ошибка: ${err.message}</p>`;
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function loadNichesPage() {
