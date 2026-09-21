@@ -463,15 +463,16 @@
             <div class="inline-form" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
               <input type="text" id="mymarketProductsSearch" placeholder="Поиск по названию или SKU" style="max-width:280px" />
               <div style="display:flex;gap:8px">
+                <button class="btn btn--accent" id="mymarketNewProductBtn">+ Новый товар витрины</button>
                 <button class="btn btn--ghost" id="mymarketDownloadTemplateBtn">⬇ Скачать шаблон</button>
-                <button class="btn btn--accent" id="mymarketGoUploadBtn">⬆ Загрузить Excel</button>
+                <button class="btn btn--ghost" id="mymarketGoUploadBtn">⬆ Загрузить Excel</button>
               </div>
             </div>
             <div class="seg" id="mymarketProductFilterTabs" style="margin-top:10px">
-              <button class="is-active" data-filter="all">Все</button>
-              <button data-filter="active">В продаже</button>
+              <button data-filter="active" class="is-active">В продаже</button>
               <button data-filter="hidden">Скрыты</button>
               <button data-filter="nocat">Без категории <span style="color:var(--warn)">⚠</span></button>
+              <button data-filter="all">Все <span style="color:var(--text-faint);font-size:11px">(товары учёта, не витрина)</span></button>
             </div>
             <div class="table-wrap">
               <table class="table" id="mymarketProductsTable">
@@ -533,18 +534,20 @@ https://..."></textarea></label>
         <!-- ---- Цены и акции ---- -->
         <div id="mymarketPricesTab" hidden>
           <div class="panel">
-            <div class="panel__head"><h2>Быстрое редактирование цен</h2></div>
-            <div class="table-wrap">
+            <div class="panel__head"><h2>Баннеры главной приложения (4 слота)</h2></div>
+            <p class="panel__hint">Слайды карусели на главной приложения. Своя картинка (URL), заголовок, подзаголовок и ссылка — на конкретный товар (по SKU) или на категорию.</p>
+            <div id="mymarketBannerSlots" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px"></div>
+          </div>
+          <div class="panel">
+            <div class="panel__head"><h2>Быстрое редактирование цен — только товары «В продаже»</h2></div>
+            <p class="panel__hint">Показаны только товары с включённым «В продаже» (shopActive) — не весь каталог Kaspi/Ozon/WB. Сохранение — при уходе с поля (blur).</p>
+            <div id="mymarketPricesEmpty" hidden></div>
+            <div class="table-wrap" id="mymarketPricesTableWrap">
               <table class="table" id="mymarketPricesTable">
                 <thead><tr><th>SKU</th><th>Название</th><th class="num">Цена</th><th class="num">Старая цена</th><th class="num">Остаток</th></tr></thead>
                 <tbody></tbody>
               </table>
             </div>
-          </div>
-          <div class="panel">
-            <div class="panel__head"><h2>Баннеры главной приложения (4 слота)</h2></div>
-            <p class="panel__hint">Выбери товар по SKU для каждого слота — он появится баннером на главной приложения с заголовком и подзаголовком.</p>
-            <div id="mymarketBannerSlots" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px"></div>
           </div>
         </div>
 

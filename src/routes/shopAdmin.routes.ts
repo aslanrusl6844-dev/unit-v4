@@ -64,6 +64,53 @@ shopAdminRouter.get('/dashboard', async (_req, res) => {
 });
 
 // Список заказов приложения — для вкладки «My Market» в админке.
+/**
+ * Баннеры главной приложения — 4 фиксированных слота (0..3). GET всегда
+ * возвращает ровно 4 записи (создаёт пустые "выключенные" слоты, если их
+ * ещё нет в базе), чтобы фронтенду не нужно было думать о недостающих слотах.
+ */
+shopAdminRouter.get('/banners', async (_req, res) => {
+  try {
+    const existing = await prisma.shopBanner.findMany({ orderBy: { slot: 'asc' } });
+    const bySlot = new Map(existing.map((b) => [b.slot, b]));
+    const result = [0, 1, 2, 3].map((slot) => bySlot.get(slot) ?? {
+      slot, imageUrl: null, title: null, subtitle: null, linkType: null, linkValue: null, active: false,
+    });
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Не удалось получить баннеры', details: String(err?.message ?? err) });
+  }
+});
+
+const bannerSchema = z.object({
+  imageUrl: z.string().optional().nullable(),
+  title: z.string().optional().nullable(),
+  subtitle: z.string().optional().nullable(),
+  linkType: z.enum(['sku', 'category']).optional().nullable(),
+  linkValue: z.string().optional().nullable(),
+  active: z.boolean().optional(),
+});
+
+shopAdminRouter.put('/banners/:slot', async (req, res) => {
+  const slot = Number(req.params.slot);
+  if (!Number.isInteger(slot) || slot < 0 || slot > 3) {
+    return res.status(400).json({ error: 'Слот должен быть числом от 0 до 3' });
+  }
+  const parsed = bannerSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+
+  try {
+    const banner = await prisma.shopBanner.upsert({
+      where: { slot },
+      update: parsed.data,
+      create: { slot, ...parsed.data },
+    });
+    res.json(banner);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Не удалось сохранить баннер', details: String(err?.message ?? err) });
+  }
+});
+
 // Число отзывов по списку sku разом — для колонки "Отзывы" в таблице
 // товаров My Market (без x-app-key, это админский путь).
 shopAdminRouter.get('/reviews-count', async (req, res) => {

@@ -104,8 +104,21 @@ shopRouter.get('/categories', async (_req, res) => {
 
 shopRouter.get('/banners', async (_req, res) => {
   try {
-    const products = await prisma.product.findMany({ where: { shopActive: true, banner: true } });
-    res.json(products.map(toShopProduct));
+    // Слайды карусели — отдельная сущность ShopBanner (не поле товара),
+    // т.к. баннер может вести и на конкретный товар, и на категорию.
+    // Отдаём только включённые (active=true) и хотя бы с картинкой —
+    // пустой "выключенный" слот приложению не нужен.
+    const banners = await prisma.shopBanner.findMany({
+      where: { active: true, imageUrl: { not: null } },
+      orderBy: { slot: 'asc' },
+    });
+    res.json(banners.map((b) => ({
+      imageUrl: b.imageUrl,
+      title: b.title,
+      subtitle: b.subtitle,
+      linkType: b.linkType,
+      linkValue: b.linkValue,
+    })));
   } catch (err: any) {
     res.status(500).json({ error: 'Не удалось получить баннеры', details: String(err?.message ?? err) });
   }

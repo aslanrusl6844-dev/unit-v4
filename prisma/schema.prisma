@@ -333,3 +333,19 @@ model ShopReview {
   variant   String?  // если товар продаётся в вариантах (объём/цвет и т.п.)
   date      DateTime @default(now())
 }
+
+// Баннер (слайд карусели) на главной приложения My Market — 4 фиксированных
+// слота. Отдельная сущность, НЕ поле товара: баннер может вести на
+// конкретный товар (linkType=sku) ИЛИ на категорию (linkType=category),
+// и своя картинка может отличаться от фото самого товара.
+model ShopBanner {
+  id         String   @id @default(cuid())
+  slot       Int      @unique // 0..3
+  imageUrl   String?
+  title      String?
+  subtitle   String?
+  linkType   String?  // "sku" | "category"
+  linkValue  String?
+  active     Boolean  @default(false)
+  updatedAt  DateTime @updatedAt
+}
