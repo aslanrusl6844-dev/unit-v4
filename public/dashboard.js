@@ -2802,24 +2802,27 @@ async function loadMyMarketFinance() {
 // ---------------------------------------------------------------------
 function downloadMyMarketTemplate() {
   const headers = [
-    'Артикул *', 'Название *', 'Категория *', 'Подкатегория', 'Тип *', 'Бренд',
-    'Цена на витрине *', 'Цена до скидки', 'Остаток *', 'Доставка', 'В продаже',
-    'Ссылки на фото', 'Описание', 'Состав',
+    'Артикул *', 'Название *', 'Категория *', 'Подкатегория', 'Тип *', 'Код модели', 'Бренд', 'Цвет', 'Размер', 'Пол',
+    'Цена на витрине, ₸ *', 'Цена до скидки, ₸', 'Остаток, шт *', 'Доставка', 'В продаже',
+    'Ссылки на фото', 'Описание', 'Состав / комплектация',
   ];
   const exampleRows = [
-    ['SKU-001', 'Шампунь укрепляющий', 'Красота', 'Уход за волосами', 'Шампунь', 'BrandX', 4990, 6990, 25, 'ракета', 'да', 'https://example.com/1.jpg|https://example.com/2.jpg', 'Описание товара', 'Состав товара'],
-    ['SKU-002', 'Блендер погружной', 'Бытовая техника', '', 'Блендер', 'BrandY', 15990, '', 8, 'грузовик', 'да', 'https://example.com/3.jpg', '', ''],
+    ['SKU-001', 'Шампунь укрепляющий', 'Красота', 'Уход за волосами', 'Шампунь', '', 'BrandX', '', '', '', 4990, 6990, 25, 'ракета', 'да', 'https://example.com/1.jpg|https://example.com/2.jpg', 'Описание товара', 'Состав товара'],
+    ['SKU-002', 'Бюстгальтер спортивный', 'Одежда', 'Бельё', 'Бюстгальтер', 'BR-100', 'BrandZ', 'Чёрный', 'M', 'женский', 8990, '', 12, 'грузовик', 'да', 'https://example.com/3.jpg', '', ''],
+    ['SKU-003', 'Блендер погружной', 'Бытовая техника', '', 'Блендер', '', 'BrandY', '', '', '', 15990, '', 8, 'грузовик', 'да', 'https://example.com/4.jpg', '', ''],
   ];
   const ws = XLSX.utils.aoa_to_sheet([headers, ...exampleRows]);
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'My Market');
+  XLSX.utils.book_append_sheet(wb, ws, 'Товары');
   XLSX.writeFile(wb, 'my-market-template.xlsx');
 }
 
 /**
- * Псевдонимы колонок — русские (основные, из шаблона) + старые английские
- * (для обратной совместимости, как просили). Звёздочку "*" в заголовке
- * (маркер "обязательно" в шаблоне) при сопоставлении отбрасываем.
+ * Псевдонимы колонок — русские (основные, из шаблона листа «Товары») +
+ * старые английские и старые русские (для обратной совместимости — и
+ * прошлый шаблон без единиц измерения, и совсем старый английский, оба
+ * по-прежнему принимаются). Звёздочку "*" в заголовке (маркер "обязательно"
+ * в шаблоне) при сопоставлении отбрасываем.
  */
 const MM_UPLOAD_COLUMN_ALIASES = {
   sku: ['sku', 'артикул'],
@@ -2827,18 +2830,27 @@ const MM_UPLOAD_COLUMN_ALIASES = {
   category: ['category', 'категория'],
   subcategory: ['subcategory', 'подкатегория'],
   type: ['type', 'тип'],
-  shopPrice: ['shopprice', 'цена на витрине'],
-  shopOldPrice: ['shopoldprice', 'цена до скидки'],
-  shopStock: ['shopstock', 'остаток'],
+  model: ['код модели', 'модель'],
+  brand: ['brand', 'бренд'],
+  color: ['color', 'цвет'],
+  size: ['size', 'размер'],
+  gender: ['gender', 'пол'],
+  shopPrice: ['shopprice', 'цена на витрине', 'цена на витрине, ₸'],
+  shopOldPrice: ['shopoldprice', 'цена до скидки', 'цена до скидки, ₸'],
+  shopStock: ['shopstock', 'остаток', 'остаток, шт'],
   shopDelivery: ['shopdelivery', 'доставка'],
   shopActive: ['shopactive', 'в продаже'],
   images: ['images', 'ссылки на фото'],
   description: ['description', 'описание'],
-  composition: ['composition', 'состав'],
+  composition: ['composition', 'состав', 'состав / комплектация'],
 };
 
 function mmNormalizeHeaderCell(cell) {
-  return String(cell ?? '').replace(/\*/g, '').trim().toLowerCase();
+  return String(cell ?? '')
+    .replace(/\*/g, '')
+    .replace(/\s+/g, ' ') // схлопываем повторяющиеся пробелы — устойчивее к мелким расхождениям в файле
+    .trim()
+    .toLowerCase();
 }
 
 function mmParseDelivery(raw) {
@@ -2861,8 +2873,28 @@ function mmParseImages(raw) {
   if (v.startsWith('[')) {
     try { JSON.parse(v); return v; } catch { /* не похоже на валидный JSON — разбираем как список ниже */ }
   }
-  const urls = v.split('|').map((s) => s.trim()).filter(Boolean);
+  // Разделитель — "|" ИЛИ перевод строки (в одной ячейке Excel можно
+  // вставить перенос строки через Alt+Enter) — принимаем оба варианта.
+  const urls = v.split(/[|\n\r]+/).map((s) => s.trim()).filter(Boolean);
   return urls.length ? JSON.stringify(urls) : null;
+}
+
+/**
+ * Собирает финальное описание товара: исходный текст "Описание" плюс,
+ * если заполнены, подписанные строки по Коду модели/Бренду/Цвету/Размеру/
+ * Полу — так эти данные не теряются, хотя отдельных полей под них в базе
+ * пока нет (как и договаривались — потом можно сделать карточку на модель
+ * с выбором размера, эти строки легко парсить обратно по префиксу).
+ */
+function mmComposeDescription(baseDescription, extras) {
+  const lines = [];
+  if (baseDescription) lines.push(baseDescription);
+  if (extras.model) lines.push(`Модель: ${extras.model}`);
+  if (extras.brand) lines.push(`Бренд: ${extras.brand}`);
+  if (extras.color) lines.push(`Цвет: ${extras.color}`);
+  if (extras.size) lines.push(`Размер: ${extras.size}`);
+  if (extras.gender) lines.push(`Пол: ${extras.gender}`);
+  return lines.length ? lines.join('\n') : null;
 }
 
 function mmParseNum(raw) {
@@ -2929,8 +2961,21 @@ function mmClassifyRows(rawRows) {
       shopDelivery: mmParseDelivery(norm.shopDelivery),
       shopActive: mmParseActive(norm.shopActive),
       images: mmParseImages(norm.images),
-      description: norm.description ? String(norm.description).trim() : null,
+      description: mmComposeDescription(
+        norm.description ? String(norm.description).trim() : null,
+        {
+          model: norm.model ? String(norm.model).trim() : null,
+          brand: norm.brand ? String(norm.brand).trim() : null,
+          color: norm.color ? String(norm.color).trim() : null,
+          size: norm.size ? String(norm.size).trim() : null,
+          gender: norm.gender ? String(norm.gender).trim() : null,
+        },
+      ),
       composition: norm.composition ? String(norm.composition).trim() : null,
+      // Размер — только для экрана проверки (показываем в таблице группы,
+      // если заполнен), в базу уходит уже вшитым в description выше —
+      // отдельного поля под размер в Product пока нет.
+      sizeForPreview: norm.size ? String(norm.size).trim() : null,
     });
   });
 
@@ -3030,9 +3075,9 @@ function renderMmUploadPreview() {
           <details style="margin:0 0 6px 14px">
             <summary style="cursor:pointer;font-size:12.5px;color:var(--text-muted)">${type} — ${rows.length} шт.</summary>
             <table class="table" style="margin-top:6px">
-              <thead><tr><th>Артикул</th><th>Название</th><th class="num">Цена</th></tr></thead>
+              <thead><tr><th>Артикул</th><th>Название</th><th class="num">Цена</th><th>Размер</th></tr></thead>
               <tbody>
-                ${rows.map((r) => `<tr><td class="name-cell">${r.sku}</td><td class="name-cell">${r.name}</td><td class="num">${fmtMoney(r.shopPrice)}</td></tr>`).join('')}
+                ${rows.map((r) => `<tr><td class="name-cell">${r.sku}</td><td class="name-cell">${r.name}</td><td class="num">${fmtMoney(r.shopPrice)}</td><td>${r.sizeForPreview ?? '—'}</td></tr>`).join('')}
               </tbody>
             </table>
           </details>
