@@ -18,6 +18,7 @@ import { nichesRouter } from './routes/niches.routes';
 import { shopRouter } from './routes/shop.routes';
 import { courierRouter } from './routes/courier.routes';
 import { shopAdminRouter } from './routes/shopAdmin.routes';
+import { shopMediaRouter } from './routes/shopMedia.routes';
 
 /**
  * Собранное Express-приложение без вызова .listen(). Используется двумя
@@ -99,6 +100,12 @@ app.use('/api/reviews', reviewsRouter);
 app.use('/api/margin-calculator', marginCalculatorRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/niches', nichesRouter);
+// ВАЖНО: /api/shop/admin ЗАРЕГИСТРИРОВАН РАНЬШЕ /api/shop — у /api/shop
+// есть общий x-app-key middleware на весь путь (см. shop.routes.ts), а
+// загрузка медиа — админский путь, ей x-app-key приложения не нужен и не
+// должен быть нужен. Порядок здесь определяет, какой роут Express отдаст
+// запрос первым, так что менять местами эти две строки нельзя.
+app.use('/api/shop/admin', shopMediaRouter);
 app.use('/api/shop', shopRouter);
 app.use('/api/courier', courierRouter);
 app.use('/api/shop-admin', shopAdminRouter);

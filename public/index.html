@@ -491,37 +491,94 @@
 
         <!-- ---- Карточка товара (редактирование) ---- -->
         <div id="mymarketProductCardOverlay" class="modal-overlay" hidden>
-          <div class="modal">
+          <div class="modal modal--wide">
             <div class="modal__head">
               <h2>Карточка товара</h2>
               <button class="link-btn" id="mymarketProductCardClose">✕</button>
             </div>
+
+            <div class="seg" id="mymarketCardTabs">
+              <button class="is-active" data-cardtab="info">Информация</button>
+              <button data-cardtab="attrs">Характеристики</button>
+              <button data-cardtab="media">Медиа</button>
+              <button data-cardtab="preview">Превью</button>
+            </div>
+
             <form id="mymarketProductCardForm">
               <input type="hidden" name="id" />
-              <div class="form-grid">
-                <label>SKU<input type="text" name="sku" disabled /></label>
-                <label>Название<input type="text" name="name" /></label>
-                <label>Цена на витрине<input type="number" step="1" name="shopPrice" /></label>
-                <label>Старая цена<input type="number" step="1" name="shopOldPrice" /></label>
-                <label>Остаток<input type="number" step="1" name="shopStock" /></label>
-                <label>Доставка
-                  <select name="shopDelivery">
-                    <option value="">—</option>
-                    <option value="rocket">🚀 rocket</option>
-                    <option value="truck">🚚 truck</option>
-                  </select>
+              <input type="hidden" name="imagesJson" />
+
+              <!-- ---- Информация ---- -->
+              <div class="mm-cardtab" data-cardtab-panel="info">
+                <div class="form-grid">
+                  <label>SKU<input type="text" name="sku" disabled /></label>
+                  <label>Название<input type="text" name="name" /></label>
+                  <label>Цена на витрине<input type="number" step="1" name="shopPrice" /></label>
+                  <label>Старая цена<input type="number" step="1" name="shopOldPrice" /></label>
+                  <label>Остаток<input type="number" step="1" name="shopStock" /></label>
+                  <label>Доставка
+                    <select name="shopDelivery">
+                      <option value="">—</option>
+                      <option value="rocket">🚀 rocket</option>
+                      <option value="truck">🚚 truck</option>
+                    </select>
+                  </label>
+                </div>
+                <label style="display:flex;align-items:center;gap:8px;flex-direction:row">
+                  <input type="checkbox" name="shopActive" style="width:auto" /> В продаже
                 </label>
-                <label>Категория *<input type="text" name="category" required /></label>
-                <label>Подкатегория<input type="text" name="subcategory" /></label>
-                <label>Тип *<input type="text" name="type" required /></label>
               </div>
-              <label>Описание<textarea name="description" rows="3"></textarea></label>
-              <label>Состав<textarea name="composition" rows="2"></textarea></label>
-              <label>URL фото (по одной ссылке на строку)<textarea name="imagesText" rows="3" placeholder="https://...
-https://..."></textarea></label>
-              <label style="display:flex;align-items:center;gap:8px;flex-direction:row">
-                <input type="checkbox" name="shopActive" style="width:auto" /> В продаже
-              </label>
+
+              <!-- ---- Характеристики ---- -->
+              <div class="mm-cardtab" data-cardtab-panel="attrs" hidden>
+                <div class="form-grid">
+                  <label>Категория *<input type="text" name="category" required /></label>
+                  <label>Подкатегория<input type="text" name="subcategory" /></label>
+                  <label>Тип *<input type="text" name="type" required /></label>
+                </div>
+                <label>Описание<textarea name="description" rows="3"></textarea></label>
+                <label>Состав<textarea name="composition" rows="2"></textarea></label>
+              </div>
+
+              <!-- ---- Медиа ---- -->
+              <div class="mm-cardtab" data-cardtab-panel="media" hidden>
+                <p class="panel__hint" style="margin-top:0">Первое фото — главное, показывается на главной приложения. JPEG/PNG/WEBP, до 10 МБ, до 10 фото. Перетащи миниатюру, чтобы изменить порядок.</p>
+                <div id="mmMediaGrid" class="mm-media-grid"></div>
+
+                <div id="mmPhotoDropzone" class="mm-dropzone">
+                  <div>📷 Перетащи фото сюда, или</div>
+                  <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap;justify-content:center">
+                    <button type="button" class="btn btn--ghost" id="mmChoosePhotoBtn">Выбрать с компьютера / телефона</button>
+                    <input type="file" id="mmPhotoFileInput" accept="image/jpeg,image/png,image/webp" multiple hidden />
+                  </div>
+                  <div style="display:flex;gap:6px;margin-top:10px;align-items:center;justify-content:center">
+                    <input type="text" id="mmPhotoUrlInput" placeholder="или вставь URL фото" style="max-width:280px" />
+                    <button type="button" class="btn btn--ghost" id="mmAddPhotoUrlBtn">Добавить</button>
+                  </div>
+                  <div id="mmPhotoUploadStatus" class="panel__hint"></div>
+                </div>
+
+                <div class="panel__head" style="margin-top:18px"><h2 style="font-size:14px">Видео</h2></div>
+                <div id="mmVideoPreview"></div>
+                <div class="mm-dropzone">
+                  <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center">
+                    <button type="button" class="btn btn--ghost" id="mmChooseVideoBtn">Загрузить видео (mp4/webm, до 50 МБ)</button>
+                    <input type="file" id="mmVideoFileInput" accept="video/mp4,video/webm" hidden />
+                  </div>
+                  <div style="display:flex;gap:6px;margin-top:10px;align-items:center;justify-content:center">
+                    <input type="text" id="mmVideoUrlInput" placeholder="или вставь URL видео" style="max-width:280px" />
+                    <button type="button" class="btn btn--ghost" id="mmAddVideoUrlBtn">Добавить</button>
+                  </div>
+                  <div id="mmVideoUploadStatus" class="panel__hint"></div>
+                </div>
+              </div>
+
+              <!-- ---- Превью ---- -->
+              <div class="mm-cardtab" data-cardtab-panel="preview" hidden>
+                <p class="panel__hint" style="margin-top:0">Как товар будет выглядеть в приложении (упрощённо).</p>
+                <div id="mmPreviewCard"></div>
+              </div>
+
               <p class="panel__hint" id="mymarketCardWarning" style="color:var(--warn)"></p>
               <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:10px">
                 <button type="button" class="btn btn--ghost" id="mymarketProductCardCancel">Отмена</button>

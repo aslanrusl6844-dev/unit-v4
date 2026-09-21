@@ -42,6 +42,7 @@ function toShopProduct(p: any) {
     description: p.description,
     composition: p.composition,
     images,
+    video: p.shopVideo ?? null,
     delivery: p.shopDelivery,
     banner: p.banner,
     bannerTitle: p.bannerTitle,

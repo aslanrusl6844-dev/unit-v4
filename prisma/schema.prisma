@@ -147,6 +147,7 @@ model Product {
   composition     String?
   images          String?   // JSON-массив URL строкой, напр. ["https://...","https://..."]
   shopDelivery    String?   // "rocket" | "truck"
+  shopVideo       String?   // URL видео товара (Vercel Blob или внешняя ссылка)
   banner          Boolean   @default(false) // товар участвует в баннерах на главной приложения
   bannerTitle     String?
   bannerSubtitle  String?

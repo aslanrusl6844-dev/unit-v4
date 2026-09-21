@@ -72,6 +72,10 @@ const envSchema = z.object({
   // Ключ авторизации для приложения My Market (канал APP) — приложение
   // передаёт его в заголовке x-app-key на каждый запрос к /api/shop/*.
   SHOP_APP_KEY: z.preprocess(cleanEnvString, z.string().optional().default('')),
+  // Токен Vercel Blob — для загрузки фото/видео товаров My Market. Если не
+  // задан, загрузка файлом честно недоступна (см. src/routes/shopMedia.routes.ts) —
+  // поле "URL фото" продолжает работать как обычная ссылка.
+  BLOB_READ_WRITE_TOKEN: z.preprocess(cleanEnvString, z.string().optional().default('')),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -147,4 +151,5 @@ export const env = {
   repricerCron: safeData.REPRICER_CRON ?? '*/15 * * * *',
   priceFeedSecret: safeData.PRICE_FEED_SECRET ?? '',
   shopAppKey: safeData.SHOP_APP_KEY ?? '',
+  blobToken: safeData.BLOB_READ_WRITE_TOKEN ?? '',
 };

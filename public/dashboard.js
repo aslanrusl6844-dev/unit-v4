@@ -2081,6 +2081,55 @@ function wireMyMarketTabsOnce() {
       closeMyMarketProductCard();
     }
   });
+
+  // Вкладки внутри карточки товара (Информация/Характеристики/Медиа/Превью)
+  document.getElementById('mymarketCardTabs').addEventListener('click', (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    switchMyMarketCardTab(btn.dataset.cardtab);
+  });
+
+  // --- Фото: выбор с компьютера/телефона ---
+  document.getElementById('mmChoosePhotoBtn').addEventListener('click', () => document.getElementById('mmPhotoFileInput').click());
+  document.getElementById('mmPhotoFileInput').addEventListener('change', (e) => {
+    if (e.target.files.length) handleMyMarketPhotoFiles(e.target.files);
+    e.target.value = '';
+  });
+  // --- Фото: перетаскивание в зону ---
+  const photoDropzone = document.getElementById('mmPhotoDropzone');
+  photoDropzone.addEventListener('dragover', (e) => { e.preventDefault(); photoDropzone.classList.add('is-dragover'); });
+  photoDropzone.addEventListener('dragleave', () => photoDropzone.classList.remove('is-dragover'));
+  photoDropzone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    photoDropzone.classList.remove('is-dragover');
+    if (e.dataTransfer.files.length) handleMyMarketPhotoFiles(e.dataTransfer.files);
+  });
+  // --- Фото: вставка URL ---
+  document.getElementById('mmAddPhotoUrlBtn').addEventListener('click', () => {
+    const input = document.getElementById('mmPhotoUrlInput');
+    const url = input.value.trim();
+    if (!url) return;
+    if (myMarketCardImages.length >= 10) { alert('Можно не больше 10 фото'); return; }
+    myMarketCardImages.push(url);
+    renderMyMarketMediaGrid();
+    input.value = '';
+  });
+
+  // --- Видео: выбор файла ---
+  document.getElementById('mmChooseVideoBtn').addEventListener('click', () => document.getElementById('mmVideoFileInput').click());
+  document.getElementById('mmVideoFileInput').addEventListener('change', (e) => {
+    if (e.target.files[0]) handleMyMarketVideoFile(e.target.files[0]);
+    e.target.value = '';
+  });
+  // --- Видео: вставка URL ---
+  document.getElementById('mmAddVideoUrlBtn').addEventListener('click', () => {
+    const input = document.getElementById('mmVideoUrlInput');
+    const url = input.value.trim();
+    if (!url) return;
+    myMarketCardVideo = url;
+    renderMyMarketVideoPreview();
+    input.value = '';
+  });
 }
 
 function switchMyMarketTab(tab) {
@@ -2239,6 +2288,18 @@ function generateMyMarketSku() {
   return `MM-${rand}`;
 }
 
+// Состояние медиа открытой карточки — массив URL фото (порядок важен,
+// первое = главное) и URL видео (или null). Живёт, пока карточка открыта.
+let myMarketCardImages = [];
+let myMarketCardVideo = null;
+let myMarketDragFromIndex = null;
+
+function switchMyMarketCardTab(tab) {
+  document.querySelectorAll('#mymarketCardTabs button').forEach((b) => b.classList.toggle('is-active', b.dataset.cardtab === tab));
+  document.querySelectorAll('.mm-cardtab').forEach((el) => { el.hidden = el.dataset.cardtabPanel !== tab; });
+  if (tab === 'preview') renderMyMarketPreviewCard();
+}
+
 /** Новый товар витрины — пустая карточка, сгенерированный sku вида MM-xxxxxx.
  *  Артикулы Kaspi/Ozon/WB НЕ подставляются вообще — это отдельный товар
  *  только для My Market, не связанный с другими площадками. */
@@ -2250,7 +2311,12 @@ function openMyMarketNewProductCard() {
   form.elements.sku.value = generateMyMarketSku();
   form.elements.shopStock.value = 0;
   form.elements.shopActive.checked = false;
+  myMarketCardImages = [];
+  myMarketCardVideo = null;
+  renderMyMarketMediaGrid();
+  renderMyMarketVideoPreview();
   document.getElementById('mymarketCardWarning').textContent = 'Новый товар витрины — не связан с Kaspi/Ozon/WB.';
+  switchMyMarketCardTab('info');
   document.getElementById('mymarketProductCardOverlay').hidden = false;
 }
 
@@ -2271,19 +2337,166 @@ function openMyMarketProductCard(id) {
   form.elements.type.value = p.type ?? '';
   form.elements.description.value = p.description ?? '';
   form.elements.composition.value = p.composition ?? '';
-  let images = [];
-  try { images = p.images ? JSON.parse(p.images) : []; } catch { images = []; }
-  form.elements.imagesText.value = images.join('\n');
+  try { myMarketCardImages = p.images ? JSON.parse(p.images) : []; } catch { myMarketCardImages = []; }
+  myMarketCardVideo = p.shopVideo ?? null;
+  renderMyMarketMediaGrid();
+  renderMyMarketVideoPreview();
   form.elements.shopActive.checked = !!p.shopActive;
   document.getElementById('mymarketCardWarning').textContent = (!p.category || !p.type)
     ? 'Без category и type нельзя включить «В продаже».'
     : '';
+  switchMyMarketCardTab('info');
   document.getElementById('mymarketProductCardOverlay').hidden = false;
 }
 
 function closeMyMarketProductCard() {
   document.getElementById('mymarketProductCardOverlay').hidden = true;
   myMarketEditingProductId = null;
+  myMarketCardImages = [];
+  myMarketCardVideo = null;
+}
+
+// ---------------------------------------------------------------------
+// Медиа: сетка фото с drag-переупорядочиванием, загрузка файлом/URL
+// ---------------------------------------------------------------------
+function renderMyMarketMediaGrid() {
+  const grid = document.getElementById('mmMediaGrid');
+  if (!myMarketCardImages.length) {
+    grid.innerHTML = `<p style="color:var(--text-faint);font-size:12.5px;grid-column:1/-1">Фото ещё не добавлены</p>`;
+    return;
+  }
+  grid.innerHTML = myMarketCardImages.map((url, i) => `
+    <div class="mm-media-item" draggable="true" data-index="${i}">
+      ${i === 0 ? '<span class="mm-media-item__main-badge">Главное</span>' : ''}
+      <img src="${url}" alt="" />
+      <button type="button" class="mm-media-item__remove" data-index="${i}" title="Удалить">✕</button>
+    </div>
+  `).join('');
+
+  grid.querySelectorAll('.mm-media-item__remove').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      myMarketCardImages.splice(Number(btn.dataset.index), 1);
+      renderMyMarketMediaGrid();
+    });
+  });
+
+  // Перетаскивание миниатюр для смены порядка (первая = главная).
+  grid.querySelectorAll('.mm-media-item').forEach((item) => {
+    item.addEventListener('dragstart', () => {
+      myMarketDragFromIndex = Number(item.dataset.index);
+      item.classList.add('is-dragging');
+    });
+    item.addEventListener('dragend', () => item.classList.remove('is-dragging'));
+    item.addEventListener('dragover', (e) => { e.preventDefault(); item.classList.add('is-dragover'); });
+    item.addEventListener('dragleave', () => item.classList.remove('is-dragover'));
+    item.addEventListener('drop', (e) => {
+      e.preventDefault();
+      item.classList.remove('is-dragover');
+      const toIndex = Number(item.dataset.index);
+      if (myMarketDragFromIndex === null || myMarketDragFromIndex === toIndex) return;
+      const [moved] = myMarketCardImages.splice(myMarketDragFromIndex, 1);
+      myMarketCardImages.splice(toIndex, 0, moved);
+      myMarketDragFromIndex = null;
+      renderMyMarketMediaGrid();
+    });
+  });
+}
+
+function renderMyMarketVideoPreview() {
+  const el = document.getElementById('mmVideoPreview');
+  el.innerHTML = myMarketCardVideo
+    ? `<video src="${myMarketCardVideo}" controls></video><br><button type="button" class="btn btn--ghost" id="mmRemoveVideoBtn" style="font-size:12px">Убрать видео</button>`
+    : '';
+  const removeBtn = document.getElementById('mmRemoveVideoBtn');
+  if (removeBtn) removeBtn.addEventListener('click', () => { myMarketCardVideo = null; renderMyMarketVideoPreview(); });
+}
+
+function readFileAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(',')[1]); // без префикса data:...;base64,
+    reader.onerror = () => reject(new Error('Не удалось прочитать файл'));
+    reader.readAsDataURL(file);
+  });
+}
+
+const MM_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+const MM_VIDEO_TYPES = ['video/mp4', 'video/webm'];
+const MM_IMAGE_MAX_MB = 10;
+const MM_VIDEO_MAX_MB = 50;
+
+async function uploadMyMarketFile(file, kind) {
+  const allowed = kind === 'image' ? MM_IMAGE_TYPES : MM_VIDEO_TYPES;
+  const maxMb = kind === 'image' ? MM_IMAGE_MAX_MB : MM_VIDEO_MAX_MB;
+  if (!allowed.includes(file.type)) {
+    throw new Error(`Формат ${file.type || '(неизвестен)'} не поддерживается — нужен ${kind === 'image' ? 'JPEG/PNG/WEBP' : 'mp4/webm'}`);
+  }
+  if (file.size > maxMb * 1024 * 1024) {
+    throw new Error(`Файл слишком большой: ${(file.size / 1024 / 1024).toFixed(1)} МБ, максимум ${maxMb} МБ`);
+  }
+  const dataBase64 = await readFileAsBase64(file);
+  const res = await api('/shop/admin/upload', {
+    method: 'POST',
+    body: JSON.stringify({ kind, filename: file.name, contentType: file.type, dataBase64 }),
+  });
+  return res.url;
+}
+
+async function handleMyMarketPhotoFiles(files) {
+  const statusEl = document.getElementById('mmPhotoUploadStatus');
+  const list = Array.from(files);
+  if (myMarketCardImages.length + list.length > 10) {
+    statusEl.textContent = `Можно не больше 10 фото (сейчас ${myMarketCardImages.length}, пытаешься добавить ещё ${list.length}).`;
+    statusEl.style.color = 'var(--loss)';
+    return;
+  }
+  for (const file of list) {
+    statusEl.textContent = `Загружаю ${file.name}…`;
+    statusEl.style.color = 'var(--text-faint)';
+    try {
+      const url = await uploadMyMarketFile(file, 'image');
+      myMarketCardImages.push(url);
+      renderMyMarketMediaGrid();
+      statusEl.textContent = '';
+    } catch (err) {
+      statusEl.textContent = err.message;
+      statusEl.style.color = err.message === 'добавьте Blob' || /Blob/.test(err.message) ? 'var(--warn)' : 'var(--loss)';
+    }
+  }
+}
+
+async function handleMyMarketVideoFile(file) {
+  const statusEl = document.getElementById('mmVideoUploadStatus');
+  statusEl.textContent = `Загружаю ${file.name}…`;
+  statusEl.style.color = 'var(--text-faint)';
+  try {
+    const url = await uploadMyMarketFile(file, 'video');
+    myMarketCardVideo = url;
+    renderMyMarketVideoPreview();
+    statusEl.textContent = '';
+  } catch (err) {
+    statusEl.textContent = err.message;
+    statusEl.style.color = 'var(--loss)';
+  }
+}
+
+function renderMyMarketPreviewCard() {
+  const form = document.getElementById('mymarketProductCardForm');
+  const name = form.elements.name.value.trim() || '(без названия)';
+  const price = form.elements.shopPrice.value;
+  const oldPrice = form.elements.shopOldPrice.value;
+  const img = myMarketCardImages[0];
+  document.getElementById('mmPreviewCard').innerHTML = `
+    ${img ? `<img src="${img}" alt="" />` : `<div style="aspect-ratio:1/1;background:var(--bg);display:flex;align-items:center;justify-content:center;color:var(--text-faint);font-size:12px">нет фото</div>`}
+    <div class="mm-preview-body">
+      <div class="mm-preview-name">${name}</div>
+      <div>
+        <span class="mm-preview-price">${price ? fmtMoney(Number(price)) : '—'}</span>
+        ${oldPrice ? `<span class="mm-preview-oldprice">${fmtMoney(Number(oldPrice))}</span>` : ''}
+      </div>
+    </div>
+  `;
 }
 
 async function saveMyMarketProductCard(e) {
@@ -2297,10 +2510,10 @@ async function saveMyMarketProductCard(e) {
 
   if (shopActive && (!category || !type)) {
     document.getElementById('mymarketCardWarning').textContent = 'Нельзя включить «В продаже» без category и type — заполни оба поля.';
+    switchMyMarketCardTab('attrs');
     return;
   }
 
-  const imagesArr = form.elements.imagesText.value.split('\n').map((s) => s.trim()).filter(Boolean);
   const payload = {
     name: form.elements.name.value.trim(),
     shopPrice: form.elements.shopPrice.value === '' ? null : Number(form.elements.shopPrice.value),
@@ -2312,7 +2525,8 @@ async function saveMyMarketProductCard(e) {
     type,
     description: form.elements.description.value.trim() || null,
     composition: form.elements.composition.value.trim() || null,
-    images: imagesArr.length ? JSON.stringify(imagesArr) : null,
+    images: myMarketCardImages.length ? JSON.stringify(myMarketCardImages) : null,
+    shopVideo: myMarketCardVideo || null,
     shopActive,
   };
 
@@ -2331,6 +2545,7 @@ async function saveMyMarketProductCard(e) {
     document.getElementById('mymarketCardWarning').textContent = 'Не удалось сохранить: ' + err.message;
   }
 }
+
 
 // ---------------------------------------------------------------------
 // Цены и акции — только товары «В продаже» + баннеры (4 слота)

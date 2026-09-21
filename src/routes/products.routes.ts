@@ -62,6 +62,7 @@ const productSchema = z.object({
   composition: z.string().optional().nullable(),
   images: z.string().optional().nullable(), // JSON-массив URL строкой
   shopDelivery: z.string().optional().nullable(),
+  shopVideo: z.string().optional().nullable(),
   banner: z.boolean().optional(),
   bannerTitle: z.string().optional().nullable(),
   bannerSubtitle: z.string().optional().nullable(),
