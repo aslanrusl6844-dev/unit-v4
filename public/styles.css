@@ -259,6 +259,15 @@ body {
   position: fixed; inset: 0; background: rgba(0,0,0,0.5);
   display: flex; align-items: center; justify-content: center; z-index: 2000; padding: 20px;
 }
+/* ВАЖНО: без этого правила окно не закрывалось и блокировало клики по
+   всей странице. Атрибут [hidden] в стандартной таблице стилей браузера
+   задаёт display:none с той же специфичностью (0,1,0), что и класс
+   .modal-overlay выше — а класс объявлен ПОЗЖЕ в каскаде, поэтому побеждал
+   и держал display:flex даже когда hidden был выставлен. Явное правило
+   ниже гарантированно перекрывает это. */
+.modal-overlay[hidden] {
+  display: none !important;
+}
 .modal {
   background: var(--surface); border-radius: 12px; padding: 20px 24px; width: 100%; max-width: 640px;
   max-height: 90vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.3);

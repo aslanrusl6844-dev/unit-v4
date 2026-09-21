@@ -2073,6 +2073,13 @@ function wireMyMarketTabsOnce() {
     if (e.target.id === 'mymarketProductCardOverlay') closeMyMarketProductCard();
   });
   document.getElementById('mymarketProductCardForm').addEventListener('submit', saveMyMarketProductCard);
+  // Esc — тоже закрывает карточку (не было подключено, только крестик/
+  // отмена/клик по фону). Реагируем только когда карточка реально открыта.
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !document.getElementById('mymarketProductCardOverlay').hidden) {
+      closeMyMarketProductCard();
+    }
+  });
 }
 
 function switchMyMarketTab(tab) {
