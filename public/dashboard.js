@@ -2065,7 +2065,22 @@ function wireMyMarketTabsOnce() {
   document.getElementById('mymarketGoUploadBtn').addEventListener('click', () => switchMyMarketTab('upload'));
   document.getElementById('mymarketNewProductBtn').addEventListener('click', openMyMarketNewProductCard);
 
-  document.getElementById('mymarketUploadBtn').addEventListener('click', handleMyMarketUpload);
+  // --- Загрузка Excel: выбор файла (кнопка / перетаскивание) ---
+  document.getElementById('mmChooseUploadFileBtn').addEventListener('click', () => document.getElementById('mymarketUploadFile').click());
+  document.getElementById('mymarketUploadFile').addEventListener('change', (e) => {
+    if (e.target.files[0]) handleMyMarketFileSelected(e.target.files[0]);
+  });
+  const uploadDropzone = document.getElementById('mmUploadDropzone');
+  uploadDropzone.addEventListener('dragover', (e) => { e.preventDefault(); uploadDropzone.classList.add('is-dragover'); });
+  uploadDropzone.addEventListener('dragleave', () => uploadDropzone.classList.remove('is-dragover'));
+  uploadDropzone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    uploadDropzone.classList.remove('is-dragover');
+    if (e.dataTransfer.files[0]) handleMyMarketFileSelected(e.dataTransfer.files[0]);
+  });
+  // --- Экран проверки: отмена / подтверждение записи в базу ---
+  document.getElementById('mmPreviewCancelBtn').addEventListener('click', resetMmUploadScreen);
+  document.getElementById('mmPreviewConfirmBtn').addEventListener('click', confirmMmUpload);
 
   // Карточка товара — модальное окно
   document.getElementById('mymarketProductCardClose').addEventListener('click', closeMyMarketProductCard);
@@ -2786,86 +2801,298 @@ async function loadMyMarketFinance() {
 // Загрузка Excel — только My Market, жёсткие английские названия колонок
 // ---------------------------------------------------------------------
 function downloadMyMarketTemplate() {
-  const headers = ['sku', 'name', 'category', 'subcategory', 'type', 'shopPrice', 'shopOldPrice', 'shopStock', 'description', 'composition', 'images', 'shopDelivery', 'shopActive'];
-  const exampleRow = ['SKU-001', 'Пример товара', 'Красота', 'Уход за лицом', 'Крем', 4990, 6990, 25, 'Описание товара', 'Состав товара', 'https://example.com/photo1.jpg', 'rocket', 'true'];
-  const ws = XLSX.utils.aoa_to_sheet([headers, exampleRow]);
+  const headers = [
+    'Артикул *', 'Название *', 'Категория *', 'Подкатегория', 'Тип *', 'Бренд',
+    'Цена на витрине *', 'Цена до скидки', 'Остаток *', 'Доставка', 'В продаже',
+    'Ссылки на фото', 'Описание', 'Состав',
+  ];
+  const exampleRows = [
+    ['SKU-001', 'Шампунь укрепляющий', 'Красота', 'Уход за волосами', 'Шампунь', 'BrandX', 4990, 6990, 25, 'ракета', 'да', 'https://example.com/1.jpg|https://example.com/2.jpg', 'Описание товара', 'Состав товара'],
+    ['SKU-002', 'Блендер погружной', 'Бытовая техника', '', 'Блендер', 'BrandY', 15990, '', 8, 'грузовик', 'да', 'https://example.com/3.jpg', '', ''],
+  ];
+  const ws = XLSX.utils.aoa_to_sheet([headers, ...exampleRows]);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'My Market');
   XLSX.writeFile(wb, 'my-market-template.xlsx');
 }
 
-async function handleMyMarketUpload() {
-  const fileInput = document.getElementById('mymarketUploadFile');
-  const file = fileInput.files[0];
-  const progressEl = document.getElementById('mymarketUploadProgress');
-  const btn = document.getElementById('mymarketUploadBtn');
-  if (!file) { alert('Сначала выбери файл'); return; }
+/**
+ * Псевдонимы колонок — русские (основные, из шаблона) + старые английские
+ * (для обратной совместимости, как просили). Звёздочку "*" в заголовке
+ * (маркер "обязательно" в шаблоне) при сопоставлении отбрасываем.
+ */
+const MM_UPLOAD_COLUMN_ALIASES = {
+  sku: ['sku', 'артикул'],
+  name: ['name', 'название'],
+  category: ['category', 'категория'],
+  subcategory: ['subcategory', 'подкатегория'],
+  type: ['type', 'тип'],
+  shopPrice: ['shopprice', 'цена на витрине'],
+  shopOldPrice: ['shopoldprice', 'цена до скидки'],
+  shopStock: ['shopstock', 'остаток'],
+  shopDelivery: ['shopdelivery', 'доставка'],
+  shopActive: ['shopactive', 'в продаже'],
+  images: ['images', 'ссылки на фото'],
+  description: ['description', 'описание'],
+  composition: ['composition', 'состав'],
+};
 
-  progressEl.innerHTML = `<p style="color:var(--text-faint);font-size:12.5px">Читаю файл…</p>`;
-  btn.disabled = true;
+function mmNormalizeHeaderCell(cell) {
+  return String(cell ?? '').replace(/\*/g, '').trim().toLowerCase();
+}
 
-  try {
-    const rows = await new Promise((resolve, reject) => {
-      const isExcel = /\.xlsx?$/i.test(file.name);
-      const toBool = (v) => v === true || String(v).trim().toLowerCase() === 'true' || String(v).trim() === '1';
-      const toNum = (v) => (v === '' || v == null ? null : Number(String(v).replace(',', '.')));
-      const normalizeRow = (row) => {
-        const norm = {};
-        Object.keys(row).forEach((k) => { norm[k.trim()] = row[k]; });
-        if (!norm.sku || !norm.name) return null;
-        return {
-          sku: String(norm.sku).trim(),
-          name: String(norm.name).trim(),
-          category: norm.category ? String(norm.category).trim() : '',
-          subcategory: norm.subcategory ? String(norm.subcategory).trim() : null,
-          type: norm.type ? String(norm.type).trim() : '',
-          shopPrice: toNum(norm.shopPrice),
-          shopOldPrice: toNum(norm.shopOldPrice),
-          shopStock: toNum(norm.shopStock) ?? 0,
-          description: norm.description ? String(norm.description).trim() : null,
-          composition: norm.composition ? String(norm.composition).trim() : null,
-          images: norm.images ? String(norm.images).trim() : null,
-          shopDelivery: norm.shopDelivery ? String(norm.shopDelivery).trim() : null,
-          shopActive: norm.shopActive === undefined || norm.shopActive === '' ? true : toBool(norm.shopActive),
-        };
-      };
-      if (isExcel) {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          try {
-            const wb = XLSX.read(e.target.result, { type: 'array' });
-            const json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
-            resolve(json.map(normalizeRow).filter(Boolean));
-          } catch (err) { reject(err); }
-        };
-        reader.onerror = () => reject(new Error('Не удалось прочитать файл'));
-        reader.readAsArrayBuffer(file);
-      } else {
-        Papa.parse(file, {
-          header: true,
-          skipEmptyLines: true,
-          complete: (res) => resolve(res.data.map(normalizeRow).filter(Boolean)),
-          error: (err) => reject(err),
-        });
-      }
+function mmParseDelivery(raw) {
+  const v = String(raw ?? '').trim().toLowerCase();
+  if (v === 'ракета' || v === 'rocket') return 'rocket';
+  if (v === 'грузовик' || v === 'truck') return 'truck';
+  return null;
+}
+
+function mmParseActive(raw) {
+  const v = String(raw ?? '').trim().toLowerCase();
+  if (v === '') return true; // по умолчанию — включено, если колонку вообще не заполнили
+  return v === 'да' || v === 'true' || v === '1';
+}
+
+function mmParseImages(raw) {
+  const v = String(raw ?? '').trim();
+  if (!v) return null;
+  // Уже готовый JSON-массив (старые файлы/API) — оставляем как есть.
+  if (v.startsWith('[')) {
+    try { JSON.parse(v); return v; } catch { /* не похоже на валидный JSON — разбираем как список ниже */ }
+  }
+  const urls = v.split('|').map((s) => s.trim()).filter(Boolean);
+  return urls.length ? JSON.stringify(urls) : null;
+}
+
+function mmParseNum(raw) {
+  const v = String(raw ?? '').trim();
+  if (v === '') return null;
+  const n = Number(v.replace(',', '.'));
+  return Number.isNaN(n) ? null : n;
+}
+
+/** Разбирает лист (массив объектов от XLSX/Papa с сырыми заголовками) в
+ *  { accepted, rejected } — БЕЗ обращения к серверу, ничего не пишет в базу.
+ *  accepted — готовые к отправке объекты, rejected — { sku, name, reason }. */
+function mmClassifyRows(rawRows) {
+  // Строим карту "нормализованный заголовок -> внутреннее имя поля" один раз.
+  const headerToField = {};
+  for (const [field, aliases] of Object.entries(MM_UPLOAD_COLUMN_ALIASES)) {
+    aliases.forEach((a) => { headerToField[a] = field; });
+  }
+
+  const accepted = [];
+  const rejected = [];
+
+  rawRows.forEach((row, idx) => {
+    const norm = {};
+    Object.keys(row).forEach((k) => {
+      const field = headerToField[mmNormalizeHeaderCell(k)];
+      if (field) norm[field] = row[k];
     });
 
-    if (!rows.length) {
-      progressEl.innerHTML = `<p style="color:var(--loss);font-size:12.5px">Не нашёл ни одной строки с обязательными колонками sku и name.</p>`;
+    const sku = norm.sku != null ? String(norm.sku).trim() : '';
+    const name = norm.name != null ? String(norm.name).trim() : '';
+    const category = norm.category != null ? String(norm.category).trim() : '';
+    const type = norm.type != null ? String(norm.type).trim() : '';
+    const shopPrice = mmParseNum(norm.shopPrice);
+    const shopStock = mmParseNum(norm.shopStock);
+
+    // Полностью пустая строка (например, хвост файла) — тихо пропускаем,
+    // это не "отклонённый товар", а просто пустое место в таблице.
+    const isBlankRow = !sku && !name && !category && !type && norm.shopPrice == null && norm.shopStock == null;
+    if (isBlankRow) return;
+
+    const missing = [];
+    if (!sku) missing.push('нет артикула');
+    if (!name) missing.push('нет названия');
+    if (!category) missing.push('нет категории');
+    if (!type) missing.push('нет типа');
+    if (shopPrice == null) missing.push('нет цены на витрине');
+    if (shopStock == null) missing.push('нет остатка');
+
+    if (missing.length) {
+      rejected.push({ sku: sku || `строка ${idx + 2}`, name: name || '—', reason: missing.join(', ') });
       return;
     }
 
-    const res = await api('/shop-admin/bulk-upsert', { method: 'POST', body: JSON.stringify({ products: rows }) });
-    progressEl.innerHTML = `
-      <p style="color:var(--accent);font-size:12.5px">
-        Готово: создано ${res.created}, обновлено ${res.updated} из ${rows.length}.
-        ${res.errors.length ? `<br>Отклонено (нет category/type или другая ошибка): ${res.errors.length}<br>${res.errors.slice(0, 10).map((e) => `— ${e}`).join('<br>')}` : ''}
-      </p>`;
-    fileInput.value = '';
+    accepted.push({
+      sku,
+      name,
+      category,
+      subcategory: norm.subcategory ? String(norm.subcategory).trim() : null,
+      type,
+      shopPrice,
+      shopOldPrice: mmParseNum(norm.shopOldPrice),
+      shopStock,
+      shopDelivery: mmParseDelivery(norm.shopDelivery),
+      shopActive: mmParseActive(norm.shopActive),
+      images: mmParseImages(norm.images),
+      description: norm.description ? String(norm.description).trim() : null,
+      composition: norm.composition ? String(norm.composition).trim() : null,
+    });
+  });
+
+  return { accepted, rejected };
+}
+
+function mmReadSpreadsheet(file) {
+  return new Promise((resolve, reject) => {
+    const isExcel = /\.xlsx?$/i.test(file.name);
+    if (isExcel) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const wb = XLSX.read(e.target.result, { type: 'array' });
+          const json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' });
+          resolve(json);
+        } catch (err) { reject(err); }
+      };
+      reader.onerror = () => reject(new Error('Не удалось прочитать файл'));
+      reader.readAsArrayBuffer(file);
+    } else {
+      Papa.parse(file, {
+        header: true,
+        skipEmptyLines: true,
+        complete: (res) => resolve(res.data),
+        error: (err) => reject(err),
+      });
+    }
+  });
+}
+
+let mmUploadAccepted = [];
+let mmUploadRejected = [];
+
+async function handleMyMarketFileSelected(file) {
+  const progressEl = document.getElementById('mymarketUploadProgress');
+  if (!file) return;
+
+  if (!/\.xlsx?$/i.test(file.name)) {
+    progressEl.innerHTML = `<p style="color:var(--loss);font-size:12.5px">Нужен файл .xlsx или .xls.</p>`;
+    return;
+  }
+  if (file.size > 10 * 1024 * 1024) {
+    progressEl.innerHTML = `<p style="color:var(--loss);font-size:12.5px">Файл слишком большой: ${(file.size / 1024 / 1024).toFixed(1)} МБ, максимум 10 МБ.</p>`;
+    return;
+  }
+
+  progressEl.innerHTML = `<p style="color:var(--text-faint);font-size:12.5px">Читаю файл…</p>`;
+  try {
+    const rawRows = await mmReadSpreadsheet(file);
+    const { accepted, rejected } = mmClassifyRows(rawRows);
+    if (!accepted.length && !rejected.length) {
+      progressEl.innerHTML = `<p style="color:var(--loss);font-size:12.5px">В файле не нашлось ни одной строки — проверь, что заголовки на первой строке совпадают с шаблоном.</p>`;
+      return;
+    }
+    progressEl.innerHTML = '';
+    mmUploadAccepted = accepted;
+    mmUploadRejected = rejected;
+    renderMmUploadPreview();
   } catch (err) {
-    progressEl.innerHTML = `<p style="color:var(--loss);font-size:12.5px">Ошибка: ${err.message}</p>`;
+    progressEl.innerHTML = `<p style="color:var(--loss);font-size:12.5px">Ошибка чтения файла: ${err.message}</p>`;
+  }
+}
+
+/** Группирует принятые строки по Категория → Тип, с раскрывающимся
+ *  списком товаров внутри каждой группы (артикул/название/цена). */
+function renderMmUploadPreview() {
+  document.getElementById('mmUploadSteps').hidden = true;
+  document.getElementById('mmUploadReport').innerHTML = '';
+  const previewEl = document.getElementById('mmUploadPreview');
+  previewEl.hidden = false;
+
+  document.getElementById('mmPreviewSummary').innerHTML = `
+    <span>Всего строк: <strong>${mmUploadAccepted.length + mmUploadRejected.length}</strong></span>
+    <span style="color:var(--accent)">Приняты: <strong>${mmUploadAccepted.length}</strong></span>
+    <span style="color:${mmUploadRejected.length ? 'var(--loss)' : 'var(--text-faint)'}">Не приняты: <strong>${mmUploadRejected.length}</strong></span>
+  `;
+
+  // Группировка Категория -> Тип -> список товаров.
+  const groups = new Map();
+  mmUploadAccepted.forEach((row) => {
+    const catKey = row.category;
+    if (!groups.has(catKey)) groups.set(catKey, new Map());
+    const typeMap = groups.get(catKey);
+    if (!typeMap.has(row.type)) typeMap.set(row.type, []);
+    typeMap.get(row.type).push(row);
+  });
+
+  const groupsEl = document.getElementById('mmPreviewGroups');
+  if (!groups.size) {
+    groupsEl.innerHTML = `<p style="color:var(--text-faint);font-size:12.5px">Нет принятых строк.</p>`;
+  } else {
+    groupsEl.innerHTML = Array.from(groups.entries()).map(([category, typeMap]) => `
+      <div style="margin-bottom:10px">
+        <div style="font-weight:600;font-size:13.5px;margin-bottom:4px">${category}</div>
+        ${Array.from(typeMap.entries()).map(([type, rows]) => `
+          <details style="margin:0 0 6px 14px">
+            <summary style="cursor:pointer;font-size:12.5px;color:var(--text-muted)">${type} — ${rows.length} шт.</summary>
+            <table class="table" style="margin-top:6px">
+              <thead><tr><th>Артикул</th><th>Название</th><th class="num">Цена</th></tr></thead>
+              <tbody>
+                ${rows.map((r) => `<tr><td class="name-cell">${r.sku}</td><td class="name-cell">${r.name}</td><td class="num">${fmtMoney(r.shopPrice)}</td></tr>`).join('')}
+              </tbody>
+            </table>
+          </details>
+        `).join('')}
+      </div>
+    `).join('');
+  }
+
+  const rejectedPanel = document.getElementById('mmPreviewRejectedPanel');
+  if (mmUploadRejected.length) {
+    rejectedPanel.hidden = false;
+    document.getElementById('mmPreviewRejectedBody').innerHTML = mmUploadRejected.map((r) => `
+      <tr><td class="name-cell">${r.sku}</td><td class="name-cell">${r.name}</td><td style="color:var(--loss);font-size:12px">${r.reason}</td></tr>
+    `).join('');
+  } else {
+    rejectedPanel.hidden = true;
+  }
+}
+
+function resetMmUploadScreen() {
+  document.getElementById('mmUploadSteps').hidden = false;
+  document.getElementById('mmUploadPreview').hidden = true;
+  document.getElementById('mymarketUploadFile').value = '';
+  document.getElementById('mymarketUploadProgress').innerHTML = '';
+  mmUploadAccepted = [];
+  mmUploadRejected = [];
+}
+
+/** Единственное место, которое реально пишет в базу — по нажатию
+ *  «Загрузить принятые». До этого момента ничего не отправлялось на сервер. */
+async function confirmMmUpload() {
+  const btn = document.getElementById('mmPreviewConfirmBtn');
+  if (!mmUploadAccepted.length) { alert('Нет принятых строк для загрузки'); return; }
+  btn.disabled = true;
+  btn.textContent = 'Загружаю…';
+  try {
+    const res = await api('/shop-admin/bulk-upsert', { method: 'POST', body: JSON.stringify({ products: mmUploadAccepted }) });
+    document.getElementById('mmUploadPreview').hidden = true;
+    document.getElementById('mmUploadReport').innerHTML = `
+      <div class="panel">
+        <p style="color:var(--accent);font-size:13.5px">
+          Готово: принято <strong>${res.created + res.updated}</strong>
+          (создано ${res.created}, обновлено ${res.updated}), отклонено <strong>${mmUploadRejected.length}</strong>.
+          ${res.errors.length ? `<br><span style="color:var(--loss)">Ошибок при записи: ${res.errors.length}<br>${res.errors.slice(0, 10).map((e) => `— ${e}`).join('<br>')}</span>` : ''}
+        </p>
+        <button class="btn btn--ghost" id="mmUploadAnotherBtn">Загрузить ещё файл</button>
+      </div>
+    `;
+    document.getElementById('mmUploadAnotherBtn').addEventListener('click', () => {
+      resetMmUploadScreen();
+      document.getElementById('mmUploadReport').innerHTML = '';
+    });
+    mmUploadAccepted = [];
+    mmUploadRejected = [];
+    await loadMyMarketProducts();
+  } catch (err) {
+    alert('Не удалось загрузить: ' + err.message);
   } finally {
     btn.disabled = false;
+    btn.textContent = 'Загрузить принятые';
   }
 }
 

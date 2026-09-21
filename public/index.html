@@ -652,27 +652,80 @@
 
         <!-- ---- Загрузка Excel ---- -->
         <div id="mymarketUploadTab" hidden>
-          <div class="panel">
-            <div class="panel__head"><h2>Массовая загрузка витрины (Excel/CSV)</h2></div>
-            <p class="panel__hint">
-              Отдельная загрузка только для My Market (не влияет на Kaspi/Ozon/WB). Обязательные колонки:
-              <code>sku</code>, <code>name</code>, <code>category</code>, <code>type</code> — строка без
-              <code>category</code> или <code>type</code> не загрузится (отклоняется, не «чинится» ничем по умолчанию).
-              Остальные колонки: <code>subcategory</code>, <code>shopPrice</code>, <code>shopOldPrice</code>,
-              <code>shopStock</code>, <code>description</code>, <code>composition</code>, <code>images</code>
-              (JSON-массив URL строкой), <code>shopDelivery</code> (<code>rocket</code> или <code>truck</code>),
-              <code>shopActive</code> (true/false, по умолчанию — включено).
-              Товар с уже существующим SKU — обновится, новый — создастся.
-            </p>
-            <div class="inline-form">
-              <button class="btn btn--ghost" id="mymarketDownloadTemplateBtn2">⬇ Скачать шаблон</button>
-              <input type="file" id="mymarketUploadFile" accept=".csv,.xlsx,.xls" />
-              <button class="btn btn--accent" id="mymarketUploadBtn">Загрузить</button>
+          <!-- ---- Шаги 1-3: справочник, шаблон, файл ---- -->
+          <div id="mmUploadSteps">
+            <div class="panel">
+              <div class="panel__head"><h2>Шаг 1. Справочник категорий (подсказка)</h2></div>
+              <p class="panel__hint">
+                Это подсказка, не фильтр — файл принимает любые категории и типы, в том числе смешанные
+                в одной таблице (шампунь, блендер, телевизор, автозапчасти — всё в одном файле). Сервер
+                <strong>не угадывает</strong> категорию по названию — товар несёт свою категорию и тип сам,
+                в своих колонках.
+              </p>
+              <div class="table-wrap">
+                <table class="table">
+                  <thead><tr><th>Категория</th><th>Примеры типов</th></tr></thead>
+                  <tbody>
+                    <tr><td class="name-cell">Электроника</td><td>Телевизор, Наушники, Смартфон</td></tr>
+                    <tr><td class="name-cell">Бытовая техника</td><td>Блендер, Холодильник, Парогенератор</td></tr>
+                    <tr><td class="name-cell">Красота</td><td>Пилинг, Крем, Шампунь, Умывалка</td></tr>
+                    <tr><td class="name-cell">Дом и кухня</td><td>Посуда, Мелочи кухонные</td></tr>
+                    <tr><td class="name-cell">Авто</td><td>Автозапчасти</td></tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
-            <div id="mymarketUploadProgress"></div>
+
+            <div class="panel">
+              <div class="panel__head"><h2>Шаг 2. Шаблон</h2></div>
+              <p class="panel__hint">
+                Колонки со звёздочкой (*) обязательны. Доставка: <code>ракета</code> или <code>грузовик</code>.
+                В продаже: <code>да</code> или <code>нет</code>. Ссылки на фото — несколько через <code>|</code>.
+                Старые английские названия колонок (<code>sku</code>, <code>name</code>, <code>category</code> и т.д.) тоже принимаются.
+              </p>
+              <button class="btn btn--accent" id="mymarketDownloadTemplateBtn2">⬇ Скачать шаблон</button>
+            </div>
+
+            <div class="panel">
+              <div class="panel__head"><h2>Шаг 3. Файл</h2></div>
+              <div id="mmUploadDropzone" class="mm-dropzone">
+                <div>📄 Перетащи .xlsx / .xls сюда, или</div>
+                <div style="display:flex;gap:8px;margin-top:6px;justify-content:center">
+                  <button type="button" class="btn btn--ghost" id="mmChooseUploadFileBtn">Выберите файл</button>
+                  <input type="file" id="mymarketUploadFile" accept=".xlsx,.xls" hidden />
+                </div>
+                <div style="font-size:11px;color:var(--text-faint);margin-top:6px">До 10 МБ</div>
+              </div>
+              <div id="mymarketUploadProgress"></div>
+            </div>
           </div>
+
+          <!-- ---- Экран проверки (до записи в базу) ---- -->
+          <div id="mmUploadPreview" hidden>
+            <div class="panel">
+              <div class="panel__head"><h2>Проверка перед загрузкой</h2></div>
+              <div id="mmPreviewSummary" style="display:flex;gap:20px;flex-wrap:wrap;margin-bottom:14px;font-size:13px"></div>
+              <div id="mmPreviewGroups"></div>
+            </div>
+            <div class="panel" id="mmPreviewRejectedPanel" hidden>
+              <div class="panel__head"><h2 style="color:var(--loss)">Не приняты</h2></div>
+              <div class="table-wrap">
+                <table class="table">
+                  <thead><tr><th>Артикул</th><th>Название</th><th>Причина</th></tr></thead>
+                  <tbody id="mmPreviewRejectedBody"></tbody>
+                </table>
+              </div>
+            </div>
+            <div style="display:flex;gap:10px;justify-content:flex-end;margin:14px 0">
+              <button class="btn btn--ghost" id="mmPreviewCancelBtn">Отмена</button>
+              <button class="btn btn--accent" id="mmPreviewConfirmBtn">Загрузить принятые</button>
+            </div>
+          </div>
+
+          <div id="mmUploadReport"></div>
         </div>
       </section>
+
 
       <!-- ============ НИШИ ============ -->
       <section class="page" id="page-niches" hidden>
