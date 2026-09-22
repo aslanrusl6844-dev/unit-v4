@@ -130,8 +130,12 @@ shopAdminRouter.get('/reviews-count', async (req, res) => {
 shopAdminRouter.get('/orders', async (req, res) => {
   try {
     const status = req.query.status as string | undefined;
+    // "Все" (status не передан) — это ВСЕ, КРОМЕ отменённых. Отменённые
+    // заказы видны только на отдельной вкладке "Отменён" (status=cancelled
+    // явно), чтобы не путались с активными на вкладке "Все".
+    const where = status ? { status } : { status: { not: 'cancelled' } };
     const orders = await prisma.shopOrder.findMany({
-      where: status ? { status } : undefined,
+      where,
       orderBy: { createdAt: 'desc' },
       take: 500,
     });

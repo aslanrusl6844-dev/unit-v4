@@ -2743,6 +2743,12 @@ async function loadMyMarketOrders() {
   }
   tbody.innerHTML = orders.map((o) => {
     const address = [o.city, o.street, o.house, o.apartment ? `кв. ${o.apartment}` : ''].filter(Boolean).join(', ');
+    const isCancelled = o.status === 'cancelled';
+    // Отменённый заказ — накладная не нужна: кнопка серая, неактивная,
+    // без обработчика клика (не просто визуально приглушена).
+    const waybillCell = isCancelled
+      ? `<button class="link-btn" disabled style="color:var(--text-faint);cursor:not-allowed" title="Заказ отменён">🖨 Накладная</button>`
+      : `<button class="link-btn" data-action="print" data-id="${o.id}">🖨 Накладная</button>`;
     return `
     <tr>
       <td class="name-cell">${o.number}</td>
@@ -2753,7 +2759,7 @@ async function loadMyMarketOrders() {
       <td class="num">${fmtMoney(o.total)}</td>
       <td>${MY_MARKET_STATUS_LABELS[o.status] ?? o.status}</td>
       <td>${o.pickupCode}</td>
-      <td><button class="link-btn" data-action="print" data-id="${o.id}">🖨 Накладная</button></td>
+      <td>${waybillCell}</td>
     </tr>
   `;
   }).join('');
