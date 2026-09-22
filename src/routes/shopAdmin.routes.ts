@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../db/prisma';
 import { logger } from '../utils/logger';
+import { markShopOrderAsPaid } from './shop.routes';
 
 export const shopAdminRouter = Router();
 
@@ -177,6 +178,51 @@ shopAdminRouter.post('/orders/:id/status', async (req, res) => {
 
 /** Отметить выплату курьеру как выполненную — кнопка «Выплачено» в
  *  «Заказы APP» у доставленных заказов. */
+/**
+ * Кнопка «Отметить оплаченным» в «Заказы APP» — пока нет реальной
+ * интеграции с эквайрингом, это единственный способ перевести заказ в
+ * paid и протестировать весь дальнейший путь (курьер, выплата и т.д.).
+ * Разрешено ТОЛЬКО из pending_payment — из paid/assembled/delivered/
+ * cancelled явно отклоняем (409), не переводим повторно и не "чиним"
+ * чужой статус этой кнопкой.
+ *
+ * Списание остатка и создание Order/OrderItem для юнит-экономики —
+ * ТОЧНО ТА ЖЕ функция markShopOrderAsPaid, что использует клиентский
+ * /orders/:id/paid — поэтому повторное списание при уже списанном на
+ * этапе создания остатке физически исключено (первым делом там же
+ * проверяется, что заказ всё ещё pending_payment).
+ */
+shopAdminRouter.post('/orders/:id/mark-paid', async (req, res) => {
+  try {
+    const order = await prisma.shopOrder.findUnique({ where: { id: req.params.id } });
+    if (!order) return res.status(404).json({ error: 'Заказ не найден' });
+    if (order.status !== 'pending_payment') {
+      return res.status(409).json({ error: `Заказ в статусе "${order.status}" — отметить оплаченным можно только заказ «Ожидает оплаты»` });
+    }
+
+    // Если код выдачи пустой ИЛИ старого 4-значного формата — генерируем
+    // новый 5-значный (10000–99999). Уже 5-значный код (например, заказ
+    // до этого уже проходил через эту кнопку) не трогаем.
+    let pickupCode = order.pickupCode;
+    if (!pickupCode || /^\d{4}$/.test(pickupCode)) {
+      pickupCode = String(Math.floor(10000 + Math.random() * 90000));
+      await prisma.shopOrder.update({ where: { id: order.id }, data: { pickupCode } });
+    }
+
+    const result = await markShopOrderAsPaid(order.id);
+    if (!result.ok) {
+      // Между проверкой выше и этим вызовом заказ успел измениться
+      // (гонка) — сообщаем честно, не притворяемся, что всё получилось.
+      return res.status(409).json({ error: 'Заказ уже был обработан — попробуйте обновить страницу' });
+    }
+
+    res.json({ ok: true, status: 'paid', pickupCode });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] Ошибка отметки заказа оплаченным');
+    res.status(500).json({ error: 'Не удалось отметить заказ оплаченным', details: String(err?.message ?? err) });
+  }
+});
+
 shopAdminRouter.post('/payouts/:orderId/paid', async (req, res) => {
   try {
     const payout = await prisma.courierPayout.findUnique({ where: { orderId: req.params.orderId } });

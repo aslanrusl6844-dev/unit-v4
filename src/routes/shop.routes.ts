@@ -221,66 +221,85 @@ shopRouter.post('/orders', async (req, res) => {
  *     попал в общую юнит-экономику (Обзор/Финансы/Товары), без отдельного
  *     параллельного пути отчётности.
  */
+/**
+ * Общая логика перехода ShopOrder в paid — списание остатка + создание
+ * Order/OrderItem для юнит-экономики. Используется и клиентским
+ * /orders/:id/paid (пока — ручное подтверждение продавцом, в будущем —
+ * вебхук эквайринга), и админской кнопкой «Отметить оплаченным» — ОДИН
+ * код на оба пути, поэтому повторное списание физически невозможно: и там,
+ * и там первым делом проверяется, что заказ ещё pending_payment.
+ */
+export async function markShopOrderAsPaid(orderId: string): Promise<
+  { ok: true } | { ok: false; reason: 'not_found' } | { ok: false; reason: 'wrong_status'; status: string }
+> {
+  const shopOrder = await prisma.shopOrder.findUnique({ where: { id: orderId } });
+  if (!shopOrder) return { ok: false, reason: 'not_found' };
+  if (shopOrder.status !== 'pending_payment') {
+    return { ok: false, reason: 'wrong_status', status: shopOrder.status };
+  }
+
+  const items: Array<{ sku: string; name: string; price: number; quantity: number }> = JSON.parse(shopOrder.items);
+
+  // Списываем остаток по каждой позиции — не даём уйти в минус.
+  for (const item of items) {
+    const product = await prisma.product.findUnique({ where: { sku: item.sku } });
+    if (product) {
+      await prisma.product.update({
+        where: { id: product.id },
+        data: { shopStock: Math.max(0, product.shopStock - item.quantity) },
+      });
+    }
+  }
+
+  // Логистика заказа (если проставлена вручную в админке) распределяется
+  // между позициями пропорционально их доле в выручке заказа — тот же
+  // принцип, что уже используется для распределения расходов на рекламу.
+  const orderRevenue = items.reduce((sum, i) => sum + i.price * i.quantity, 0) || 1;
+
+  const orderItemsData = await Promise.all(items.map(async (item) => {
+    const product = await prisma.product.findUnique({ where: { sku: item.sku } });
+    const itemRevenue = item.price * item.quantity;
+    const itemLogistics = (itemRevenue / orderRevenue) * shopOrder.logisticsCost;
+    return {
+      productId: product?.id ?? null,
+      externalSku: item.sku,
+      name: item.name,
+      quantity: item.quantity,
+      price: item.price,
+      // Себестоимость для канала APP — приоритетно shopCost (своя цена
+      // закупа для витрины), иначе общая costPrice, иначе 0.
+      costPrice: product?.shopCost ?? product?.costPrice ?? 0,
+      commission: 0, // канал APP — своя витрина, комиссии площадки нет
+      itemLogistics: Math.round(itemLogistics * 100) / 100,
+    };
+  }));
+
+  await prisma.$transaction([
+    prisma.shopOrder.update({ where: { id: shopOrder.id }, data: { status: 'paid', paidAt: new Date() } }),
+    prisma.order.create({
+      data: {
+        marketplace: 'APP',
+        externalId: shopOrder.number,
+        status: 'paid',
+        orderDate: new Date(),
+        totalRevenue: shopOrder.total,
+        marketplaceCommission: 0,
+        logisticsCost: shopOrder.logisticsCost,
+        items: { create: orderItemsData },
+      },
+    }),
+  ]);
+
+  return { ok: true };
+}
+
 shopRouter.post('/orders/:id/paid', async (req, res) => {
   try {
-    const shopOrder = await prisma.shopOrder.findUnique({ where: { id: req.params.id } });
-    if (!shopOrder) return res.status(404).json({ error: 'Заказ не найден' });
-    if (shopOrder.status !== 'pending_payment') {
-      return res.status(409).json({ error: `Заказ уже в статусе "${shopOrder.status}" — повторно оплатить нельзя` });
+    const result = await markShopOrderAsPaid(req.params.id);
+    if (!result.ok) {
+      if (result.reason === 'not_found') return res.status(404).json({ error: 'Заказ не найден' });
+      return res.status(409).json({ error: `Заказ уже в статусе "${result.status}" — повторно оплатить нельзя` });
     }
-
-    const items: Array<{ sku: string; name: string; price: number; quantity: number }> = JSON.parse(shopOrder.items);
-
-    // Списываем остаток по каждой позиции — не даём уйти в минус.
-    for (const item of items) {
-      const product = await prisma.product.findUnique({ where: { sku: item.sku } });
-      if (product) {
-        await prisma.product.update({
-          where: { id: product.id },
-          data: { shopStock: Math.max(0, product.shopStock - item.quantity) },
-        });
-      }
-    }
-
-    // Логистика заказа (если проставлена вручную в админке) распределяется
-    // между позициями пропорционально их доле в выручке заказа — тот же
-    // принцип, что уже используется для распределения расходов на рекламу.
-    const orderRevenue = items.reduce((sum, i) => sum + i.price * i.quantity, 0) || 1;
-
-    const orderItemsData = await Promise.all(items.map(async (item) => {
-      const product = await prisma.product.findUnique({ where: { sku: item.sku } });
-      const itemRevenue = item.price * item.quantity;
-      const itemLogistics = (itemRevenue / orderRevenue) * shopOrder.logisticsCost;
-      return {
-        productId: product?.id ?? null,
-        externalSku: item.sku,
-        name: item.name,
-        quantity: item.quantity,
-        price: item.price,
-        // Себестоимость для канала APP — приоритетно shopCost (своя цена
-        // закупа для витрины), иначе общая costPrice, иначе 0.
-        costPrice: product?.shopCost ?? product?.costPrice ?? 0,
-        commission: 0, // канал APP — своя витрина, комиссии площадки нет
-        itemLogistics: Math.round(itemLogistics * 100) / 100,
-      };
-    }));
-
-    await prisma.$transaction([
-      prisma.shopOrder.update({ where: { id: shopOrder.id }, data: { status: 'paid', paidAt: new Date() } }),
-      prisma.order.create({
-        data: {
-          marketplace: 'APP',
-          externalId: shopOrder.number,
-          status: 'paid',
-          orderDate: new Date(),
-          totalRevenue: shopOrder.total,
-          marketplaceCommission: 0,
-          logisticsCost: shopOrder.logisticsCost,
-          items: { create: orderItemsData },
-        },
-      }),
-    ]);
-
     res.json({ ok: true, status: 'paid' });
   } catch (err: any) {
     logger.error({ err }, '[Shop API] Ошибка подтверждения оплаты');
@@ -490,7 +509,10 @@ shopRouter.post('/courier/register', async (req, res) => {
 const courierDeliverSchema = z.object({
   courierPhone: z.string().min(1),
   orderNumber: z.string().min(1),
-  code: z.string().regex(/^\d{4}$/, 'Код должен состоять из 4 цифр'),
+  // 4 ИЛИ 5 цифр — новые заказы создаются с 4-значным кодом, но кнопка
+  // «Отметить оплаченным» в админке (см. shopAdmin.routes.ts) может
+  // перегенерировать код в 5-значный — курьер должен уметь ввести любой.
+  code: z.string().regex(/^\d{4,5}$/, 'Код должен состоять из 4 или 5 цифр'),
 });
 
 /**

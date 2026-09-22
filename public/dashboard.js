@@ -2752,7 +2752,9 @@ async function loadMyMarketOrders() {
     const statusLabel = MY_MARKET_STATUS_LABELS[o.status] ?? o.status;
     const statusCell = o.status === 'delivered'
       ? `<span style="color:var(--accent);font-weight:600">● ${statusLabel}</span>`
-      : statusLabel;
+      : o.status === 'pending_payment'
+        ? `${statusLabel}<br><button class="link-btn" data-action="mark-paid" data-id="${o.id}" style="font-size:11px;margin-top:2px">Отметить оплаченным</button>`
+        : statusLabel;
     // Курьер + сумма к выплате — только у доставленных заказов (courier/
     // payout приходят из include на бэкенде, у остальных статусов null).
     const courierCell = o.courier
@@ -2781,6 +2783,20 @@ async function loadMyMarketOrders() {
     </tr>
   `;
   }).join('');
+
+  tbody.querySelectorAll('button[data-action="mark-paid"]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      if (!confirm('Отметить заказ оплаченным? Пока нет эквайринга — это единственный способ протестировать дальнейший путь заказа.')) return;
+      btn.disabled = true;
+      try {
+        await api(`/shop-admin/orders/${btn.dataset.id}/mark-paid`, { method: 'POST' });
+        await loadMyMarketOrders();
+      } catch (err) {
+        alert('Не удалось отметить оплаченным: ' + err.message);
+        btn.disabled = false;
+      }
+    });
+  });
 
   tbody.querySelectorAll('button[data-action="payout"]').forEach((btn) => {
     btn.addEventListener('click', async () => {
