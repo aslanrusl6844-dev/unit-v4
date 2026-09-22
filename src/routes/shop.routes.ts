@@ -297,6 +297,55 @@ function phonesMatch(a: string, b: string): boolean {
 }
 
 /**
+ * Отмена заказа покупателем — разрешена ТОЛЬКО из pending_payment (ещё не
+ * оплачен) или paid (оплачен, но ещё не собран/выдан). Из любого другого
+ * статуса (assembled/delivered/cancelled) — 409, уже нельзя отменить.
+ *
+ * Если заказ был paid — остаток shopStock уже был списан в момент оплаты
+ * (см. /orders/:id/paid), значит здесь его нужно вернуть обратно. Заодно
+ * убираем связанный Order/OrderItem (созданный на этапе paid для общей
+ * юнит-экономики) — иначе выручка и себестоимость отменённого заказа
+ * продолжили бы засчитываться в «Финансы»/«Обзор» (общий запрос отчётов
+ * не фильтрует заказы по статусу — специально не трогаю эту логику,
+ * она общая с Kaspi/Ozon/WB). Order→OrderItem удаляется каскадно.
+ */
+shopRouter.post('/orders/:id/cancel', async (req, res) => {
+  try {
+    const order = await prisma.shopOrder.findUnique({ where: { id: req.params.id } });
+    if (!order) return res.status(404).json({ error: 'Заказ не найден' });
+
+    const phone = String(req.body?.phone ?? '');
+    if (!phone || !phonesMatch(phone, order.phone)) {
+      return res.status(403).json({ error: 'Номер телефона не совпадает с заказом' });
+    }
+
+    if (order.status !== 'pending_payment' && order.status !== 'paid') {
+      return res.status(409).json({ error: 'уже нельзя отменить' });
+    }
+
+    if (order.status === 'paid') {
+      const items: Array<{ sku: string; quantity: number }> = JSON.parse(order.items);
+      for (const item of items) {
+        const product = await prisma.product.findUnique({ where: { sku: item.sku } });
+        if (product) {
+          await prisma.product.update({
+            where: { id: product.id },
+            data: { shopStock: product.shopStock + item.quantity },
+          });
+        }
+      }
+      await prisma.order.deleteMany({ where: { marketplace: 'APP', externalId: order.number } });
+    }
+
+    await prisma.shopOrder.update({ where: { id: order.id }, data: { status: 'cancelled' } });
+    res.json({ ok: true, status: 'cancelled' });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop API] Ошибка отмены заказа');
+    res.status(500).json({ error: 'Не удалось отменить заказ', details: String(err?.message ?? err) });
+  }
+});
+
+/**
  * Заказ "как есть" для приложения — только СВОЙ заказ: номер телефона в
  * query должен совпадать с телефоном в заказе (простая, но реальная
  * проверка "это точно тот же покупатель", без отдельной системы токенов).
