@@ -437,3 +437,122 @@ shopRouter.get('/orders/:id/waybill', async (req, res) => {
     res.status(500).json({ error: 'Не удалось сформировать накладную', details: String(err?.message ?? err) });
   }
 });
+
+// =====================================================================
+// Курьер My Market — работает ТОЛЬКО через этот API (x-app-key, тот же,
+// что у покупателя). Никакого отдельного логина в саму админку unit-v4
+// для курьера нет и не предусмотрено.
+// =====================================================================
+
+const CODE_MAX_ATTEMPTS = 5;
+const DEFAULT_COURIER_PAYOUT = 2000;
+
+const courierRegisterSchema = z.object({
+  firstName: z.string().min(1),
+  lastName: z.string().min(1),
+  phone: z.string().min(1),
+  requisitesType: z.enum(['kaspi', 'card']),
+  requisitesValue: z.string().min(1),
+});
+
+/**
+ * Регистрация курьера — имя, фамилия, телефон, реквизиты для выплат
+ * (Kaspi-перевод по номеру телефона или номер карты). Повторная
+ * регистрация с уже известным телефоном обновляет данные (upsert), а не
+ * создаёт дубликат.
+ */
+shopRouter.post('/courier/register', async (req, res) => {
+  const parsed = courierRegisterSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные регистрации', details: parsed.error.flatten() });
+
+  const normalizedPhone = normalizePhone(parsed.data.phone);
+  if (!normalizedPhone) return res.status(400).json({ error: 'Некорректный номер телефона' });
+
+  try {
+    const name = `${parsed.data.firstName} ${parsed.data.lastName}`.trim();
+    const courier = await prisma.courier.upsert({
+      where: { phone: normalizedPhone },
+      update: { name, requisitesType: parsed.data.requisitesType, requisitesValue: parsed.data.requisitesValue },
+      create: {
+        name,
+        phone: normalizedPhone,
+        requisitesType: parsed.data.requisitesType,
+        requisitesValue: parsed.data.requisitesValue,
+      },
+    });
+    res.status(201).json({ id: courier.id, name: courier.name, phone: courier.phone });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop API] Ошибка регистрации курьера');
+    res.status(500).json({ error: 'Не удалось зарегистрировать курьера', details: String(err?.message ?? err) });
+  }
+});
+
+const courierDeliverSchema = z.object({
+  courierPhone: z.string().min(1),
+  orderNumber: z.string().min(1),
+  code: z.string().regex(/^\d{4}$/, 'Код должен состоять из 4 цифр'),
+});
+
+/**
+ * Подтверждение выдачи курьером. Правила ровно как в задаче:
+ *  - разрешено только для заказов в статусе paid/assembled ("в пути" —
+ *    это по факту тот же assembled, отдельного статуса для транзита нет);
+ *  - не больше 5 неверных попыток кода НА ЗАКАЗ — дальше 423 "заблокирован",
+ *    даже если код правильный, попытки больше не считаем нужным принимать;
+ *  - верный код → delivered + создаётся CourierPayout (сумма — logisticsCost
+ *    заказа, если он больше 0, иначе фиксированные 2000).
+ */
+shopRouter.post('/courier/deliver', async (req, res) => {
+  const parsed = courierDeliverSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+
+  try {
+    const normalizedPhone = normalizePhone(parsed.data.courierPhone);
+    if (!normalizedPhone) return res.status(400).json({ error: 'Некорректный номер телефона курьера' });
+
+    const courier = await prisma.courier.findUnique({ where: { phone: normalizedPhone } });
+    if (!courier || !courier.active) {
+      return res.status(403).json({ error: 'Курьер не зарегистрирован или не активен' });
+    }
+
+    const order = await prisma.shopOrder.findUnique({ where: { number: parsed.data.orderNumber } });
+    if (!order) return res.status(404).json({ error: 'Заказ с таким номером не найден' });
+
+    if (order.status !== 'paid' && order.status !== 'assembled') {
+      return res.status(409).json({ error: `Заказ в статусе "${order.status}" — выдача недоступна` });
+    }
+
+    if (order.codeAttempts >= CODE_MAX_ATTEMPTS) {
+      return res.status(423).json({ error: 'Слишком много неверных попыток — заказ заблокирован, обратитесь в поддержку' });
+    }
+
+    if (order.pickupCode !== parsed.data.code) {
+      const attempts = order.codeAttempts + 1;
+      await prisma.shopOrder.update({ where: { id: order.id }, data: { codeAttempts: attempts } });
+      const remaining = CODE_MAX_ATTEMPTS - attempts;
+      if (remaining <= 0) {
+        return res.status(423).json({ error: 'Код неверный. Попытки исчерпаны — заказ заблокирован.' });
+      }
+      return res.status(400).json({ error: `Код неверный. Осталось попыток: ${remaining}` });
+    }
+
+    const payoutAmount = order.logisticsCost && order.logisticsCost > 0 ? order.logisticsCost : DEFAULT_COURIER_PAYOUT;
+
+    await prisma.$transaction([
+      prisma.shopOrder.update({
+        where: { id: order.id },
+        data: { status: 'delivered', deliveredAt: new Date(), courierId: courier.id },
+      }),
+      // Синхронизируем и связанный Order (для отчётности) в тот же статус.
+      prisma.order.updateMany({ where: { marketplace: 'APP', externalId: order.number }, data: { status: 'delivered' } }),
+      prisma.courierPayout.create({
+        data: { orderId: order.id, courierId: courier.id, amount: payoutAmount, status: 'pending' },
+      }),
+    ]);
+
+    res.json({ ok: true, status: 'delivered' });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop API] Ошибка подтверждения выдачи курьером');
+    res.status(500).json({ error: 'Не удалось подтвердить выдачу', details: String(err?.message ?? err) });
+  }
+});

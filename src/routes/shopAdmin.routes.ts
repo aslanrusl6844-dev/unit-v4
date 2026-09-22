@@ -138,6 +138,7 @@ shopAdminRouter.get('/orders', async (req, res) => {
       where,
       orderBy: { createdAt: 'desc' },
       take: 500,
+      include: { courier: true, payout: true }, // курьер и выплата — только у доставленных, у остальных null
     });
     res.json(orders.map((o) => ({ ...o, items: JSON.parse(o.items) })));
   } catch (err: any) {
@@ -171,6 +172,23 @@ shopAdminRouter.post('/orders/:id/status', async (req, res) => {
     res.json(order);
   } catch (err: any) {
     res.status(500).json({ error: 'Не удалось изменить статус заказа', details: String(err?.message ?? err) });
+  }
+});
+
+/** Отметить выплату курьеру как выполненную — кнопка «Выплачено» в
+ *  «Заказы APP» у доставленных заказов. */
+shopAdminRouter.post('/payouts/:orderId/paid', async (req, res) => {
+  try {
+    const payout = await prisma.courierPayout.findUnique({ where: { orderId: req.params.orderId } });
+    if (!payout) return res.status(404).json({ error: 'Выплата не найдена для этого заказа' });
+    if (payout.status === 'paid') return res.status(409).json({ error: 'Уже отмечено как выплачено' });
+    const updated = await prisma.courierPayout.update({
+      where: { id: payout.id },
+      data: { status: 'paid', paidAt: new Date() },
+    });
+    res.json(updated);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Не удалось отметить выплату', details: String(err?.message ?? err) });
   }
 });
 

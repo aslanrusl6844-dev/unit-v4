@@ -327,6 +327,45 @@ model ShopOrder {
   updatedAt     DateTime @updatedAt
   paidAt        DateTime?
   deliveredAt   DateTime?
+
+  // --- Курьер, доставивший заказ (заполняется только при выдаче) ---
+  courierId     String?
+  courier       Courier?      @relation(fields: [courierId], references: [id])
+  // Счётчик неверных попыток кода выдачи — блокируем после 5-й подряд
+  // неверной попытки (не сбрасывается верной попыткой раньше — только
+  // считаем ошибочные вводы, успешная выдача такой уже не потребует).
+  codeAttempts  Int           @default(0)
+  payout        CourierPayout?
+}
+
+// Курьер My Market — работает только через API приложения (x-app-key),
+// НЕ имеет доступа в саму админку unit-v4 (там нет отдельного логина под
+// курьера — только API-ключ приложения, тот же, что у покупателя).
+model Courier {
+  id               String    @id @default(cuid())
+  name             String
+  phone            String    @unique
+  requisitesType   String    // "kaspi" | "card"
+  requisitesValue  String    // номер телефона для Kaspi-перевода или номер карты
+  active           Boolean   @default(true)
+  createdAt        DateTime  @default(now())
+  orders           ShopOrder[]
+  payouts          CourierPayout[]
+}
+
+// Выплата курьеру за доставку одного заказа — создаётся автоматически при
+// подтверждении выдачи (см. /api/shop/courier/deliver), сумма фиксируется
+// в момент создания (снимок logisticsCost заказа на тот момент).
+model CourierPayout {
+  id          String    @id @default(cuid())
+  orderId     String    @unique
+  order       ShopOrder @relation(fields: [orderId], references: [id])
+  courierId   String
+  courier     Courier   @relation(fields: [courierId], references: [id])
+  amount      Float
+  status      String    @default("pending") // pending | paid
+  createdAt   DateTime  @default(now())
+  paidAt      DateTime?
 }
 
 // Отзыв в приложении — оставляется ТОЛЬКО после того, как заказ, включавший

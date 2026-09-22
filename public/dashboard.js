@@ -2738,7 +2738,7 @@ async function loadMyMarketOrders() {
   const orders = await api(`/shop-admin/orders${status ? `?status=${status}` : ''}`);
   const tbody = document.querySelector('#mymarketOrdersTable tbody');
   if (!orders.length) {
-    tbody.innerHTML = `<tr><td colspan="9" style="color:var(--text-faint)">Заказов нет</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="10" style="color:var(--text-faint)">Заказов нет</td></tr>`;
     return;
   }
   tbody.innerHTML = orders.map((o) => {
@@ -2749,6 +2749,23 @@ async function loadMyMarketOrders() {
     const waybillCell = isCancelled
       ? `<button class="link-btn" disabled style="color:var(--text-faint);cursor:not-allowed" title="Заказ отменён">🖨 Накладная</button>`
       : `<button class="link-btn" data-action="print" data-id="${o.id}">🖨 Накладная</button>`;
+    const statusLabel = MY_MARKET_STATUS_LABELS[o.status] ?? o.status;
+    const statusCell = o.status === 'delivered'
+      ? `<span style="color:var(--accent);font-weight:600">● ${statusLabel}</span>`
+      : statusLabel;
+    // Курьер + сумма к выплате — только у доставленных заказов (courier/
+    // payout приходят из include на бэкенде, у остальных статусов null).
+    const courierCell = o.courier
+      ? `<div style="font-size:11px;line-height:1.5">
+          <div>${o.courier.name}</div>
+          <div style="color:var(--text-faint)">${o.courier.phone}</div>
+          <div style="color:var(--text-faint)">${o.courier.requisitesType === 'kaspi' ? 'Kaspi' : 'Карта'}: ${o.courier.requisitesValue}</div>
+          ${o.payout ? `<div style="margin-top:2px;font-weight:600">${fmtMoney(o.payout.amount)}</div>` : ''}
+          ${o.payout && o.payout.status === 'pending'
+            ? `<button class="link-btn" data-action="payout" data-order-id="${o.id}" style="font-size:11px">Выплачено</button>`
+            : o.payout ? `<span style="color:var(--accent);font-size:11px">✓ выплачено</span>` : ''}
+        </div>`
+      : `<span style="color:var(--text-faint)">—</span>`;
     return `
     <tr>
       <td class="name-cell">${o.number}</td>
@@ -2757,12 +2774,26 @@ async function loadMyMarketOrders() {
       <td>${o.phone}</td>
       <td class="name-cell" style="font-size:11px">${address}</td>
       <td class="num">${fmtMoney(o.total)}</td>
-      <td>${MY_MARKET_STATUS_LABELS[o.status] ?? o.status}</td>
+      <td>${statusCell}</td>
       <td>${o.pickupCode}</td>
+      <td>${courierCell}</td>
       <td>${waybillCell}</td>
     </tr>
   `;
   }).join('');
+
+  tbody.querySelectorAll('button[data-action="payout"]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      try {
+        await api(`/shop-admin/payouts/${btn.dataset.orderId}/paid`, { method: 'POST' });
+        await loadMyMarketOrders();
+      } catch (err) {
+        alert('Не удалось отметить выплату: ' + err.message);
+        btn.disabled = false;
+      }
+    });
+  });
 
   tbody.querySelectorAll('button[data-action="print"]').forEach((btn) => {
     btn.addEventListener('click', () => downloadMyMarketWaybill(btn.dataset.id));

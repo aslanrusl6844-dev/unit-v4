@@ -16,7 +16,6 @@ import { marginCalculatorRouter } from './routes/marginCalculator.routes';
 import { settingsRouter } from './routes/settings.routes';
 import { nichesRouter } from './routes/niches.routes';
 import { shopRouter } from './routes/shop.routes';
-import { courierRouter } from './routes/courier.routes';
 import { shopAdminRouter } from './routes/shopAdmin.routes';
 import { shopMediaRouter } from './routes/shopMedia.routes';
 
@@ -114,7 +113,6 @@ app.use('/api/niches', nichesRouter);
 // запрос первым, так что менять местами эти две строки нельзя.
 app.use('/api/shop/admin', shopMediaRouter);
 app.use('/api/shop', shopRouter);
-app.use('/api/courier', courierRouter);
 app.use('/api/shop-admin', shopAdminRouter);
 
 // Дашборд (статика) — актуально только для локальной разработки, см. комментарий выше.
