@@ -300,8 +300,13 @@ model SyncLog {
 model ShopOrder {
   id            String   @id @default(cuid())
   number        String   @unique // человекочитаемый номер заказа
-  pickupCode    String   // 4-значный код выдачи, сообщается курьеру/на ПВЗ
-  status        String   @default("pending_payment") // pending_payment | paid | assembled | delivered | cancelled
+  // Код выдачи (4-5 цифр) — теперь генерируется ТОЛЬКО по запросу курьера
+  // (см. /api/shop/courier/request-code), не при создании заказа и не при
+  // оплате. До этого момента — пусто. Старые тестовые заказы, у которых
+  // код уже был проставлен раньше, не трогаем — просто новый путь его
+  // больше не создаёт заранее.
+  pickupCode    String?
+  status        String   @default("pending_payment") // pending_payment | paid | picked | in_transit | delivered | cancelled
 
   city          String
   street        String

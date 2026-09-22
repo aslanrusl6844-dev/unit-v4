@@ -54,7 +54,9 @@ shopAdminRouter.get('/dashboard', async (_req, res) => {
       totalRevenue,
       totalItems,
       awaitingAssembly: allOrders.filter((o) => o.status === 'paid').length,
-      inDelivery: allOrders.filter((o) => o.status === 'assembled').length,
+      // "В доставке" теперь — сумма picked (курьер забрал) и in_transit
+      // (в пути), т.к. отдельного статуса "assembled" в новой цепочке нет.
+      inDelivery: allOrders.filter((o) => o.status === 'picked' || o.status === 'in_transit').length,
       delivered: allOrders.filter((o) => o.status === 'delivered').length,
       cancelled: allOrders.filter((o) => o.status === 'cancelled').length,
     });
@@ -158,9 +160,9 @@ shopAdminRouter.get('/orders/:id', async (req, res) => {
   }
 });
 
-const statusSchema = z.object({ status: z.enum(['pending_payment', 'paid', 'assembled', 'delivered', 'cancelled']) });
+const statusSchema = z.object({ status: z.enum(['pending_payment', 'paid', 'picked', 'in_transit', 'delivered', 'cancelled']) });
 
-// Ручная смена статуса из админки (например, "assembled" — товар собран,
+// Ручная смена статуса из админки (например, "picked"/"in_transit" — товар
 // готов к выдаче; "cancelled" — отмена). Оплата (-> paid) и выдача
 // (-> delivered) обычно идут через свои специализированные эндпоинты
 // (/api/shop/orders/:id/paid и /api/courier/deliver), но этот путь
@@ -182,9 +184,13 @@ shopAdminRouter.post('/orders/:id/status', async (req, res) => {
  * Кнопка «Отметить оплаченным» в «Заказы APP» — пока нет реальной
  * интеграции с эквайрингом, это единственный способ перевести заказ в
  * paid и протестировать весь дальнейший путь (курьер, выплата и т.д.).
- * Разрешено ТОЛЬКО из pending_payment — из paid/assembled/delivered/
- * cancelled явно отклоняем (409), не переводим повторно и не "чиним"
- * чужой статус этой кнопкой.
+ * Разрешено ТОЛЬКО из pending_payment — из любого другого статуса
+ * отклоняем (409), не переводим повторно и не "чиним" чужой статус
+ * этой кнопкой.
+ *
+ * Код выдачи здесь НЕ создаётся и НЕ трогается — теперь код появляется
+ * только когда курьер сам его запросит (/api/shop/courier/request-code),
+ * непосредственно перед выдачей, а не заранее при оплате.
  *
  * Списание остатка и создание Order/OrderItem для юнит-экономики —
  * ТОЧНО ТА ЖЕ функция markShopOrderAsPaid, что использует клиентский
@@ -200,15 +206,6 @@ shopAdminRouter.post('/orders/:id/mark-paid', async (req, res) => {
       return res.status(409).json({ error: `Заказ в статусе "${order.status}" — отметить оплаченным можно только заказ «Ожидает оплаты»` });
     }
 
-    // Если код выдачи пустой ИЛИ старого 4-значного формата — генерируем
-    // новый 5-значный (10000–99999). Уже 5-значный код (например, заказ
-    // до этого уже проходил через эту кнопку) не трогаем.
-    let pickupCode = order.pickupCode;
-    if (!pickupCode || /^\d{4}$/.test(pickupCode)) {
-      pickupCode = String(Math.floor(10000 + Math.random() * 90000));
-      await prisma.shopOrder.update({ where: { id: order.id }, data: { pickupCode } });
-    }
-
     const result = await markShopOrderAsPaid(order.id);
     if (!result.ok) {
       // Между проверкой выше и этим вызовом заказ успел измениться
@@ -216,7 +213,7 @@ shopAdminRouter.post('/orders/:id/mark-paid', async (req, res) => {
       return res.status(409).json({ error: 'Заказ уже был обработан — попробуйте обновить страницу' });
     }
 
-    res.json({ ok: true, status: 'paid', pickupCode });
+    res.json({ ok: true, status: 'paid' });
   } catch (err: any) {
     logger.error({ err }, '[Shop Admin] Ошибка отметки заказа оплаченным');
     res.status(500).json({ error: 'Не удалось отметить заказ оплаченным', details: String(err?.message ?? err) });

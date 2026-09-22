@@ -165,10 +165,6 @@ function generateOrderNumber(): string {
   return `MM-${datePart}-${randPart}`;
 }
 
-function generatePickupCode(): string {
-  return String(Math.floor(1000 + Math.random() * 9000)); // 4 цифры, 1000–9999
-}
-
 shopRouter.post('/orders', async (req, res) => {
   const parsed = createOrderSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Неверные данные заказа', details: parsed.error.flatten() });
@@ -185,10 +181,11 @@ shopRouter.post('/orders', async (req, res) => {
       number = generateOrderNumber();
     }
 
+    // Код выдачи здесь НЕ создаётся — только по запросу курьера
+    // (/api/shop/courier/request-code), непосредственно перед выдачей.
     const order = await prisma.shopOrder.create({
       data: {
         number,
-        pickupCode: generatePickupCode(),
         status: 'pending_payment',
         city: parsed.data.city,
         street: parsed.data.street,
@@ -205,7 +202,7 @@ shopRouter.post('/orders', async (req, res) => {
       },
     });
 
-    res.status(201).json({ id: order.id, number: order.number, pickupCode: order.pickupCode, total: order.total, status: order.status });
+    res.status(201).json({ id: order.id, number: order.number, total: order.total, status: order.status });
   } catch (err: any) {
     logger.error({ err }, '[Shop API] Ошибка создания заказа');
     res.status(500).json({ error: 'Не удалось создать заказ', details: String(err?.message ?? err) });
@@ -461,10 +458,36 @@ shopRouter.get('/orders/:id/waybill', async (req, res) => {
 // Курьер My Market — работает ТОЛЬКО через этот API (x-app-key, тот же,
 // что у покупателя). Никакого отдельного логина в саму админку unit-v4
 // для курьера нет и не предусмотрено.
+//
+// Новая цепочка статусов заказа:
+//   pending_payment → paid → picked (курьер забрал) → in_transit (в пути)
+//   → delivered (выдан), и параллельно pending_payment/paid → cancelled.
+// "assembled" из старой версии здесь больше не используется — вместо
+// одного промежуточного статуса теперь два, привязанных к реальным
+// действиям курьера (scan/start), а не к абстрактной "сборке".
 // =====================================================================
 
 const CODE_MAX_ATTEMPTS = 5;
 const DEFAULT_COURIER_PAYOUT = 2000;
+
+function generatePickupCode5(): string {
+  return String(Math.floor(10000 + Math.random() * 90000)); // 5 цифр, 10000–99999
+}
+
+/**
+ * Номер заказа со стикера может прийти как есть ("MM-260922-0282") или
+ * без разделителей, как его иногда отдают сканеры штрихкодов
+ * ("MM2609220282") — приводим ко второй форме к канонической с дефисами,
+ * чтобы искать по уникальному полю number как обычно.
+ */
+function normalizeOrderNumber(raw: string): string {
+  const clean = raw.trim().toUpperCase();
+  if (/^MM-\d{6}-\d{4}$/.test(clean)) return clean;
+  const stripped = clean.replace(/[^A-Z0-9]/g, '');
+  const match = stripped.match(/^MM(\d{6})(\d{4})$/);
+  if (match) return `MM-${match[1]}-${match[2]}`;
+  return clean; // не удалось распознать — вернём как есть, дальше просто не найдётся заказ
+}
 
 const courierRegisterSchema = z.object({
   firstName: z.string().min(1),
@@ -506,65 +529,174 @@ shopRouter.post('/courier/register', async (req, res) => {
   }
 });
 
+/** Ищет активного курьера по телефону — общая часть для всех эндпоинтов
+ *  ниже, отдаёт понятную ошибку, если курьера нет или он заблокирован. */
+async function findActiveCourierOrFail(rawPhone: string, res: any): Promise<{ id: string; phone: string } | null> {
+  const normalizedPhone = normalizePhone(rawPhone);
+  if (!normalizedPhone) {
+    res.status(400).json({ error: 'Некорректный номер телефона курьера' });
+    return null;
+  }
+  const courier = await prisma.courier.findUnique({ where: { phone: normalizedPhone } });
+  if (!courier || !courier.active) {
+    res.status(403).json({ error: 'Курьер не зарегистрирован или заблокирован' });
+    return null;
+  }
+  return courier;
+}
+
+const courierScanSchema = z.object({
+  courierPhone: z.string().min(1),
+  barcode: z.string().min(1),
+});
+
+/**
+ * Курьер сканирует стикер на складе — заказ переходит paid → picked и
+ * закрепляется за этим курьером. Разрешено только для paid (ещё никем не
+ * забран) и только не для собственного заказа курьера (антифрод: курьер
+ * не может "забрать" покупку, оформленную на свой же телефон).
+ */
+shopRouter.post('/courier/scan', async (req, res) => {
+  const parsed = courierScanSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+
+  try {
+    const courier = await findActiveCourierOrFail(parsed.data.courierPhone, res);
+    if (!courier) return;
+
+    const orderNumber = normalizeOrderNumber(parsed.data.barcode);
+    const order = await prisma.shopOrder.findUnique({ where: { number: orderNumber } });
+    if (!order) return res.status(404).json({ error: 'Заказ не найден' });
+
+    if (order.status !== 'paid') {
+      return res.status(409).json({ error: `Заказ в статусе "${order.status}" — забрать можно только оплаченный заказ` });
+    }
+    if (phonesMatch(courier.phone, order.phone)) {
+      return res.status(403).json({ error: 'Нельзя забрать собственный заказ' });
+    }
+
+    await prisma.shopOrder.update({ where: { id: order.id }, data: { status: 'picked', courierId: courier.id } });
+    res.json({ ok: true, status: 'picked', orderNumber: order.number });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop API] Ошибка сканирования заказа курьером');
+    res.status(500).json({ error: 'Не удалось забрать заказ', details: String(err?.message ?? err) });
+  }
+});
+
+const courierOrderRefSchema = z.object({
+  courierPhone: z.string().min(1),
+  orderNumber: z.string().min(1),
+});
+
+/** Курьер выехал с заказом — picked → in_transit. Только для СВОЕГО заказа. */
+shopRouter.post('/courier/start', async (req, res) => {
+  const parsed = courierOrderRefSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+
+  try {
+    const courier = await findActiveCourierOrFail(parsed.data.courierPhone, res);
+    if (!courier) return;
+
+    const order = await prisma.shopOrder.findUnique({ where: { number: normalizeOrderNumber(parsed.data.orderNumber) } });
+    if (!order) return res.status(404).json({ error: 'Заказ не найден' });
+    if (order.courierId !== courier.id) return res.status(403).json({ error: 'Это не ваш заказ' });
+    if (order.status !== 'picked') {
+      return res.status(409).json({ error: `Заказ в статусе "${order.status}" — начать доставку можно только из "Курьер забрал"` });
+    }
+
+    await prisma.shopOrder.update({ where: { id: order.id }, data: { status: 'in_transit' } });
+    res.json({ ok: true, status: 'in_transit' });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop API] Ошибка старта доставки');
+    res.status(500).json({ error: 'Не удалось начать доставку', details: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * Курьер запрашивает код выдачи — генерируется ЗДЕСЬ, впервые (не при
+ * оплате). Только для своего заказа в picked/in_transit. Код отдаётся в
+ * ответе — дальше это забота приложения показать его покупателю; SMS
+ * отправка — отдельная, более поздняя задача, здесь не реализована.
+ */
+shopRouter.post('/courier/request-code', async (req, res) => {
+  const parsed = courierOrderRefSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+
+  try {
+    const courier = await findActiveCourierOrFail(parsed.data.courierPhone, res);
+    if (!courier) return;
+
+    const order = await prisma.shopOrder.findUnique({ where: { number: normalizeOrderNumber(parsed.data.orderNumber) } });
+    if (!order) return res.status(404).json({ error: 'Заказ не найден' });
+    if (order.courierId !== courier.id) return res.status(403).json({ error: 'Это не ваш заказ' });
+    if (order.status !== 'picked' && order.status !== 'in_transit') {
+      return res.status(409).json({ error: `Заказ в статусе "${order.status}" — код выдачи запросить нельзя` });
+    }
+
+    const pickupCode = generatePickupCode5();
+    await prisma.shopOrder.update({ where: { id: order.id }, data: { pickupCode } });
+    res.json({ ok: true, pickupCode });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop API] Ошибка запроса кода выдачи');
+    res.status(500).json({ error: 'Не удалось получить код выдачи', details: String(err?.message ?? err) });
+  }
+});
+
 const courierDeliverSchema = z.object({
   courierPhone: z.string().min(1),
   orderNumber: z.string().min(1),
-  // 4 ИЛИ 5 цифр — новые заказы создаются с 4-значным кодом, но кнопка
-  // «Отметить оплаченным» в админке (см. shopAdmin.routes.ts) может
-  // перегенерировать код в 5-значный — курьер должен уметь ввести любой.
   code: z.string().regex(/^\d{4,5}$/, 'Код должен состоять из 4 или 5 цифр'),
 });
 
 /**
- * Подтверждение выдачи курьером. Правила ровно как в задаче:
- *  - разрешено только для заказов в статусе paid/assembled ("в пути" —
- *    это по факту тот же assembled, отдельного статуса для транзита нет);
- *  - не больше 5 неверных попыток кода НА ЗАКАЗ — дальше 423 "заблокирован",
- *    даже если код правильный, попытки больше не считаем нужным принимать;
- *  - верный код → delivered + создаётся CourierPayout (сумма — logisticsCost
- *    заказа, если он больше 0, иначе фиксированные 2000).
+ * Подтверждение выдачи курьером.
+ *  - Только СВОЙ заказ (courierId должен совпадать) — не тот же самый, что
+ *    и антифрод-проверка на scan (курьер ≠ покупатель), но здесь ещё и
+ *    "не чужой заказ другого курьера".
+ *  - Не больше 5 неверных попыток — на 5-й ошибке блокируется КУРЬЕР
+ *    целиком (Courier.active = false), не только этот заказ — дальше он
+ *    не пройдёт даже findActiveCourierOrFail ни в одном из эндпоинтов.
+ *  - Верный код → delivered + создаётся CourierPayout (сумма —
+ *    logisticsCost заказа, если больше 0, иначе фиксированные 2000).
  */
 shopRouter.post('/courier/deliver', async (req, res) => {
   const parsed = courierDeliverSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
 
   try {
-    const normalizedPhone = normalizePhone(parsed.data.courierPhone);
-    if (!normalizedPhone) return res.status(400).json({ error: 'Некорректный номер телефона курьера' });
+    const courier = await findActiveCourierOrFail(parsed.data.courierPhone, res);
+    if (!courier) return;
 
-    const courier = await prisma.courier.findUnique({ where: { phone: normalizedPhone } });
-    if (!courier || !courier.active) {
-      return res.status(403).json({ error: 'Курьер не зарегистрирован или не активен' });
-    }
-
-    const order = await prisma.shopOrder.findUnique({ where: { number: parsed.data.orderNumber } });
+    const order = await prisma.shopOrder.findUnique({ where: { number: normalizeOrderNumber(parsed.data.orderNumber) } });
     if (!order) return res.status(404).json({ error: 'Заказ с таким номером не найден' });
 
-    if (order.status !== 'paid' && order.status !== 'assembled') {
+    if (order.courierId !== courier.id) return res.status(403).json({ error: 'Это не ваш заказ' });
+    if (phonesMatch(courier.phone, order.phone)) return res.status(403).json({ error: 'Нельзя выдать собственный заказ' });
+
+    if (order.status !== 'picked' && order.status !== 'in_transit') {
       return res.status(409).json({ error: `Заказ в статусе "${order.status}" — выдача недоступна` });
     }
-
+    if (!order.pickupCode) {
+      return res.status(400).json({ error: 'Код выдачи ещё не запрошен для этого заказа (см. /courier/request-code)' });
+    }
     if (order.codeAttempts >= CODE_MAX_ATTEMPTS) {
-      return res.status(423).json({ error: 'Слишком много неверных попыток — заказ заблокирован, обратитесь в поддержку' });
+      return res.status(423).json({ error: 'Курьер заблокирован из-за превышения числа неверных попыток' });
     }
 
     if (order.pickupCode !== parsed.data.code) {
       const attempts = order.codeAttempts + 1;
       await prisma.shopOrder.update({ where: { id: order.id }, data: { codeAttempts: attempts } });
-      const remaining = CODE_MAX_ATTEMPTS - attempts;
-      if (remaining <= 0) {
-        return res.status(423).json({ error: 'Код неверный. Попытки исчерпаны — заказ заблокирован.' });
+      if (attempts >= CODE_MAX_ATTEMPTS) {
+        await prisma.courier.update({ where: { id: courier.id }, data: { active: false } });
+        return res.status(423).json({ error: 'Код неверный. Попытки исчерпаны — курьер заблокирован.' });
       }
-      return res.status(400).json({ error: `Код неверный. Осталось попыток: ${remaining}` });
+      return res.status(400).json({ error: `Код неверный. Осталось попыток: ${CODE_MAX_ATTEMPTS - attempts}` });
     }
 
     const payoutAmount = order.logisticsCost && order.logisticsCost > 0 ? order.logisticsCost : DEFAULT_COURIER_PAYOUT;
 
     await prisma.$transaction([
-      prisma.shopOrder.update({
-        where: { id: order.id },
-        data: { status: 'delivered', deliveredAt: new Date(), courierId: courier.id },
-      }),
+      prisma.shopOrder.update({ where: { id: order.id }, data: { status: 'delivered', deliveredAt: new Date() } }),
       // Синхронизируем и связанный Order (для отчётности) в тот же статус.
       prisma.order.updateMany({ where: { marketplace: 'APP', externalId: order.number }, data: { status: 'delivered' } }),
       prisma.courierPayout.create({
@@ -576,5 +708,40 @@ shopRouter.post('/courier/deliver', async (req, res) => {
   } catch (err: any) {
     logger.error({ err }, '[Shop API] Ошибка подтверждения выдачи курьером');
     res.status(500).json({ error: 'Не удалось подтвердить выдачу', details: String(err?.message ?? err) });
+  }
+});
+
+/** Список заказов курьера — для его собственного экрана "Мои заказы". */
+shopRouter.get('/courier/my-orders', async (req, res) => {
+  try {
+    const phone = String(req.query.phone ?? '');
+    const normalizedPhone = normalizePhone(phone);
+    if (!normalizedPhone) return res.status(400).json({ error: 'Некорректный номер телефона' });
+
+    const courier = await prisma.courier.findUnique({ where: { phone: normalizedPhone } });
+    if (!courier) return res.status(404).json({ error: 'Курьер не найден' });
+
+    const orders = await prisma.shopOrder.findMany({
+      where: { courierId: courier.id },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    res.json(orders.map((o: { number: string; status: string; pickupCode: string | null; items: string }) => {
+      let items: Array<{ sku: string; name: string }> = [];
+      try {
+        items = (JSON.parse(o.items) as Array<{ sku: string; name: string }>).map((i) => ({ sku: i.sku, name: i.name }));
+      } catch {
+        items = [];
+      }
+      return {
+        number: o.number,
+        status: o.status,
+        items,
+        canDeliver: (o.status === 'picked' || o.status === 'in_transit') && !!o.pickupCode,
+      };
+    }));
+  } catch (err: any) {
+    logger.error({ err }, '[Shop API] Ошибка получения заказов курьера');
+    res.status(500).json({ error: 'Не удалось получить заказы', details: String(err?.message ?? err) });
   }
 });

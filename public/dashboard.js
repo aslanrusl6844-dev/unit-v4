@@ -2728,7 +2728,8 @@ async function renderMyMarketBannerSlots() {
 const MY_MARKET_STATUS_LABELS = {
   pending_payment: 'Ожидает оплаты',
   paid: 'Оплачен',
-  assembled: 'Собран',
+  picked: 'Курьер забрал',
+  in_transit: 'В пути',
   delivered: 'Выдан',
   cancelled: 'Отменён',
 };
@@ -2752,9 +2753,11 @@ async function loadMyMarketOrders() {
     const statusLabel = MY_MARKET_STATUS_LABELS[o.status] ?? o.status;
     const statusCell = o.status === 'delivered'
       ? `<span style="color:var(--accent);font-weight:600">● ${statusLabel}</span>`
-      : o.status === 'pending_payment'
-        ? `${statusLabel}<br><button class="link-btn" data-action="mark-paid" data-id="${o.id}" style="font-size:11px;margin-top:2px">Отметить оплаченным</button>`
-        : statusLabel;
+      : (o.status === 'picked' || o.status === 'in_transit')
+        ? `<span style="color:#2563eb;font-weight:600">● ${statusLabel}</span>`
+        : o.status === 'pending_payment'
+          ? `${statusLabel}<br><button class="link-btn" data-action="mark-paid" data-id="${o.id}" style="font-size:11px;margin-top:2px">Отметить оплаченным</button>`
+          : statusLabel;
     // Курьер + сумма к выплате — только у доставленных заказов (courier/
     // payout приходят из include на бэкенде, у остальных статусов null).
     const courierCell = o.courier
