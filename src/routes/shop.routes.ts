@@ -290,10 +290,27 @@ shopRouter.post('/orders/:id/paid', async (req, res) => {
 
 /** Сравнение телефонов только по цифрам (последние 10) — терпимо к
  *  разным форматам записи (+7 xxx, 8xxx, пробелы/дефисы и т.п.). */
+/**
+ * Нормализация номера телефона к канонической форме "7XXXXXXXXXX" (11 цифр,
+ * без +/пробелов/скобок/дефисов). 8XXXXXXXXXX, 7XXXXXXXXXX и +7XXXXXXXXXX —
+ * один и тот же номер, приводятся к одному виду. Возвращает null, если
+ * после нормализации не получился похожий на телефон номер (не 10-11 цифр).
+ */
+function normalizePhone(raw: string): string | null {
+  const digits = raw.replace(/\D/g, '');
+  if (digits.length === 11 && digits[0] === '8') return '7' + digits.slice(1);
+  if (digits.length === 11 && digits[0] === '7') return digits;
+  if (digits.length === 10) return '7' + digits; // без кода страны — считаем, что это +7
+  return null;
+}
+
+/** Сравнение телефонов ТОЛЬКО после нормализации — сырые строки никогда
+ *  не сравниваются напрямую (разный формат записи — это один и тот же
+ *  номер, если совпадает после normalizePhone). */
 function phonesMatch(a: string, b: string): boolean {
-  const digitsA = a.replace(/\D/g, '').slice(-10);
-  const digitsB = b.replace(/\D/g, '').slice(-10);
-  return digitsA.length === 10 && digitsA === digitsB;
+  const normA = normalizePhone(a);
+  const normB = normalizePhone(b);
+  return normA !== null && normA === normB;
 }
 
 /**
