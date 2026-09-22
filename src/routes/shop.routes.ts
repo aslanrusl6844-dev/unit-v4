@@ -480,13 +480,42 @@ function generatePickupCode5(): string {
  * ("MM2609220282") — приводим ко второй форме к канонической с дефисами,
  * чтобы искать по уникальному полю number как обычно.
  */
-function normalizeOrderNumber(raw: string): string {
+/**
+ * Номер заказа со стикера может прийти как есть ("MM-260922-0282") или
+ * без разделителей, как его иногда отдают сканеры штрихкодов
+ * ("MM2609220282"). Плюс — заказы, созданные ДО перехода на 2-значный год
+ * в номере, хранятся в старом формате ("MM-20260922-0282", 8 цифр даты
+ * вместо 6) — если проверять только новый формат, такие старые заказы
+ * никогда не найдутся, хотя реально существуют. Возвращает ВСЕ разумные
+ * варианты канонического номера — вызывающий код пробует их по очереди.
+ */
+function buildOrderNumberCandidates(raw: string): string[] {
   const clean = raw.trim().toUpperCase();
-  if (/^MM-\d{6}-\d{4}$/.test(clean)) return clean;
+  const candidates = new Set<string>();
+
+  if (/^MM-\d{6}-\d{4}$/.test(clean) || /^MM-\d{8}-\d{4}$/.test(clean)) {
+    candidates.add(clean);
+  }
+
   const stripped = clean.replace(/[^A-Z0-9]/g, '');
-  const match = stripped.match(/^MM(\d{6})(\d{4})$/);
-  if (match) return `MM-${match[1]}-${match[2]}`;
-  return clean; // не удалось распознать — вернём как есть, дальше просто не найдётся заказ
+  const shortMatch = stripped.match(/^MM(\d{6})(\d{4})$/); // новый формат: MM + YYMMDD + XXXX
+  if (shortMatch) candidates.add(`MM-${shortMatch[1]}-${shortMatch[2]}`);
+  const longMatch = stripped.match(/^MM(\d{8})(\d{4})$/); // старый формат: MM + YYYYMMDD + XXXX
+  if (longMatch) candidates.add(`MM-${longMatch[1]}-${longMatch[2]}`);
+
+  if (candidates.size === 0) candidates.add(clean); // не удалось распознать — пробуем как есть
+
+  return Array.from(candidates);
+}
+
+/** Ищет ShopOrder по номеру, перебирая все разумные варианты формата
+ *  (см. buildOrderNumberCandidates) — не только "как ввели буквально". */
+async function findShopOrderByNumberLoosely(raw: string) {
+  for (const candidate of buildOrderNumberCandidates(raw)) {
+    const order = await prisma.shopOrder.findUnique({ where: { number: candidate } });
+    if (order) return order;
+  }
+  return null;
 }
 
 const courierRegisterSchema = z.object({
@@ -564,10 +593,21 @@ shopRouter.post('/courier/scan', async (req, res) => {
     const courier = await findActiveCourierOrFail(parsed.data.courierPhone, res);
     if (!courier) return;
 
-    const orderNumber = normalizeOrderNumber(parsed.data.barcode);
-    const order = await prisma.shopOrder.findUnique({ where: { number: orderNumber } });
-    if (!order) return res.status(404).json({ error: 'Заказ не найден' });
+    const order = await findShopOrderByNumberLoosely(parsed.data.barcode);
+    if (!order) {
+      // Логируем ВСЁ, что пробовали — если это повторится, в логах будет
+      // видно точную причину (опечатка, лишний символ, реально другой
+      // номер), а не только результат "не нашли".
+      logger.warn(
+        { rawBarcode: parsed.data.barcode, triedCandidates: buildOrderNumberCandidates(parsed.data.barcode) },
+        '[Shop API] /courier/scan: заказ не найден ни по одному варианту номера',
+      );
+      return res.status(404).json({ error: 'Заказ не найден' });
+    }
 
+    if (order.status === 'pending_payment') {
+      return res.status(409).json({ error: 'Заказ не оплачен' });
+    }
     if (order.status !== 'paid') {
       return res.status(409).json({ error: `Заказ в статусе "${order.status}" — забрать можно только оплаченный заказ` });
     }
@@ -597,7 +637,7 @@ shopRouter.post('/courier/start', async (req, res) => {
     const courier = await findActiveCourierOrFail(parsed.data.courierPhone, res);
     if (!courier) return;
 
-    const order = await prisma.shopOrder.findUnique({ where: { number: normalizeOrderNumber(parsed.data.orderNumber) } });
+    const order = await findShopOrderByNumberLoosely(parsed.data.orderNumber);
     if (!order) return res.status(404).json({ error: 'Заказ не найден' });
     if (order.courierId !== courier.id) return res.status(403).json({ error: 'Это не ваш заказ' });
     if (order.status !== 'picked') {
@@ -626,7 +666,7 @@ shopRouter.post('/courier/request-code', async (req, res) => {
     const courier = await findActiveCourierOrFail(parsed.data.courierPhone, res);
     if (!courier) return;
 
-    const order = await prisma.shopOrder.findUnique({ where: { number: normalizeOrderNumber(parsed.data.orderNumber) } });
+    const order = await findShopOrderByNumberLoosely(parsed.data.orderNumber);
     if (!order) return res.status(404).json({ error: 'Заказ не найден' });
     if (order.courierId !== courier.id) return res.status(403).json({ error: 'Это не ваш заказ' });
     if (order.status !== 'picked' && order.status !== 'in_transit') {
@@ -667,7 +707,7 @@ shopRouter.post('/courier/deliver', async (req, res) => {
     const courier = await findActiveCourierOrFail(parsed.data.courierPhone, res);
     if (!courier) return;
 
-    const order = await prisma.shopOrder.findUnique({ where: { number: normalizeOrderNumber(parsed.data.orderNumber) } });
+    const order = await findShopOrderByNumberLoosely(parsed.data.orderNumber);
     if (!order) return res.status(404).json({ error: 'Заказ с таким номером не найден' });
 
     if (order.courierId !== courier.id) return res.status(403).json({ error: 'Это не ваш заказ' });
