@@ -116,6 +116,10 @@ shopRouter.get('/banners', async (_req, res) => {
       where: { active: true, imageUrl: { not: null } },
       orderBy: { slot: 'asc' },
     });
+    // Диагностика — сколько слайдов реально ушло в ответ. Формат ответа —
+    // обычный массив [...], НЕ {banners:[...]}; это уже так и должно так
+    // оставаться (см. обсуждение) — меняется тут только логирование.
+    logger.info({ count: banners.length }, '[Shop API] GET /banners — отдано слайдов');
     res.json(banners.map((b) => ({
       imageUrl: b.imageUrl,
       title: b.title,

@@ -2106,6 +2106,17 @@ function wireMyMarketTabsOnce() {
     if (e.target.id === 'mmCourierCardOverlay') closeCourierCard();
   });
 
+  // Курьеры — поиск (по мере ввода) и вкладки Активные/Заблокированные —
+  // оба фильтруют уже загруженный список на клиенте, без нового запроса.
+  document.getElementById('mymarketCouriersSearch').addEventListener('input', () => renderMyMarketCouriersTable());
+  document.getElementById('mymarketCouriersStatusTabs').addEventListener('click', (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    document.querySelectorAll('#mymarketCouriersStatusTabs button').forEach((b) => b.classList.remove('is-active'));
+    btn.classList.add('is-active');
+    renderMyMarketCouriersTable();
+  });
+
   // Вкладки внутри карточки товара (Информация/Характеристики/Медиа/Превью)
   document.getElementById('mymarketCardTabs').addEventListener('click', (e) => {
     const btn = e.target.closest('button');
@@ -2847,12 +2858,32 @@ let myMarketCouriersCache = [];
 async function loadMyMarketCouriers() {
   const couriers = await api('/shop-admin/couriers');
   myMarketCouriersCache = couriers;
+  renderMyMarketCouriersTable();
+}
+
+/** Фильтрует уже загруженный список по вкладке (active=true/false) и
+ *  поисковой строке (имя, фамилия, телефон, ИИН) — без обращения к
+ *  серверу заново, список уже есть в myMarketCouriersCache. */
+function renderMyMarketCouriersTable() {
+  const statusTab = document.querySelector('#mymarketCouriersStatusTabs button.is-active')?.dataset.status || 'active';
+  const wantActive = statusTab === 'active';
+  const query = document.getElementById('mymarketCouriersSearch').value.trim().toLowerCase();
+
+  let rows = myMarketCouriersCache.filter((c) => c.active === wantActive);
+  if (query) {
+    rows = rows.filter((c) =>
+      c.name.toLowerCase().includes(query) ||
+      c.phone.toLowerCase().includes(query) ||
+      (c.iin ?? '').toLowerCase().includes(query),
+    );
+  }
+
   const tbody = document.querySelector('#mymarketCouriersTable tbody');
-  if (!couriers.length) {
-    tbody.innerHTML = `<tr><td colspan="9" style="color:var(--text-faint)">Курьеров нет</td></tr>`;
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="9" style="color:var(--text-faint)">${wantActive ? 'Активных курьеров нет' : 'Заблокированных курьеров нет'}</td></tr>`;
     return;
   }
-  tbody.innerHTML = couriers.map((c) => `
+  tbody.innerHTML = rows.map((c) => `
     <tr data-id="${c.id}" style="cursor:pointer">
       <td>${c.facePhotoUrl ? `<img src="${c.facePhotoUrl}" alt="" style="width:36px;height:36px;object-fit:cover;border-radius:50%" />` : '<span style="color:var(--text-faint);font-size:11px">—</span>'}</td>
       <td class="name-cell">${c.name}</td>

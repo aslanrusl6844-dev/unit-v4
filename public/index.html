@@ -637,6 +637,11 @@
         <div id="mymarketCouriersTab" hidden>
           <div class="panel">
             <p class="panel__hint">Фото удостоверения и лица видны только здесь — ни один курьерский API-запрос их не отдаёт.</p>
+            <input type="text" id="mymarketCouriersSearch" placeholder="Поиск: имя, фамилия, телефон, ИИН" style="max-width:320px;margin-bottom:10px" />
+            <div class="seg" id="mymarketCouriersStatusTabs" style="margin-bottom:10px">
+              <button class="is-active" data-status="active">Активные</button>
+              <button data-status="blocked">Заблокированные</button>
+            </div>
             <div class="table-wrap">
               <table class="table" id="mymarketCouriersTable">
                 <thead>
