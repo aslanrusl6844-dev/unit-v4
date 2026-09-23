@@ -255,6 +255,7 @@ const shopBulkRowSchema = z.object({
   images: z.string().optional().nullable(),
   shopDelivery: z.string().optional().nullable(),
   shopActive: z.boolean().default(true),
+  videoUrl: z.string().optional().nullable(),
 });
 
 shopAdminRouter.post('/bulk-upsert', async (req, res) => {
@@ -304,6 +305,7 @@ shopAdminRouter.post('/bulk-upsert', async (req, res) => {
         images: row.data.images || null,
         shopDelivery: row.data.shopDelivery || null,
         shopActive: row.data.shopActive,
+        videoUrl: row.data.videoUrl || null,
       };
       const wasExisting = existingSkus.has(row.data.sku);
       await prisma.product.upsert({

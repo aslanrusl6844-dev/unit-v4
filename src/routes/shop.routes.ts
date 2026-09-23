@@ -46,6 +46,7 @@ function toShopProduct(p: any) {
     composition: p.composition,
     images,
     video: p.shopVideo ?? null,
+    videoUrl: p.videoUrl ?? null,
     delivery: p.shopDelivery,
     banner: p.banner,
     bannerTitle: p.bannerTitle,

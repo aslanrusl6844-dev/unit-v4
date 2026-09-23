@@ -2370,6 +2370,7 @@ function openMyMarketProductCard(id) {
   form.elements.type.value = p.type ?? '';
   form.elements.description.value = p.description ?? '';
   form.elements.composition.value = p.composition ?? '';
+  form.elements.videoUrl.value = p.videoUrl ?? '';
   try { myMarketCardImages = p.images ? JSON.parse(p.images) : []; } catch { myMarketCardImages = []; }
   myMarketCardVideo = p.shopVideo ?? null;
   renderMyMarketMediaGrid();
@@ -2562,6 +2563,7 @@ async function saveMyMarketProductCard(e) {
     composition: form.elements.composition.value.trim() || null,
     images: myMarketCardImages.length ? JSON.stringify(myMarketCardImages) : null,
     shopVideo: myMarketCardVideo || null,
+    videoUrl: form.elements.videoUrl.value.trim() || null,
     shopActive,
   };
 
@@ -2988,12 +2990,12 @@ function downloadMyMarketTemplate() {
   const headers = [
     'Артикул *', 'Название *', 'Категория *', 'Подкатегория', 'Тип *', 'Код модели', 'Бренд', 'Цвет', 'Размер', 'Пол',
     'Цена на витрине, ₸ *', 'Цена до скидки, ₸', 'Остаток, шт *', 'Доставка', 'В продаже',
-    'Ссылки на фото', 'Описание', 'Состав / комплектация',
+    'Ссылки на фото', 'Видео', 'Описание', 'Состав / комплектация',
   ];
   const exampleRows = [
-    ['SKU-001', 'Шампунь укрепляющий', 'Красота', 'Уход за волосами', 'Шампунь', '', 'BrandX', '', '', '', 4990, 6990, 25, 'ракета', 'да', 'https://example.com/1.jpg|https://example.com/2.jpg', 'Описание товара', 'Состав товара'],
-    ['SKU-002', 'Бюстгальтер спортивный', 'Одежда', 'Бельё', 'Бюстгальтер', 'BR-100', 'BrandZ', 'Чёрный', 'M', 'женский', 8990, '', 12, 'грузовик', 'да', 'https://example.com/3.jpg', '', ''],
-    ['SKU-003', 'Блендер погружной', 'Бытовая техника', '', 'Блендер', '', 'BrandY', '', '', '', 15990, '', 8, 'грузовик', 'да', 'https://example.com/4.jpg', '', ''],
+    ['SKU-001', 'Шампунь укрепляющий', 'Красота', 'Уход за волосами', 'Шампунь', '', 'BrandX', '', '', '', 4990, 6990, 25, 'ракета', 'да', 'https://example.com/1.jpg|https://example.com/2.jpg', '', 'Описание товара', 'Состав товара'],
+    ['SKU-002', 'Бюстгальтер спортивный', 'Одежда', 'Бельё', 'Бюстгальтер', 'BR-100', 'BrandZ', 'Чёрный', 'M', 'женский', 8990, '', 12, 'грузовик', 'да', 'https://example.com/3.jpg', 'https://example.com/video.mp4', '', ''],
+    ['SKU-003', 'Блендер погружной', 'Бытовая техника', '', 'Блендер', '', 'BrandY', '', '', '', 15990, '', 8, 'грузовик', 'да', 'https://example.com/4.jpg', '', '', ''],
   ];
   const ws = XLSX.utils.aoa_to_sheet([headers, ...exampleRows]);
   const wb = XLSX.utils.book_new();
@@ -3027,7 +3029,19 @@ const MM_UPLOAD_COLUMN_ALIASES = {
   images: ['images', 'ссылки на фото'],
   description: ['description', 'описание'],
   composition: ['composition', 'состав', 'состав / комплектация'],
+  videoUrl: ['videourl', 'видео'],
 };
+
+/**
+ * Видео из Excel — строго http(s)-ссылка на .mp4/.webm. Если ячейка не
+ * похожа на такую ссылку (мусор, текст, пустая) — просто игнорируем поле
+ * (не заполняем videoUrl), НЕ отклоняем строку целиком и не роняем загрузку.
+ */
+function mmParseVideoUrl(raw) {
+  const v = String(raw ?? '').trim();
+  if (!v) return null;
+  return /^https?:\/\/.+\.(mp4|webm)(\?.*)?$/i.test(v) ? v : null;
+}
 
 function mmNormalizeHeaderCell(cell) {
   return String(cell ?? '')
@@ -3156,6 +3170,7 @@ function mmClassifyRows(rawRows) {
         },
       ),
       composition: norm.composition ? String(norm.composition).trim() : null,
+      videoUrl: mmParseVideoUrl(norm.videoUrl),
       // Размер — только для экрана проверки (показываем в таблице группы,
       // если заполнен), в базу уходит уже вшитым в description выше —
       // отдельного поля под размер в Product пока нет.
