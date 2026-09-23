@@ -531,8 +531,11 @@ const courierRegisterSchema = z.object({
   vehicle: z.string().min(1),
   // Без этих двух URL — регистрация не пройдёт (400). Их получают ЗАРАНЕЕ
   // через POST /courier/upload-photo, здесь только принимаем готовые ссылки.
-  idPhotoUrl: z.string().min(1),
-  facePhotoUrl: z.string().min(1),
+  // Строго URL, не просто непустая строка — "без живого url анкета не
+  // сохранится" означает и защиту от пустышки/заглушки на бэкенде, не
+  // только на клиенте.
+  idPhotoUrl: z.string().url('idPhotoUrl должен быть настоящей ссылкой (результат upload-photo)'),
+  facePhotoUrl: z.string().url('facePhotoUrl должен быть настоящей ссылкой (результат upload-photo)'),
 });
 
 /**
@@ -576,7 +579,8 @@ shopRouter.post('/courier/register', async (req, res) => {
 });
 
 const COURIER_PHOTO_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
-const COURIER_PHOTO_MAX_BYTES = 5 * 1024 * 1024; // 5 МБ
+const COURIER_PHOTO_MAX_MB = 2;
+const COURIER_PHOTO_MAX_BYTES = COURIER_PHOTO_MAX_MB * 1024 * 1024; // 2 МБ — с запасом под реальный предел тела запроса на Vercel (~4.5 МБ)
 const courierPhotoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: COURIER_PHOTO_MAX_BYTES } });
 
 /**
@@ -584,8 +588,26 @@ const courierPhotoUpload = multer({ storage: multer.memoryStorage(), limits: { f
  * поле файла "file", поле "type" = "id" | "face". Сохраняется туда же,
  * куда фото товаров (Vercel Blob) — тот же токен, тот же принцип. Без
  * настроенного Blob — честный 501 "добавьте Blob", как и для фото товаров.
+ *
+ * ВАЖНО: multer подключён НЕ как обычный middleware в цепочке роута, а
+ * вызван вручную с колбэком — если запускать его как middleware напрямую
+ * (upload.single('file') третьим аргументом у router.post), его ошибки
+ * (например, превышение лимита размера) уходят прямо в общий обработчик
+ * ошибок Express, МИМО try/catch в самом хендлере — получался неясный
+ * ответ вместо понятного "файл слишком большой". Так — ловим сами.
  */
-shopRouter.post('/courier/upload-photo', courierPhotoUpload.single('file'), async (req, res) => {
+shopRouter.post('/courier/upload-photo', (req, res, next) => {
+  courierPhotoUpload.single('file')(req, res, (err: any) => {
+    if (err) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(413).json({ error: `Файл слишком большой, максимум ${COURIER_PHOTO_MAX_MB} МБ` });
+      }
+      logger.error({ err }, '[Shop API] Ошибка чтения multipart-запроса при загрузке фото курьера');
+      return res.status(400).json({ error: 'Не удалось прочитать файл', details: String(err?.message ?? err) });
+    }
+    next();
+  });
+}, async (req, res) => {
   const type = req.body?.type;
   if (type !== 'id' && type !== 'face') {
     return res.status(400).json({ error: 'Поле type должно быть "id" или "face"' });
