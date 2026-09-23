@@ -444,6 +444,7 @@
           <button data-tab="products">Товары</button>
           <button data-tab="prices">Цены и акции</button>
           <button data-tab="orders">Заказы</button>
+          <button data-tab="couriers">Курьеры</button>
           <button data-tab="finance">Финансы</button>
           <button data-tab="upload">Загрузка Excel</button>
         </div>
@@ -629,6 +630,35 @@
                 <tbody></tbody>
               </table>
             </div>
+          </div>
+        </div>
+
+        <!-- ---- Курьеры ---- -->
+        <div id="mymarketCouriersTab" hidden>
+          <div class="panel">
+            <p class="panel__hint">Фото удостоверения и лица видны только здесь — ни один курьерский API-запрос их не отдаёт.</p>
+            <div class="table-wrap">
+              <table class="table" id="mymarketCouriersTable">
+                <thead>
+                  <tr>
+                    <th>Фото</th><th>ФИО</th><th>ИИН</th><th>Телефон</th><th>Адрес</th>
+                    <th>Авто</th><th>Реквизиты</th><th>Согласие</th><th>Статус</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ---- Карточка курьера ---- -->
+        <div id="mmCourierCardOverlay" class="modal-overlay" hidden>
+          <div class="modal">
+            <div class="modal__head">
+              <h2>Курьер</h2>
+              <button class="link-btn" id="mmCourierCardClose">✕</button>
+            </div>
+            <div id="mmCourierCardBody"></div>
           </div>
         </div>
 

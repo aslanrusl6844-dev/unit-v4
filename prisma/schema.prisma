@@ -356,6 +356,16 @@ model Courier {
   createdAt        DateTime  @default(now())
   orders           ShopOrder[]
   payouts          CourierPayout[]
+
+  // --- Верификация личности — ОБЯЗАТЕЛЬНЫ при регистрации (API это
+  // проверяет), но nullable на уровне БД, чтобы не сломать уже
+  // существующих тестовых курьеров, заведённых до этого поля. ---
+  idPhotoUrl       String?   // фото удостоверения личности
+  facePhotoUrl     String?   // фото лица
+  iin              String?   // ИИН
+  address          String?
+  vehicle          String?   // авто (марка/модель/номер)
+  agreeContractAt  DateTime? // дата согласия с договором-офертой
 }
 
 // Выплата курьеру за доставку одного заказа — создаётся автоматически при

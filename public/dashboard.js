@@ -2030,7 +2030,7 @@ let myMarketProductsCache = [];
 let myMarketChartInstance = null;
 let myMarketEditingProductId = null;
 
-const MY_MARKET_TABS = ['home', 'products', 'prices', 'orders', 'finance', 'upload'];
+const MY_MARKET_TABS = ['home', 'products', 'prices', 'orders', 'couriers', 'finance', 'upload'];
 
 function wireMyMarketTabsOnce() {
   if (myMarketTabWired) return;
@@ -2095,6 +2095,15 @@ function wireMyMarketTabsOnce() {
     if (e.key === 'Escape' && !document.getElementById('mymarketProductCardOverlay').hidden) {
       closeMyMarketProductCard();
     }
+    if (e.key === 'Escape' && !document.getElementById('mmCourierCardOverlay').hidden) {
+      closeCourierCard();
+    }
+  });
+
+  // Карточка курьера — модальное окно
+  document.getElementById('mmCourierCardClose').addEventListener('click', closeCourierCard);
+  document.getElementById('mmCourierCardOverlay').addEventListener('click', (e) => {
+    if (e.target.id === 'mmCourierCardOverlay') closeCourierCard();
   });
 
   // Вкладки внутри карточки товара (Информация/Характеристики/Медиа/Превью)
@@ -2154,6 +2163,7 @@ function switchMyMarketTab(tab) {
   if (tab === 'products') loadMyMarketProducts();
   if (tab === 'prices') loadMyMarketPrices();
   if (tab === 'orders') loadMyMarketOrders();
+  if (tab === 'couriers') loadMyMarketCouriers();
   if (tab === 'finance') loadMyMarketFinance();
 }
 
@@ -2827,6 +2837,78 @@ async function loadMyMarketOrders() {
  */
 function downloadMyMarketWaybill(orderId) {
   window.open(`/api/shop/admin/orders/${orderId}/waybill`, '_blank');
+}
+
+// ---------------------------------------------------------------------
+// Курьеры — таблица + карточка с фото (только здесь, не в API курьера)
+// ---------------------------------------------------------------------
+let myMarketCouriersCache = [];
+
+async function loadMyMarketCouriers() {
+  const couriers = await api('/shop-admin/couriers');
+  myMarketCouriersCache = couriers;
+  const tbody = document.querySelector('#mymarketCouriersTable tbody');
+  if (!couriers.length) {
+    tbody.innerHTML = `<tr><td colspan="9" style="color:var(--text-faint)">Курьеров нет</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = couriers.map((c) => `
+    <tr data-id="${c.id}" style="cursor:pointer">
+      <td>${c.facePhotoUrl ? `<img src="${c.facePhotoUrl}" alt="" style="width:36px;height:36px;object-fit:cover;border-radius:50%" />` : '<span style="color:var(--text-faint);font-size:11px">—</span>'}</td>
+      <td class="name-cell">${c.name}</td>
+      <td>${c.iin ?? '—'}</td>
+      <td>${c.phone}</td>
+      <td class="name-cell" style="font-size:11px">${c.address ?? '—'}</td>
+      <td>${c.vehicle ?? '—'}</td>
+      <td style="font-size:11px">${c.requisitesType === 'kaspi' ? 'Kaspi' : 'Карта'}: ${c.requisitesValue}</td>
+      <td style="font-size:11px">${c.agreeContractAt ? fmtOrderDateTime(c.agreeContractAt) : '—'}</td>
+      <td>${c.active ? '<span style="color:var(--accent)">● Активен</span>' : '<span style="color:var(--loss)">● Заблокирован</span>'}</td>
+    </tr>
+  `).join('');
+
+  tbody.querySelectorAll('tr[data-id]').forEach((tr) => {
+    tr.addEventListener('click', () => openCourierCard(tr.dataset.id));
+  });
+}
+
+function openCourierCard(id) {
+  const c = myMarketCouriersCache.find((x) => x.id === id);
+  if (!c) return;
+  document.getElementById('mmCourierCardBody').innerHTML = `
+    <div style="display:flex;gap:14px;margin-bottom:14px">
+      ${c.facePhotoUrl ? `<img src="${c.facePhotoUrl}" alt="Лицо" style="width:140px;height:140px;object-fit:cover;border-radius:10px" />` : ''}
+      ${c.idPhotoUrl ? `<img src="${c.idPhotoUrl}" alt="Удостоверение" style="width:220px;height:140px;object-fit:cover;border-radius:10px" />` : ''}
+    </div>
+    <div class="form-grid">
+      <div><strong>ФИО:</strong> ${c.name}</div>
+      <div><strong>ИИН:</strong> ${c.iin ?? '—'}</div>
+      <div><strong>Телефон:</strong> ${c.phone}</div>
+      <div><strong>Адрес:</strong> ${c.address ?? '—'}</div>
+      <div><strong>Авто:</strong> ${c.vehicle ?? '—'}</div>
+      <div><strong>Реквизиты:</strong> ${c.requisitesType === 'kaspi' ? 'Kaspi' : 'Карта'}: ${c.requisitesValue}</div>
+      <div><strong>Согласие:</strong> ${c.agreeContractAt ? fmtOrderDateTime(c.agreeContractAt) : '—'}</div>
+      <div><strong>Статус:</strong> ${c.active ? 'Активен' : 'Заблокирован'}</div>
+    </div>
+    <div style="display:flex;justify-content:flex-end;margin-top:10px">
+      <button class="btn ${c.active ? 'btn--ghost' : 'btn--accent'}" id="mmCourierBlockBtn" style="${c.active ? 'color:var(--loss)' : ''}">
+        ${c.active ? 'Заблокировать' : 'Разблокировать'}
+      </button>
+    </div>
+  `;
+  document.getElementById('mmCourierBlockBtn').addEventListener('click', async () => {
+    try {
+      await api(`/shop-admin/couriers/${c.id}/block`, { method: 'POST', body: JSON.stringify({ active: !c.active }) });
+      closeCourierCard();
+      await loadMyMarketCouriers();
+    } catch (err) {
+      alert('Не удалось изменить статус курьера: ' + err.message);
+    }
+  });
+  document.getElementById('mmCourierCardOverlay').hidden = false;
+}
+
+function closeCourierCard() {
+  document.getElementById('mmCourierCardOverlay').hidden = true;
 }
 
 // ---------------------------------------------------------------------

@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import multer from 'multer';
+import { put } from '@vercel/blob';
 import { prisma } from '../db/prisma';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
@@ -524,13 +526,23 @@ const courierRegisterSchema = z.object({
   phone: z.string().min(1),
   requisitesType: z.enum(['kaspi', 'card']),
   requisitesValue: z.string().min(1),
+  iin: z.string().min(1),
+  address: z.string().min(1),
+  vehicle: z.string().min(1),
+  // Без этих двух URL — регистрация не пройдёт (400). Их получают ЗАРАНЕЕ
+  // через POST /courier/upload-photo, здесь только принимаем готовые ссылки.
+  idPhotoUrl: z.string().min(1),
+  facePhotoUrl: z.string().min(1),
 });
 
 /**
  * Регистрация курьера — имя, фамилия, телефон, реквизиты для выплат
- * (Kaspi-перевод по номеру телефона или номер карты). Повторная
- * регистрация с уже известным телефоном обновляет данные (upsert), а не
- * создаёт дубликат.
+ * (Kaspi-перевод по номеру телефона или номер карты), ИИН, адрес, авто,
+ * фото удостоверения и лица (оба обязательны — без них 400 через zod).
+ * Повторная регистрация с уже известным телефоном обновляет данные
+ * (upsert), а не создаёт дубликат. Дата согласия (agreeContractAt)
+ * проставляется автоматически моментом регистрации — считаем, что
+ * заполнение формы регистрации и есть момент согласия с офертой.
  */
 shopRouter.post('/courier/register', async (req, res) => {
   const parsed = courierRegisterSchema.safeParse(req.body);
@@ -541,15 +553,20 @@ shopRouter.post('/courier/register', async (req, res) => {
 
   try {
     const name = `${parsed.data.firstName} ${parsed.data.lastName}`.trim();
+    const commonData = {
+      name,
+      requisitesType: parsed.data.requisitesType,
+      requisitesValue: parsed.data.requisitesValue,
+      iin: parsed.data.iin,
+      address: parsed.data.address,
+      vehicle: parsed.data.vehicle,
+      idPhotoUrl: parsed.data.idPhotoUrl,
+      facePhotoUrl: parsed.data.facePhotoUrl,
+    };
     const courier = await prisma.courier.upsert({
       where: { phone: normalizedPhone },
-      update: { name, requisitesType: parsed.data.requisitesType, requisitesValue: parsed.data.requisitesValue },
-      create: {
-        name,
-        phone: normalizedPhone,
-        requisitesType: parsed.data.requisitesType,
-        requisitesValue: parsed.data.requisitesValue,
-      },
+      update: commonData, // agreeContractAt НЕ трогаем при повторной регистрации — дата согласия должна быть первой, не последней
+      create: { ...commonData, phone: normalizedPhone, agreeContractAt: new Date() },
     });
     res.status(201).json({ id: courier.id, name: courier.name, phone: courier.phone });
   } catch (err: any) {
@@ -558,9 +575,48 @@ shopRouter.post('/courier/register', async (req, res) => {
   }
 });
 
+const COURIER_PHOTO_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+const COURIER_PHOTO_MAX_BYTES = 5 * 1024 * 1024; // 5 МБ
+const courierPhotoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: COURIER_PHOTO_MAX_BYTES } });
+
+/**
+ * Загрузка фото курьера (удостоверение или лицо) — multipart/form-data,
+ * поле файла "file", поле "type" = "id" | "face". Сохраняется туда же,
+ * куда фото товаров (Vercel Blob) — тот же токен, тот же принцип. Без
+ * настроенного Blob — честный 501 "добавьте Blob", как и для фото товаров.
+ */
+shopRouter.post('/courier/upload-photo', courierPhotoUpload.single('file'), async (req, res) => {
+  const type = req.body?.type;
+  if (type !== 'id' && type !== 'face') {
+    return res.status(400).json({ error: 'Поле type должно быть "id" или "face"' });
+  }
+  const file = (req as any).file as Express.Multer.File | undefined;
+  if (!file) return res.status(400).json({ error: 'Файл не передан (поле "file")' });
+
+  if (!env.blobToken) {
+    return res.status(501).json({ error: 'добавьте Blob', details: 'BLOB_READ_WRITE_TOKEN не задан в переменных окружения — загрузка фото недоступна.' });
+  }
+  if (!COURIER_PHOTO_TYPES.includes(file.mimetype)) {
+    return res.status(400).json({ error: `Недопустимый формат файла: ${file.mimetype}. Разрешено: ${COURIER_PHOTO_TYPES.join(', ')}` });
+  }
+
+  try {
+    const pathname = `courier/${type}/${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+    const blob = await put(pathname, file.buffer, { access: 'public', contentType: file.mimetype, token: env.blobToken });
+    res.json({ url: blob.url });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop API] Ошибка загрузки фото курьера');
+    res.status(500).json({ error: 'Не удалось загрузить фото', details: String(err?.message ?? err) });
+  }
+});
+
 /** Ищет активного курьера по телефону — общая часть для всех эндпоинтов
- *  ниже, отдаёт понятную ошибку, если курьера нет или он заблокирован. */
-async function findActiveCourierOrFail(rawPhone: string, res: any): Promise<{ id: string; phone: string } | null> {
+ *  ниже, отдаёт понятную ошибку, если курьера нет или он заблокирован.
+ *  Возвращает полную запись (включая поля верификации) — так вызывающий
+ *  код может проверить полноту профиля (см. isCourierProfileComplete). */
+async function findActiveCourierOrFail(rawPhone: string, res: any): Promise<{
+  id: string; phone: string; idPhotoUrl: string | null; facePhotoUrl: string | null; iin: string | null; agreeContractAt: Date | null;
+} | null> {
   const normalizedPhone = normalizePhone(rawPhone);
   if (!normalizedPhone) {
     res.status(400).json({ error: 'Некорректный номер телефона курьера' });
@@ -572,6 +628,12 @@ async function findActiveCourierOrFail(rawPhone: string, res: any): Promise<{ id
     return null;
   }
   return courier;
+}
+
+/** Профиль курьера считается заполненным, только если есть оба фото, ИИН
+ *  и дата согласия — проверяется перед scan (см. п.5 запроса). */
+function isCourierProfileComplete(courier: { idPhotoUrl: string | null; facePhotoUrl: string | null; iin: string | null; agreeContractAt: Date | null }): boolean {
+  return !!(courier.idPhotoUrl && courier.facePhotoUrl && courier.iin && courier.agreeContractAt);
 }
 
 const courierScanSchema = z.object({
@@ -592,6 +654,9 @@ shopRouter.post('/courier/scan', async (req, res) => {
   try {
     const courier = await findActiveCourierOrFail(parsed.data.courierPhone, res);
     if (!courier) return;
+    if (!isCourierProfileComplete(courier)) {
+      return res.status(403).json({ error: 'Профиль курьера не заполнен полностью — нужны оба фото, ИИН и согласие с договором' });
+    }
 
     const order = await findShopOrderByNumberLoosely(parsed.data.barcode);
     if (!order) {

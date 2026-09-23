@@ -319,3 +319,35 @@ shopAdminRouter.post('/bulk-upsert', async (req, res) => {
 
   res.json({ ok: true, created, updated, errors });
 });
+
+// =====================================================================
+// Курьеры — вкладка «Курьеры» в My Market. Фото (удостоверение/лицо) и
+// прочие личные данные отдаются ТОЛЬКО отсюда (админский путь) — ни один
+// эндпоинт /api/shop/courier/* (курьерский, x-app-key) их не возвращает.
+// =====================================================================
+
+shopAdminRouter.get('/couriers', async (_req, res) => {
+  try {
+    const couriers = await prisma.courier.findMany({ orderBy: { createdAt: 'desc' } });
+    res.json(couriers);
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] GET /couriers упал');
+    res.status(500).json({ error: 'Не удалось получить список курьеров', details: String(err?.message ?? err) });
+  }
+});
+
+const courierBlockSchema = z.object({ active: z.boolean() });
+
+/** Заблокировать/разблокировать курьера — кнопка «Заблокировать» в
+ *  карточке (переключается на «Разблокировать», если уже заблокирован,
+ *  чтобы не было тупикового состояния без возможности отменить). */
+shopAdminRouter.post('/couriers/:id/block', async (req, res) => {
+  const parsed = courierBlockSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  try {
+    const courier = await prisma.courier.update({ where: { id: req.params.id }, data: { active: parsed.data.active } });
+    res.json(courier);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Не удалось изменить статус курьера', details: String(err?.message ?? err) });
+  }
+});
