@@ -548,11 +548,29 @@ const courierRegisterSchema = z.object({
  * заполнение формы регистрации и есть момент согласия с офертой.
  */
 shopRouter.post('/courier/register', async (req, res) => {
+  // Логируем КАЖДУЮ попытку регистрации — телефон и есть ли фото — ещё до
+  // валидации, чтобы при любом отказе (400) в логах было видно, что вообще
+  // пришло, а не только факт "не получилось".
+  const rawPhone = req.body?.phone;
+  const hasIdPhoto = Boolean(req.body?.idPhotoUrl);
+  const hasFacePhoto = Boolean(req.body?.facePhotoUrl);
+  logger.info(
+    { phone: rawPhone, hasIdPhoto, hasFacePhoto },
+    '[Shop API] POST /courier/register — попытка регистрации',
+  );
+
   const parsed = courierRegisterSchema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные регистрации', details: parsed.error.flatten() });
+  if (!parsed.success) {
+    const reason = JSON.stringify(parsed.error.flatten().fieldErrors);
+    logger.warn({ phone: rawPhone, hasIdPhoto, hasFacePhoto, reason }, '[Shop API] /courier/register отклонён — неверные данные (400)');
+    return res.status(400).json({ error: 'Неверные данные регистрации', details: parsed.error.flatten() });
+  }
 
   const normalizedPhone = normalizePhone(parsed.data.phone);
-  if (!normalizedPhone) return res.status(400).json({ error: 'Некорректный номер телефона' });
+  if (!normalizedPhone) {
+    logger.warn({ phone: rawPhone }, '[Shop API] /courier/register отклонён — некорректный номер телефона (400)');
+    return res.status(400).json({ error: 'Некорректный номер телефона' });
+  }
 
   try {
     const name = `${parsed.data.firstName} ${parsed.data.lastName}`.trim();
@@ -571,9 +589,10 @@ shopRouter.post('/courier/register', async (req, res) => {
       update: commonData, // agreeContractAt НЕ трогаем при повторной регистрации — дата согласия должна быть первой, не последней
       create: { ...commonData, phone: normalizedPhone, agreeContractAt: new Date() },
     });
+    logger.info({ phone: normalizedPhone, courierId: courier.id }, '[Shop API] /courier/register — успешно сохранён');
     res.status(201).json({ id: courier.id, name: courier.name, phone: courier.phone });
   } catch (err: any) {
-    logger.error({ err }, '[Shop API] Ошибка регистрации курьера');
+    logger.error({ err, phone: normalizedPhone }, '[Shop API] Ошибка регистрации курьера (500)');
     res.status(500).json({ error: 'Не удалось зарегистрировать курьера', details: String(err?.message ?? err) });
   }
 });

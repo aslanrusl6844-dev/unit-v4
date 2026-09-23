@@ -328,6 +328,9 @@ shopAdminRouter.post('/bulk-upsert', async (req, res) => {
 
 shopAdminRouter.get('/couriers', async (_req, res) => {
   try {
+    // Явно без кэша — этот список должен ВСЕГДА показывать актуальное
+    // состояние БД, а не что-то, что мог закэшировать браузер/прокси/CDN.
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     const couriers = await prisma.courier.findMany({ orderBy: { createdAt: 'desc' } });
     res.json(couriers);
   } catch (err: any) {
