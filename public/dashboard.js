@@ -2897,33 +2897,30 @@ async function loadMyMarketAnalyticsSearch() {
     tbody.innerHTML = `<tr><td colspan="7" style="color:var(--text-faint)">Поисковых запросов за этот период нет</td></tr>`;
     return;
   }
-  tbody.innerHTML = rows.map((r) => `
+  tbody.innerHTML = rows.map((r) => {
+    // Города этого запроса — уже только из белого списка, только >0,
+    // отсортированы по числу людей убыв. (см. бэкенд). Формат ровно как
+    // просили: "Алматы 12 · Астана 5 · Павлодар 1 · Всего по РК: 18".
+    const cityParts = r.cityBreakdown.map((c) => `${c.city} ${c.count}`);
+    let citySummary = cityParts.length ? cityParts.join(' · ') : '';
+    citySummary += (citySummary ? ' · ' : '') + `Всего по РК: ${r.totalRk}`;
+    if (r.noCityCount > 0) citySummary += ` · без города: ${r.noCityCount}`;
+
+    return `
     <tr>
-      <td colspan="7" style="padding:0;border:none">
-        <details>
-          <summary style="cursor:pointer;display:grid;grid-template-columns:2fr repeat(6,1fr);gap:8px;padding:8px 4px;align-items:center">
-            <span class="name-cell">${r.query}</span>
-            <span class="num">${fmt.format(r.searchCount)}</span>
-            <span class="num">${fmt.format(r.uniquePeople)}</span>
-            <span class="num">${fmt.format(r.orderedAfterSearch)}</span>
-            <span class="num">${fmtMoney(r.orderedRevenue)}</span>
-            <span class="num">${r.avgResultsCount ?? '—'}</span>
-            <span class="num">${fmt.format(r.zeroResultsCount)}</span>
-          </summary>
-          <div style="padding:6px 4px 10px 20px">
-            ${r.cities.length ? `
-              <table class="table" style="margin-top:4px">
-                <thead><tr><th>Город</th><th class="num">Уникальные люди</th><th class="num">% от всех по запросу</th></tr></thead>
-                <tbody>
-                  ${r.cities.map((c) => `<tr><td>${c.city}</td><td class="num">${fmt.format(c.uniquePeople)}</td><td class="num">${c.percent}%</td></tr>`).join('')}
-                </tbody>
-              </table>
-            ` : `<span style="color:var(--text-faint);font-size:12px">Нет данных по городам</span>`}
-          </div>
-        </details>
-      </td>
+      <td class="name-cell">${r.query}</td>
+      <td class="num">${fmt.format(r.searchCount)}</td>
+      <td class="num">${fmt.format(r.uniquePeople)}</td>
+      <td class="num">${fmt.format(r.orderedAfterSearch)}</td>
+      <td class="num">${fmtMoney(r.orderedRevenue)}</td>
+      <td class="num">${r.avgResultsCount ?? '—'}</td>
+      <td class="num">${fmt.format(r.zeroResultsCount)}</td>
     </tr>
-  `).join('');
+    <tr>
+      <td colspan="7" style="padding:2px 4px 10px;color:var(--text-faint);font-size:11.5px;border-top:none">${citySummary}</td>
+    </tr>
+  `;
+  }).join('');
 }
 
 async function loadMyMarketAnalyticsConversion() {

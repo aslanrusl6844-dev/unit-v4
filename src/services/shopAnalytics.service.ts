@@ -21,6 +21,28 @@ function round1(n: number): number {
 }
 
 /**
+ * Белый список городов приложения — ТОЛЬКО эти 14, как в адресе заказа.
+ * Регистр не важен, "Нур-Султан" — алиас на "Астана". Всё остальное —
+ * не из списка, считается "без города" (см. normalizeKzCity) — город не
+ * выдумываем, если его нет в этом списке.
+ */
+const KZ_CITY_WHITELIST = [
+  'Алматы', 'Астана', 'Шымкент', 'Караганда', 'Актобе', 'Тараз', 'Павлодар',
+  'Усть-Каменогорск', 'Семей', 'Атырау', 'Костанай', 'Кызылорда', 'Актау', 'Уральск',
+];
+const KZ_CITY_LOOKUP = new Map<string, string>();
+for (const c of KZ_CITY_WHITELIST) KZ_CITY_LOOKUP.set(c.toLowerCase(), c);
+KZ_CITY_LOOKUP.set('нур-султан', 'Астана');
+
+/** trim + регистр не важен; не из списка (или пусто) -> null ("без города"). */
+function normalizeKzCity(raw: string | null): string | null {
+  if (!raw) return null;
+  const key = raw.trim().toLowerCase();
+  if (!key) return null;
+  return KZ_CITY_LOOKUP.get(key) ?? null;
+}
+
+/**
  * Заказы канала APP за период — читаем ShopOrder напрямую (не через
  * ShopEvent), т.к. заказ как факт уже пишется туда при POST /orders и не
  * дублируется отдельным событием (см. shop.routes.ts POST /events).
@@ -37,7 +59,13 @@ function isPaidStatus(status: string): boolean {
   return status !== 'pending_payment' && status !== 'cancelled';
 }
 
-/** А) Поисковые запросы — с разбивкой по городам внутри каждой строки. */
+/**
+ * А) Поисковые запросы — под каждой строкой одна подстрока с городами
+ * ЭТОГО запроса: только из белого списка, формат "Город N · Город N",
+ * сортировка по числу людей убыв., затем "Всего по РК: N" (сумма только
+ * по белому списку), и если есть события с городом не из списка/пустым —
+ * отдельной пометкой "без города: N" в конце (город не выдумываем).
+ */
 export async function getSearchAnalytics(days: number) {
   const from = daysAgo(days);
   const [searchEvents, orders] = await Promise.all([
@@ -81,24 +109,24 @@ export async function getSearchAnalytics(days: number) {
     const avgResultsCount = resultsCounts.length ? resultsCounts.reduce((a, b) => a + b, 0) / resultsCounts.length : null;
     const zeroResultsCount = events.filter((e) => e.resultsCount === 0).length;
 
-    // Разбивка по городам — внутри запроса, по числу уникальных людей убыв., "без города" в конец.
+    // Города этого запроса — ТОЛЬКО из белого списка.
     const cityMap = new Map<string, Set<string>>();
+    const noCityKeys = new Set<string>();
     for (const e of events) {
-      const cityKey = e.city || '';
-      if (!cityMap.has(cityKey)) cityMap.set(cityKey, new Set());
-      cityMap.get(cityKey)!.add(e.phone ? `p:${e.phone}` : `e:${e.id}`);
+      const uniqueKey = e.phone ? `p:${e.phone}` : `e:${e.id}`;
+      const canonical = normalizeKzCity(e.city);
+      if (canonical) {
+        if (!cityMap.has(canonical)) cityMap.set(canonical, new Set());
+        cityMap.get(canonical)!.add(uniqueKey);
+      } else {
+        noCityKeys.add(uniqueKey);
+      }
     }
-    const cities = Array.from(cityMap.entries())
-      .map(([city, keys]) => ({
-        city: city || 'без города',
-        uniquePeople: keys.size,
-        percent: uniquePeople > 0 ? round1((keys.size / uniquePeople) * 100) : 0,
-      }))
-      .sort((a, b) => {
-        if (a.city === 'без города') return 1;
-        if (b.city === 'без города') return -1;
-        return b.uniquePeople - a.uniquePeople;
-      });
+    const cityBreakdown = Array.from(cityMap.entries())
+      .map(([city, keys]) => ({ city, count: keys.size }))
+      .filter((c) => c.count > 0)
+      .sort((a, b) => b.count - a.count);
+    const totalRk = cityBreakdown.reduce((s, c) => s + c.count, 0);
 
     return {
       query,
@@ -108,7 +136,9 @@ export async function getSearchAnalytics(days: number) {
       orderedRevenue: round2(orderedRevenue),
       avgResultsCount: avgResultsCount != null ? round1(avgResultsCount) : null,
       zeroResultsCount,
-      cities,
+      cityBreakdown, // [{ city, count }] — уже только не-нулевые, отсортированы убыв.
+      totalRk,
+      noCityCount: noCityKeys.size,
     };
   });
 
@@ -167,9 +197,13 @@ export async function getConversionAnalytics(days: number) {
   return rows;
 }
 
-/** В) Сезонность по дням + отдельная таблица городов. */
+/** В) Сезонность по дням + отдельная таблица городов (белый список). */
 export async function getSeasonalityAnalytics(days: number) {
-  const from = daysAgo(days);
+  // ВАЖНО: "days" суток, ЗАКАНЧИВАЯ сегодняшним (не вчерашним). Раньше
+  // "from" было ровно daysAgo(days) и цикл шёл на "days" дней вперёд от
+  // него, из-за чего последний день оказывался вчера — сегодняшняя дата
+  // не попадала в "По дням". Теперь from = сегодня минус (days-1) суток.
+  const from = daysAgo(days - 1);
   const [searchEvents, cartEvents, orders] = await Promise.all([
     prisma.shopEvent.findMany({ where: { type: 'search', createdAt: { gte: from } } }),
     prisma.shopEvent.findMany({ where: { type: 'cart', createdAt: { gte: from } } }),
@@ -205,21 +239,26 @@ export async function getSeasonalityAnalytics(days: number) {
     paidRevenue: round2(v.paidRevenue),
   }));
 
-  // Города — поиски/уникальные из ShopEvent.city (воронка), заказы/сумма
-  // из ShopOrder.city (адрес доставки) — заказ отдельным событием city не
-  // дублируется, поэтому для заказов город берём из самого ShopOrder.
+  // Города — ТОЛЬКО из белого списка (не "без города" бакет — только эти
+  // 14, и только там, где реально есть события или заказы APP).
+  // Поиски/уникальные — из ShopEvent.city, заказы/сумма — из ShopOrder.city
+  // (адрес доставки), т.к. заказ отдельным событием city не дублируется.
   const cityStats = new Map<string, { searches: number; uniqueKeys: Set<string>; orders: number; revenue: number }>();
   function ensureCity(city: string) {
     if (!cityStats.has(city)) cityStats.set(city, { searches: 0, uniqueKeys: new Set(), orders: 0, revenue: 0 });
     return cityStats.get(city)!;
   }
   for (const e of searchEvents) {
-    const bucket = ensureCity(e.city || 'без города');
+    const canonical = normalizeKzCity(e.city);
+    if (!canonical) continue;
+    const bucket = ensureCity(canonical);
     bucket.searches += 1;
     bucket.uniqueKeys.add(e.phone ? `p:${e.phone}` : `e:${e.id}`);
   }
   for (const o of orders) {
-    const bucket = ensureCity(o.city?.trim() || 'без города');
+    const canonical = normalizeKzCity(o.city);
+    if (!canonical) continue;
+    const bucket = ensureCity(canonical);
     bucket.orders += 1;
     if (isPaidStatus(o.status)) bucket.revenue += o.total;
   }
@@ -231,11 +270,7 @@ export async function getSeasonalityAnalytics(days: number) {
       orders: v.orders,
       revenue: round2(v.revenue),
     }))
-    .sort((a, b) => {
-      if (a.city === 'без города') return 1;
-      if (b.city === 'без города') return -1;
-      return b.searches - a.searches;
-    });
+    .sort((a, b) => b.searches - a.searches);
 
   return { daily, cities };
 }
