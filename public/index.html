@@ -655,18 +655,28 @@
 
           <!-- А) Поисковые запросы -->
           <div id="mmAnalyticsSearchTab">
-            <div class="panel">
-              <div class="table-wrap">
-                <table class="table" id="mmAnalyticsSearchTable">
-                  <thead>
-                    <tr>
-                      <th>Запрос</th><th class="num">Искали раз</th><th class="num">Уникальные люди</th>
-                      <th class="num">Заказали после поиска</th><th class="num">Сумма заказов</th>
-                      <th class="num">Среднее число товаров</th><th class="num">Поисков с 0 товаров</th>
-                    </tr>
-                  </thead>
-                  <tbody></tbody>
-                </table>
+            <div style="display:flex;gap:14px;align-items:flex-start">
+              <div class="panel" style="flex:1;min-width:0">
+                <label style="display:block;margin-bottom:10px">
+                  <span style="display:block;font-size:12.5px;color:var(--text-muted);margin-bottom:4px">Поисковый запрос</span>
+                  <input type="text" id="mmSearchQueryFilter" placeholder="например памперс" style="max-width:280px" />
+                </label>
+                <div class="table-wrap">
+                  <table class="table" id="mmAnalyticsSearchTable">
+                    <thead>
+                      <tr>
+                        <th>Запрос</th><th class="num">Искали раз</th><th class="num">Уникальные люди</th>
+                        <th class="num">Заказали после поиска</th><th class="num">Сумма заказов</th>
+                        <th class="num">Среднее число товаров</th><th class="num">Поисков с 0 товаров</th>
+                      </tr>
+                    </thead>
+                    <tbody></tbody>
+                  </table>
+                </div>
+              </div>
+              <div class="panel" style="width:260px;flex-shrink:0">
+                <div class="panel__head"><h2 id="mmCitiesByQueryTitle" style="font-size:14px">Города по запросу</h2></div>
+                <div id="mmCitiesByQueryBody" style="max-height:420px;overflow-y:auto"></div>
               </div>
             </div>
           </div>

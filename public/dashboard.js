@@ -2127,6 +2127,10 @@ function wireMyMarketTabsOnce() {
     document.getElementById('mmAnalyticsSeasonalityTab').hidden = subtab !== 'seasonality';
     loadMyMarketAnalytics();
   });
+  // Фильтр запросов — по мере ввода, без нового запроса к серверу (список
+  // уже в кэше). Смена фильтра не трогает явный выбор строки, если он
+  // всё ещё виден среди отфильтрованных — иначе подставляется первый.
+  document.getElementById('mmSearchQueryFilter').addEventListener('input', () => renderMyMarketSearchAnalytics());
 
   // Курьеры — поиск (по мере ввода) и вкладки Активные/Заблокированные —
   // оба фильтруют уже загруженный список на клиенте, без нового запроса.
@@ -2889,25 +2893,41 @@ async function loadMyMarketAnalytics() {
   if (subtab === 'seasonality') return loadMyMarketAnalyticsSeasonality();
 }
 
+let myMarketSearchAnalyticsCache = [];
+let myMarketSelectedSearchQuery = null; // null = ничего не кликали явно — берём первый из отфильтрованных
+
 async function loadMyMarketAnalyticsSearch() {
   const days = mmAnalyticsPeriodDays();
-  const rows = await api(`/shop-admin/analytics/search?days=${days}`);
+  myMarketSearchAnalyticsCache = await api(`/shop-admin/analytics/search?days=${days}`);
+  myMarketSelectedSearchQuery = null; // при смене периода выбор сбрасываем — старый запрос мог вообще пропасть
+  renderMyMarketSearchAnalytics();
+}
+
+/** Фильтрует уже загруженные строки по вхождению слова в query (без учёта
+ *  регистра) — без нового запроса к серверу, список уже есть в кэше. */
+function mmFilteredSearchRows() {
+  const q = document.getElementById('mmSearchQueryFilter').value.trim().toLowerCase();
+  if (!q) return myMarketSearchAnalyticsCache;
+  return myMarketSearchAnalyticsCache.filter((r) => r.query.toLowerCase().includes(q));
+}
+
+function renderMyMarketSearchAnalytics() {
+  const filtered = mmFilteredSearchRows();
   const tbody = document.querySelector('#mmAnalyticsSearchTable tbody');
-  if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="7" style="color:var(--text-faint)">Поисковых запросов за этот период нет</td></tr>`;
+
+  if (!filtered.length) {
+    tbody.innerHTML = `<tr><td colspan="7" style="color:var(--text-faint)">${myMarketSearchAnalyticsCache.length ? 'Ничего не найдено по фильтру' : 'Поисковых запросов за этот период нет'}</td></tr>`;
+    renderMyMarketCitiesByQuery(null);
     return;
   }
-  tbody.innerHTML = rows.map((r) => {
-    // Города этого запроса — уже только из белого списка, только >0,
-    // отсортированы по числу людей убыв. (см. бэкенд). Формат ровно как
-    // просили: "Алматы 12 · Астана 5 · Павлодар 1 · Всего по РК: 18".
-    const cityParts = r.cityBreakdown.map((c) => `${c.city} ${c.count}`);
-    let citySummary = cityParts.length ? cityParts.join(' · ') : '';
-    citySummary += (citySummary ? ' · ' : '') + `Всего по РК: ${r.totalRk}`;
-    if (r.noCityCount > 0) citySummary += ` · без города: ${r.noCityCount}`;
 
-    return `
-    <tr>
+  // Если явно ничего не кликали (или выбранного запроса больше нет среди
+  // отфильтрованных) — по умолчанию берём первый из отфильтрованного списка.
+  const stillVisible = filtered.some((r) => r.query === myMarketSelectedSearchQuery);
+  const activeQuery = stillVisible ? myMarketSelectedSearchQuery : filtered[0].query;
+
+  tbody.innerHTML = filtered.map((r) => `
+    <tr data-query="${r.query.replace(/"/g, '&quot;')}" class="${r.query === activeQuery ? 'is-selected-row' : ''}" style="cursor:pointer">
       <td class="name-cell">${r.query}</td>
       <td class="num">${fmt.format(r.searchCount)}</td>
       <td class="num">${fmt.format(r.uniquePeople)}</td>
@@ -2916,12 +2936,54 @@ async function loadMyMarketAnalyticsSearch() {
       <td class="num">${r.avgResultsCount ?? '—'}</td>
       <td class="num">${fmt.format(r.zeroResultsCount)}</td>
     </tr>
-    <tr>
-      <td colspan="7" style="padding:2px 4px 10px;color:var(--text-faint);font-size:11.5px;border-top:none">${citySummary}</td>
-    </tr>
-  `;
-  }).join('');
+  `).join('');
+
+  tbody.querySelectorAll('tr[data-query]').forEach((tr) => {
+    tr.addEventListener('click', () => {
+      myMarketSelectedSearchQuery = tr.dataset.query;
+      renderMyMarketSearchAnalytics();
+    });
+  });
+
+  const activeRow = myMarketSearchAnalyticsCache.find((r) => r.query === activeQuery) || null;
+  renderMyMarketCitiesByQuery(activeRow);
 }
+
+/** Правая узкая карточка — города ТОЛЬКО выбранного запроса (не сумма по
+ *  всему периоду). cityBreakdown/totalRk уже посчитаны бэкендом именно
+ *  для этого конкретного query. */
+function renderMyMarketCitiesByQuery(row) {
+  const titleEl = document.getElementById('mmCitiesByQueryTitle');
+  const bodyEl = document.getElementById('mmCitiesByQueryBody');
+
+  if (!row) {
+    titleEl.textContent = 'Города по запросу';
+    bodyEl.innerHTML = `<p style="color:var(--text-faint);font-size:12.5px">Выберите запрос слева</p>`;
+    return;
+  }
+
+  titleEl.textContent = row.query;
+  const cityRows = row.cityBreakdown.map((c) => `
+    <tr><td>${c.city}</td><td class="num">${fmt.format(c.count)}</td></tr>
+  `).join('');
+  const noCityRow = row.noCityCount > 0
+    ? `<tr><td style="color:var(--text-faint)">без города</td><td class="num" style="color:var(--text-faint)">${fmt.format(row.noCityCount)}</td></tr>`
+    : '';
+
+  bodyEl.innerHTML = `
+    <table class="table" style="font-size:12.5px">
+      <thead><tr><th>Город</th><th class="num">Людей</th></tr></thead>
+      <tbody>
+        ${cityRows || `<tr><td colspan="2" style="color:var(--text-faint)">Нет городов из списка по этому запросу</td></tr>`}
+        ${noCityRow}
+      </tbody>
+      <tfoot>
+        <tr style="font-weight:700"><td>Всего по РК</td><td class="num">${fmt.format(row.totalRk)}</td></tr>
+      </tfoot>
+    </table>
+  `;
+}
+
 
 async function loadMyMarketAnalyticsConversion() {
   const days = mmAnalyticsPeriodDays();
