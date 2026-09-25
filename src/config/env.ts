@@ -76,6 +76,10 @@ const envSchema = z.object({
   // задан, загрузка файлом честно недоступна (см. src/routes/shopMedia.routes.ts) —
   // поле "URL фото" продолжает работать как обычная ссылка.
   BLOB_READ_WRITE_TOKEN: z.preprocess(cleanEnvString, z.string().optional().default('')),
+  // SMS для курьерского кода выдачи (POST /courier/request-code). Без
+  // SMS_API_KEY SMS честно не отправляется, эндпоинт при этом не падает.
+  SMS_PROVIDER: z.preprocess(cleanEnvString, z.string().optional().default('smsc')),
+  SMS_API_KEY: z.preprocess(cleanEnvString, z.string().optional().default('')),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -152,4 +156,6 @@ export const env = {
   priceFeedSecret: safeData.PRICE_FEED_SECRET ?? '',
   shopAppKey: safeData.SHOP_APP_KEY ?? '',
   blobToken: safeData.BLOB_READ_WRITE_TOKEN ?? '',
+  smsProvider: safeData.SMS_PROVIDER ?? 'smsc',
+  smsApiKey: safeData.SMS_API_KEY ?? '',
 };

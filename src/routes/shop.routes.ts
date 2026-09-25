@@ -6,6 +6,7 @@ import { prisma } from '../db/prisma';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
 import { generateWaybillPdf, WaybillAddressError, WaybillOrderItem } from '../services/waybill.service';
+import { sendSms } from '../services/sms.service';
 
 export const shopRouter = Router();
 
@@ -786,6 +787,21 @@ shopRouter.post('/courier/request-code', async (req, res) => {
 
     const pickupCode = generatePickupCode5();
     await prisma.shopOrder.update({ where: { id: order.id }, data: { pickupCode } });
+
+    // SMS покупателю (order.phone — телефон КЛИЕНТА, не курьера) — ровно
+    // здесь и только здесь: не при оплате, не при скане. Повторный запрос
+    // кода — новый код выше и новое SMS ниже, как договаривались. Сбой
+    // шлюза НЕ ломает эндпоинт: код уже сохранён строкой выше, sendSms
+    // сама ловит все свои ошибки и просто логирует — код всё равно уйдёт
+    // курьеру в ответе, даже если SMS не доставится.
+    const customerPhone = normalizePhone(order.phone);
+    if (customerPhone) {
+      const smsText = `My Market. Kod vydachi ${pickupCode}. Nazovite tolko kureru. Zakaz ${order.number}.`;
+      await sendSms(customerPhone, smsText);
+    } else {
+      logger.warn({ orderNumber: order.number, phone: order.phone }, '[Shop API] Не удалось нормализовать телефон покупателя для SMS');
+    }
+
     res.json({ ok: true, pickupCode });
   } catch (err: any) {
     logger.error({ err }, '[Shop API] Ошибка запроса кода выдачи');
