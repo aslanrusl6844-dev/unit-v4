@@ -411,3 +411,34 @@ model ShopBanner {
   active     Boolean  @default(false)
   updatedAt  DateTime @updatedAt
 }
+
+// Событие аналитики витрины My Market — поиск/просмотр/корзина/заказ/оплата.
+// Заказ APP как факт уже есть в ShopOrder — эта модель НЕ дублирует его,
+// нужна для воронки (поиск -> просмотр -> корзина) и разбивки по городам.
+// "Заказали после поиска" в аналитике считается склейкой по телефону и
+// окну 24 часа между ShopEvent(search) и ShopOrder — не отдельным событием.
+enum ShopEventType {
+  search
+  view
+  cart
+  order
+  paid
+}
+
+model ShopEvent {
+  id           String        @id @default(cuid())
+  createdAt    DateTime      @default(now())
+  type         ShopEventType
+  query        String?
+  sku          String?
+  phone        String?
+  city         String?
+  resultsCount Int?
+  amount       Int?
+
+  @@index([createdAt])
+  @@index([type])
+  @@index([query])
+  @@index([city])
+  @@index([sku])
+}

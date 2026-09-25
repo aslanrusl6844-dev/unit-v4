@@ -444,6 +444,7 @@
           <button data-tab="products">Товары</button>
           <button data-tab="prices">Цены и акции</button>
           <button data-tab="orders">Заказы</button>
+          <button data-tab="analytics">Аналитика</button>
           <button data-tab="couriers">Курьеры</button>
           <button data-tab="finance">Финансы</button>
           <button data-tab="upload">Загрузка Excel</button>
@@ -636,6 +637,85 @@
         </div>
 
         <!-- ---- Курьеры ---- -->
+        <!-- ---- Аналитика ---- -->
+        <div id="mymarketAnalyticsTab" hidden>
+          <div class="panel">
+            <div class="seg" id="mmAnalyticsPeriodTabs">
+              <button class="is-active" data-days="7">7 дней</button>
+              <button data-days="30">30 дней</button>
+            </div>
+            <p class="panel__hint">Только канал APP — события и заказы Kaspi/Ozon/WB здесь не учитываются.</p>
+          </div>
+
+          <div class="seg" id="mmAnalyticsSubTabs">
+            <button class="is-active" data-subtab="search">Поисковые запросы</button>
+            <button data-subtab="conversion">Конверсия</button>
+            <button data-subtab="seasonality">Сезонность + города</button>
+          </div>
+
+          <!-- А) Поисковые запросы -->
+          <div id="mmAnalyticsSearchTab">
+            <div class="panel">
+              <div class="table-wrap">
+                <table class="table" id="mmAnalyticsSearchTable">
+                  <thead>
+                    <tr>
+                      <th>Запрос</th><th class="num">Искали раз</th><th class="num">Уникальные люди</th>
+                      <th class="num">Заказали после поиска</th><th class="num">Сумма заказов</th>
+                      <th class="num">Среднее число товаров</th><th class="num">Поисков с 0 товаров</th>
+                    </tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <!-- Б) Конверсия -->
+          <div id="mmAnalyticsConversionTab" hidden>
+            <div class="panel">
+              <div class="table-wrap">
+                <table class="table" id="mmAnalyticsConversionTable">
+                  <thead>
+                    <tr>
+                      <th>Товар</th><th class="num">Просмотры</th><th class="num">В корзину</th>
+                      <th class="num">Заказы APP</th><th class="num">Оплаты</th>
+                      <th class="num">% корзина/просмотр</th><th class="num">% заказ/корзина</th>
+                    </tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <!-- В) Сезонность + города -->
+          <div id="mmAnalyticsSeasonalityTab" hidden>
+            <div class="panel">
+              <div class="panel__head"><h2>По дням</h2></div>
+              <div class="table-wrap">
+                <table class="table" id="mmAnalyticsDailyTable">
+                  <thead>
+                    <tr><th>Дата</th><th class="num">Поиски</th><th class="num">Корзина</th><th class="num">Заказы APP</th><th class="num">Сумма оплаченных</th></tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="panel">
+              <div class="panel__head"><h2>Города</h2></div>
+              <div class="table-wrap">
+                <table class="table" id="mmAnalyticsCitiesTable">
+                  <thead>
+                    <tr><th>Город</th><th class="num">Поиски</th><th class="num">Уникальные</th><th class="num">Заказы APP</th><th class="num">Сумма</th></tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div id="mymarketCouriersTab" hidden>
           <div class="panel">
             <p class="panel__hint">Фото удостоверения и лица видны только здесь — ни один курьерский API-запрос их не отдаёт.</p>

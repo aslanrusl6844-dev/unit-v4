@@ -896,3 +896,55 @@ shopRouter.get('/courier/my-orders', async (req, res) => {
     res.status(500).json({ error: 'Не удалось получить заказы', details: String(err?.message ?? err) });
   }
 });
+
+// =====================================================================
+// Аналитика витрины — события поиска/просмотра/корзины/заказа/оплаты.
+// Заказ APP как факт уже пишется в ShopOrder при /orders — это событие
+// НЕ дублирует его; нужно для воронки и разбивки по городам/запросам.
+// =====================================================================
+
+const shopEventSchema = z.object({
+  type: z.enum(['search', 'view', 'cart', 'order', 'paid']),
+  query: z.string().optional().nullable(),
+  sku: z.string().optional().nullable(),
+  phone: z.string().optional().nullable(),
+  city: z.string().optional().nullable(),
+  resultsCount: z.number().int().optional().nullable(),
+  amount: z.number().int().optional().nullable(),
+});
+
+shopRouter.post('/events', async (req, res) => {
+  const parsed = shopEventSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные события', details: parsed.error.flatten() });
+
+  const { type, sku, phone, resultsCount, amount } = parsed.data;
+  // city: trim, пустая строка -> null.
+  const city = parsed.data.city?.trim() || null;
+  const query = parsed.data.query?.trim() || null;
+
+  // search без query не пишем — это невалидное событие, не тихо
+  // игнорируемое, а честная ошибка 400 (та же логика, что и остальная
+  // валидация здесь).
+  if (type === 'search' && !query) {
+    return res.status(400).json({ error: 'search без query не пишется' });
+  }
+
+  try {
+    // Гостей без телефона тоже сохраняем — phone намеренно необязателен.
+    await prisma.shopEvent.create({
+      data: {
+        type,
+        query,
+        sku: sku || null,
+        phone: phone || null,
+        city,
+        resultsCount: resultsCount ?? null,
+        amount: amount ?? null,
+      },
+    });
+    res.status(201).json({ ok: true });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop API] Ошибка записи события аналитики');
+    res.status(500).json({ error: 'Не удалось записать событие', details: String(err?.message ?? err) });
+  }
+});

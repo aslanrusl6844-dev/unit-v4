@@ -2030,7 +2030,7 @@ let myMarketProductsCache = [];
 let myMarketChartInstance = null;
 let myMarketEditingProductId = null;
 
-const MY_MARKET_TABS = ['home', 'products', 'prices', 'orders', 'couriers', 'finance', 'upload'];
+const MY_MARKET_TABS = ['home', 'products', 'prices', 'orders', 'analytics', 'couriers', 'finance', 'upload'];
 
 function wireMyMarketTabsOnce() {
   if (myMarketTabWired) return;
@@ -2106,6 +2106,28 @@ function wireMyMarketTabsOnce() {
     if (e.target.id === 'mmCourierCardOverlay') closeCourierCard();
   });
 
+  // Аналитика — период (7/30 дней) и три подвкладки. Период меняет то,
+  // что грузится по факту нового запроса; подвкладки переключают, какая
+  // из трёх уже загруженных (или ещё не загруженных) таблиц видна.
+  document.getElementById('mmAnalyticsPeriodTabs').addEventListener('click', (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    document.querySelectorAll('#mmAnalyticsPeriodTabs button').forEach((b) => b.classList.remove('is-active'));
+    btn.classList.add('is-active');
+    loadMyMarketAnalytics();
+  });
+  document.getElementById('mmAnalyticsSubTabs').addEventListener('click', (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    document.querySelectorAll('#mmAnalyticsSubTabs button').forEach((b) => b.classList.remove('is-active'));
+    btn.classList.add('is-active');
+    const subtab = btn.dataset.subtab;
+    document.getElementById('mmAnalyticsSearchTab').hidden = subtab !== 'search';
+    document.getElementById('mmAnalyticsConversionTab').hidden = subtab !== 'conversion';
+    document.getElementById('mmAnalyticsSeasonalityTab').hidden = subtab !== 'seasonality';
+    loadMyMarketAnalytics();
+  });
+
   // Курьеры — поиск (по мере ввода) и вкладки Активные/Заблокированные —
   // оба фильтруют уже загруженный список на клиенте, без нового запроса.
   document.getElementById('mymarketCouriersSearch').addEventListener('input', () => renderMyMarketCouriersTable());
@@ -2174,6 +2196,7 @@ function switchMyMarketTab(tab) {
   if (tab === 'products') loadMyMarketProducts();
   if (tab === 'prices') loadMyMarketPrices();
   if (tab === 'orders') loadMyMarketOrders();
+  if (tab === 'analytics') loadMyMarketAnalytics();
   if (tab === 'couriers') loadMyMarketCouriers();
   if (tab === 'finance') loadMyMarketFinance();
 }
@@ -2850,6 +2873,109 @@ async function loadMyMarketOrders() {
  */
 function downloadMyMarketWaybill(orderId) {
   window.open(`/api/shop/admin/orders/${orderId}/waybill`, '_blank');
+}
+
+// ---------------------------------------------------------------------
+// Аналитика витрины — период 7/30 дней, три подвкладки. Только канал APP.
+// ---------------------------------------------------------------------
+function mmAnalyticsPeriodDays() {
+  return document.querySelector('#mmAnalyticsPeriodTabs button.is-active')?.dataset.days === '30' ? 30 : 7;
+}
+
+async function loadMyMarketAnalytics() {
+  const subtab = document.querySelector('#mmAnalyticsSubTabs button.is-active')?.dataset.subtab || 'search';
+  if (subtab === 'search') return loadMyMarketAnalyticsSearch();
+  if (subtab === 'conversion') return loadMyMarketAnalyticsConversion();
+  if (subtab === 'seasonality') return loadMyMarketAnalyticsSeasonality();
+}
+
+async function loadMyMarketAnalyticsSearch() {
+  const days = mmAnalyticsPeriodDays();
+  const rows = await api(`/shop-admin/analytics/search?days=${days}`);
+  const tbody = document.querySelector('#mmAnalyticsSearchTable tbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="7" style="color:var(--text-faint)">Поисковых запросов за этот период нет</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((r) => `
+    <tr>
+      <td colspan="7" style="padding:0;border:none">
+        <details>
+          <summary style="cursor:pointer;display:grid;grid-template-columns:2fr repeat(6,1fr);gap:8px;padding:8px 4px;align-items:center">
+            <span class="name-cell">${r.query}</span>
+            <span class="num">${fmt.format(r.searchCount)}</span>
+            <span class="num">${fmt.format(r.uniquePeople)}</span>
+            <span class="num">${fmt.format(r.orderedAfterSearch)}</span>
+            <span class="num">${fmtMoney(r.orderedRevenue)}</span>
+            <span class="num">${r.avgResultsCount ?? '—'}</span>
+            <span class="num">${fmt.format(r.zeroResultsCount)}</span>
+          </summary>
+          <div style="padding:6px 4px 10px 20px">
+            ${r.cities.length ? `
+              <table class="table" style="margin-top:4px">
+                <thead><tr><th>Город</th><th class="num">Уникальные люди</th><th class="num">% от всех по запросу</th></tr></thead>
+                <tbody>
+                  ${r.cities.map((c) => `<tr><td>${c.city}</td><td class="num">${fmt.format(c.uniquePeople)}</td><td class="num">${c.percent}%</td></tr>`).join('')}
+                </tbody>
+              </table>
+            ` : `<span style="color:var(--text-faint);font-size:12px">Нет данных по городам</span>`}
+          </div>
+        </details>
+      </td>
+    </tr>
+  `).join('');
+}
+
+async function loadMyMarketAnalyticsConversion() {
+  const days = mmAnalyticsPeriodDays();
+  const rows = await api(`/shop-admin/analytics/conversion?days=${days}`);
+  const tbody = document.querySelector('#mmAnalyticsConversionTable tbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="7" style="color:var(--text-faint)">Нет событий по товарам за этот период</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map((r) => `
+    <tr>
+      <td class="name-cell">${r.name}</td>
+      <td class="num">${fmt.format(r.views)}</td>
+      <td class="num">${fmt.format(r.cart)}</td>
+      <td class="num">${fmt.format(r.orders)}</td>
+      <td class="num">${fmt.format(r.payments)}</td>
+      <td class="num">${fmtPct(r.cartPct)}</td>
+      <td class="num">${fmtPct(r.orderPct)}</td>
+    </tr>
+  `).join('');
+}
+
+async function loadMyMarketAnalyticsSeasonality() {
+  const days = mmAnalyticsPeriodDays();
+  const data = await api(`/shop-admin/analytics/seasonality?days=${days}`);
+
+  const dailyBody = document.querySelector('#mmAnalyticsDailyTable tbody');
+  dailyBody.innerHTML = data.daily.length
+    ? data.daily.map((d) => `
+        <tr>
+          <td>${d.date}</td>
+          <td class="num">${fmt.format(d.searches)}</td>
+          <td class="num">${fmt.format(d.cart)}</td>
+          <td class="num">${fmt.format(d.orders)}</td>
+          <td class="num">${fmtMoney(d.paidRevenue)}</td>
+        </tr>
+      `).join('')
+    : `<tr><td colspan="5" style="color:var(--text-faint)">Нет данных</td></tr>`;
+
+  const citiesBody = document.querySelector('#mmAnalyticsCitiesTable tbody');
+  citiesBody.innerHTML = data.cities.length
+    ? data.cities.map((c) => `
+        <tr>
+          <td>${c.city}</td>
+          <td class="num">${fmt.format(c.searches)}</td>
+          <td class="num">${fmt.format(c.uniquePeople)}</td>
+          <td class="num">${fmt.format(c.orders)}</td>
+          <td class="num">${fmtMoney(c.revenue)}</td>
+        </tr>
+      `).join('')
+    : `<tr><td colspan="5" style="color:var(--text-faint)">Нет данных</td></tr>`;
 }
 
 // ---------------------------------------------------------------------

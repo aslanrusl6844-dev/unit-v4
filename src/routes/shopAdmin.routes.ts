@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../db/prisma';
 import { logger } from '../utils/logger';
 import { markShopOrderAsPaid } from './shop.routes';
+import { getSearchAnalytics, getConversionAnalytics, getSeasonalityAnalytics } from '../services/shopAnalytics.service';
 
 export const shopAdminRouter = Router();
 
@@ -354,5 +355,45 @@ shopAdminRouter.post('/couriers/:id/block', async (req, res) => {
     res.json(courier);
   } catch (err: any) {
     res.status(500).json({ error: 'Не удалось изменить статус курьера', details: String(err?.message ?? err) });
+  }
+});
+
+// =====================================================================
+// Аналитика витрины My Market — период 7/30 дней, только канал APP.
+// Три подвкладки: поиск, конверсия по SKU, сезонность + города.
+// =====================================================================
+
+function parseAnalyticsDays(req: any): number {
+  const raw = Number(req.query.days);
+  return raw === 30 ? 30 : 7; // по умолчанию и на любое другое значение — 7
+}
+
+shopAdminRouter.get('/analytics/search', async (req, res) => {
+  try {
+    const rows = await getSearchAnalytics(parseAnalyticsDays(req));
+    res.json(rows);
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] GET /analytics/search упал');
+    res.status(500).json({ error: 'Не удалось получить аналитику поиска', details: String(err?.message ?? err) });
+  }
+});
+
+shopAdminRouter.get('/analytics/conversion', async (req, res) => {
+  try {
+    const rows = await getConversionAnalytics(parseAnalyticsDays(req));
+    res.json(rows);
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] GET /analytics/conversion упал');
+    res.status(500).json({ error: 'Не удалось получить аналитику конверсии', details: String(err?.message ?? err) });
+  }
+});
+
+shopAdminRouter.get('/analytics/seasonality', async (req, res) => {
+  try {
+    const data = await getSeasonalityAnalytics(parseAnalyticsDays(req));
+    res.json(data);
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] GET /analytics/seasonality упал');
+    res.status(500).json({ error: 'Не удалось получить аналитику сезонности', details: String(err?.message ?? err) });
   }
 });
