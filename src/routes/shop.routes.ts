@@ -387,6 +387,47 @@ shopRouter.post('/orders/:id/cancel', async (req, res) => {
 });
 
 /**
+ * Список заказов "Мои заказы" по телефону — БАГ-ФИКС: раньше приложение
+ * показывало список заказов, не фильтруя их по покупателю, и чужие заказы
+ * оказывались видны кому попало. Возвращает ТОЛЬКО заказы, чей телефон
+ * совпадает с переданным через ту же phonesMatch/normalizePhone, что и
+ * у одиночного /orders/:id и накладной — единая логика сравнения номеров.
+ * Это НЕ админский /api/shop-admin/orders (тот отдаёт вообще все заказы,
+ * для админки, и его не трогаю).
+ */
+shopRouter.get('/orders', async (req, res) => {
+  try {
+    const phone = String(req.query.phone ?? '');
+    if (!phone) return res.status(400).json({ error: 'Не указан номер телефона' });
+
+    const allOrders = await prisma.shopOrder.findMany({ orderBy: { createdAt: 'desc' } });
+    // Сравнение строго через phonesMatch — чужой заказ никогда не пройдёт
+    // этот фильтр, даже если телефон совпадает частично/по формату.
+    const myOrders = allOrders.filter((o: typeof allOrders[number]) => phonesMatch(phone, o.phone));
+
+    res.json(myOrders.map((o: typeof allOrders[number]) => ({
+      id: o.id,
+      number: o.number,
+      status: o.status,
+      pickupCode: o.pickupCode,
+      total: o.total,
+      items: JSON.parse(o.items),
+      createdAt: o.createdAt,
+      city: o.city,
+      street: o.street,
+      house: o.house,
+      apartment: o.apartment,
+      entrance: o.entrance,
+      floor: o.floor,
+      intercom: o.intercom,
+    })));
+  } catch (err: any) {
+    logger.error({ err }, '[Shop API] Ошибка получения списка заказов по телефону');
+    res.status(500).json({ error: 'Не удалось получить заказы', details: String(err?.message ?? err) });
+  }
+});
+
+/**
  * Заказ "как есть" для приложения — только СВОЙ заказ: номер телефона в
  * query должен совпадать с телефоном в заказе (простая, но реальная
  * проверка "это точно тот же покупатель", без отдельной системы токенов).
