@@ -1,9 +1,11 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import JSZip from 'jszip';
 import { prisma } from '../db/prisma';
 import { logger } from '../utils/logger';
 import { markShopOrderAsPaid } from './shop.routes';
 import { getSearchAnalytics, getConversionAnalytics, getSeasonalityAnalytics } from '../services/shopAnalytics.service';
+import { generateWaybillPdf, WaybillOrderItem } from '../services/waybill.service';
 
 export const shopAdminRouter = Router();
 
@@ -148,6 +150,102 @@ shopAdminRouter.get('/orders', async (req, res) => {
   } catch (err: any) {
     logger.error({ err }, '[Shop Admin] GET /orders упал');
     res.status(500).json({ error: 'Не удалось получить заказы', details: String(err?.message ?? err) });
+  }
+});
+
+const WAYBILL_ZIP_LIMIT = 50;
+
+// Русские метки для имени файла — те же, что на вкладках, но в имени
+// файла без заглавных букв и пробелов (дефис вместо пробела).
+const WAYBILL_ZIP_STATUS_LABELS: Record<string, string> = {
+  '': 'все',
+  pending_payment: 'ожидает-оплаты',
+  paid: 'оплачен',
+  picked: 'курьер-забрал',
+  in_transit: 'в-пути',
+  delivered: 'выдан',
+  cancelled: 'отменён',
+};
+
+/**
+ * ZIP-пачка накладных для текущей открытой вкладки заказов. ВАЖНО:
+ * зарегистрирован ДО GET /orders/:id ниже — иначе Express принял бы
+ * "waybills-zip" за параметр :id и сюда бы запрос никогда не долетал.
+ *
+ * Отменённые заказы НИКОГДА не попадают в пачку — даже если явно запросить
+ * status=cancelled (тогда результат после фильтра будет пуст, и это
+ * корректно даёт "Нет заказов для печати", а не отдельный частный случай).
+ * Один и тот же generateWaybillPdf, что и у одиночной кнопки «Накладная» —
+ * макет гарантированно тот же самый, не отдельная копия логики.
+ */
+shopAdminRouter.get('/orders/waybills-zip', async (req, res) => {
+  try {
+    const status = (req.query.status as string) || '';
+    const baseWhere = status ? { status } : { status: { not: 'cancelled' } };
+    const allMatching = await prisma.shopOrder.findMany({ where: baseWhere, orderBy: { createdAt: 'desc' } });
+    const eligible = allMatching.filter((o) => o.status !== 'cancelled');
+
+    if (!eligible.length) {
+      return res.status(404).json({ error: 'Нет заказов для печати' });
+    }
+
+    const total = eligible.length;
+    const batch = eligible.slice(0, WAYBILL_ZIP_LIMIT);
+
+    const zip = new JSZip();
+    let includedCount = 0;
+    for (const order of batch) {
+      let items: WaybillOrderItem[] = [];
+      try {
+        items = (JSON.parse(order.items) as Array<{ sku: string; name: string; quantity: number }>)
+          .map((i) => ({ sku: i.sku, name: i.name, quantity: i.quantity }));
+      } catch {
+        items = [];
+      }
+      try {
+        const pdfBuffer = await generateWaybillPdf({
+          number: order.number,
+          customerName: order.customerName,
+          phone: order.phone,
+          city: order.city,
+          street: order.street,
+          house: order.house,
+          apartment: order.apartment,
+          entrance: order.entrance,
+          floor: order.floor,
+          intercom: order.intercom,
+          items,
+        });
+        zip.file(`waybill-${order.number}.pdf`, pdfBuffer);
+        includedCount += 1;
+      } catch (err: any) {
+        // Один заказ не собрался (например, не заполнен адрес) — просто
+        // пропускаем его, остальные в архив всё равно попадают, весь
+        // запрос не роняем.
+        logger.warn({ err: String(err?.message ?? err), orderNumber: order.number }, '[Shop Admin] Накладная для заказа не собралась — пропущена в ZIP-пачке');
+      }
+    }
+
+    if (!includedCount) {
+      return res.status(500).json({ error: 'Ни одна накладная не собралась' });
+    }
+
+    const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
+    const label = WAYBILL_ZIP_STATUS_LABELS[status] ?? status;
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const filename = `nakladnye-${label}-${dateStr}.zip`;
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="waybills.zip"; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    // Фронт читает эти два заголовка, чтобы показать "скачано N из M",
+    // если пачка была обрезана лимитом.
+    res.setHeader('X-Waybills-Total', String(total));
+    res.setHeader('X-Waybills-Included', String(includedCount));
+    res.setHeader('Access-Control-Expose-Headers', 'X-Waybills-Total, X-Waybills-Included');
+    res.send(zipBuffer);
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] Ошибка сборки ZIP-пачки накладных');
+    res.status(500).json({ error: 'Не удалось собрать пачку накладных', details: String(err?.message ?? err) });
   }
 });
 

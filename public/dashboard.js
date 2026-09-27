@@ -2047,7 +2047,50 @@ function wireMyMarketTabsOnce() {
     if (!btn) return;
     document.querySelectorAll('#mymarketOrderStatusTabs button').forEach((b) => b.classList.remove('is-active'));
     btn.classList.add('is-active');
+    document.getElementById('mmWaybillsZipStatus').innerHTML = ''; // сообщение про прошлую пачку неактуально для другой вкладки
     loadMyMarketOrders();
+  });
+
+  // Пачка накладных ZIP — за текущую открытую вкладку статуса. Тот же PDF,
+  // что и одиночная кнопка «Накладная» в строке — просто собранный пачкой.
+  document.getElementById('mmDownloadWaybillsZipBtn').addEventListener('click', async () => {
+    const status = document.querySelector('#mymarketOrderStatusTabs button.is-active')?.dataset.status || '';
+    const btn = document.getElementById('mmDownloadWaybillsZipBtn');
+    const statusEl = document.getElementById('mmWaybillsZipStatus');
+    btn.disabled = true;
+    statusEl.innerHTML = `<p style="color:var(--text-faint);font-size:12.5px">Собираю накладные…</p>`;
+    try {
+      const res = await fetch(`/api/shop-admin/orders/waybills-zip?status=${encodeURIComponent(status)}`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        statusEl.innerHTML = `<p style="color:var(--loss);font-size:12.5px">${body?.error || 'Не удалось собрать накладные'}</p>`;
+        return;
+      }
+
+      const total = Number(res.headers.get('X-Waybills-Total') || '0');
+      const included = Number(res.headers.get('X-Waybills-Included') || '0');
+      const disposition = res.headers.get('Content-Disposition') || '';
+      const match = disposition.match(/filename\*=UTF-8''([^;]+)/);
+      const filename = match ? decodeURIComponent(match[1]) : 'waybills.zip';
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+
+      statusEl.innerHTML = total > included
+        ? `<p style="color:var(--warn);font-size:12.5px">Скачано ${included} из ${total}, отфильтруйте или скачайте ещё раз.</p>`
+        : `<p style="color:var(--accent);font-size:12.5px">Скачано ${included} накладных.</p>`;
+    } catch (err) {
+      statusEl.innerHTML = `<p style="color:var(--loss);font-size:12.5px">Ошибка: ${err.message}</p>`;
+    } finally {
+      btn.disabled = false;
+    }
   });
 
   document.getElementById('mymarketProductFilterTabs').addEventListener('click', (e) => {

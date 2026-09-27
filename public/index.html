@@ -613,15 +613,19 @@
         <!-- ---- Заказы ---- -->
         <div id="mymarketOrdersTab" hidden>
           <div class="panel">
-            <div class="seg" id="mymarketOrderStatusTabs">
-              <button class="is-active" data-status="">Все</button>
-              <button data-status="pending_payment">Ожидает оплаты</button>
-              <button data-status="paid">Оплачен</button>
-              <button data-status="picked">Курьер забрал</button>
-              <button data-status="in_transit">В пути</button>
-              <button data-status="delivered">Выдан</button>
-              <button data-status="cancelled">Отменён</button>
+            <div class="inline-form" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+              <div class="seg" id="mymarketOrderStatusTabs">
+                <button class="is-active" data-status="">Все</button>
+                <button data-status="pending_payment">Ожидает оплаты</button>
+                <button data-status="paid">Оплачен</button>
+                <button data-status="picked">Курьер забрал</button>
+                <button data-status="in_transit">В пути</button>
+                <button data-status="delivered">Выдан</button>
+                <button data-status="cancelled">Отменён</button>
+              </div>
+              <button class="btn btn--ghost" id="mmDownloadWaybillsZipBtn">📦 Скачать накладные ZIP</button>
             </div>
+            <div id="mmWaybillsZipStatus" style="margin:6px 0"></div>
             <div class="table-wrap">
               <table class="table" id="mymarketOrdersTable">
                 <thead>
