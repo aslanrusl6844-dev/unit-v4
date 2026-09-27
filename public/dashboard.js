@@ -2784,12 +2784,60 @@ const MY_MARKET_STATUS_LABELS = {
   cancelled: 'Отменён',
 };
 
+/**
+ * Колонка «Товар» в «Заказы APP» — фото 48×48 + название (+ «×N», если
+ * позиций больше 1), столбиком, если позиций несколько. Фото: сначала из
+ * самой позиции заказа (image/imageUrl/images[0] — на случай, если когда-
+ * нибудь появится там), иначе первое фото товара по sku (та же логика,
+ * что и на вкладке «Товары» — см. myMarketFirstImage). Нет фото — серый
+ * квадрат с первой буквой названия (через onerror — и на случай, если
+ * ссылка есть, но битая, не только когда её вообще нет).
+ */
+function renderMyMarketOrderItemsCell(items, productBySku) {
+  if (!items || !items.length) return '<span style="color:var(--text-faint)">—</span>';
+
+  const rows = items.map((item) => {
+    const product = productBySku.get(item.sku);
+    const directImage = item.image || item.imageUrl || (Array.isArray(item.images) && item.images[0]) || null;
+    const imageUrl = directImage || (product ? myMarketFirstImage(product.images) : null);
+    const name = item.name || item.title || product?.name || item.sku || 'Товар';
+    const qtySuffix = item.quantity > 1 ? ` ×${item.quantity}` : '';
+    const initial = (name[0] || '?').toUpperCase();
+    // Оба варианта — картинка и серый квадрат-запасной — всегда в DOM
+    // сразу; запасной изначально скрыт (display:none), onerror у <img>
+    // просто переключает видимость соседнего элемента. Без вставки HTML
+    // строкой внутрь onerror — там легко сломать кавычки.
+    const photoHtml = imageUrl
+      ? `<div style="position:relative;width:48px;height:48px;flex-shrink:0">
+          <img src="${imageUrl}" alt="" style="width:48px;height:48px;object-fit:cover;border-radius:8px;display:block" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" />
+          <div style="display:none;width:48px;height:48px;border-radius:8px;background:var(--bg);align-items:center;justify-content:center;color:var(--text-faint);font-weight:600;position:absolute;top:0;left:0">${initial}</div>
+        </div>`
+      : `<div style="width:48px;height:48px;border-radius:8px;background:var(--bg);display:flex;align-items:center;justify-content:center;color:var(--text-faint);font-weight:600;flex-shrink:0">${initial}</div>`;
+    return `
+      <div style="display:flex;gap:8px;align-items:center">
+        ${photoHtml}
+        <span style="font-size:12px;line-height:1.3">${name}${qtySuffix}</span>
+      </div>
+    `;
+  });
+
+  return `<div style="display:flex;flex-direction:column;gap:6px">${rows.join('')}</div>`;
+}
+
 async function loadMyMarketOrders() {
   const status = document.querySelector('#mymarketOrderStatusTabs button.is-active')?.dataset.status || '';
-  const orders = await api(`/shop-admin/orders${status ? `?status=${status}` : ''}`);
+  // Товары грузим параллельно с заказами — нужны для фото/названия по sku,
+  // когда их нет в самом снимке позиции заказа (сейчас там только
+  // sku/name/price/quantity, фото там никогда не было). Не трогает
+  // GET /shop-admin/orders — он как отдавал items распарсенными, так и отдаёт.
+  const [orders, products] = await Promise.all([
+    api(`/shop-admin/orders${status ? `?status=${status}` : ''}`),
+    api('/products'),
+  ]);
+  const productBySku = new Map(products.map((p) => [p.sku, p]));
   const tbody = document.querySelector('#mymarketOrdersTable tbody');
   if (!orders.length) {
-    tbody.innerHTML = `<tr><td colspan="10" style="color:var(--text-faint)">Заказов нет</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="11" style="color:var(--text-faint)">Заказов нет</td></tr>`;
     return;
   }
   tbody.innerHTML = orders.map((o) => {
@@ -2821,10 +2869,12 @@ async function loadMyMarketOrders() {
             : o.payout ? `<span style="color:var(--accent);font-size:11px">✓ выплачено</span>` : ''}
         </div>`
       : `<span style="color:var(--text-faint)">—</span>`;
+    const itemsCell = renderMyMarketOrderItemsCell(o.items, productBySku);
     return `
     <tr>
       <td class="name-cell">${o.number}</td>
       <td>${fmtOrderDateTime(o.createdAt)}</td>
+      <td>${itemsCell}</td>
       <td class="name-cell">${o.customerName}</td>
       <td>${o.phone}</td>
       <td class="name-cell" style="font-size:11px">${address}</td>
