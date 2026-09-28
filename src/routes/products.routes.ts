@@ -327,8 +327,13 @@ productsRouter.put('/:id', async (req, res) => {
     const existing = await prisma.product.findUnique({ where: { id: req.params.id } });
     const category = data.category !== undefined ? data.category : existing?.category;
     const type = data.type !== undefined ? data.type : existing?.type;
+    const shopPrice = data.shopPrice !== undefined ? data.shopPrice : existing?.shopPrice;
     if (!category || !type) {
       return res.status(400).json({ error: 'Нельзя включить «В продаже» без заполненных category и type' });
+    }
+    // Цену Ozon/Kaspi/WB на витрину не подставляем — её задают вручную.
+    if (shopPrice == null) {
+      return res.status(400).json({ error: 'Нельзя включить «В продаже» без цены на витрине (shopPrice)' });
     }
   }
 

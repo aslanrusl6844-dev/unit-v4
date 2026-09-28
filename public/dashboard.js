@@ -2311,7 +2311,12 @@ function switchMyMarketTab(tab) {
     if (el) el.hidden = t !== tab;
   });
   if (tab === 'home') loadMyMarketHome();
-  if (tab === 'products') loadMyMarketProducts();
+  if (tab === 'products') {
+    // По умолчанию при входе в «Товары» — «В продаже», а не «Все».
+    document.querySelectorAll('#mymarketProductFilterTabs button').forEach((b) => b.classList.toggle('is-active', b.dataset.filter === 'active'));
+    myMarketSelectedProductIds.clear();
+    loadMyMarketProducts();
+  }
   if (tab === 'prices') loadMyMarketPrices();
   if (tab === 'orders') loadMyMarketOrders();
   if (tab === 'analytics') loadMyMarketAnalytics();
@@ -2509,7 +2514,9 @@ function renderMyMarketProductsTable() {
         ${status === 'archived'
           ? `<button class="link-btn" data-action="restore" data-id="${p.id}" title="Вернуть из архива">↩</button>`
           : `<button class="link-btn" data-action="archive" data-id="${p.id}" title="В архив">📥</button>`}
-        <button class="link-btn" data-action="delete" data-id="${p.id}" title="Убрать из My Market" style="color:var(--loss)">🗑</button>
+        ${isMyMarketAccountingProduct(p)
+          ? `<button class="link-btn" data-action="delete" data-id="${p.id}" title="${MY_MARKET_ACCOUNTING_DELETE_MSG}" style="color:var(--text-faint)">🗑</button>`
+          : `<button class="link-btn" data-action="delete" data-id="${p.id}" title="Убрать из My Market" style="color:var(--loss)">🗑</button>`}
       </td>
     </tr>
   `;
@@ -2562,29 +2569,62 @@ function updateMyMarketProductBulkBar(visibleRows) {
   all.indeterminate = n > 0 && n < visibleRows.length;
 }
 
+/** Короткое уведомление внизу экрана (само исчезает). */
+function showToast(text) {
+  const el = document.createElement('div');
+  el.textContent = text;
+  el.style.cssText = 'position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:#111;color:#fff;padding:10px 18px;border-radius:8px;font-size:13.5px;z-index:9999;box-shadow:0 4px 16px rgba(0,0,0,.25)';
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 3500);
+}
+
+/** Товар учёта маркетплейса (kaspi-/ozon-/wb-* или с идентификатором
+ *  площадки): его нельзя удалять из My Market — только архив витрины. */
+function isMyMarketAccountingProduct(p) {
+  if (/^(kaspi|ozon|wb)-/i.test(p.sku || '')) return true;
+  return !!(p.kaspiSku || p.ozonOfferId || p.ozonSku != null || p.wbArticle || p.wbNmId != null || p.kaspiProductUrl);
+}
+const MY_MARKET_ACCOUNTING_DELETE_MSG = 'Товар учёта. Только архив витрины';
+
+// Пачка на один запрос — с запасом под лимит времени serverless и под
+// ограничение сервера (500 id), когда выбрано много строк.
+const MY_MARKET_ARCHIVE_CHUNK = 200;
+
 async function runMyMarketArchive(ids, archived) {
   if (!ids.length) return;
+  let done = 0;
   try {
-    await api('/shop-admin/products/archive', { method: 'POST', body: JSON.stringify({ ids, archived }) });
-    myMarketSelectedProductIds.clear();
-    await loadMyMarketProducts();
+    for (let i = 0; i < ids.length; i += MY_MARKET_ARCHIVE_CHUNK) {
+      const chunk = ids.slice(i, i + MY_MARKET_ARCHIVE_CHUNK);
+      const res = await api('/shop-admin/products/archive', { method: 'POST', body: JSON.stringify({ ids: chunk, archived }) });
+      done += res.updated ?? chunk.length;
+    }
   } catch (err) {
-    alert('Не удалось изменить архив: ' + err.message);
+    alert(`Не удалось изменить архив${done ? ` (успело: ${done})` : ''}: ` + err.message);
   }
+  // Что бы ни случилось — выделение снимаем и таблицу обновляем.
+  myMarketSelectedProductIds.clear();
+  await loadMyMarketProducts();
+  if (done) showToast(`${archived ? 'В архив' : 'Из архива'}: ${done}`);
 }
 
 async function runMyMarketRemove(ids) {
   if (!ids.length) return;
+  // Товары учёта удалять нельзя — только архив. Проверяем ДО подтверждения
+  // и до запроса; сервер дублирует запрет (409).
+  const selected = ids.map((id) => myMarketProductsCache.find((x) => x.id === id)).filter(Boolean);
+  if (selected.some(isMyMarketAccountingProduct)) {
+    alert(MY_MARKET_ACCOUNTING_DELETE_MSG);
+    return;
+  }
   if (!confirm(`Убрать ${ids.length} товар(ов) из My Market? На Kaspi/Ozon/WB это не повлияет.`)) return;
   try {
     const res = await api('/shop-admin/products/remove', { method: 'POST', body: JSON.stringify({ ids }) });
     myMarketSelectedProductIds.clear();
     await loadMyMarketProducts();
-    if (res.detached > 0) {
-      alert(`Готово. Удалено товаров витрины: ${res.deleted}. Снято с витрины: ${res.detached} — это товары учёта, они остались в разделе «Товары» и на площадках.`);
-    }
+    showToast(`Удалено: ${res.deleted}`);
   } catch (err) {
-    alert('Не удалось убрать товары: ' + err.message);
+    alert(err.message.includes(MY_MARKET_ACCOUNTING_DELETE_MSG) ? MY_MARKET_ACCOUNTING_DELETE_MSG : 'Не удалось убрать товары: ' + err.message);
   }
 }
 
@@ -2843,6 +2883,11 @@ async function saveMyMarketProductCard(e) {
   if (shopActive && (!category || !type)) {
     document.getElementById('mymarketCardWarning').textContent = 'Нельзя включить «В продаже» без category и type — заполни оба поля.';
     switchMyMarketCardTab('attrs');
+    return;
+  }
+  if (shopActive && form.elements.shopPrice.value === '') {
+    document.getElementById('mymarketCardWarning').textContent = 'Нельзя включить «В продаже» без цены на витрине — укажи цену.';
+    switchMyMarketCardTab('info');
     return;
   }
 

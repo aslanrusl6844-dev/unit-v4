@@ -27,6 +27,20 @@ shopRouter.use((req, res, next) => {
 });
 
 /** Товар как его видит приложение — ТОЛЬКО поля витрины, цена = shopPrice. */
+/**
+ * Товар виден в приложении ТОЛЬКО если продажу включили вручную (shopActive),
+ * он не в архиве витрины и заполнены category, type и shopPrice. Один
+ * общий фильтр для списка, карточки и категорий — чтобы правило нельзя было
+ * обойти, включив продажу другим путём (Excel, старые данные и т.п.).
+ */
+const SHOP_VISIBLE_WHERE = {
+  shopActive: true,
+  shopArchived: false,
+  category: { not: null },
+  type: { not: null },
+  shopPrice: { not: null },
+} as const;
+
 function toShopProduct(p: any) {
   let images: string[] = [];
   try {
@@ -57,7 +71,7 @@ function toShopProduct(p: any) {
 
 shopRouter.get('/products', async (_req, res) => {
   try {
-    const products = await prisma.product.findMany({ where: { shopActive: true, shopArchived: false } });
+    const products = await prisma.product.findMany({ where: SHOP_VISIBLE_WHERE });
     res.json(products.map(toShopProduct));
   } catch (err: any) {
     logger.error({ err }, '[Shop API] GET /products упал');
@@ -67,7 +81,7 @@ shopRouter.get('/products', async (_req, res) => {
 
 shopRouter.get('/products/:sku', async (req, res) => {
   try {
-    const product = await prisma.product.findFirst({ where: { sku: req.params.sku, shopActive: true, shopArchived: false } });
+    const product = await prisma.product.findFirst({ where: { sku: req.params.sku, ...SHOP_VISIBLE_WHERE } });
     if (!product) return res.status(404).json({ error: 'Товар не найден' });
     res.json(toShopProduct(product));
   } catch (err: any) {
@@ -84,7 +98,7 @@ shopRouter.get('/products/:sku', async (req, res) => {
 shopRouter.get('/categories', async (_req, res) => {
   try {
     const products = await prisma.product.findMany({
-      where: { shopActive: true, shopArchived: false, category: { not: null } },
+      where: SHOP_VISIBLE_WHERE,
       select: { category: true, subcategory: true, type: true },
     });
     const tree = new Map<string, Map<string, Set<string>>>();
