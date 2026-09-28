@@ -2134,6 +2134,21 @@ function wireMyMarketTabsOnce() {
 
   document.getElementById('mymarketProductsSearch').addEventListener('input', () => renderMyMarketProductsTable());
 
+  // Массовый выбор товаров витрины. «Выбрать все» работает только по
+  // строкам, которые сейчас видны (текущий фильтр + поиск).
+  document.getElementById('mmProdSelectAll').addEventListener('change', (e) => {
+    const box = e.target;
+    document.querySelectorAll('#mymarketProductsTable tbody input[data-select-id]').forEach((cb) => {
+      cb.checked = box.checked;
+      if (box.checked) myMarketSelectedProductIds.add(cb.dataset.selectId);
+      else myMarketSelectedProductIds.delete(cb.dataset.selectId);
+    });
+    renderMyMarketProductsTable();
+  });
+  document.getElementById('mmProdBulkArchiveBtn').addEventListener('click', () => runMyMarketArchive([...myMarketSelectedProductIds], true));
+  document.getElementById('mmProdBulkRestoreBtn').addEventListener('click', () => runMyMarketArchive([...myMarketSelectedProductIds], false));
+  document.getElementById('mmProdBulkDeleteBtn').addEventListener('click', () => runMyMarketRemove([...myMarketSelectedProductIds]));
+
   document.getElementById('mymarketDownloadTemplateBtn').addEventListener('click', downloadMyMarketTemplate);
   document.getElementById('mymarketDownloadTemplateBtn2').addEventListener('click', downloadMyMarketTemplate);
   document.getElementById('mymarketGoUploadBtn').addEventListener('click', () => switchMyMarketTab('upload'));
@@ -2362,6 +2377,7 @@ function isMyMarketShopProduct(p) {
   return p.shopPrice != null
     || (p.shopStock ?? 0) > 0
     || !!p.shopActive
+    || !!p.shopArchived
     || !!p.shopDelivery
     || !!myMarketFirstImage(p.images)
     || !!p.category
@@ -2374,9 +2390,15 @@ function myMarketStatusOf(p) {
   // active / hidden / nocat — иначе весь каталог учёта без категории
   // попадал бы в «Без категории».
   if (!isMyMarketShopProduct(p)) return 'catalog';
+  if (p.shopArchived) return 'archived';
   if (!p.category || !p.type) return 'nocat';
   return p.shopActive ? 'active' : 'hidden';
 }
+
+// Выбранные галочками товары. При каждой отрисовке из выбора выкидываются
+// строки, которых нет в текущем фильтре/поиске — так массовое действие
+// никогда не заденет товар, которого пользователь не видит.
+let myMarketSelectedProductIds = new Set();
 
 function renderMyMarketProductsTable() {
   const filter = document.querySelector('#mymarketProductFilterTabs button.is-active')?.dataset.filter || 'active';
@@ -2388,9 +2410,14 @@ function renderMyMarketProductsTable() {
 
   const tbody = document.querySelector('#mymarketProductsTable tbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="10" style="color:var(--text-faint)">Товаров нет</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="11" style="color:var(--text-faint)">Товаров нет</td></tr>`;
+    myMarketSelectedProductIds.clear();
+    updateMyMarketProductBulkBar([]);
     return;
   }
+
+  const visibleIds = new Set(rows.map((p) => p.id));
+  myMarketSelectedProductIds = new Set([...myMarketSelectedProductIds].filter((id) => visibleIds.has(id)));
 
   tbody.innerHTML = rows.map((p) => {
     // Своё фото витрины приоритетнее; фото с площадки — только если своих нет.
@@ -2398,6 +2425,8 @@ function renderMyMarketProductsTable() {
     const status = myMarketStatusOf(p);
     const statusHtml = status === 'catalog'
       ? `<span class="mm-status--hidden" title="Товар учёта маркетплейса, не карточка приложения">Учёт (не витрина)</span>`
+      : status === 'archived'
+      ? `<span class="mm-status--hidden" title="В архиве витрины: не показывается в приложении">📥 В архиве</span>`
       : status === 'nocat'
         ? `<span class="mm-status--nocat" title="Нет category или type — нельзя включить «В продаже»">⚠ Без категории</span>`
         : status === 'active'
@@ -2405,6 +2434,7 @@ function renderMyMarketProductsTable() {
           : `<span class="mm-status--hidden">○ Скрыт</span>`;
     return `
     <tr>
+      <td><input type="checkbox" data-select-id="${p.id}" ${myMarketSelectedProductIds.has(p.id) ? 'checked' : ''} /></td>
       <td>${img ? `<img src="${img}" alt="" style="width:36px;height:36px;object-fit:cover;border-radius:6px" />` : '<span style="color:var(--text-faint);font-size:11px">—</span>'}</td>
       <td class="name-cell">${p.sku}</td>
       <td class="name-cell">${p.name}<br><span style="font-size:10.5px;color:var(--text-faint)">${p.category ?? '—'}${p.type ? ` / ${p.type}` : ''}</span></td>
@@ -2414,7 +2444,13 @@ function renderMyMarketProductsTable() {
       <td class="num">${p.shopStock ?? 0}</td>
       <td>${p.shopDelivery === 'rocket' ? '🚀' : p.shopDelivery === 'truck' ? '🚚' : '—'}</td>
       <td class="num" id="mm-reviews-${p.sku}">…</td>
-      <td><button class="link-btn" data-action="edit" data-id="${p.id}">✎</button></td>
+      <td style="white-space:nowrap">
+        <button class="link-btn" data-action="edit" data-id="${p.id}" title="Открыть карточку">✎</button>
+        ${status === 'archived'
+          ? `<button class="link-btn" data-action="restore" data-id="${p.id}" title="Вернуть из архива">↩</button>`
+          : `<button class="link-btn" data-action="archive" data-id="${p.id}" title="В архив">📥</button>`}
+        <button class="link-btn" data-action="delete" data-id="${p.id}" title="Убрать из My Market" style="color:var(--loss)">🗑</button>
+      </td>
     </tr>
   `;
   }).join('');
@@ -2423,9 +2459,70 @@ function renderMyMarketProductsTable() {
     btn.addEventListener('click', () => openMyMarketProductCard(btn.dataset.id));
   });
 
+  tbody.querySelectorAll('button[data-action="archive"]').forEach((btn) => {
+    btn.addEventListener('click', () => runMyMarketArchive([btn.dataset.id], true));
+  });
+  tbody.querySelectorAll('button[data-action="restore"]').forEach((btn) => {
+    btn.addEventListener('click', () => runMyMarketArchive([btn.dataset.id], false));
+  });
+  tbody.querySelectorAll('button[data-action="delete"]').forEach((btn) => {
+    btn.addEventListener('click', () => runMyMarketRemove([btn.dataset.id]));
+  });
+  tbody.querySelectorAll('input[data-select-id]').forEach((box) => {
+    box.addEventListener('change', () => {
+      if (box.checked) myMarketSelectedProductIds.add(box.dataset.selectId);
+      else myMarketSelectedProductIds.delete(box.dataset.selectId);
+      updateMyMarketProductBulkBar(rows);
+    });
+  });
+  updateMyMarketProductBulkBar(rows);
+
   // Число отзывов — один общий запрос по всем sku сразу (не по одному на
   // строку), через отдельный админский эндпоинт без x-app-key.
   loadMyMarketReviewCounts(rows.map((p) => p.sku));
+}
+
+/** Счётчик «Выбрано: N», доступность кнопок и «выбрать все» — по видимым
+ *  строкам текущего фильтра (с учётом поиска). */
+function updateMyMarketProductBulkBar(visibleRows) {
+  const n = myMarketSelectedProductIds.size;
+  const filter = document.querySelector('#mymarketProductFilterTabs button.is-active')?.dataset.filter || 'active';
+  const inArchive = filter === 'archived';
+  document.getElementById('mmProdSelectedCount').textContent = `Выбрано: ${n}`;
+  const archiveBtn = document.getElementById('mmProdBulkArchiveBtn');
+  const restoreBtn = document.getElementById('mmProdBulkRestoreBtn');
+  archiveBtn.hidden = inArchive;
+  restoreBtn.hidden = !inArchive;
+  archiveBtn.disabled = restoreBtn.disabled = document.getElementById('mmProdBulkDeleteBtn').disabled = n === 0;
+  const all = document.getElementById('mmProdSelectAll');
+  all.checked = visibleRows.length > 0 && n === visibleRows.length;
+  all.indeterminate = n > 0 && n < visibleRows.length;
+}
+
+async function runMyMarketArchive(ids, archived) {
+  if (!ids.length) return;
+  try {
+    await api('/shop-admin/products/archive', { method: 'POST', body: JSON.stringify({ ids, archived }) });
+    myMarketSelectedProductIds.clear();
+    await loadMyMarketProducts();
+  } catch (err) {
+    alert('Не удалось изменить архив: ' + err.message);
+  }
+}
+
+async function runMyMarketRemove(ids) {
+  if (!ids.length) return;
+  if (!confirm(`Убрать ${ids.length} товар(ов) из My Market? На Kaspi/Ozon/WB это не повлияет.`)) return;
+  try {
+    const res = await api('/shop-admin/products/remove', { method: 'POST', body: JSON.stringify({ ids }) });
+    myMarketSelectedProductIds.clear();
+    await loadMyMarketProducts();
+    if (res.detached > 0) {
+      alert(`Готово. Удалено товаров витрины: ${res.deleted}. Снято с витрины: ${res.detached} — это товары учёта, они остались в разделе «Товары» и на площадках.`);
+    }
+  } catch (err) {
+    alert('Не удалось убрать товары: ' + err.message);
+  }
 }
 
 async function loadMyMarketReviewCounts(skus) {

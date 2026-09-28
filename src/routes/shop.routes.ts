@@ -57,7 +57,7 @@ function toShopProduct(p: any) {
 
 shopRouter.get('/products', async (_req, res) => {
   try {
-    const products = await prisma.product.findMany({ where: { shopActive: true } });
+    const products = await prisma.product.findMany({ where: { shopActive: true, shopArchived: false } });
     res.json(products.map(toShopProduct));
   } catch (err: any) {
     logger.error({ err }, '[Shop API] GET /products упал');
@@ -67,7 +67,7 @@ shopRouter.get('/products', async (_req, res) => {
 
 shopRouter.get('/products/:sku', async (req, res) => {
   try {
-    const product = await prisma.product.findFirst({ where: { sku: req.params.sku, shopActive: true } });
+    const product = await prisma.product.findFirst({ where: { sku: req.params.sku, shopActive: true, shopArchived: false } });
     if (!product) return res.status(404).json({ error: 'Товар не найден' });
     res.json(toShopProduct(product));
   } catch (err: any) {
@@ -84,7 +84,7 @@ shopRouter.get('/products/:sku', async (req, res) => {
 shopRouter.get('/categories', async (_req, res) => {
   try {
     const products = await prisma.product.findMany({
-      where: { shopActive: true, category: { not: null } },
+      where: { shopActive: true, shopArchived: false, category: { not: null } },
       select: { category: true, subcategory: true, type: true },
     });
     const tree = new Map<string, Map<string, Set<string>>>();

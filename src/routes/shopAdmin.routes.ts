@@ -405,6 +405,8 @@ shopAdminRouter.post('/bulk-upsert', async (req, res) => {
         shopDelivery: row.data.shopDelivery || null,
         shopActive: row.data.shopActive,
         videoUrl: row.data.videoUrl || null,
+        // Excel с shopActive=да возвращает товар из архива витрины.
+        ...(row.data.shopActive ? { shopArchived: false } : {}),
       };
       const wasExisting = existingSkus.has(row.data.sku);
       await prisma.product.upsert({
@@ -493,5 +495,89 @@ shopAdminRouter.get('/analytics/seasonality', async (req, res) => {
   } catch (err: any) {
     logger.error({ err }, '[Shop Admin] GET /analytics/seasonality упал');
     res.status(500).json({ error: 'Не удалось получить аналитику сезонности', details: String(err?.message ?? err) });
+  }
+});
+
+// =====================================================================
+// Архив и удаление товаров ВИТРИНЫ My Market (вкладка «Товары»).
+// Ничего не вызывает на Kaspi/Ozon/WB: работает только с записью Product
+// в нашей базе. Раздел учёта (active, costPrice, идентификаторы площадок,
+// marketImages) не затрагивается.
+// =====================================================================
+
+const shopProductIdsSchema = z.object({ ids: z.array(z.string()).min(1).max(500) });
+
+/**
+ * Архив витрины / возврат из архива. archived=true: товар пропадает из
+ * приложения (shopActive=false) и из «В продаже»/«Скрыты», остаётся во
+ * вкладке «Архив». archived=false: только снимает метку — товар вернётся в
+ * «Скрыты» (или «Без категории»); в продажу его включают отдельно.
+ * Поле active (архив учёта) намеренно НЕ трогается.
+ */
+shopAdminRouter.post('/products/archive', async (req, res) => {
+  const parsed = shopProductIdsSchema.extend({ archived: z.boolean() }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  try {
+    const result = await prisma.product.updateMany({
+      where: { id: { in: parsed.data.ids } },
+      data: parsed.data.archived ? { shopArchived: true, shopActive: false } : { shopArchived: false },
+    });
+    res.json({ ok: true, updated: result.count });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] POST /products/archive упал');
+    res.status(500).json({ error: 'Не удалось изменить архив витрины', details: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * «Чистый» товар витрины — существует только ради приложения: без
+ * идентификаторов Kaspi/Ozon/WB и не с sku вида kaspi-/ozon-/wb-. MM-* и
+ * товары из Excel My Market (SKU-001 и т.п.) сюда попадают. Всё остальное —
+ * товар учёта: его запись НИКОГДА не удаляется этим эндпоинтом.
+ */
+function isPureShopProduct(p: {
+  sku: string; kaspiSku: string | null; ozonOfferId: string | null; ozonSku: number | null;
+  wbArticle: string | null; wbNmId: number | null; kaspiProductUrl: string | null;
+}): boolean {
+  if (/^(kaspi|ozon|wb)-/i.test(p.sku)) return false;
+  return !p.kaspiSku && !p.ozonOfferId && p.ozonSku == null && !p.wbArticle && p.wbNmId == null && !p.kaspiProductUrl;
+}
+
+/** Витринные поля, которые обнуляются при «снятии с витрины» товара учёта. */
+const SHOP_FIELDS_RESET = {
+  shopActive: false, shopArchived: false, shopPrice: null, shopOldPrice: null, shopStock: 0,
+  shopDelivery: null, shopVideo: null, videoUrl: null, shopCost: null,
+  category: null, subcategory: null, type: null, description: null, composition: null, images: null,
+  banner: false, bannerTitle: null, bannerSubtitle: null,
+  // marketImages (фото с площадки), active, costPrice, kaspiSku/ozonOfferId/wbArticle
+  // и т.д. — НЕ входят сюда: это данные учёта, они остаются как есть.
+};
+
+/**
+ * «Удалить» из My Market. Чистый товар витрины — удаляется запись Product
+ * (история APP-заказов сохраняется: OrderItem.productId при этом
+ * обнуляется, снимок названия/цены/себестоимости остаётся). Товар учёта —
+ * запись остаётся, с него только снимаются витринные поля, так что он
+ * перестаёт считаться карточкой приложения; строка в разделе «Товары» слева
+ * и карточка на площадке не затрагиваются.
+ */
+shopAdminRouter.post('/products/remove', async (req, res) => {
+  const parsed = shopProductIdsSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  try {
+    const products = await prisma.product.findMany({
+      where: { id: { in: parsed.data.ids } },
+      select: { id: true, sku: true, kaspiSku: true, ozonOfferId: true, ozonSku: true, wbArticle: true, wbNmId: true, kaspiProductUrl: true },
+    });
+    const pureIds = products.filter((p) => isPureShopProduct(p)).map((p) => p.id);
+    const detachIds = products.filter((p) => !isPureShopProduct(p)).map((p) => p.id);
+
+    const deleted = pureIds.length ? (await prisma.product.deleteMany({ where: { id: { in: pureIds } } })).count : 0;
+    const detached = detachIds.length ? (await prisma.product.updateMany({ where: { id: { in: detachIds } }, data: SHOP_FIELDS_RESET })).count : 0;
+
+    res.json({ ok: true, deleted, detached, notFound: parsed.data.ids.length - products.length });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] POST /products/remove упал');
+    res.status(500).json({ error: 'Не удалось убрать товары из My Market', details: String(err?.message ?? err) });
   }
 });

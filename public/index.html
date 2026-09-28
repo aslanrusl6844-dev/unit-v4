@@ -475,13 +475,20 @@
               <button data-filter="active" class="is-active">В продаже</button>
               <button data-filter="hidden">Скрыты</button>
               <button data-filter="nocat">Без категории <span style="color:var(--warn)">⚠</span></button>
+              <button data-filter="archived">Архив</button>
               <button data-filter="all">Все <span style="color:var(--text-faint);font-size:11px">(товары учёта, не витрина)</span></button>
+            </div>
+            <div id="mmProdBulkBar" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0">
+              <span id="mmProdSelectedCount" style="font-size:12.5px;color:var(--text-muted);min-width:90px">Выбрано: 0</span>
+              <button class="btn btn--ghost" id="mmProdBulkArchiveBtn" disabled>📥 В архив</button>
+              <button class="btn btn--ghost" id="mmProdBulkRestoreBtn" disabled hidden>↩ Вернуть из архива</button>
+              <button class="btn btn--ghost" id="mmProdBulkDeleteBtn" disabled style="color:var(--loss)">🗑 Удалить</button>
             </div>
             <div class="table-wrap">
               <table class="table" id="mymarketProductsTable">
                 <thead>
                   <tr>
-                    <th>Фото</th><th>Артикул / SKU</th><th>Название</th><th>Статус</th>
+                    <th style="width:28px"><input type="checkbox" id="mmProdSelectAll" title="Выбрать все в текущем фильтре" /></th><th>Фото</th><th>Артикул / SKU</th><th>Название</th><th>Статус</th>
                     <th class="num">Цена</th><th class="num">Старая цена</th><th class="num">Остаток</th>
                     <th>Доставка</th><th>Отзывы</th><th></th>
                   </tr>

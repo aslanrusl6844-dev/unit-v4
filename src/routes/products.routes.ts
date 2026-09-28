@@ -52,6 +52,7 @@ const productSchema = z.object({
   wbVolumeLiters: z.number().positive().optional().nullable(),
   // --- Витрина приложения My Market (канал APP) ---
   shopActive: z.boolean().optional(),
+  shopArchived: z.boolean().optional(),
   shopPrice: z.number().nonnegative().optional().nullable(),
   shopOldPrice: z.number().nonnegative().optional().nullable(),
   shopStock: z.number().int().nonnegative().optional(),
@@ -298,6 +299,10 @@ productsRouter.put('/:id', async (req, res) => {
   // категории приложения. Проверяем ОБЕ версии (то, что уже сохранено, и
   // то, что пришло в этом же запросе), чтобы не заблокировать случай
   // "включаю И одновременно проставляю категорию одним запросом".
+  // Включили «В продаже» — значит товар возвращается из архива витрины
+  // (архивный товар в продаже быть не может), если архив явно не задан.
+  if (data.shopActive === true && data.shopArchived === undefined) data.shopArchived = false;
+
   if (data.shopActive === true) {
     const existing = await prisma.product.findUnique({ where: { id: req.params.id } });
     const category = data.category !== undefined ? data.category : existing?.category;

@@ -137,6 +137,10 @@ model Product {
   // --- Витрина приложения My Market (канал APP) ---
   // Независимо от Kaspi/Ozon/WB — свой набор полей, свои цена/остаток/статус.
   shopActive      Boolean   @default(false) // показывать ли товар в приложении
+  // Архив именно витрины My Market. НЕ то же самое, что active (это архив
+  // учёта, раздел слева «Товары») — его архив витрины не трогает. Архивный
+  // товар не показывается в приложении и во вкладках «В продаже»/«Скрыты».
+  shopArchived    Boolean   @default(false)
   shopPrice       Float?
   shopOldPrice    Float?    // "старая" цена, для зачёркнутой скидки в карточке
   shopStock       Int       @default(0)
