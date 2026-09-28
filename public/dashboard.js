@@ -2317,7 +2317,32 @@ async function loadMyMarketProducts() {
   renderMyMarketProductsTable();
 }
 
+/**
+ * Товар витрины My Market (а не товар учёта Kaspi/Ozon/WB): sku начинается
+ * с MM- (без учёта регистра) ИЛИ у товара заполнено хоть одно витринное
+ * поле — значит его явно настраивали как карточку приложения. Товары
+ * учёта (kaspi-…, ozon-…, wb-… без витринных полей) сюда не попадают.
+ * category/subcategory/type тоже считаются витринными: они нужны только
+ * витрине, и частично заполненный товар (например, только категория) не
+ * должен пропасть из «Без категории».
+ */
+function isMyMarketShopProduct(p) {
+  if (/^mm-/i.test(p.sku || '')) return true;
+  return p.shopPrice != null
+    || (p.shopStock ?? 0) > 0
+    || !!p.shopActive
+    || !!p.shopDelivery
+    || !!myMarketFirstImage(p.images)
+    || !!p.category
+    || !!p.subcategory
+    || !!p.type;
+}
+
 function myMarketStatusOf(p) {
+  // Сначала отсеиваем не-витринные товары, и только потом считаем
+  // active / hidden / nocat — иначе весь каталог учёта без категории
+  // попадал бы в «Без категории».
+  if (!isMyMarketShopProduct(p)) return 'catalog';
   if (!p.category || !p.type) return 'nocat';
   return p.shopActive ? 'active' : 'hidden';
 }
@@ -2339,11 +2364,13 @@ function renderMyMarketProductsTable() {
   tbody.innerHTML = rows.map((p) => {
     const img = myMarketFirstImage(p.images);
     const status = myMarketStatusOf(p);
-    const statusHtml = status === 'nocat'
-      ? `<span class="mm-status--nocat" title="Нет category или type — нельзя включить «В продаже»">⚠ Без категории</span>`
-      : status === 'active'
-        ? `<span class="mm-status--active">● В продаже</span>`
-        : `<span class="mm-status--hidden">○ Скрыт</span>`;
+    const statusHtml = status === 'catalog'
+      ? `<span class="mm-status--hidden" title="Товар учёта маркетплейса, не карточка приложения">Учёт (не витрина)</span>`
+      : status === 'nocat'
+        ? `<span class="mm-status--nocat" title="Нет category или type — нельзя включить «В продаже»">⚠ Без категории</span>`
+        : status === 'active'
+          ? `<span class="mm-status--active">● В продаже</span>`
+          : `<span class="mm-status--hidden">○ Скрыт</span>`;
     return `
     <tr>
       <td>${img ? `<img src="${img}" alt="" style="width:36px;height:36px;object-fit:cover;border-radius:6px" />` : '<span style="color:var(--text-faint);font-size:11px">—</span>'}</td>
