@@ -2886,11 +2886,12 @@ async function loadMyMarketOrders() {
   tbody.innerHTML = orders.map((o) => {
     const address = [o.city, o.street, o.house, o.apartment ? `кв. ${o.apartment}` : ''].filter(Boolean).join(', ');
     const isCancelled = o.status === 'cancelled';
-    // Отменённый заказ — накладная не нужна: кнопка серая, неактивная,
-    // без обработчика клика (не просто визуально приглушена).
+    // Накладная — обычная ссылка на тот же URL, что открывается напрямую
+    // (без JS-обработчика и window.open). Отменённый заказ — серый <span>
+    // без href, физически не кликается.
     const waybillCell = isCancelled
-      ? `<button class="link-btn" disabled style="color:var(--text-faint);cursor:not-allowed" title="Заказ отменён">🖨 Накладная</button>`
-      : `<button class="link-btn" data-action="print" data-id="${o.id}">🖨 Накладная</button>`;
+      ? `<span class="link-btn" style="color:var(--text-faint);cursor:not-allowed;pointer-events:none" title="Заказ отменён">🖨 Накладная</span>`
+      : `<a class="link-btn" href="/api/shop/admin/orders/${o.id}/waybill" target="_blank" rel="noopener" style="text-decoration:none">🖨 Накладная</a>`;
     const statusLabel = MY_MARKET_STATUS_LABELS[o.status] ?? o.status;
     const statusCell = o.status === 'delivered'
       ? `<span style="color:var(--accent);font-weight:600">● ${statusLabel}</span>`
@@ -2957,19 +2958,6 @@ async function loadMyMarketOrders() {
     });
   });
 
-  tbody.querySelectorAll('button[data-action="print"]').forEach((btn) => {
-    btn.addEventListener('click', () => downloadMyMarketWaybill(btn.dataset.id));
-  });
-}
-
-/**
- * Кнопка «Накладная» — качает PDF-наклейку 75×120мм с сервера
- * (GET /api/shop/admin/orders/:id/waybill, без x-app-key — это админский
- * путь). Никакого HTML-окна с ценой/суммой/кодом выдачи больше нет — та
- * версия показывала то, что на наклейке печатать нельзя.
- */
-function downloadMyMarketWaybill(orderId) {
-  window.open(`/api/shop/admin/orders/${orderId}/waybill`, '_blank');
 }
 
 // ---------------------------------------------------------------------
