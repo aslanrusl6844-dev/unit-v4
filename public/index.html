@@ -483,6 +483,7 @@
               <button class="btn btn--ghost" id="mmProdBulkArchiveBtn" disabled>📥 В архив</button>
               <button class="btn btn--ghost" id="mmProdBulkRestoreBtn" disabled hidden>↩ Вернуть из архива</button>
               <button class="btn btn--ghost" id="mmProdBulkDeleteBtn" disabled style="color:var(--loss)">🗑 Удалить</button>
+              <button class="btn btn--ghost" id="mmProdApplyNameCatsBtn" title="Для товаров из «Без категории» с пустыми категорией и типом. Только подсказка: продажа не включается.">🏷 Проставить категории по названиям</button>
             </div>
             <div class="table-wrap">
               <table class="table" id="mymarketProductsTable">
@@ -557,10 +558,11 @@
               <!-- ---- Характеристики ---- -->
               <div class="mm-cardtab" data-cardtab-panel="attrs" hidden>
                 <div class="form-grid">
-                  <label>Категория *<input type="text" name="category" required /></label>
+                  <label>Категория *<select name="category"></select></label>
                   <label>Подкатегория<input type="text" name="subcategory" /></label>
-                  <label>Тип *<input type="text" name="type" required /></label>
+                  <label>Тип *<select name="type"></select></label>
                 </div>
+                <div id="mmCardCategoryHints" style="font-size:12.5px;margin:-4px 0 12px"></div>
                 <label>Описание<textarea name="description" rows="3"></textarea></label>
                 <label>Состав<textarea name="composition" rows="2"></textarea></label>
               </div>

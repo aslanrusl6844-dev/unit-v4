@@ -7,6 +7,7 @@ import { markShopOrderAsPaid } from './shop.routes';
 import { getSearchAnalytics, getConversionAnalytics, getSeasonalityAnalytics } from '../services/shopAnalytics.service';
 import { generateWaybillPdf, WaybillOrderItem } from '../services/waybill.service';
 import { ozonTypeKey } from '../services/sync.service';
+import { hintCategoryByName, hintRuleCatalogPairs, buildCatalog } from '../services/categoryHints';
 
 export const shopAdminRouter = Router();
 
@@ -654,6 +655,90 @@ shopAdminRouter.put('/ozon-type-map', async (req, res) => {
   } catch (err: any) {
     logger.error({ err }, '[Shop Admin] PUT /ozon-type-map упал');
     res.status(500).json({ error: 'Не удалось сохранить соответствие', details: String(err?.message ?? err) });
+  }
+});
+
+// =====================================================================
+// Категория и тип «по названию» — подсказка, а не публикация. Правила и
+// справочник — в services/categoryHints.ts (дерево Ozon не используется).
+// Ничего из этого не включает продажу и не затирает заполненные поля.
+// =====================================================================
+
+/**
+ * Каталог «категория → её типы» для выпадающих списков в карточке:
+ * справочник правил + соответствия из словаря Ozon (уже My Market-значения)
+ * + пары, реально использованные в товарах. Дерево категорий Ozon не берётся.
+ */
+shopAdminRouter.get('/category-catalog', async (_req, res) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store');
+    const used = await prisma.product.groupBy({
+      by: ['category', 'type'],
+      where: { category: { not: null }, type: { not: null } },
+    });
+    const mapped = await prisma.ozonTypeMap.findMany({ select: { category: true, type: true } });
+    const categories = buildCatalog([
+      ...hintRuleCatalogPairs(),
+      ...(mapped as Array<{ category: string; type: string }>),
+      ...(used as Array<{ category: string | null; type: string | null }>),
+    ]);
+    res.json({ categories });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] GET /category-catalog упал');
+    res.status(500).json({ error: 'Не удалось получить каталог категорий', details: String(err?.message ?? err) });
+  }
+});
+
+/** Варианты category/type по названию (для блока «По названию» в карточке). */
+shopAdminRouter.get('/category-hints', (req, res) => {
+  res.json(hintCategoryByName(String(req.query.name ?? '')));
+});
+
+/**
+ * Пакетная простановка category/type по названию. Только для товаров, у
+ * которых category И type пусты (заполненное — в том числе руками — не
+ * трогается), и только когда подходит ровно один вариант; спорные и без
+ * совпадений остаются пустыми. shopActive не меняется. Источник помечается
+ * categorySource="name" — так в списке видно «категория с названия».
+ * Клиент шлёт id пачками (до 500), чтобы уложиться в лимит serverless.
+ */
+shopAdminRouter.post('/products/apply-name-categories', async (req, res) => {
+  const parsed = shopProductIdsSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  try {
+    const products = await prisma.product.findMany({
+      where: { id: { in: parsed.data.ids } },
+      select: { id: true, name: true, category: true, type: true },
+    });
+    let alreadyFilled = 0;
+    let multiple = 0;
+    let none = 0;
+    const groups = new Map<string, { category: string; type: string; ids: string[] }>();
+    for (const p of products as Array<{ id: string; name: string; category: string | null; type: string | null }>) {
+      if (p.category || p.type) { alreadyFilled += 1; continue; }
+      const hint = hintCategoryByName(p.name);
+      if (hint.status === 'multiple') { multiple += 1; continue; }
+      if (hint.status === 'none') { none += 1; continue; }
+      const v = hint.variants[0];
+      const key = `${v.category}|${v.type}`;
+      if (!groups.has(key)) groups.set(key, { category: v.category, type: v.type, ids: [] });
+      groups.get(key)!.ids.push(p.id);
+    }
+
+    let applied = 0;
+    for (const g of groups.values()) {
+      // category/type: null в условии — защита от гонки: если поле успели
+      // заполнить между чтением и записью, оно не будет перезаписано.
+      const r = await prisma.product.updateMany({
+        where: { id: { in: g.ids }, category: null, type: null },
+        data: { category: g.category, type: g.type, categorySource: 'name' },
+      });
+      applied += r.count;
+    }
+    res.json({ ok: true, applied, multiple, none, alreadyFilled, notFound: parsed.data.ids.length - products.length });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] POST /products/apply-name-categories упал');
+    res.status(500).json({ error: 'Не удалось проставить категории по названиям', details: String(err?.message ?? err) });
   }
 });
 

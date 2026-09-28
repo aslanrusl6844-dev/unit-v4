@@ -2170,6 +2170,25 @@ function wireMyMarketTabsOnce() {
   document.getElementById('mmOzonMapPanel').addEventListener('toggle', (e) => {
     if (e.target.open) loadMyMarketOzonTypeMap().catch((err) => alert('Не удалось загрузить словарь: ' + err.message));
   });
+  // Карточка: списки «Категория»/«Тип» и подсказки по названию.
+  (() => {
+    const form = document.getElementById('mymarketProductCardForm');
+    form.elements.category.addEventListener('change', () => {
+      myMarketCardCategoryTouched = true;
+      const category = form.elements.category.value;
+      const prevType = form.elements.type.value;
+      const allowed = myMarketCatalog.find((c) => c.category === category)?.types ?? [];
+      // Тип подтягивается только из выбранной категории; прежний остаётся, лишь если он оттуда же.
+      fillMyMarketTypeSelect(category, allowed.includes(prevType) ? prevType : '');
+    });
+    form.elements.type.addEventListener('change', () => { myMarketCardCategoryTouched = true; });
+    let hintTimer = null;
+    form.elements.name.addEventListener('input', () => {
+      clearTimeout(hintTimer);
+      hintTimer = setTimeout(refreshMyMarketCardHints, 350);
+    });
+  })();
+  document.getElementById('mmProdApplyNameCatsBtn').addEventListener('click', runMyMarketApplyNameCategories);
   document.getElementById('mmProdBulkArchiveBtn').addEventListener('click', () => runMyMarketArchive([...myMarketSelectedProductIds], true));
   document.getElementById('mmProdBulkRestoreBtn').addEventListener('click', () => runMyMarketArchive([...myMarketSelectedProductIds], false));
   document.getElementById('mmProdBulkDeleteBtn').addEventListener('click', () => runMyMarketRemove([...myMarketSelectedProductIds]));
@@ -2499,7 +2518,7 @@ function renderMyMarketProductsTable() {
       <td><input type="checkbox" data-select-id="${p.id}" ${myMarketSelectedProductIds.has(p.id) ? 'checked' : ''} /></td>
       <td>${img ? `<img src="${img}" alt="" style="width:36px;height:36px;object-fit:cover;border-radius:6px" />` : '<span style="color:var(--text-faint);font-size:11px">—</span>'}</td>
       <td class="name-cell">${p.sku}</td>
-      <td class="name-cell">${p.name}<br><span style="font-size:10.5px;color:var(--text-faint)">${p.category ?? '—'}${p.type ? ` / ${p.type}` : ''}</span>${myMarketSourceLabels(p).map((l) => `<br><span style="font-size:10.5px;color:${l === 'категория не задана' ? 'var(--warn)' : 'var(--accent)'}">${l}</span>`).join('')}</td>
+      <td class="name-cell">${p.name}<br><span style="font-size:10.5px;color:var(--text-faint)">${p.category ?? '—'}${p.type ? ` / ${p.type}` : ''}</span>${myMarketSourceLabels(p).map((l) => `<br><span style="font-size:10.5px;color:${l === 'категория не задана' ? 'var(--warn)' : 'var(--accent)'}">${l}</span>`).join('')}${p.categorySource === 'name' && p.category && p.type ? `<br><span style="font-size:10.5px;color:var(--accent)">категория с названия</span> <button type="button" class="link-btn" data-action="edit-hint" data-id="${p.id}" style="font-size:10px;text-decoration:underline">можно изменить</button>` : ''}</td>
       <td>${statusHtml}</td>
       <td class="num">${p.shopPrice != null ? fmtMoney(p.shopPrice) : '—'}</td>
       <td class="num">${p.shopOldPrice != null ? fmtMoney(p.shopOldPrice) : '—'}</td>
@@ -2526,6 +2545,12 @@ function renderMyMarketProductsTable() {
     btn.addEventListener('click', () => openMyMarketProductCard(btn.dataset.id));
   });
 
+  tbody.querySelectorAll('button[data-action="edit-hint"]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      openMyMarketProductCard(btn.dataset.id);
+      switchMyMarketCardTab('attrs'); // сразу к полям «Категория» и «Тип»
+    });
+  });
   tbody.querySelectorAll('button[data-action="onsale"]').forEach((btn) => {
     btn.addEventListener('click', () => runMyMarketPutOnSale(btn.dataset.id));
   });
@@ -2664,6 +2689,132 @@ function switchMyMarketCardTab(tab) {
 /** Новый товар витрины — пустая карточка, сгенерированный sku вида MM-xxxxxx.
  *  Артикулы Kaspi/Ozon/WB НЕ подставляются вообще — это отдельный товар
  *  только для My Market, не связанный с другими площадками. */
+// ---------------------------------------------------------------------
+// Категория и тип «по названию» — подсказка, а не публикация. Поля в карточке
+// — обычные списки (не замок): всегда можно выбрать другое из каталога, тип
+// показывается только из выбранной категории. Подсказки по названию — под
+// полями: клик по варианту подставляет оба поля.
+// ---------------------------------------------------------------------
+let myMarketCatalog = [];              // [{ category, types: [] }] — каталог для списков
+let myMarketCardCategoryTouched = false; // пользователь сам выбирал категорию/тип в этой карточке
+let myMarketHintsSeq = 0;               // отбрасываем устаревшие ответы подсказок
+
+function mmEsc(v) {
+  return String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+async function loadMyMarketCatalog() {
+  try {
+    const r = await api('/shop-admin/category-catalog');
+    myMarketCatalog = Array.isArray(r?.categories) ? r.categories : [];
+  } catch {
+    // Каталог не загрузился — списки остаются рабочими на текущих значениях.
+  }
+}
+
+function mmSetSelectOptions(sel, values, selected) {
+  sel.innerHTML = '';
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = '— выберите —';
+  sel.appendChild(placeholder);
+  values.forEach((v) => {
+    const o = document.createElement('option');
+    o.value = v;
+    o.textContent = v;
+    sel.appendChild(o);
+  });
+  sel.value = selected || '';
+}
+
+/** Список типов = только типы выбранной категории (+ текущее значение, чтобы не потерять его). */
+function fillMyMarketTypeSelect(category, type) {
+  const sel = document.getElementById('mymarketProductCardForm').elements.type;
+  const types = [...(myMarketCatalog.find((c) => c.category === category)?.types ?? [])];
+  if (type && !types.includes(type)) types.push(type);
+  mmSetSelectOptions(sel, types, type);
+}
+
+function fillMyMarketCategorySelect(category, type) {
+  const sel = document.getElementById('mymarketProductCardForm').elements.category;
+  const cats = myMarketCatalog.map((c) => c.category);
+  if (category && !cats.includes(category)) cats.push(category);
+  mmSetSelectOptions(sel, cats, category);
+  fillMyMarketTypeSelect(category, type);
+}
+
+/** Блок под полями: «По названию: …» и «Ещё: …» — по одному варианту в строке. */
+async function refreshMyMarketCardHints() {
+  const box = document.getElementById('mmCardCategoryHints');
+  const name = document.getElementById('mymarketProductCardForm').elements.name.value.trim();
+  const seq = ++myMarketHintsSeq;
+  if (!name) { box.innerHTML = ''; return; }
+  let r = null;
+  try { r = await api(`/shop-admin/category-hints?name=${encodeURIComponent(name)}`); } catch { r = null; }
+  if (seq !== myMarketHintsSeq) return;
+  const variants = Array.isArray(r?.variants) ? r.variants : [];
+  if (!variants.length) {
+    box.innerHTML = '<span style="color:var(--text-faint)">По названию подсказки нет — выберите категорию и тип из списка.</span>';
+    return;
+  }
+  box.innerHTML = variants.map((v, i) => `
+    <div>${i === 0 ? 'По названию' : 'Ещё'}: <button type="button" class="link-btn" data-hint-index="${i}" style="color:var(--accent);text-decoration:underline;font-size:12.5px">${mmEsc(v.category)} / ${mmEsc(v.type)}</button></div>
+  `).join('');
+  box.querySelectorAll('button[data-hint-index]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const v = variants[Number(btn.dataset.hintIndex)];
+      myMarketCardCategoryTouched = true; // выбрано пользователем — источник «с названия» снимается
+      fillMyMarketCategorySelect(v.category, v.type);
+    });
+  });
+}
+
+/** Открывает списки и подсказки в карточке; каталог догружается в фоне. */
+function initMyMarketCardCategoryFields(category, type) {
+  myMarketCardCategoryTouched = false;
+  fillMyMarketCategorySelect(category, type);
+  loadMyMarketCatalog().then(() => {
+    const form = document.getElementById('mymarketProductCardForm');
+    fillMyMarketCategorySelect(form.elements.category.value, form.elements.type.value);
+  });
+  refreshMyMarketCardHints();
+}
+
+const MY_MARKET_NAME_CATS_CHUNK = 200;
+
+/** «Проставить категории по названиям»: только товары из «Без категории» с пустыми
+ *  category и type, пачками. Спорные (несколько вариантов / нет совпадений) остаются пустыми. */
+async function runMyMarketApplyNameCategories() {
+  const targets = myMarketProductsCache.filter((p) => myMarketStatusOf(p) === 'nocat' && !p.category && !p.type);
+  if (!targets.length) { showToast('В «Без категории» нет товаров с пустыми категорией и типом'); return; }
+  if (!confirm(`Проставить категорию и тип по названию для ${targets.length} товар(ов) из «Без категории»? Заполнятся только пустые поля, товары в продажу не включаются. Спорные и без совпадений останутся пустыми.`)) return;
+
+  const btn = document.getElementById('mmProdApplyNameCatsBtn');
+  btn.disabled = true;
+  const total = { applied: 0, multiple: 0, none: 0, alreadyFilled: 0 };
+  const ids = targets.map((p) => p.id);
+  try {
+    for (let i = 0; i < ids.length; i += MY_MARKET_NAME_CATS_CHUNK) {
+      btn.textContent = `Проставляю… ${Math.min(i + MY_MARKET_NAME_CATS_CHUNK, ids.length)} из ${ids.length}`;
+      const r = await api('/shop-admin/products/apply-name-categories', { method: 'POST', body: JSON.stringify({ ids: ids.slice(i, i + MY_MARKET_NAME_CATS_CHUNK) }) });
+      total.applied += r.applied; total.multiple += r.multiple; total.none += r.none; total.alreadyFilled += r.alreadyFilled;
+    }
+  } catch (err) {
+    alert(`Не удалось проставить категории${total.applied ? ` (успело: ${total.applied})` : ''}: ` + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🏷 Проставить категории по названиям';
+  }
+
+  myMarketSelectedProductIds.clear();
+  await loadMyMarketProducts();
+  // После простановки открываем «Без категории»: там остались только спорные.
+  document.querySelectorAll('#mymarketProductFilterTabs button').forEach((b) => b.classList.toggle('is-active', b.dataset.filter === 'nocat'));
+  renderMyMarketProductsTable();
+  const left = total.multiple + total.none;
+  alert(`Проставлено по названию: ${total.applied}.\nОсталось в «Без категории»: ${left} — спорные: несколько вариантов ${total.multiple}, нет совпадений ${total.none}.${total.alreadyFilled ? `\nПропущено уже заполненных: ${total.alreadyFilled}.` : ''}\nПродажа ни у одного товара не включалась.`);
+}
+
 function openMyMarketNewProductCard() {
   myMarketEditingProductId = null;
   const form = document.getElementById('mymarketProductCardForm');
@@ -2674,6 +2825,7 @@ function openMyMarketNewProductCard() {
   form.elements.shopActive.checked = false;
   myMarketCardImages = [];
   myMarketCardVideo = null;
+  initMyMarketCardCategoryFields('', '');
   renderMyMarketMediaGrid();
   renderMyMarketVideoPreview();
   document.getElementById('mymarketCardWarning').textContent = 'Новый товар витрины — не связан с Kaspi/Ozon/WB.';
@@ -2694,9 +2846,8 @@ function openMyMarketProductCard(id) {
   form.elements.shopCost.value = p.shopCost ?? '';
   form.elements.shopStock.value = p.shopStock ?? 0;
   form.elements.shopDelivery.value = p.shopDelivery ?? '';
-  form.elements.category.value = p.category ?? '';
   form.elements.subcategory.value = p.subcategory ?? '';
-  form.elements.type.value = p.type ?? '';
+  initMyMarketCardCategoryFields(p.category ?? '', p.type ?? '');
   form.elements.description.value = p.description ?? '';
   form.elements.composition.value = p.composition ?? '';
   form.elements.videoUrl.value = p.videoUrl ?? '';
@@ -2907,6 +3058,9 @@ async function saveMyMarketProductCard(e) {
     shopVideo: myMarketCardVideo || null,
     videoUrl: form.elements.videoUrl.value.trim() || null,
     shopActive,
+    // Пользователь сам выбирал категорию/тип (или кликнул вариант) — это уже его
+    // выбор: пометка «с названия» снимается, синк Ozon это больше не перезаписывает.
+    ...(myMarketCardCategoryTouched ? { categorySource: null } : {}),
   };
 
   try {
