@@ -3,6 +3,7 @@ import { kaspiClient } from '../integrations/kaspi.client';
 import { ozonClient } from '../integrations/ozon.client';
 import { wbClient } from '../integrations/wb.client';
 import { fetchProductImages } from '../integrations/kaspi.scraper';
+import { looksLikeAttributeDump, looksLikeLegacySyncDump, buildCharacteristics } from '../integrations/ozon.content';
 import { calcKaspiCommissionAmount } from '../integrations/kaspi.categories';
 import { calculateKaspiDeliveryCost } from '../integrations/kaspi.delivery';
 import { env } from '../config/env';
@@ -627,7 +628,7 @@ export async function syncOzonContent(limit = 40, cursor?: string) {
     take: limit,
     select: {
       id: true, ozonOfferId: true, description: true, composition: true, descriptionSource: true, compositionSource: true,
-      images: true, marketImages: true, category: true, type: true, categorySource: true, ozonType: true,
+      images: true, marketImages: true, category: true, type: true, categorySource: true, ozonType: true, characteristics: true,
     },
   });
   if (!products.length) return { processed: 0, updated: 0, withDescription: 0, mapped: 0, unmappedTypes: [] as string[], nextCursor: null as string | null, done: true };
@@ -649,14 +650,43 @@ export async function syncOzonContent(limit = 40, cursor?: string) {
 
     if (c.typeName && c.typeName !== p.ozonType) data.ozonType = c.typeName;
 
-    if (c.description && (!p.description || p.descriptionSource === 'ozon')) {
-      if (c.description !== p.description) data.description = c.description;
-      data.descriptionSource = 'ozon';
+    // Описание — только очищенная аннотация (см. ozon.content.ts). Пишем в пустое
+    // поле или в то, что раньше записал синк; вписанное руками не трогаем.
+    if (c.description !== undefined) {
+      if (c.description && (!p.description || p.descriptionSource === 'ozon')) {
+        if (c.description !== p.description) data.description = c.description;
+        data.descriptionSource = 'ozon';
+      } else if (!c.description && p.descriptionSource === 'ozon' && p.description) {
+        // Аннотация после чистки пуста (там была только оферта/хештеги) — а прежний
+        // текст писал сам синк: убираем его, чтобы мусор не висел в карточке.
+        data.description = null;
+        data.descriptionSource = null;
+      }
     }
-    if (c.composition && (!p.composition || p.compositionSource === 'ozon')) {
-      if (c.composition !== p.composition) data.composition = c.composition;
+
+    // Состав — ТОЛЬКО из отдельного поля Ozon «Состав»/«Состав/ингредиенты», чистым
+    // текстом. Уже залитая свалка атрибутов («#Хештеги», «ТН ВЭД», «Нужен код
+    // маркировки»…) очищается и, если у товара есть нормальный состав, тут же
+    // заполняется заново. Вписанный руками состав не трогаем.
+    let curComposition: string | null = p.composition;
+    let curCompositionSource: string | null = p.compositionSource;
+    const compositionIsDump =
+      !!p.composition && (looksLikeAttributeDump(p.composition) || (p.compositionSource === 'ozon' && looksLikeLegacySyncDump(p.composition)));
+    if (compositionIsDump) {
+      data.composition = null;
+      data.compositionSource = null;
+      curComposition = null;
+      curCompositionSource = null;
+    }
+    if (c.composition && (!curComposition || curCompositionSource === 'ozon')) {
+      data.composition = c.composition;
       data.compositionSource = 'ozon';
     }
+
+    // Короткий список для покупателя: Тип, Материал, Артикул. Считается заново
+    // при каждом синке (это производные данные, вручную не правятся).
+    const characteristicsJson = JSON.stringify(buildCharacteristics({ typeName: c.typeName ?? p.ozonType ?? undefined, material: c.material, offerId: p.ozonOfferId ?? undefined }));
+    if (characteristicsJson !== p.characteristics) data.characteristics = characteristicsJson;
     if (p.descriptionSource === 'ozon' || data.descriptionSource === 'ozon') withDescription += 1;
 
     // Фото витрины: только если пусто (свои и скопированные ранее не трогаем).

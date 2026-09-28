@@ -161,6 +161,9 @@ model Product {
   // такое (или пустое) поле синк вправе обновлять. Ручная правка в карточке
   // My Market сбрасывает источник в null, и синк это поле больше не трогает.
   ozonType           String?  // тип товара на Ozon, как его отдаёт площадка (для словаря соответствий)
+  // Короткий список для покупателя (JSON: [{name,value}]) — только Тип, Материал,
+  // Артикул с нормальными значениями. Целиком считает синк Ozon, вручную не правится.
+  characteristics    String?
   descriptionSource  String?  // "ozon" | null
   compositionSource  String?  // "ozon" | null
   categorySource     String?  // "dictionary" | null — category/type проставлены из словаря OzonTypeMap

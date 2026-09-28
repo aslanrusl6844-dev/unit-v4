@@ -7,6 +7,7 @@ import { env } from '../config/env';
 import { logger } from '../utils/logger';
 import { generateWaybillPdf, WaybillAddressError, WaybillOrderItem } from '../services/waybill.service';
 import { sendSms } from '../services/sms.service';
+import { cleanOzonDescription, looksLikeAttributeDump, sanitizeCharacteristics } from '../integrations/ozon.content';
 
 export const shopRouter = Router();
 
@@ -48,6 +49,25 @@ function toShopProduct(p: any) {
   } catch {
     images = [];
   }
+  // Страховка при чтении: то, что синк Ozon записал ДО чистки, в приложение не
+  // уходит — не надо ждать следующего синка. Вписанное руками не трогаем.
+  const description = p.descriptionSource === 'ozon' ? (cleanOzonDescription(p.description) || null) : p.description;
+  const composition = looksLikeAttributeDump(p.composition) ? null : p.composition;
+  // Характеристики для покупателя — только Тип / Материал / Артикул. Пока синк
+  // не посчитал список, для Ozon-товара собираем минимум из тех данных, что уже есть.
+  let stored: Array<{ name?: unknown; value?: unknown }> = [];
+  try {
+    stored = p.characteristics ? JSON.parse(p.characteristics) : [];
+  } catch {
+    stored = [];
+  }
+  let characteristics = sanitizeCharacteristics(stored);
+  if (!characteristics.length) {
+    characteristics = sanitizeCharacteristics([
+      { name: 'Тип', value: p.ozonType },
+      { name: 'Артикул', value: p.ozonOfferId },
+    ]);
+  }
   return {
     sku: p.sku,
     name: p.name,
@@ -57,8 +77,9 @@ function toShopProduct(p: any) {
     price: p.shopPrice,
     oldPrice: p.shopOldPrice,
     stock: p.shopStock,
-    description: p.description,
-    composition: p.composition,
+    description,
+    composition,
+    characteristics,
     images,
     video: p.shopVideo ?? null,
     videoUrl: p.videoUrl ?? null,

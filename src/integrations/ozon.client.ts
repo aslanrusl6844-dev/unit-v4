@@ -3,6 +3,7 @@ import { env } from '../config/env';
 import { logger } from '../utils/logger';
 import { prisma } from '../db/prisma';
 import { NormalizedOrder, NormalizedOrderItem } from '../types';
+import { cleanOzonDescription, cleanOzonComposition, isCompositionAttributeName, isMaterialAttributeName, isGarbageValue } from './ozon.content';
 
 /**
  * Клиент для Ozon Seller API.
@@ -106,23 +107,20 @@ function collectOzonImages(primary?: string[] | string, images?: string[]): stri
 
 export interface OzonProductContent {
   offerId: string;
-  /** Тип товара на Ozon (атрибут «Тип»), если Ozon его отдал. */
+  /** Тип товара на Ozon (атрибут «Тип»), если Ozon его отдал и он не пустышка. */
   typeName?: string;
-  /** Описание (атрибут «Аннотация»). */
+  /** Описание — ТОЛЬКО аннотация, уже очищенная. undefined = аннотации в ответе нет;
+   *  '' = была, но после чистки (оферта, хештеги, доставка по РФ…) ничего не осталось. */
   description?: string;
-  /** Характеристики построчно «Название: значение» — для поля «Состав / характеристики». */
+  /** Чистый текст состава — ТОЛЬКО из отдельного поля «Состав» / «Состав/ингредиенты».
+   *  undefined = такого поля у товара нет; '' = было, но пустое/мусорное. */
   composition?: string;
+  /** Материал (для короткого списка характеристик), если значение нормальное. */
+  material?: string;
 }
 
-// Атрибуты, которые НЕ идут в «Состав / характеристики»: они либо уже
-// лежат в других полях (описание, название, тип), либо служебные.
 const OZON_ATTR_ID_DESCRIPTION = 4191; // «Аннотация»
 const OZON_ATTR_ID_TYPE = 8229;        // «Тип»
-const OZON_ATTR_SKIP_NAMES = new Set([
-  'аннотация', 'название', 'тип', 'ключевые слова', 'хештеги', 'rich-контент json',
-  'название модели (для объединения в одну карточку)', 'ozon.видео', 'ozon.видеообложка', 'pdf-файл',
-]);
-const OZON_COMPOSITION_MAX_CHARS = 4000;
 
 // Имена атрибутов по паре (категория, тип) не меняются — кэшируем в памяти,
 // чтобы не спрашивать их у Ozon на каждой пачке.
@@ -289,20 +287,26 @@ export class OzonClient {
     return items.map((it): OzonProductContent => {
       const names = ozonAttrNamesCache.get(`${it.description_category_id}:${it.type_id}`) ?? new Map<number, string>();
       let description: string | undefined;
+      let composition: string | undefined;
+      let material: string | undefined;
       let typeName: string | undefined;
-      const lines: string[] = [];
       for (const attr of (it.attributes ?? []) as Array<{ id: number; values?: Array<{ value?: string }> }>) {
         const value = (attr.values ?? []).map((v) => String(v?.value ?? '').trim()).filter(Boolean).join(', ');
         if (!value) continue;
         const name = names.get(attr.id) ?? (attr.id === OZON_ATTR_ID_DESCRIPTION ? 'Аннотация' : attr.id === OZON_ATTR_ID_TYPE ? 'Тип' : undefined);
-        if (attr.id === OZON_ATTR_ID_DESCRIPTION || name?.toLowerCase() === 'аннотация') { description = value; continue; }
-        if (attr.id === OZON_ATTR_ID_TYPE || name?.toLowerCase() === 'тип') { typeName = value; continue; }
-        if (!name || OZON_ATTR_SKIP_NAMES.has(name.toLowerCase()) || value.length > 500) continue;
-        lines.push(`${name}: ${value}`);
+        if (attr.id === OZON_ATTR_ID_DESCRIPTION || name?.toLowerCase() === 'аннотация') {
+          description = cleanOzonDescription(value);
+        } else if (attr.id === OZON_ATTR_ID_TYPE || name?.toLowerCase() === 'тип') {
+          if (!isGarbageValue(value)) typeName = value;
+        } else if (isCompositionAttributeName(name)) {
+          composition = cleanOzonComposition(value);
+        } else if (isMaterialAttributeName(name)) {
+          if (!isGarbageValue(value)) material = value;
+        }
+        // Все остальные атрибуты (бренд, пол, страна, ТН ВЭД, маркировка, код
+        // продавца, хештеги…) сознательно игнорируются — в карточку не идут.
       }
-      let composition = Array.from(new Set(lines)).join('\n');
-      if (composition.length > OZON_COMPOSITION_MAX_CHARS) composition = composition.slice(0, OZON_COMPOSITION_MAX_CHARS).replace(/\n[^\n]*$/, '');
-      return { offerId: String(it.offer_id), typeName, description, composition: composition || undefined };
+      return { offerId: String(it.offer_id), typeName, description, composition, material };
     });
   }
 
