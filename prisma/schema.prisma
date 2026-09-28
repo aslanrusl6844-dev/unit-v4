@@ -156,6 +156,14 @@ model Product {
   // карточки My Market и обложка в списке «Все», пока своих фото нет.
   // null = ещё не проверяли, "[]" = проверили, площадка фото не отдала.
   marketImages    String?
+  // Контент карточки, подтянутый синком Ozon (см. syncOzonContent). *Source =
+  // "ozon" значит: поле записал синк и его никто не правил вручную — только
+  // такое (или пустое) поле синк вправе обновлять. Ручная правка в карточке
+  // My Market сбрасывает источник в null, и синк это поле больше не трогает.
+  ozonType           String?  // тип товара на Ozon, как его отдаёт площадка (для словаря соответствий)
+  descriptionSource  String?  // "ozon" | null
+  compositionSource  String?  // "ozon" | null
+  categorySource     String?  // "dictionary" | null — category/type проставлены из словаря OzonTypeMap
   shopDelivery    String?   // "rocket" | "truck"
   shopVideo       String?   // URL видео товара (Vercel Blob или внешняя ссылка)
   videoUrl        String?   // Отдельное поле "Видео URL" — только внешняя ссылка, ничего не загружается на Vercel
@@ -452,3 +460,17 @@ model ShopEvent {
   @@index([city])
   @@index([sku])
 }
+
+// Словарь соответствий: тип товара на Ozon -> category + type в My Market.
+// Заполняется вручную в админке (вкладка «Товары»). Сырую категорию Ozon в
+// category/type не пишем никогда и тип по названию не угадываем: нет записи
+// в словаре — category и type остаются пустыми.
+model OzonTypeMap {
+  id            String   @id @default(cuid())
+  ozonTypeKey   String   @unique // тип Ozon в нижнем регистре, без лишних пробелов — по нему ищем
+  ozonTypeLabel String   // как тип называется на Ozon (для показа)
+  category      String
+  type          String
+  updatedAt     DateTime @updatedAt
+}
+

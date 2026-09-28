@@ -653,7 +653,28 @@ function wireProductsFormOnce() {
     btn.textContent = '…'; btn.disabled = true;
     try {
       const res = await api('/sync/ozon-catalog', { method: 'POST' });
-      alert(`Каталог Ozon синхронизирован. Создано товаров: ${res.created}. Обновлено: ${res.updated}.`);
+      let msg = `Каталог Ozon синхронизирован. Создано товаров: ${res.created}. Обновлено: ${res.updated}.`;
+      // Описание, состав, фото и категория для карточек My Market — пачками
+      // по 40 (лимит serverless). Только чтение с Ozon; сбой этого шага не
+      // отменяет уже прошедший синк каталога.
+      try {
+        let cursor = null;
+        let processed = 0, updated = 0, mapped = 0;
+        const unmapped = new Set();
+        for (let i = 0; i < 200; i++) {
+          btn.textContent = `Описания… ${processed}`;
+          const part = await api('/sync/ozon-content', { method: 'POST', body: JSON.stringify({ cursor }) });
+          processed += part.processed; updated += part.updated; mapped += part.mapped;
+          part.unmappedTypes.forEach((t) => unmapped.add(t));
+          if (part.done || !part.nextCursor) break;
+          cursor = part.nextCursor;
+        }
+        msg += `\nОписания Ozon: обработано ${processed}, обновлено карточек ${updated}, категория из словаря — ${mapped}.`;
+        if (unmapped.size) msg += `\n⚠ Типов Ozon без соответствия: ${unmapped.size}. Заполните словарь: «Товары» → «Словарь типов Ozon» — до этого category/type остаются пустыми.`;
+      } catch (contentErr) {
+        msg += `\n⚠ Описания Ozon подтянуть не удалось: ${contentErr.message}`;
+      }
+      alert(msg);
       try {
         await loadProductsAdminTable();
       } catch (renderErr) {
@@ -2145,6 +2166,10 @@ function wireMyMarketTabsOnce() {
     });
     renderMyMarketProductsTable();
   });
+  // Словарь типов Ozon — подгружаем при раскрытии панели.
+  document.getElementById('mmOzonMapPanel').addEventListener('toggle', (e) => {
+    if (e.target.open) loadMyMarketOzonTypeMap().catch((err) => alert('Не удалось загрузить словарь: ' + err.message));
+  });
   document.getElementById('mmProdBulkArchiveBtn').addEventListener('click', () => runMyMarketArchive([...myMarketSelectedProductIds], true));
   document.getElementById('mmProdBulkRestoreBtn').addEventListener('click', () => runMyMarketArchive([...myMarketSelectedProductIds], false));
   document.getElementById('mmProdBulkDeleteBtn').addEventListener('click', () => runMyMarketRemove([...myMarketSelectedProductIds]));
@@ -2379,7 +2404,9 @@ function isMyMarketShopProduct(p) {
     || !!p.shopActive
     || !!p.shopArchived
     || !!p.shopDelivery
-    || !!myMarketFirstImage(p.images)
+    // images, совпадающие с marketImages, — просто копия фото площадки (синк Ozon
+    // кладёт её в пустое поле), сами по себе карточкой приложения товар не делают.
+    || (!!myMarketFirstImage(p.images) && p.images !== p.marketImages)
     || !!p.category
     || !!p.subcategory
     || !!p.type;
@@ -2393,6 +2420,36 @@ function myMarketStatusOf(p) {
   if (p.shopArchived) return 'archived';
   if (!p.category || !p.type) return 'nocat';
   return p.shopActive ? 'active' : 'hidden';
+}
+
+/** Откуда данные карточки Ozon-товара: показываем под названием. Про
+ *  категорию — только у товаров Ozon (у остальных статус и так виден). */
+function myMarketSourceLabels(p) {
+  const labels = [];
+  if (p.descriptionSource === 'ozon' || p.compositionSource === 'ozon') labels.push('описание с Ozon');
+  if (p.ozonOfferId) {
+    if (!p.category || !p.type) labels.push('категория не задана');
+    else if (p.categorySource === 'dictionary') labels.push('категория из словаря');
+  }
+  return labels;
+}
+
+/** «В витрину» — включает продажу. Цену Ozon мы не подставляем, поэтому без
+ *  цены на витрине товар не включаем: открываем карточку, чтобы её указать. */
+async function runMyMarketPutOnSale(id) {
+  const p = myMarketProductsCache.find((x) => x.id === id);
+  if (!p) return;
+  if (p.shopPrice == null) {
+    alert('Укажите цену на витрине — откроется карточка. Цена с Ozon сама не подставляется.');
+    openMyMarketProductCard(id);
+    return;
+  }
+  try {
+    await api(`/products/${id}`, { method: 'PUT', body: JSON.stringify({ shopActive: true }) });
+    await loadMyMarketProducts();
+  } catch (err) {
+    alert('Не удалось включить «В продаже»: ' + err.message);
+  }
 }
 
 // Выбранные галочками товары. При каждой отрисовке из выбора выкидываются
@@ -2437,7 +2494,7 @@ function renderMyMarketProductsTable() {
       <td><input type="checkbox" data-select-id="${p.id}" ${myMarketSelectedProductIds.has(p.id) ? 'checked' : ''} /></td>
       <td>${img ? `<img src="${img}" alt="" style="width:36px;height:36px;object-fit:cover;border-radius:6px" />` : '<span style="color:var(--text-faint);font-size:11px">—</span>'}</td>
       <td class="name-cell">${p.sku}</td>
-      <td class="name-cell">${p.name}<br><span style="font-size:10.5px;color:var(--text-faint)">${p.category ?? '—'}${p.type ? ` / ${p.type}` : ''}</span></td>
+      <td class="name-cell">${p.name}<br><span style="font-size:10.5px;color:var(--text-faint)">${p.category ?? '—'}${p.type ? ` / ${p.type}` : ''}</span>${myMarketSourceLabels(p).map((l) => `<br><span style="font-size:10.5px;color:${l === 'категория не задана' ? 'var(--warn)' : 'var(--accent)'}">${l}</span>`).join('')}</td>
       <td>${statusHtml}</td>
       <td class="num">${p.shopPrice != null ? fmtMoney(p.shopPrice) : '—'}</td>
       <td class="num">${p.shopOldPrice != null ? fmtMoney(p.shopOldPrice) : '—'}</td>
@@ -2446,6 +2503,9 @@ function renderMyMarketProductsTable() {
       <td class="num" id="mm-reviews-${p.sku}">…</td>
       <td style="white-space:nowrap">
         <button class="link-btn" data-action="edit" data-id="${p.id}" title="Открыть карточку">✎</button>
+        ${p.category && p.type && !p.shopActive && !p.shopArchived
+          ? `<button class="link-btn" data-action="onsale" data-id="${p.id}" title="Включить «В продаже»" style="color:var(--accent)">В витрину</button>`
+          : ''}
         ${status === 'archived'
           ? `<button class="link-btn" data-action="restore" data-id="${p.id}" title="Вернуть из архива">↩</button>`
           : `<button class="link-btn" data-action="archive" data-id="${p.id}" title="В архив">📥</button>`}
@@ -2459,6 +2519,9 @@ function renderMyMarketProductsTable() {
     btn.addEventListener('click', () => openMyMarketProductCard(btn.dataset.id));
   });
 
+  tbody.querySelectorAll('button[data-action="onsale"]').forEach((btn) => {
+    btn.addEventListener('click', () => runMyMarketPutOnSale(btn.dataset.id));
+  });
   tbody.querySelectorAll('button[data-action="archive"]').forEach((btn) => {
     btn.addEventListener('click', () => runMyMarketArchive([btn.dataset.id], true));
   });
@@ -4336,3 +4399,45 @@ document.getElementById('syncWbBtn').addEventListener('click', async () => {
   const startPage = (window.location.hash || '').replace('#', '') || 'overview';
   showPage(PAGE_LOADERS[startPage] ? startPage : 'overview');
 })();
+
+// ---------------------------------------------------------------------
+// Словарь «тип Ozon -> category + type My Market». Category/type в карточки
+// ставятся ТОЛЬКО по нему (сырую категорию Ozon не пишем, тип не угадываем).
+// ---------------------------------------------------------------------
+async function loadMyMarketOzonTypeMap() {
+  const rows = await api('/shop-admin/ozon-type-map');
+  const tbody = document.querySelector('#mmOzonMapTable tbody');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="5" style="color:var(--text-faint)">Типов Ozon пока нет — они появятся после «↻ Каталог Ozon».</td></tr>`;
+    return;
+  }
+  const esc = (v) => String(v ?? '').replace(/"/g, '&quot;');
+  tbody.innerHTML = rows.map((r) => `
+    <tr data-ozon-type="${esc(r.ozonType)}">
+      <td class="name-cell">${r.ozonType}${r.mapped ? '' : ' <span style="color:var(--warn);font-size:11px">нет соответствия</span>'}</td>
+      <td class="num">${r.count}</td>
+      <td><input type="text" list="mmCategoryList" data-field="category" value="${esc(r.category)}" placeholder="Категория" style="width:170px" /></td>
+      <td><input type="text" data-field="type" value="${esc(r.type)}" placeholder="Тип" style="width:170px" /></td>
+      <td><button class="link-btn" data-action="save-map" style="color:var(--accent)">Сохранить</button></td>
+    </tr>
+  `).join('');
+  tbody.querySelectorAll('button[data-action="save-map"]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const tr = btn.closest('tr');
+      const category = tr.querySelector('[data-field="category"]').value.trim();
+      const type = tr.querySelector('[data-field="type"]').value.trim();
+      if (!category || !type) { alert('Заполните и категорию, и тип.'); return; }
+      btn.disabled = true;
+      try {
+        const res = await api('/shop-admin/ozon-type-map', { method: 'PUT', body: JSON.stringify({ ozonType: tr.dataset.ozonType, category, type }) });
+        await loadMyMarketOzonTypeMap();
+        await loadMyMarketProducts();
+        alert(`Соответствие сохранено. Категория и тип проставлены товарам: ${res.applied} (карточки с уже заполненными вручную категорией/типом не менялись).`);
+      } catch (err) {
+        alert('Не удалось сохранить соответствие: ' + err.message);
+        btn.disabled = false;
+      }
+    });
+  });
+}
+

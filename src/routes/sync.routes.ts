@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import dayjs from 'dayjs';
 import { prisma } from '../db/prisma';
-import { syncKaspiOrders, syncOzonOrders, syncWbOrders, syncOzonCatalog, syncWbCatalog, syncKaspiPhotos } from '../services/sync.service';
+import { syncKaspiOrders, syncOzonOrders, syncWbOrders, syncOzonCatalog, syncWbCatalog, syncKaspiPhotos, syncOzonContent } from '../services/sync.service';
 import { kaspiClient } from '../integrations/kaspi.client';
 import { ozonClient } from '../integrations/ozon.client';
 import { wbClient } from '../integrations/wb.client';
@@ -98,6 +98,21 @@ syncRouter.post('/kaspi-photos', async (req, res) => {
     res.json({ ok: true, ...result });
   } catch (err: any) {
     logger.error({ err }, 'Ошибка синхронизации фото Kaspi');
+    res.status(500).json({ ok: false, error: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * Описание/состав/фото/категория карточек My Market из Ozon — пачкой по 40
+ * с курсором (см. syncOzonContent). Фронт вызывает повторно, пока done=false.
+ */
+syncRouter.post('/ozon-content', async (req, res) => {
+  try {
+    const cursor = typeof req.body?.cursor === 'string' && req.body.cursor ? req.body.cursor : undefined;
+    const result = await syncOzonContent(40, cursor);
+    res.json({ ok: true, ...result });
+  } catch (err: any) {
+    logger.error({ err }, 'Ошибка синхронизации описаний Ozon');
     res.status(500).json({ ok: false, error: String(err?.message ?? err) });
   }
 });

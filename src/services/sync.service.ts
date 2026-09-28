@@ -437,7 +437,14 @@ export async function syncOzonCatalog() {
           // Фото с площадки — в отдельное поле marketImages (не в images
           // витрины, её фото не трогаем). Если Ozon фото не прислал —
           // прежнее значение не стираем.
-          ...(item.images.length ? { marketImages: JSON.stringify(item.images) } : {}),
+          ...(item.images.length
+            ? {
+                marketImages: JSON.stringify(item.images),
+                // Если images витрины — это нетронутая копия прежних фото Ozon
+                // (руками их не меняли), обновляем и её; свои фото не трогаем.
+                ...(existing.images && existing.images === existing.marketImages ? { images: JSON.stringify(item.images) } : {}),
+              }
+            : {}),
         },
       });
       updated += 1;
@@ -587,3 +594,101 @@ export async function syncKaspiPhotos(limit = 5, excludeIds: string[] = []) {
   logger.info(`[Kaspi] Фото: проверено ${batch.length}, с фото ${withPhotos}, не удалось прочитать ${failedIds.length}, осталось ${remaining}, без ссылки ${withoutUrl}`);
   return { checked: batch.length, withPhotos, failedIds, remaining, withoutUrl };
 }
+
+/** Ключ словаря: тип Ozon без учёта регистра и лишних пробелов. */
+export function ozonTypeKey(name: string): string {
+  return name.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+/**
+ * Описание, состав/характеристики, фото и категория для КАРТОЧЕК My Market из
+ * данных Ozon — только для товаров, которые уже есть в базе (по ozonOfferId).
+ * Пачками (по умолчанию 40) с курсором, чтобы уложиться в лимит serverless.
+ *
+ * Правила (см. ТЗ):
+ *  - description / composition пишутся, если поле пустое или его раньше
+ *    записал этот же синк (*Source = "ozon"); поле, которое правили руками,
+ *    не трогаем;
+ *  - images витрины — только если поле пустое, из marketImages (фото Ozon);
+ *  - category/type — ТОЛЬКО через словарь OzonTypeMap по типу Ozon. Нет записи
+ *    в словаре — остаются пустыми. Тип по названию не угадываем, сырую
+ *    категорию Ozon не пишем;
+ *  - shopActive, shopPrice, shopStock, subcategory не трогаются вообще.
+ */
+export async function syncOzonContent(limit = 40, cursor?: string) {
+  if (!(await ozonClient.isConfigured())) {
+    logger.warn('[Ozon] Магазин не настроен — синхронизация описаний пропущена');
+    return { processed: 0, updated: 0, withDescription: 0, mapped: 0, unmappedTypes: [] as string[], nextCursor: null as string | null, done: true };
+  }
+
+  const products = await prisma.product.findMany({
+    where: { ozonOfferId: { not: null }, ...(cursor ? { id: { gt: cursor } } : {}) },
+    orderBy: { id: 'asc' },
+    take: limit,
+    select: {
+      id: true, ozonOfferId: true, description: true, composition: true, descriptionSource: true, compositionSource: true,
+      images: true, marketImages: true, category: true, type: true, categorySource: true, ozonType: true,
+    },
+  });
+  if (!products.length) return { processed: 0, updated: 0, withDescription: 0, mapped: 0, unmappedTypes: [] as string[], nextCursor: null as string | null, done: true };
+
+  const content = await ozonClient.fetchProductContent(products.map((p: { ozonOfferId: string | null }) => p.ozonOfferId as string));
+  const byOffer = new Map(content.map((c) => [c.offerId, c]));
+  const dictRows = await prisma.ozonTypeMap.findMany();
+  const dict = new Map<string, { category: string; type: string }>(dictRows.map((r: { ozonTypeKey: string; category: string; type: string }) => [r.ozonTypeKey, { category: r.category, type: r.type }]));
+
+  let updated = 0;
+  let withDescription = 0;
+  let mapped = 0;
+  const unmapped = new Set<string>();
+
+  for (const p of products) {
+    const c = byOffer.get(p.ozonOfferId as string);
+    if (!c) continue;
+    const data: Record<string, unknown> = {};
+
+    if (c.typeName && c.typeName !== p.ozonType) data.ozonType = c.typeName;
+
+    if (c.description && (!p.description || p.descriptionSource === 'ozon')) {
+      if (c.description !== p.description) data.description = c.description;
+      data.descriptionSource = 'ozon';
+    }
+    if (c.composition && (!p.composition || p.compositionSource === 'ozon')) {
+      if (c.composition !== p.composition) data.composition = c.composition;
+      data.compositionSource = 'ozon';
+    }
+    if (p.descriptionSource === 'ozon' || data.descriptionSource === 'ozon') withDescription += 1;
+
+    // Фото витрины: только если пусто (свои и скопированные ранее не трогаем).
+    const imagesEmpty = !p.images || p.images === '[]';
+    if (imagesEmpty && p.marketImages && p.marketImages !== '[]') data.images = p.marketImages;
+
+    // Категория/тип — только из словаря; пусто у нас или проставлено словарём ранее.
+    const typeName = c.typeName ?? p.ozonType ?? null;
+    if (typeName) {
+      const hit = dict.get(ozonTypeKey(typeName));
+      const mayWrite = (!p.category && !p.type) || p.categorySource === 'dictionary';
+      if (hit && mayWrite) {
+        if (hit.category !== p.category) data.category = hit.category;
+        if (hit.type !== p.type) data.type = hit.type;
+        data.categorySource = 'dictionary';
+        mapped += 1;
+      } else if (!hit) {
+        unmapped.add(typeName);
+      }
+    }
+
+    // Обновляем только если реально что-то изменилось (источник без изменений — не пишем).
+    const changed = Object.entries(data).some(([k, v]) => (p as Record<string, unknown>)[k] !== v);
+    if (changed) {
+      await prisma.product.update({ where: { id: p.id }, data });
+      updated += 1;
+    }
+  }
+
+  const last = products[products.length - 1].id as string;
+  const done = products.length < limit;
+  logger.info(`[Ozon] Описания: обработано ${products.length}, обновлено ${updated}, категория из словаря ${mapped}, типов без соответствия ${unmapped.size}`);
+  return { processed: products.length, updated, withDescription, mapped, unmappedTypes: Array.from(unmapped), nextCursor: done ? null : last, done };
+}
+

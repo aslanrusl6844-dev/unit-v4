@@ -496,6 +496,20 @@
                 <tbody></tbody>
               </table>
             </div>
+            <details id="mmOzonMapPanel" style="margin-top:14px">
+              <summary style="cursor:pointer;font-size:13.5px;font-weight:600">Словарь типов Ozon → категория My Market</summary>
+              <p class="panel__hint">Категория и тип в карточки Ozon-товаров ставятся только по этому словарю: если типа здесь нет, category и type остаются пустыми, а товар не попадает на витрину. Тип по названию не угадывается.</p>
+              <datalist id="mmCategoryList">
+                <option value="Электроника"></option><option value="Бытовая техника"></option><option value="Красота"></option>
+                <option value="Дом и кухня"></option><option value="Авто"></option>
+              </datalist>
+              <div class="table-wrap">
+                <table class="table" id="mmOzonMapTable">
+                  <thead><tr><th>Тип на Ozon</th><th class="num">Товаров</th><th>Категория My Market</th><th>Тип My Market</th><th></th></tr></thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </details>
           </div>
         </div>
 

@@ -6,6 +6,7 @@ import { logger } from '../utils/logger';
 import { markShopOrderAsPaid } from './shop.routes';
 import { getSearchAnalytics, getConversionAnalytics, getSeasonalityAnalytics } from '../services/shopAnalytics.service';
 import { generateWaybillPdf, WaybillOrderItem } from '../services/waybill.service';
+import { ozonTypeKey } from '../services/sync.service';
 
 export const shopAdminRouter = Router();
 
@@ -581,3 +582,81 @@ shopAdminRouter.post('/products/remove', async (req, res) => {
     res.status(500).json({ error: 'Не удалось убрать товары из My Market', details: String(err?.message ?? err) });
   }
 });
+
+// =====================================================================
+// Словарь соответствий «тип Ozon -> category + type My Market».
+// Сырую категорию Ozon в карточки не пишем и тип по названию не угадываем:
+// category/type ставятся ТОЛЬКО по записи из этого словаря.
+// =====================================================================
+
+/** Типы Ozon, встречающиеся у товаров (с числом товаров) + соответствия. */
+shopAdminRouter.get('/ozon-type-map', async (_req, res) => {
+  try {
+    const groups = await prisma.product.groupBy({ by: ['ozonType'], where: { ozonType: { not: null } }, _count: { _all: true } });
+    const maps = await prisma.ozonTypeMap.findMany();
+    const mapByKey = new Map<string, { ozonTypeLabel: string; category: string; type: string }>(
+      maps.map((m: { ozonTypeKey: string; ozonTypeLabel: string; category: string; type: string }) => [m.ozonTypeKey, m]),
+    );
+
+    const rows = new Map<string, { ozonType: string; count: number; category: string | null; type: string | null; mapped: boolean }>();
+    for (const g of groups as Array<{ ozonType: string | null; _count: { _all: number } }>) {
+      if (!g.ozonType) continue;
+      const key = ozonTypeKey(g.ozonType);
+      const hit = mapByKey.get(key);
+      const prev = rows.get(key);
+      rows.set(key, {
+        ozonType: prev?.ozonType ?? g.ozonType,
+        count: (prev?.count ?? 0) + g._count._all,
+        category: hit?.category ?? null,
+        type: hit?.type ?? null,
+        mapped: !!hit,
+      });
+    }
+    // Соответствия, по которым сейчас нет ни одного товара, тоже показываем.
+    for (const [key, m] of mapByKey) {
+      if (!rows.has(key)) rows.set(key, { ozonType: m.ozonTypeLabel, count: 0, category: m.category, type: m.type, mapped: true });
+    }
+    const list = Array.from(rows.values()).sort((a, b) => Number(a.mapped) - Number(b.mapped) || b.count - a.count || a.ozonType.localeCompare(b.ozonType, 'ru'));
+    res.json(list);
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] GET /ozon-type-map упал');
+    res.status(500).json({ error: 'Не удалось получить словарь типов Ozon', details: String(err?.message ?? err) });
+  }
+});
+
+const ozonTypeMapSchema = z.object({
+  ozonType: z.string().trim().min(1),
+  category: z.string().trim().min(1),
+  type: z.string().trim().min(1),
+});
+
+/**
+ * Сохранить соответствие и сразу применить его к уже загруженным товарам
+ * этого типа Ozon — но только к тем, у кого category И type пусты либо были
+ * проставлены словарём раньше. Вручную заполненные карточки не перезаписываются.
+ */
+shopAdminRouter.put('/ozon-type-map', async (req, res) => {
+  const parsed = ozonTypeMapSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const { ozonType, category, type } = parsed.data;
+  try {
+    const key = ozonTypeKey(ozonType);
+    await prisma.ozonTypeMap.upsert({
+      where: { ozonTypeKey: key },
+      update: { ozonTypeLabel: ozonType, category, type },
+      create: { ozonTypeKey: key, ozonTypeLabel: ozonType, category, type },
+    });
+    const applied = await prisma.product.updateMany({
+      where: {
+        ozonType: { equals: ozonType, mode: 'insensitive' },
+        OR: [{ AND: [{ category: null }, { type: null }] }, { categorySource: 'dictionary' }],
+      },
+      data: { category, type, categorySource: 'dictionary' },
+    });
+    res.json({ ok: true, applied: applied.count });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] PUT /ozon-type-map упал');
+    res.status(500).json({ error: 'Не удалось сохранить соответствие', details: String(err?.message ?? err) });
+  }
+});
+

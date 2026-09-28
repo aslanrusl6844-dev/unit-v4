@@ -103,6 +103,31 @@ function collectOzonImages(primary?: string[] | string, images?: string[]): stri
   return Array.from(new Set(list)).slice(0, 10);
 }
 
+
+export interface OzonProductContent {
+  offerId: string;
+  /** Тип товара на Ozon (атрибут «Тип»), если Ozon его отдал. */
+  typeName?: string;
+  /** Описание (атрибут «Аннотация»). */
+  description?: string;
+  /** Характеристики построчно «Название: значение» — для поля «Состав / характеристики». */
+  composition?: string;
+}
+
+// Атрибуты, которые НЕ идут в «Состав / характеристики»: они либо уже
+// лежат в других полях (описание, название, тип), либо служебные.
+const OZON_ATTR_ID_DESCRIPTION = 4191; // «Аннотация»
+const OZON_ATTR_ID_TYPE = 8229;        // «Тип»
+const OZON_ATTR_SKIP_NAMES = new Set([
+  'аннотация', 'название', 'тип', 'ключевые слова', 'хештеги', 'rich-контент json',
+  'название модели (для объединения в одну карточку)', 'ozon.видео', 'ozon.видеообложка', 'pdf-файл',
+]);
+const OZON_COMPOSITION_MAX_CHARS = 4000;
+
+// Имена атрибутов по паре (категория, тип) не меняются — кэшируем в памяти,
+// чтобы не спрашивать их у Ozon на каждой пачке.
+const ozonAttrNamesCache = new Map<string, Map<number, string>>();
+
 export class OzonClient {
   async isConfigured(): Promise<boolean> {
     const creds = await getOzonCredentials();
@@ -206,6 +231,79 @@ export class OzonClient {
     }
 
     return catalog;
+  }
+
+
+  /**
+   * Описание, тип и характеристики товаров Ozon — ТОЛЬКО ЧТЕНИЕ:
+   *   POST /v4/product/info/attributes — атрибуты по списку offer_id (до 1000),
+   *     у каждого: description_category_id, type_id, attributes[{id, values[{value}]}];
+   *   POST /v1/description-category/attribute — имена атрибутов для пары
+   *     (категория, тип), чтобы характеристики получили названия.
+   * Ничего на Ozon не создаётся и не меняется. Если имена атрибутов получить
+   * не удалось — описание и тип всё равно возвращаются, без характеристик.
+   */
+  async fetchProductContent(offerIds: string[]): Promise<OzonProductContent[]> {
+    if (!offerIds.length) return [];
+    const http = await this.getHttp();
+    let items: any[] = [];
+    try {
+      const { data } = await http.post('/v4/product/info/attributes', {
+        filter: { offer_id: offerIds, visibility: 'ALL' },
+        limit: Math.min(1000, Math.max(offerIds.length, 1)),
+        sort_dir: 'ASC',
+      });
+      items = (data?.result ?? data?.items ?? []) as any[];
+    } catch (err: any) {
+      const ozonErrorBody = err?.response?.data;
+      logger.error({ status: err?.response?.status, body: ozonErrorBody }, '[Ozon] Ошибка запроса атрибутов (/v4/product/info/attributes)');
+      throw new Error(`Ozon API вернул ошибку ${err?.response?.status ?? ''} при запросе описаний: ${JSON.stringify(ozonErrorBody) || err?.message}`);
+    }
+
+    // Имена атрибутов — по каждой уникальной паре (категория, тип) один раз.
+    const pairs = new Map<string, { categoryId: number; typeId: number }>();
+    for (const it of items) {
+      if (it?.description_category_id && it?.type_id) {
+        pairs.set(`${it.description_category_id}:${it.type_id}`, { categoryId: it.description_category_id, typeId: it.type_id });
+      }
+    }
+    for (const [key, pair] of pairs) {
+      if (ozonAttrNamesCache.has(key)) continue;
+      try {
+        const { data } = await http.post('/v1/description-category/attribute', {
+          description_category_id: pair.categoryId,
+          type_id: pair.typeId,
+          language: 'DEFAULT',
+        });
+        const names = new Map<number, string>();
+        for (const a of (data?.result ?? []) as Array<{ id: number; name: string }>) {
+          if (a?.id != null && a?.name) names.set(a.id, a.name);
+        }
+        ozonAttrNamesCache.set(key, names);
+      } catch (err: any) {
+        logger.warn({ status: err?.response?.status, pair: key }, '[Ozon] Не удалось получить названия атрибутов — характеристики этой категории пропущены');
+        ozonAttrNamesCache.set(key, new Map());
+      }
+    }
+
+    return items.map((it): OzonProductContent => {
+      const names = ozonAttrNamesCache.get(`${it.description_category_id}:${it.type_id}`) ?? new Map<number, string>();
+      let description: string | undefined;
+      let typeName: string | undefined;
+      const lines: string[] = [];
+      for (const attr of (it.attributes ?? []) as Array<{ id: number; values?: Array<{ value?: string }> }>) {
+        const value = (attr.values ?? []).map((v) => String(v?.value ?? '').trim()).filter(Boolean).join(', ');
+        if (!value) continue;
+        const name = names.get(attr.id) ?? (attr.id === OZON_ATTR_ID_DESCRIPTION ? 'Аннотация' : attr.id === OZON_ATTR_ID_TYPE ? 'Тип' : undefined);
+        if (attr.id === OZON_ATTR_ID_DESCRIPTION || name?.toLowerCase() === 'аннотация') { description = value; continue; }
+        if (attr.id === OZON_ATTR_ID_TYPE || name?.toLowerCase() === 'тип') { typeName = value; continue; }
+        if (!name || OZON_ATTR_SKIP_NAMES.has(name.toLowerCase()) || value.length > 500) continue;
+        lines.push(`${name}: ${value}`);
+      }
+      let composition = Array.from(new Set(lines)).join('\n');
+      if (composition.length > OZON_COMPOSITION_MAX_CHARS) composition = composition.slice(0, OZON_COMPOSITION_MAX_CHARS).replace(/\n[^\n]*$/, '');
+      return { offerId: String(it.offer_id), typeName, description, composition: composition || undefined };
+    });
   }
 
   /**

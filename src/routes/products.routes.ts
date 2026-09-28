@@ -53,6 +53,9 @@ const productSchema = z.object({
   // --- Витрина приложения My Market (канал APP) ---
   shopActive: z.boolean().optional(),
   shopArchived: z.boolean().optional(),
+  descriptionSource: z.string().nullable().optional(),
+  compositionSource: z.string().nullable().optional(),
+  categorySource: z.string().nullable().optional(),
   shopPrice: z.number().nonnegative().optional().nullable(),
   shopOldPrice: z.number().nonnegative().optional().nullable(),
   shopStock: z.number().int().nonnegative().optional(),
@@ -302,6 +305,23 @@ productsRouter.put('/:id', async (req, res) => {
   // Включили «В продаже» — значит товар возвращается из архива витрины
   // (архивный товар в продаже быть не может), если архив явно не задан.
   if (data.shopActive === true && data.shopArchived === undefined) data.shopArchived = false;
+
+  // Ручная правка описания/состава/категории/типа в карточке снимает пометку
+  // «это записал синк Ozon» — такое поле синк больше не перезаписывает.
+  // Сравниваем с тем, что уже сохранено: карточка шлёт все поля целиком, и
+  // «сохранил без изменений» источник не сбрасывает.
+  if (data.description !== undefined || data.composition !== undefined || data.category !== undefined || data.type !== undefined) {
+    const cur = await prisma.product.findUnique({
+      where: { id: req.params.id },
+      select: { description: true, composition: true, category: true, type: true },
+    });
+    if (cur) {
+      const differs = (a: unknown, b: unknown) => (a || null) !== (b || null);
+      if (data.description !== undefined && differs(data.description, cur.description)) data.descriptionSource = null;
+      if (data.composition !== undefined && differs(data.composition, cur.composition)) data.compositionSource = null;
+      if ((data.category !== undefined && differs(data.category, cur.category)) || (data.type !== undefined && differs(data.type, cur.type))) data.categorySource = null;
+    }
+  }
 
   if (data.shopActive === true) {
     const existing = await prisma.product.findUnique({ where: { id: req.params.id } });
