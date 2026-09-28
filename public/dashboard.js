@@ -697,6 +697,37 @@ function wireProductsFormOnce() {
     }
   });
 
+  // Фото Kaspi — пачками по 5 с сервера, пока не останется непроверенных.
+  // Ничего не меняет на Kaspi: сервер только читает публичные страницы.
+  document.getElementById('syncKaspiPhotosBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('syncKaspiPhotosBtn');
+    btn.disabled = true;
+    const failedIds = [];
+    let checked = 0;
+    let withPhotos = 0;
+    let withoutUrl = 0;
+    try {
+      for (let i = 0; i < 200; i++) {
+        const res = await api('/sync/kaspi-photos', { method: 'POST', body: JSON.stringify({ excludeIds: failedIds }) });
+        checked += res.checked;
+        withPhotos += res.withPhotos;
+        withoutUrl = res.withoutUrl;
+        failedIds.push(...res.failedIds);
+        btn.textContent = `Фото Kaspi… осталось ${res.remaining}`;
+        if (res.remaining === 0 || res.checked === 0) break;
+      }
+      let msg = `Фото Kaspi: проверено товаров ${checked}, фото найдено у ${withPhotos}.`;
+      if (failedIds.length) msg += `\n⚠ Страницу не удалось прочитать у ${failedIds.length} — можно повторить позже.`;
+      if (withoutUrl) msg += `\nУ ${withoutUrl} товаров Kaspi не указана ссылка на карточку kaspi.kz — для них фото не подтянуть.`;
+      alert(msg);
+      try { await loadProductsAdminTable(); } catch (renderErr) { console.warn('Фото подтянуты, но таблица не обновилась:', renderErr); }
+    } catch (err) {
+      alert('Ошибка синхронизации фото Kaspi: ' + err.message);
+    } finally {
+      btn.textContent = '↻ Фото Kaspi'; btn.disabled = false;
+    }
+  });
+
   document.getElementById('bulkUploadBtn').addEventListener('click', handleBulkUpload);
 }
 
@@ -2362,7 +2393,8 @@ function renderMyMarketProductsTable() {
   }
 
   tbody.innerHTML = rows.map((p) => {
-    const img = myMarketFirstImage(p.images);
+    // Своё фото витрины приоритетнее; фото с площадки — только если своих нет.
+    const img = myMarketFirstImage(p.images) || myMarketFirstImage(p.marketImages);
     const status = myMarketStatusOf(p);
     const statusHtml = status === 'catalog'
       ? `<span class="mm-status--hidden" title="Товар учёта маркетплейса, не карточка приложения">Учёт (не витрина)</span>`
@@ -2469,6 +2501,14 @@ function openMyMarketProductCard(id) {
   form.elements.composition.value = p.composition ?? '';
   form.elements.videoUrl.value = p.videoUrl ?? '';
   try { myMarketCardImages = p.images ? JSON.parse(p.images) : []; } catch { myMarketCardImages = []; }
+  // Пока своих фото витрины нет — стартуем с фото площадки (marketImages).
+  // Если свои есть, они не подменяются.
+  if (!Array.isArray(myMarketCardImages) || !myMarketCardImages.length) {
+    try {
+      const fromMarket = p.marketImages ? JSON.parse(p.marketImages) : [];
+      myMarketCardImages = Array.isArray(fromMarket) ? fromMarket.slice(0, 10) : [];
+    } catch { myMarketCardImages = []; }
+  }
   myMarketCardVideo = p.shopVideo ?? null;
   renderMyMarketMediaGrid();
   renderMyMarketVideoPreview();

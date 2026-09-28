@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import dayjs from 'dayjs';
 import { prisma } from '../db/prisma';
-import { syncKaspiOrders, syncOzonOrders, syncWbOrders, syncOzonCatalog, syncWbCatalog } from '../services/sync.service';
+import { syncKaspiOrders, syncOzonOrders, syncWbOrders, syncOzonCatalog, syncWbCatalog, syncKaspiPhotos } from '../services/sync.service';
 import { kaspiClient } from '../integrations/kaspi.client';
 import { ozonClient } from '../integrations/ozon.client';
 import { wbClient } from '../integrations/wb.client';
@@ -80,6 +80,24 @@ syncRouter.post('/wb-catalog', async (_req, res) => {
     res.json({ ok: true, ...result });
   } catch (err: any) {
     logger.error({ err }, 'Ошибка синхронизации каталога Wildberries');
+    res.status(500).json({ ok: false, error: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * Фото Kaspi для товаров учёта — пачкой по 5 (см. syncKaspiPhotos). Фронт
+ * вызывает повторно, пока remaining не станет 0, передавая в excludeIds
+ * товары, которые не удалось прочитать в этом запуске.
+ */
+syncRouter.post('/kaspi-photos', async (req, res) => {
+  try {
+    const excludeIds: string[] = Array.isArray(req.body?.excludeIds)
+      ? req.body.excludeIds.filter((x: unknown) => typeof x === 'string').slice(0, 500)
+      : [];
+    const result = await syncKaspiPhotos(5, excludeIds);
+    res.json({ ok: true, ...result });
+  } catch (err: any) {
+    logger.error({ err }, 'Ошибка синхронизации фото Kaspi');
     res.status(500).json({ ok: false, error: String(err?.message ?? err) });
   }
 });

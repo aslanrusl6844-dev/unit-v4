@@ -93,6 +93,16 @@ interface OzonFinanceTransaction {
  * при любой нестыковке в лог пишется ПОЛНОЕ тело ответа Ozon, чтобы можно
  * было быстро уточнить точные названия по факту, не гадая заново.
  */
+/** Ссылки на фото из ответа /v3/product/info/list: primary_image (массив
+ *  или строка) + images, главное первым, без дублей и пустых, до 10 штук. */
+function collectOzonImages(primary?: string[] | string, images?: string[]): string[] {
+  const list: string[] = [];
+  const push = (v: unknown) => { if (typeof v === 'string' && /^https?:\/\//.test(v.trim())) list.push(v.trim()); };
+  if (Array.isArray(primary)) primary.forEach(push); else push(primary);
+  if (Array.isArray(images)) images.forEach(push);
+  return Array.from(new Set(list)).slice(0, 10);
+}
+
 export class OzonClient {
   async isConfigured(): Promise<boolean> {
     const creds = await getOzonCredentials();
@@ -132,7 +142,7 @@ export class OzonClient {
    * data.result.items, и data.items — на случай мелких отличий между
    * версиями API.
    */
-  async fetchCatalog(): Promise<Array<{ offerId: string; name: string; active: boolean; price?: number }>> {
+  async fetchCatalog(): Promise<Array<{ offerId: string; name: string; active: boolean; price?: number; images: string[] }>> {
     const http = await this.getHttp();
     const idPairs: Array<{ productId: number; offerId: string }> = [];
     let lastId = '';
@@ -164,7 +174,7 @@ export class OzonClient {
     logger.info(`[Ozon] В каталоге товаров (visibility=VISIBLE): ${idPairs.length}`);
 
     // Название и точный статус (archived) добираем пачками по 100 через info/list.
-    const catalog: Array<{ offerId: string; name: string; active: boolean; price?: number }> = [];
+    const catalog: Array<{ offerId: string; name: string; active: boolean; price?: number; images: string[] }> = [];
     for (let i = 0; i < idPairs.length; i += 100) {
       const chunk = idPairs.slice(i, i + 100);
       try {
@@ -172,7 +182,7 @@ export class OzonClient {
           offer_id: chunk.map((c) => c.offerId),
         });
         const result = data.result ?? data;
-        const items: Array<{ offer_id: string; name?: string; archived?: boolean; price?: string }> = result?.items ?? [];
+        const items: Array<{ offer_id: string; name?: string; archived?: boolean; price?: string; primary_image?: string[] | string; images?: string[] }> = result?.items ?? [];
         items.forEach((item) => {
           catalog.push({
             offerId: item.offer_id,
@@ -182,6 +192,9 @@ export class OzonClient {
             active: item.archived !== true,
             // Ozon отдаёт price строкой — переводим в число для расчётов.
             price: item.price ? Number(item.price) : undefined,
+            // Фото только ЧИТАЕМ (то же поле ответа, что уже приходит) —
+            // ничего на Ozon не меняем. Главное фото первым, без дублей.
+            images: collectOzonImages(item.primary_image, item.images),
           });
         });
       } catch (err: any) {

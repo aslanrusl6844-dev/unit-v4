@@ -225,9 +225,9 @@ export class WbClient {
    * предыдущего ответа). У каждой карточки: nmID (номер WB), vendorCode
    * (= supplierArticle, наш wbArticle) и title (название).
    */
-  async fetchCatalog(): Promise<Array<{ vendorCode: string; name: string; nmId: number; subject?: string }>> {
+  async fetchCatalog(): Promise<Array<{ vendorCode: string; name: string; nmId: number; subject?: string; images: string[] }>> {
     const contentHttp = await this.getContentHttp();
-    const catalog: Array<{ vendorCode: string; name: string; nmId: number; subject?: string }> = [];
+    const catalog: Array<{ vendorCode: string; name: string; nmId: number; subject?: string; images: string[] }> = [];
     let cursor: { limit: number; updatedAt?: string; nmID?: number } = { limit: 100 };
 
     for (let page = 0; page < MAX_PAGES_SAFETY; page++) {
@@ -258,13 +258,21 @@ export class WbClient {
       // Точное имя поля в Content API документировано не так подробно, как
       // у Statistics API (где мы уже уверенно используем row.subject) —
       // пробуем несколько вероятных вариантов, а не полагаемся на одно имя.
-      const cards: Array<{ nmID: number; vendorCode: string; title?: string; subjectName?: string; subject?: string; object?: string }> = data.cards ?? [];
+      const cards: Array<{ nmID: number; vendorCode: string; title?: string; subjectName?: string; subject?: string; object?: string; photos?: Array<{ big?: string; hq?: string; c516x688?: string; c246x328?: string; square?: string; tm?: string }> }> = data.cards ?? [];
       cards.forEach((card) => {
         catalog.push({
           vendorCode: card.vendorCode,
           name: card.title?.trim() || `WB-товар ${card.vendorCode}`,
           nmId: card.nmID,
           subject: card.subjectName ?? card.subject ?? card.object,
+          // Фото карточки — только читаем из уже приходящего ответа
+          // (photos[]), в WB ничего не меняем. Берём самый крупный
+          // доступный размер, порядок как в карточке (первое = главное).
+          images: Array.from(new Set(
+            (card.photos ?? [])
+              .map((ph) => ph.big ?? ph.hq ?? ph.c516x688 ?? ph.c246x328 ?? ph.square ?? ph.tm)
+              .filter((u): u is string => typeof u === 'string' && /^https?:\/\//.test(u)),
+          )).slice(0, 10),
         });
       });
 

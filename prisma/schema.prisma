@@ -146,6 +146,12 @@ model Product {
   description     String?
   composition     String?
   images          String?   // JSON-массив URL строкой, напр. ["https://...","https://..."]
+  // Фото товара С ПЛОЩАДКИ (Kaspi/Ozon/WB), подтянутые синком каталога —
+  // JSON-массив URL строкой. Отдельно от images (фото витрины): витринные
+  // фото никогда не подменяются, а это поле лишь стартовые значения для
+  // карточки My Market и обложка в списке «Все», пока своих фото нет.
+  // null = ещё не проверяли, "[]" = проверили, площадка фото не отдала.
+  marketImages    String?
   shopDelivery    String?   // "rocket" | "truck"
   shopVideo       String?   // URL видео товара (Vercel Blob или внешняя ссылка)
   videoUrl        String?   // Отдельное поле "Видео URL" — только внешняя ссылка, ничего не загружается на Vercel

@@ -2,6 +2,7 @@ import { prisma } from '../db/prisma';
 import { kaspiClient } from '../integrations/kaspi.client';
 import { ozonClient } from '../integrations/ozon.client';
 import { wbClient } from '../integrations/wb.client';
+import { fetchProductImages } from '../integrations/kaspi.scraper';
 import { calcKaspiCommissionAmount } from '../integrations/kaspi.categories';
 import { calculateKaspiDeliveryCost } from '../integrations/kaspi.delivery';
 import { env } from '../config/env';
@@ -433,6 +434,10 @@ export async function syncOzonCatalog() {
           // устареть). Обновляем её всегда, если Ozon её прислал.
           ...(referencePrice ? { ozonReferencePrice: referencePrice, ozonReferencePriceUpdatedAt: new Date() } : {}),
           ...tariffData,
+          // Фото с площадки — в отдельное поле marketImages (не в images
+          // витрины, её фото не трогаем). Если Ozon фото не прислал —
+          // прежнее значение не стираем.
+          ...(item.images.length ? { marketImages: JSON.stringify(item.images) } : {}),
         },
       });
       updated += 1;
@@ -446,6 +451,7 @@ export async function syncOzonCatalog() {
           active: item.active,
           ...(referencePrice ? { ozonReferencePrice: referencePrice, ozonReferencePriceUpdatedAt: new Date() } : {}),
           ...tariffData,
+          ...(item.images.length ? { marketImages: JSON.stringify(item.images) } : {}),
         },
       });
       created += 1;
@@ -503,6 +509,9 @@ export async function syncWbCatalog() {
           // надёжная referencePrice для WB, точнее устаревшей цены
           // последней продажи).
           ...(price != null ? { wbReferencePrice: price, wbReferencePriceUpdatedAt: new Date() } : {}),
+          // Фото с площадки — в marketImages, не в images витрины; если WB
+          // фото не прислал — прежнее значение не стираем.
+          ...(item.images.length ? { marketImages: JSON.stringify(item.images) } : {}),
         },
       });
       updated += 1;
@@ -516,6 +525,7 @@ export async function syncWbCatalog() {
           wbNmId: item.nmId,
           ...(item.subject ? { wbSubject: item.subject } : {}),
           ...(price != null ? { wbReferencePrice: price, wbReferencePriceUpdatedAt: new Date() } : {}),
+          ...(item.images.length ? { marketImages: JSON.stringify(item.images) } : {}),
         },
       });
       created += 1;
@@ -530,4 +540,50 @@ export async function syncWbCatalog() {
     priceError,
     subjectMissingCount,
   };
+}
+
+/**
+ * Фото Kaspi для товаров учёта — ПАЧКОЙ (по умолчанию 5 за вызов, чтобы
+ * уложиться в лимит serverless-функции). Официальный API Kaspi фото не
+ * отдаёт, поэтому читаем публичную страницу товара по kaspiProductUrl
+ * (см. fetchProductImages). Товары без kaspiProductUrl пропускаются (ссылку
+ * не угадываем) — их число возвращается в withoutUrl. Только чтение: на
+ * Kaspi ничего не меняется. Проверенные товары помечаются marketImages
+ * ("[]" = страница открылась, фото нет), чтобы не проверять их снова;
+ * товары, чью страницу прочитать не удалось, остаются непроверенными.
+ */
+export async function syncKaspiPhotos(limit = 5, excludeIds: string[] = []) {
+  // excludeIds — товары, чью страницу не удалось прочитать в ЭТОМ запуске
+  // (их передаёт фронт): без исключения они оставались бы "непроверенными"
+  // и каждый вызов снова упирался бы в одни и те же первые товары.
+  const where = {
+    kaspiSku: { not: null },
+    kaspiProductUrl: { not: null },
+    NOT: { kaspiProductUrl: '' },
+    marketImages: null,
+    ...(excludeIds.length ? { id: { notIn: excludeIds } } : {}),
+  };
+  const batch = await prisma.product.findMany({ where, take: limit, orderBy: { id: 'asc' }, select: { id: true, kaspiProductUrl: true } });
+
+  let withPhotos = 0;
+  const failedIds: string[] = [];
+  await Promise.all(
+    batch.map(async (p: { id: string; kaspiProductUrl: string | null }) => {
+      const images = await fetchProductImages(p.kaspiProductUrl as string);
+      if (images === null) {
+        failedIds.push(p.id);
+        return;
+      }
+      await prisma.product.update({ where: { id: p.id }, data: { marketImages: JSON.stringify(images) } });
+      if (images.length) withPhotos += 1;
+    }),
+  );
+
+  const remainingWhere = { ...where, id: { notIn: [...excludeIds, ...failedIds] } };
+  const remaining = await prisma.product.count({ where: remainingWhere });
+  const withoutUrl = await prisma.product.count({
+    where: { kaspiSku: { not: null }, OR: [{ kaspiProductUrl: null }, { kaspiProductUrl: '' }], marketImages: null },
+  });
+  logger.info(`[Kaspi] Фото: проверено ${batch.length}, с фото ${withPhotos}, не удалось прочитать ${failedIds.length}, осталось ${remaining}, без ссылки ${withoutUrl}`);
+  return { checked: batch.length, withPhotos, failedIds, remaining, withoutUrl };
 }

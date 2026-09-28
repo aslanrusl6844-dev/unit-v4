@@ -144,3 +144,50 @@ export async function fetchCompetitorPrices(productUrl: string): Promise<Competi
     return [];
   }
 }
+
+/**
+ * Фото товара со страницы kaspi.kz (публичная страница, только чтение).
+ * Официальный API Kaspi фото товаров не отдаёт, поэтому — то же, что видят
+ * поисковики: JSON-LD schema.org/Product (поле image), запасной вариант —
+ * og:image. Возвращает:
+ *   string[] — фото найдены (главное первым), либо [] — страница открылась,
+ *              но фото на ней нет;
+ *   null     — страницу прочитать не удалось (сеть/блокировка/таймаут) —
+ *              вызывающий код НЕ должен считать такой товар "проверенным".
+ * Таймаут короткий (6 c) — вызывается пачкой из serverless-функции.
+ */
+export async function fetchProductImages(productUrl: string): Promise<string[] | null> {
+  try {
+    const { data: html } = await axios.get<string>(productUrl, {
+      headers: { 'User-Agent': USER_AGENT, 'Accept-Language': 'ru' },
+      timeout: 6000,
+    });
+    const $ = cheerio.load(html);
+    const urls: string[] = [];
+    const push = (v: unknown) => {
+      if (typeof v === 'string' && /^https?:\/\//.test(v.trim())) urls.push(v.trim());
+      else if (v && typeof v === 'object' && typeof (v as any).url === 'string') push((v as any).url);
+    };
+
+    $('script[type="application/ld+json"]').each((_, el) => {
+      try {
+        const json = JSON.parse($(el).contents().text());
+        const items = Array.isArray(json) ? json : [json];
+        for (const item of items) {
+          if (item['@type'] === 'Product' || item['@type']?.includes?.('Product')) {
+            const img = item.image;
+            if (Array.isArray(img)) img.forEach(push); else push(img);
+          }
+        }
+      } catch {
+        // блок JSON-LD не распарсился — пробуем следующий / og:image
+      }
+    });
+
+    if (!urls.length) push($('meta[property="og:image"]').attr('content'));
+    return Array.from(new Set(urls)).slice(0, 10);
+  } catch (err) {
+    logger.warn({ err: String((err as any)?.message ?? err), productUrl }, '[Kaspi] Не удалось прочитать фото товара со страницы');
+    return null;
+  }
+}
