@@ -5,6 +5,7 @@ import { logger } from '../utils/logger';
 import { getAllKaspiCategoriesWithRates } from '../integrations/kaspi.categories';
 import { SHOP_TYPE_REQUIRED_FOR_SALE } from '../config/shopRules';
 import { maybeGenerateShopArticle } from '../services/shopArticle';
+import { isValidShopCategory } from '../config/shopCategories';
 
 export const productsRouter = Router();
 
@@ -87,6 +88,23 @@ productsRouter.post('/', async (req, res) => {
     return res.status(400).json({ error: parsed.error.flatten() });
   }
   const data: Record<string, any> = { ...parsed.data };
+  // Та же защита, что и в PUT: нельзя СРАЗУ создать товар «В продаже» без
+  // корректной category/цены — на практике карточка всегда создаёт новый
+  // товар с shopActive=false, но проверяем и здесь, а не только в PUT.
+  if (data.shopActive === true) {
+    if (!data.category) {
+      return res.status(400).json({ error: 'Нельзя включить «В продаже» без заполненной category' });
+    }
+    if (!isValidShopCategory(data.category)) {
+      return res.status(400).json({ error: `Нельзя включить «В продаже»: категория «${data.category}» не из списка разделов витрины` });
+    }
+    if (SHOP_TYPE_REQUIRED_FOR_SALE && !data.type) {
+      return res.status(400).json({ error: 'Нельзя включить «В продаже» без заполненных category и type' });
+    }
+    if (data.shopPrice == null) {
+      return res.status(400).json({ error: 'Нельзя включить «В продаже» без цены на витрине (shopPrice)' });
+    }
+  }
   // Та же логика, что и при сохранении карточки (services/shopArticle.ts) —
   // если новый товар создаётся сразу с ценой или сразу «В продаже», артикул
   // витрины генерируется здесь же, не дожидаясь первого PUT.
@@ -349,6 +367,12 @@ productsRouter.put('/:id', async (req, res) => {
     const shopPrice = data.shopPrice !== undefined ? data.shopPrice : existing?.shopPrice;
     if (!category) {
       return res.status(400).json({ error: 'Нельзя включить «В продаже» без заполненной category' });
+    }
+    // Жёсткий список разделов витрины (src/config/shopCategories.ts) — старое
+    // значение вне списка («украшение», «Кухня», нижний регистр и т.п.) не
+    // угадывается и не пропускается, продавец должен явно выбрать раздел.
+    if (!isValidShopCategory(category)) {
+      return res.status(400).json({ error: `Нельзя включить «В продаже»: категория «${category}» не из списка разделов витрины` });
     }
     // type для продажи обязателен только при SHOP_TYPE_REQUIRED_FOR_SALE (config/shopRules.ts).
     if (SHOP_TYPE_REQUIRED_FOR_SALE && !type) {

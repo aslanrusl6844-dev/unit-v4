@@ -7,6 +7,7 @@ import { markShopOrderAsPaid } from './shop.routes';
 import { getSearchAnalytics, getConversionAnalytics, getSeasonalityAnalytics } from '../services/shopAnalytics.service';
 import { generateWaybillPdf, WaybillOrderItem } from '../services/waybill.service';
 import { maybeGenerateShopArticle } from '../services/shopArticle';
+import { isValidShopCategory } from '../config/shopCategories';
 import { ozonTypeKey } from '../services/sync.service';
 import { hintCategoryByName, hintRuleCatalogPairs, starterCatalogPairs, buildCatalog } from '../services/categoryHints';
 
@@ -400,6 +401,15 @@ shopAdminRouter.post('/bulk-upsert', async (req, res) => {
       continue;
     }
     try {
+      // Жёсткий список разделов витрины — категория вне списка сохраняется
+      // «как есть» (см. config/shopCategories.ts), но «В продаже» для такой
+      // строки включить нельзя: даже если в файле стоит «да», понижаем до
+      // «нет», не отклоняя всю строку целиком (остальные поля всё же нужны).
+      const categoryValid = isValidShopCategory(row.data.category);
+      const shopActive = row.data.shopActive && categoryValid;
+      if (row.data.shopActive && !categoryValid) {
+        errors.push(`${row.data.sku}: категория «${row.data.category}» не из списка разделов витрины — сохранено, но «В продаже» не включено`);
+      }
       const data = {
         name: row.data.name,
         category: row.data.category,
@@ -412,10 +422,10 @@ shopAdminRouter.post('/bulk-upsert', async (req, res) => {
         composition: row.data.composition || null,
         images: row.data.images || null,
         shopDelivery: row.data.shopDelivery || null,
-        shopActive: row.data.shopActive,
+        shopActive,
         videoUrl: row.data.videoUrl || null,
         // Excel с shopActive=да возвращает товар из архива витрины.
-        ...(row.data.shopActive ? { shopArchived: false } : {}),
+        ...(shopActive ? { shopArchived: false } : {}),
       };
       // Артикул витрины — та же логика, что и в карточке (см.
       // services/shopArticle.ts): строка Excel всегда приходит с заполненной

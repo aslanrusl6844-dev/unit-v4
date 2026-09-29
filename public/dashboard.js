@@ -2779,12 +2779,32 @@ function fillMyMarketTypeSelect(category, type) {
   if (!isKnown) form.elements.typeCustom.value = type;
 }
 
+/**
+ * Жёсткий список разделов витрины — НЕ из мест использования, НЕ из дерева
+ * Ozon, ничего сюда не добавляется автоматически. Тот же список, в том же
+ * порядке — src/config/shopCategories.ts (SHOP_CATEGORIES), менять нужно оба.
+ */
+const MM_SHOP_CATEGORIES = [
+  'Женская одежда', 'Мужская одежда', 'Детская одежда', 'Обувь', 'Ювелирные украшения', 'Электроника',
+  'Бытовая техника', 'Красота и здоровье', 'Дом и сад', 'Мебель', 'Аксессуары', 'Строительство и ремонт',
+  'Автотовары', 'Продукты питания', 'Товары для животных', 'Детские товары', 'Спорт и отдых', 'Аптека',
+  'Канцелярия', 'Бытовая химия', 'Транспортные средства', 'Игры и консоли', 'Туризм, охота и рыбалка',
+];
+
+/**
+ * Список «Категория» — фиксированные 23 пункта, без исключений. Если у
+ * товара сейчас стоит старое значение вне этого списка (украшение, Кухня,
+ * нижний регистр и т.п.) — в select оно НЕ добавляется и НЕ выбирается
+ * автоматически: список остаётся на «— выберите —», а рядом показывается,
+ * что реально сохранено в базе. Продавец должен явно переизбрать раздел.
+ */
 function fillMyMarketCategorySelect(category, type) {
-  const sel = document.getElementById('mymarketProductCardForm').elements.category;
-  const cats = myMarketCatalog.map((c) => c.category);
-  if (category && !cats.includes(category)) cats.push(category);
-  mmSetSelectOptions(sel, cats, category);
-  fillMyMarketTypeSelect(category, type);
+  const form = document.getElementById('mymarketProductCardForm');
+  mmSetSelectOptions(form.elements.category, MM_SHOP_CATEGORIES, category, false);
+  const inList = !!category && MM_SHOP_CATEGORIES.includes(category);
+  document.getElementById('mmCardCategoryOutOfListWarn').textContent =
+    category && !inList ? `сейчас в базе: «${category}» (вне списка, выберите раздел)` : '';
+  fillMyMarketTypeSelect(inList ? category : '', type);
 }
 
 /** Блок под полями: «По названию: …» и «Ещё: …» — по одному варианту в строке. */

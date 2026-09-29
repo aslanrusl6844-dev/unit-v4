@@ -10,6 +10,7 @@ import { sendSms } from '../services/sms.service';
 import { SHOP_TYPE_REQUIRED_FOR_SALE } from '../config/shopRules';
 import { cleanOzonDescription, looksLikeAttributeDump, sanitizeCharacteristics } from '../integrations/ozon.content';
 import { maybeGenerateShopArticle } from '../services/shopArticle';
+import { SHOP_CATEGORIES, normalizeShopCategory } from '../config/shopCategories';
 
 export const shopRouter = Router();
 
@@ -179,16 +180,23 @@ shopRouter.get('/categories', async (_req, res) => {
     });
     const tree = new Map<string, Map<string, Set<string>>>();
     for (const p of products) {
-      if (!p.category) continue;
-      if (!tree.has(p.category)) tree.set(p.category, new Map());
-      const subMap = tree.get(p.category)!;
+      // Жёсткий список разделов витрины (config/shopCategories.ts) — сюда
+      // никогда не попадает то, чего нет в списке: ни старые значения
+      // («украшение», «Кухня», нижний регистр), ни что-либо угаданное из
+      // Ozon. normalizeShopCategory терпим к регистру/пробелам, но не
+      // придумывает раздел — вне списка просто пропускаем.
+      const category = normalizeShopCategory(p.category);
+      if (!category) continue;
+      if (!tree.has(category)) tree.set(category, new Map());
+      const subMap = tree.get(category)!;
       const subKey = p.subcategory ?? '';
       if (!subMap.has(subKey)) subMap.set(subKey, new Set());
       if (p.type) subMap.get(subKey)!.add(p.type);
     }
-    const result = Array.from(tree.entries()).map(([category, subMap]) => ({
+    // Порядок — как в SHOP_CATEGORIES, не как попались товары.
+    const result = SHOP_CATEGORIES.filter((c) => tree.has(c)).map((category) => ({
       category,
-      subcategories: Array.from(subMap.entries())
+      subcategories: Array.from(tree.get(category)!.entries())
         .filter(([sub]) => sub !== '')
         .map(([subcategory, types]) => ({ subcategory, types: Array.from(types) })),
     }));
