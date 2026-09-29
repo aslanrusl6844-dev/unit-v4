@@ -280,8 +280,15 @@ shopAdminRouter.post('/orders/:id/status', async (req, res) => {
     // то же Telegram-сообщение. «paid» этот путь не проставляет статус
     // напрямую через markShopOrderAsPaid, поэтому здесь его не трогаем —
     // см. отдельную кнопку «Отметить оплаченным».
+    // Ждём здесь же (см. POST /orders про serverless-лямбду) — статус уже
+    // сменён строкой выше; СВОЙ try/catch, чтобы сбой Telegram не попал во
+    // внешний catch этого роута и не подменил собой настоящую 500-ошибку.
     if (parsed.data.status === 'cancelled') {
-      editOrderNotify(order, 'cancelled').catch((err) => logger.error({ err }, '[Telegram] editOrderNotify(cancelled) не должен был бросить исключение'));
+      try {
+        await editOrderNotify(order, 'cancelled');
+      } catch (err: any) {
+        logger.error({ err }, '[Telegram] editOrderNotify(cancelled) не должен был бросить исключение');
+      }
     }
     res.json(order);
   } catch (err: any) {

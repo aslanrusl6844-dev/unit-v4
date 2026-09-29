@@ -421,10 +421,18 @@ shopRouter.post('/orders', async (req, res) => {
       },
     });
 
-    // Telegram — одно сообщение на заказ. Нет токена или сбой сети/API —
-    // молча ничего не делает / пишет в лог, но заказ УЖЕ создан и ответ
-    // клиенту это никак не блокирует и не может провалить.
-    sendOrderNotify(order).catch((err) => logger.error({ err }, '[Telegram] sendOrderNotify не должен был бросить исключение'));
+    // Telegram — одно сообщение на заказ. На Vercel serverless-лямбда может
+    // усыпляться сразу после res.json(), и фоновый (не await) вызов просто не
+    // успевает уйти — sendPhoto обрывается на середине. Поэтому ЖДЁМ здесь,
+    // ДО ответа клиенту. Заказ при этом уже создан в БД строкой выше: сбой
+    // Telegram (нет токена, таймаут, ошибка API — sendOrderNotify сама ловит
+    // всё внутри) не отменяет заказ и не меняет код ответа — try/catch ниже
+    // на всякий случай ловит и то, чего сама функция в теории не должна бросать.
+    try {
+      await sendOrderNotify(order);
+    } catch (err: any) {
+      logger.error({ err }, '[Telegram] sendOrderNotify не должен был бросить исключение');
+    }
 
     res.status(201).json({ id: order.id, number: order.number, total: order.total, status: order.status });
   } catch (err: any) {
@@ -517,8 +525,14 @@ export async function markShopOrderAsPaid(orderId: string): Promise<
   ]);
 
   // Правим то же Telegram-сообщение (если оно было отправлено) — не шлём
-  // новое. Сбой здесь не должен всплыть наружу: оплата уже прошла.
-  editOrderNotify(shopOrder, 'paid').catch((err) => logger.error({ err }, '[Telegram] editOrderNotify(paid) не должен был бросить исключение'));
+  // новое. Ждём здесь же (см. комментарий в POST /orders про serverless) —
+  // оплата (транзакция выше) уже прошла и результат функции от Telegram не
+  // зависит: сбой ловится внутри editOrderNotify и здесь же, на всякий случай.
+  try {
+    await editOrderNotify(shopOrder, 'paid');
+  } catch (err: any) {
+    logger.error({ err }, '[Telegram] editOrderNotify(paid) не должен был бросить исключение');
+  }
 
   return { ok: true };
 }
@@ -606,7 +620,13 @@ shopRouter.post('/orders/:id/cancel', async (req, res) => {
     }
 
     await prisma.shopOrder.update({ where: { id: order.id }, data: { status: 'cancelled' } });
-    editOrderNotify(order, 'cancelled').catch((err) => logger.error({ err }, '[Telegram] editOrderNotify(cancelled) не должен был бросить исключение'));
+    // Ждём правку сообщения ДО ответа (см. комментарий в POST /orders) —
+    // статус заказа уже сменён строкой выше, сбой Telegram ответ не портит.
+    try {
+      await editOrderNotify(order, 'cancelled');
+    } catch (err: any) {
+      logger.error({ err }, '[Telegram] editOrderNotify(cancelled) не должен был бросить исключение');
+    }
     res.json({ ok: true, status: 'cancelled' });
   } catch (err: any) {
     logger.error({ err }, '[Shop API] Ошибка отмены заказа');
