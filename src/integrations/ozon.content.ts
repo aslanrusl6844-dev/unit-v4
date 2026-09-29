@@ -128,11 +128,17 @@ export function sanitizeCharacteristics(list: Array<{ name?: unknown; value?: un
   return CHARACTERISTIC_NAMES.filter((n) => byName.has(n)).map((n) => ({ name: n, value: byName.get(n) as string }));
 }
 
-/** Короткий список характеристик товара Ozon: Тип, Материал, Артикул (offer_id). */
-export function buildCharacteristics(input: { typeName?: string; material?: string; offerId?: string }): ShopCharacteristic[] {
+/**
+ * Короткий список характеристик товара Ozon: Тип, Материал, Артикул.
+ * «Артикул» — ТОЛЬКО shopArticle (свой, 7 цифр, генерируется отдельно) — сюда
+ * НИКОГДА не передаётся offerId/nmId/kaspiSku площадки. Если shopArticle ещё
+ * не сгенерирован (у товара пока нет ни цены, ни «В продаже») — строки
+ * «Артикул» в характеристиках просто не будет, это не ошибка.
+ */
+export function buildCharacteristics(input: { typeName?: string; material?: string; shopArticle?: string | null }): ShopCharacteristic[] {
   return sanitizeCharacteristics([
     { name: 'Тип', value: input.typeName },
     { name: 'Материал', value: input.material },
-    { name: 'Артикул', value: input.offerId },
+    { name: 'Артикул', value: input.shopArticle ?? undefined },
   ]);
 }

@@ -629,6 +629,7 @@ export async function syncOzonContent(limit = 40, cursor?: string) {
     select: {
       id: true, ozonOfferId: true, description: true, composition: true, descriptionSource: true, compositionSource: true,
       images: true, marketImages: true, category: true, type: true, categorySource: true, ozonType: true, characteristics: true,
+      shopArticle: true, // НЕ пишем и не читаем как источник артикула — только чтобы передать в характеристики как есть
     },
   });
   if (!products.length) return { processed: 0, updated: 0, withDescription: 0, mapped: 0, unmappedTypes: [] as string[], nextCursor: null as string | null, done: true };
@@ -685,7 +686,10 @@ export async function syncOzonContent(limit = 40, cursor?: string) {
 
     // Короткий список для покупателя: Тип, Материал, Артикул. Считается заново
     // при каждом синке (это производные данные, вручную не правятся).
-    const characteristicsJson = JSON.stringify(buildCharacteristics({ typeName: c.typeName ?? p.ozonType ?? undefined, material: c.material, offerId: p.ozonOfferId ?? undefined }));
+    // shopArticle НЕ трогаем и не заполняем из offer_id — только читаем текущее
+    // значение, чтобы характеристики его показывали (или не показывали, если его
+    // ещё нет). Генерация — отдельно, при первой цене/«В продаже» (products.routes.ts).
+    const characteristicsJson = JSON.stringify(buildCharacteristics({ typeName: c.typeName ?? p.ozonType ?? undefined, material: c.material, shopArticle: p.shopArticle }));
     if (characteristicsJson !== p.characteristics) data.characteristics = characteristicsJson;
     if (p.descriptionSource === 'ozon' || data.descriptionSource === 'ozon') withDescription += 1;
 

@@ -9,6 +9,7 @@ import { generateWaybillPdf, WaybillAddressError, WaybillOrderItem } from '../se
 import { sendSms } from '../services/sms.service';
 import { SHOP_TYPE_REQUIRED_FOR_SALE } from '../config/shopRules';
 import { cleanOzonDescription, looksLikeAttributeDump, sanitizeCharacteristics } from '../integrations/ozon.content';
+import { maybeGenerateShopArticle } from '../services/shopArticle';
 
 export const shopRouter = Router();
 
@@ -72,7 +73,13 @@ function toShopProduct(p: any) {
   if (p.shopArticle) characteristics = [...typeChar, ...characteristics, { name: 'Артикул', value: p.shopArticle }];
   else characteristics = [...typeChar, ...characteristics];
   return {
-    sku: p.sku,
+    // ВАЖНО: покупателю (и приложению) в sku тоже отдаём shopArticle, если он
+    // есть — иначе приложение само подставляет "ozon-..." там, где ждёт sku
+    // (это и был баг). Внутренний ozon-.../wb-.../kaspi-... остаётся только
+    // в БД и в синке; наружу такой sku теперь не уходит вообще, пока у
+    // товара есть свой артикул витрины (а у видимого товара он есть всегда —
+    // см. ensureShopArticle ниже).
+    sku: p.shopArticle ?? p.sku,
     // Артикул витрины — ТОЛЬКО shopArticle (7 цифр, свой, не производная от sku
     // и не артикул площадки). Пока не сгенерирован (цена/продажа ещё не
     // задавались) — null, а не какая-либо часть sku.
@@ -106,15 +113,42 @@ function toShopProduct(p: any) {
 async function findVisibleProductBySkuOrArticle(param: string) {
   const trimmed = String(param ?? '').trim();
   if (!trimmed) return null;
-  return prisma.product.findFirst({
+  const product = await prisma.product.findFirst({
     where: { OR: [{ sku: trimmed }, { shopArticle: trimmed }], ...SHOP_VISIBLE_WHERE },
   });
+  return product ? ensureShopArticle(product) : null;
+}
+
+/**
+ * Добор артикула для товаров, ставших видимыми (цена + «В продаже») ДО того,
+ * как для них сработала генерация — например, если товар был активен ещё
+ * до появления shopArticle в системе, или включён в продажу каким-то путём
+ * в обход обычного сохранения карточки. Видимый товар (уже прошёл
+ * SHOP_VISIBLE_WHERE — значит и цена, и активность на месте) обязан иметь
+ * артикул; если его почему-то нет — генерируем прямо здесь, один раз,
+ * той же функцией и по тому же правилу, что и при сохранении карточки.
+ * Без этого приложению просто нечего было бы подставить в sku/article
+ * кроме внутреннего ozon-.../wb-.../kaspi-... — собственно тот самый баг.
+ */
+async function ensureShopArticle<T extends { id: string; shopArticle: string | null; shopPrice: number | null; shopActive: boolean }>(
+  product: T,
+): Promise<T> {
+  if (product.shopArticle) return product;
+  const article = await maybeGenerateShopArticle({
+    currentShopArticle: null,
+    effectivePrice: product.shopPrice,
+    effectiveActive: product.shopActive,
+  });
+  if (!article) return product; // теоретически недостижимо для видимого товара, но не падаем зря
+  await prisma.product.update({ where: { id: product.id }, data: { shopArticle: article } });
+  return { ...product, shopArticle: article };
 }
 
 shopRouter.get('/products', async (_req, res) => {
   try {
     const products = await prisma.product.findMany({ where: SHOP_VISIBLE_WHERE });
-    res.json(products.map(toShopProduct));
+    const withArticles = await Promise.all(products.map(ensureShopArticle));
+    res.json(withArticles.map(toShopProduct));
   } catch (err: any) {
     logger.error({ err }, '[Shop API] GET /products упал');
     res.status(500).json({ error: 'Не удалось получить товары', details: String(err?.message ?? err) });
@@ -301,9 +335,14 @@ export async function markShopOrderAsPaid(orderId: string): Promise<
 
   const items: Array<{ sku: string; name: string; price: number; quantity: number }> = JSON.parse(shopOrder.items);
 
+  // Позиция заказа могла прийти с внутренним sku (ozon-...) ИЛИ с shopArticle
+  // (7 цифр) — с тех пор, как /shop/products стал отдавать в sku именно
+  // shopArticle, приложение обычно эхом присылает уже его. Ищем по обоим.
+  const findOrderedProduct = (sku: string) => prisma.product.findFirst({ where: { OR: [{ sku }, { shopArticle: sku }] } });
+
   // Списываем остаток по каждой позиции — не даём уйти в минус.
   for (const item of items) {
-    const product = await prisma.product.findUnique({ where: { sku: item.sku } });
+    const product = await findOrderedProduct(item.sku);
     if (product) {
       await prisma.product.update({
         where: { id: product.id },
@@ -318,7 +357,7 @@ export async function markShopOrderAsPaid(orderId: string): Promise<
   const orderRevenue = items.reduce((sum, i) => sum + i.price * i.quantity, 0) || 1;
 
   const orderItemsData = await Promise.all(items.map(async (item) => {
-    const product = await prisma.product.findUnique({ where: { sku: item.sku } });
+    const product = await findOrderedProduct(item.sku);
     const itemRevenue = item.price * item.quantity;
     const itemLogistics = (itemRevenue / orderRevenue) * shopOrder.logisticsCost;
     return {
@@ -423,7 +462,9 @@ shopRouter.post('/orders/:id/cancel', async (req, res) => {
     if (order.status === 'paid') {
       const items: Array<{ sku: string; quantity: number }> = JSON.parse(order.items);
       for (const item of items) {
-        const product = await prisma.product.findUnique({ where: { sku: item.sku } });
+        // Тот же резерв, что и при оплате: позиция могла прийти по
+        // shopArticle, а не по внутреннему sku.
+        const product = await prisma.product.findFirst({ where: { OR: [{ sku: item.sku }, { shopArticle: item.sku }] } });
         if (product) {
           await prisma.product.update({
             where: { id: product.id },

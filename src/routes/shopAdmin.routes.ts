@@ -343,6 +343,9 @@ shopAdminRouter.post('/payouts/:orderId/paid', async (req, res) => {
  * Обязательные колонки: sku, name, category, type — строка без category
  * ИЛИ type целиком отклоняется (не загружается, не "чинится" дефолтом).
  */
+// Тот же принцип, что и в products.routes.ts: shopArticle сюда не добавлять —
+// Excel не может вписать артикул витрины (в т.ч. вида ozon-/wb-/kaspi-...),
+// он всегда только сгенерирован сервером (см. maybeGenerateShopArticle ниже).
 const shopBulkRowSchema = z.object({
   sku: z.string().min(1),
   name: z.string().min(1),

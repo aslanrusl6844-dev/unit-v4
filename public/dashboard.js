@@ -3377,7 +3377,13 @@ async function loadMyMarketOrders() {
     api(`/shop-admin/orders${status ? `?status=${status}` : ''}`),
     api('/products'),
   ]);
-  const productBySku = new Map(products.map((p) => [p.sku, p]));
+  // Ключ и по внутреннему sku, и по shopArticle — позиция заказа могла прийти
+  // с любым из двух (приложение теперь показывает покупателю shopArticle).
+  const productBySku = new Map();
+  products.forEach((p) => {
+    productBySku.set(p.sku, p);
+    if (p.shopArticle) productBySku.set(p.shopArticle, p);
+  });
   const tbody = document.querySelector('#mymarketOrdersTable tbody');
   if (!orders.length) {
     tbody.innerHTML = `<tr><td colspan="11" style="color:var(--text-faint)">Заказов нет</td></tr>`;

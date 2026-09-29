@@ -29,6 +29,11 @@ productsRouter.get('/kaspi-categories', (_req, res) => {
   res.json(getAllKaspiCategoriesWithRates());
 });
 
+// ВАЖНО: shopArticle сюда НЕ добавлять как принимаемое клиентом поле — оно
+// только генерируется сервером (services/shopArticle.ts), карточка и Excel
+// не должны иметь возможность его вписать (в том числе значение вида
+// ozon-.../wb-.../kaspi-...). Zod и так отбрасывает неизвестные ключи —
+// пока shopArticle не объявлен ниже, прислать его снаружи невозможно.
 const productSchema = z.object({
   sku: z.string().min(1),
   name: z.string().min(1),

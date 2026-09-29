@@ -161,8 +161,18 @@ export async function getConversionAnalytics(days: number) {
   ]);
   if (!skuSet.size) return [];
 
-  const products = await prisma.product.findMany({ where: { sku: { in: Array.from(skuSet) } }, select: { sku: true, name: true } });
-  const nameBySku = new Map(products.map((p) => [p.sku, p.name]));
+  // события трекинга (view/cart) могли прийти с shopArticle вместо внутреннего
+  // sku — с тех пор, как /shop/products отдаёт в sku именно его. Ищем по обоим,
+  // иначе в отчёте вместо названия товара был бы сам артикул.
+  const products = await prisma.product.findMany({
+    where: { OR: [{ sku: { in: Array.from(skuSet) } }, { shopArticle: { in: Array.from(skuSet) } }] },
+    select: { sku: true, shopArticle: true, name: true },
+  });
+  const nameBySku = new Map<string, string>();
+  for (const p of products) {
+    nameBySku.set(p.sku, p.name);
+    if (p.shopArticle) nameBySku.set(p.shopArticle, p.name);
+  }
 
   const rows = Array.from(skuSet).map((sku) => {
     const views = viewEvents.filter((e) => e.sku === sku).length;
