@@ -93,8 +93,18 @@ function buildOrderMessage(order: TelegramOrderInput, opts: { statusLine: string
   return lines.join('\n');
 }
 
-/** Первая https-картинка первого товара заказа — по sku ИЛИ shopArticle
- *  позиции (та же логика поиска товара по заказу, что и при оплате). */
+/** Первый «нормальный» url из images (https:// или http://). http://
+ *  сразу приводим к https:// той же ссылкой — Telegram надёжнее работает
+ *  с https, а домен обычно отдаёт то же самое по обеим схемам. */
+function firstNormalImageUrl(images: unknown): string | null {
+  if (!Array.isArray(images)) return null;
+  const first = images.find((u) => typeof u === 'string' && /^https?:\/\//i.test(u.trim()));
+  if (!first) return null;
+  return first.trim().replace(/^http:\/\//i, 'https://');
+}
+
+/** Картинка первого товара заказа — по sku ИЛИ shopArticle позиции (та же
+ *  логика поиска товара по заказу, что и при оплате). */
 async function firstItemImageUrl(order: TelegramOrderInput): Promise<string | null> {
   const items = parseItems(order.items);
   const firstSku = items[0]?.sku;
@@ -102,9 +112,7 @@ async function firstItemImageUrl(order: TelegramOrderInput): Promise<string | nu
   try {
     const product = await prisma.product.findFirst({ where: { OR: [{ sku: firstSku }, { shopArticle: firstSku }] } });
     if (!product?.images) return null;
-    const images = JSON.parse(product.images);
-    const first = Array.isArray(images) ? images.find((u) => typeof u === 'string' && /^https:\/\//.test(u)) : null;
-    return first ?? null;
+    return firstNormalImageUrl(JSON.parse(product.images));
   } catch {
     return null;
   }
@@ -128,6 +136,69 @@ async function telegramApi(method: string, body: Record<string, unknown>): Promi
     return { ok: true, result: data.result };
   } catch (err: any) {
     logger.error({ err: String(err?.message ?? err), method }, '[Telegram] Запрос не выполнен (сеть/таймаут)');
+    return { ok: false };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const IMAGE_DOWNLOAD_TIMEOUT_MS = 10000;
+
+/**
+ * Скачивает картинку товара сами, если Telegram не смог забрать её по url
+ * (бывает: сервер отдаёт картинку не всем ботам/CDN блокирует, домен без
+ * валидного SSL и т.п.). Таймаут 10с — на скачивание, отдельно от таймаута
+ * запросов к самому Telegram. Токен здесь ни при чём, но на всякий случай:
+ * в лог идёт только url картинки, не сам файл и не токен бота.
+ */
+async function downloadImage(url: string): Promise<{ buffer: Buffer; contentType: string } | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), IMAGE_DOWNLOAD_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    if (!res.ok) {
+      logger.error({ status: res.status, url }, '[Telegram] Не удалось скачать картинку товара (ответ не ok)');
+      return null;
+    }
+    const arrayBuffer = await res.arrayBuffer();
+    const contentType = res.headers.get('content-type') || 'image/jpeg';
+    return { buffer: Buffer.from(arrayBuffer), contentType };
+  } catch (err: any) {
+    logger.error({ err: String(err?.message ?? err), url }, '[Telegram] Не удалось скачать картинку товара (сеть/таймаут)');
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** sendPhoto файлом (multipart) — когда Telegram не смог забрать картинку
+ *  сам по url. Токен только в URL запроса, в лог не попадает нигде. */
+async function sendPhotoFile(
+  chatId: string,
+  image: { buffer: Buffer; contentType: string },
+  caption: string,
+): Promise<{ ok: boolean; result?: { message_id: number } }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TELEGRAM_TIMEOUT_MS);
+  try {
+    const form = new FormData();
+    form.append('chat_id', chatId);
+    form.append('caption', caption);
+    form.append('parse_mode', 'HTML');
+    form.append('photo', new Blob([image.buffer], { type: image.contentType }), 'photo.jpg');
+    const res = await fetch(`https://api.telegram.org/bot${env.telegramBotToken}/sendPhoto`, {
+      method: 'POST',
+      body: form,
+      signal: controller.signal,
+    });
+    const data: any = await res.json().catch(() => ({}));
+    if (!res.ok || !data?.ok) {
+      logger.error({ status: res.status, telegramError: data?.description }, '[Telegram] sendPhoto файлом — ответ не ok');
+      return { ok: false };
+    }
+    return { ok: true, result: data.result };
+  } catch (err: any) {
+    logger.error({ err: String(err?.message ?? err) }, '[Telegram] sendPhoto файлом не выполнен');
     return { ok: false };
   } finally {
     clearTimeout(timer);
@@ -175,19 +246,37 @@ export async function sendOrderNotify(order: TelegramOrderInput): Promise<void> 
   try {
     const caption = buildOrderMessage(order, { statusLine: 'ожидает оплату' });
     const photoUrl = await firstItemImageUrl(order);
+    // Скачиваем картинку САМИ только если sendPhoto по url не удался хотя бы
+    // раз — и только один раз на все чаты (картинка у всех получателей одна
+    // и та же), а не заново на каждый chat_id.
+    let downloadedImage: { buffer: Buffer; contentType: string } | null | undefined;
 
     const sent: TelegramMessageRef[] = [];
     for (const chatId of ids) {
-      let res = photoUrl
-        ? await telegramApi('sendPhoto', { chat_id: chatId, photo: photoUrl, caption, parse_mode: 'HTML' })
-        : await telegramApi('sendMessage', { chat_id: chatId, text: caption, parse_mode: 'HTML' });
-      let isPhoto = !!photoUrl;
-      // sendPhoto не удался (битая ссылка, Telegram не смог её скачать и т.п.)
-      // — сразу же тем же текстом обычным sendMessage, а не молчим в этот чат.
-      if (photoUrl && !res.ok) {
+      let res: { ok: boolean; result?: { message_id: number } };
+      let isPhoto = false;
+
+      if (photoUrl) {
+        res = await telegramApi('sendPhoto', { chat_id: chatId, photo: photoUrl, caption, parse_mode: 'HTML' });
+        if (res.ok) {
+          isPhoto = true;
+        } else {
+          // Telegram не смог забрать картинку по url — скачиваем сами и шлём файлом.
+          if (downloadedImage === undefined) downloadedImage = await downloadImage(photoUrl);
+          if (downloadedImage) {
+            res = await sendPhotoFile(chatId, downloadedImage, caption);
+            isPhoto = res.ok;
+          }
+          // И файл не ушёл (или скачать не получилось) — как раньше: просто текстом.
+          if (!res.ok) {
+            res = await telegramApi('sendMessage', { chat_id: chatId, text: caption, parse_mode: 'HTML' });
+            isPhoto = false;
+          }
+        }
+      } else {
         res = await telegramApi('sendMessage', { chat_id: chatId, text: caption, parse_mode: 'HTML' });
-        isPhoto = false;
       }
+
       if (res.ok && res.result) sent.push({ chatId, messageId: res.result.message_id, isPhoto });
     }
     if (sent.length) {
