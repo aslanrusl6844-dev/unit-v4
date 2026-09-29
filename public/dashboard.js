@@ -3364,7 +3364,9 @@ function renderMyMarketOrderItemsCell(items, productBySku) {
     const directImage = item.image || item.imageUrl || (Array.isArray(item.images) && item.images[0]) || null;
     const imageUrl = directImage || (product ? myMarketFirstImage(product.images) : null);
     const name = item.name || item.title || product?.name || item.sku || 'Товар';
-    const qtySuffix = item.quantity > 1 ? ` ×${item.quantity}` : '';
+    // Всегда показываем количество — не только когда больше 1. Нет quantity
+    // (не должно случаться, но защищаемся) — считаем за 1 штуку.
+    const qty = item.quantity > 0 ? item.quantity : 1;
     const initial = (name[0] || '?').toUpperCase();
     // Оба варианта — картинка и серый квадрат-запасной — всегда в DOM
     // сразу; запасной изначально скрыт (display:none), onerror у <img>
@@ -3379,7 +3381,7 @@ function renderMyMarketOrderItemsCell(items, productBySku) {
     return `
       <div style="display:flex;gap:8px;align-items:center">
         ${photoHtml}
-        <span style="font-size:12px;line-height:1.3">${name}${qtySuffix}</span>
+        <span style="font-size:12px;line-height:1.3">${name}<br><span style="font-size:10.5px;color:var(--text-faint)">${qty} шт</span></span>
       </div>
     `;
   });
@@ -3406,7 +3408,7 @@ async function loadMyMarketOrders() {
   });
   const tbody = document.querySelector('#mymarketOrdersTable tbody');
   if (!orders.length) {
-    tbody.innerHTML = `<tr><td colspan="11" style="color:var(--text-faint)">Заказов нет</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="12" style="color:var(--text-faint)">Заказов нет</td></tr>`;
     return;
   }
   tbody.innerHTML = orders.map((o) => {
@@ -3440,6 +3442,9 @@ async function loadMyMarketOrders() {
         </div>`
       : `<span style="color:var(--text-faint)">—</span>`;
     const itemsCell = renderMyMarketOrderItemsCell(o.items, productBySku);
+    // Кол-во по заказу — сумма количества по всем позициям (не число позиций):
+    // одна позиция 2 шт -> 2, две позиции 1+2 -> 3. Позиция без quantity — за 1.
+    const totalQty = (o.items || []).reduce((sum, item) => sum + (item.quantity > 0 ? item.quantity : 1), 0);
     return `
     <tr>
       <td class="name-cell">${o.number}</td>
@@ -3449,6 +3454,7 @@ async function loadMyMarketOrders() {
       <td>${o.phone}</td>
       <td class="name-cell" style="font-size:11px">${address}</td>
       <td class="num">${fmtMoney(o.total)}</td>
+      <td class="num">${totalQty}</td>
       <td>${statusCell}</td>
       <td>${o.pickupCode}</td>
       <td>${courierCell}</td>
