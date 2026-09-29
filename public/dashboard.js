@@ -2426,6 +2426,18 @@ async function loadMyMarketProducts() {
  * витрине, и частично заполненный товар (например, только категория) не
  * должен пропасть из «Без категории».
  */
+/**
+ * Артикул для покупателя/витрины — без префикса площадки. Внутренний sku в
+ * базе не меняется: ozon-3245069 остаётся ozon-3245069, отображается только
+ * 3245069. Если префикса нет (MM-*, SKU-001 и т.п.) — показываем sku как есть.
+ * Тот же разбор нужен и на сервере (routes/shop.routes.ts, displaySku) —
+ * менять нужно оба.
+ */
+function mmDisplaySku(sku) {
+  const m = /^(?:ozon|wb|kaspi)-(.+)$/i.exec(sku || '');
+  return m ? m[1] : (sku || '');
+}
+
 // Тот же переключатель, что и config/shopRules.ts на сервере — менять нужно
 // оба сразу. Влияет и на то, можно ли включить «В продаже» без типа, и на то,
 // считается ли товар «Без категории» из-за отсутствия только типа.
@@ -2527,7 +2539,7 @@ function renderMyMarketProductsTable() {
     <tr>
       <td><input type="checkbox" data-select-id="${p.id}" ${myMarketSelectedProductIds.has(p.id) ? 'checked' : ''} /></td>
       <td>${img ? `<img src="${img}" alt="" style="width:36px;height:36px;object-fit:cover;border-radius:6px" />` : '<span style="color:var(--text-faint);font-size:11px">—</span>'}</td>
-      <td class="name-cell">${p.sku}</td>
+      <td class="name-cell">${mmDisplaySku(p.sku)}</td>
       <td class="name-cell">${p.name}<br><span style="font-size:10.5px;color:var(--text-faint)">${p.category ?? '—'}${p.type ? ` / ${p.type}` : ''}</span>${myMarketSourceLabels(p).map((l) => `<br><span style="font-size:10.5px;color:${l === 'категория не задана' ? 'var(--warn)' : 'var(--accent)'}">${l}</span>`).join('')}${p.categorySource === 'name' && p.category && p.type ? `<br><span style="font-size:10.5px;color:var(--accent)">категория с названия</span> <button type="button" class="link-btn" data-action="edit-hint" data-id="${p.id}" style="font-size:10px;text-decoration:underline">можно изменить</button>` : ''}</td>
       <td>${statusHtml}</td>
       <td class="num">${p.shopPrice != null ? fmtMoney(p.shopPrice) : '—'}</td>
@@ -2859,6 +2871,7 @@ function openMyMarketNewProductCard() {
   form.reset();
   form.elements.id.value = '';
   form.elements.sku.value = generateMyMarketSku();
+  document.getElementById('mmCardSkuHint').textContent = ''; // новый товар витрины — своего внутреннего префикса площадки нет
   form.elements.shopStock.value = 0;
   form.elements.shopActive.checked = false;
   myMarketCardImages = [];
@@ -2878,6 +2891,9 @@ function openMyMarketProductCard(id) {
   const form = document.getElementById('mymarketProductCardForm');
   form.elements.id.value = p.id;
   form.elements.sku.value = p.sku;
+  const skuHintEl = document.getElementById('mmCardSkuHint');
+  const shortSku = mmDisplaySku(p.sku);
+  skuHintEl.textContent = shortSku !== p.sku ? `на витрине: ${shortSku}` : '';
   form.elements.name.value = p.name;
   form.elements.shopPrice.value = p.shopPrice ?? '';
   form.elements.shopOldPrice.value = p.shopOldPrice ?? '';
@@ -3171,7 +3187,7 @@ async function loadMyMarketPrices() {
     const tbody = document.querySelector('#mymarketPricesTable tbody');
     tbody.innerHTML = rows.map((p) => `
       <tr data-id="${p.id}">
-        <td class="name-cell">${p.sku}</td>
+        <td class="name-cell">${mmDisplaySku(p.sku)}</td>
         <td class="name-cell">${p.name}</td>
         <td class="num"><input class="cost-input" type="number" step="1" data-field="shopPrice" value="${p.shopPrice ?? ''}" placeholder="—" style="width:90px" /></td>
         <td class="num"><input class="cost-input" type="number" step="1" data-field="shopOldPrice" value="${p.shopOldPrice ?? ''}" placeholder="—" style="width:90px" /></td>

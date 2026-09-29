@@ -47,6 +47,17 @@ const SHOP_VISIBLE_WHERE = SHOP_TYPE_REQUIRED_FOR_SALE
   ? ({ ...SHOP_VISIBLE_BASE, type: { not: null } } as const)
   : SHOP_VISIBLE_BASE;
 
+/**
+ * Артикул для покупателя/витрины — без префикса площадки. Внутренний sku в
+ * базе НЕ меняется (ozon-3245069 остаётся ozon-3245069, синк ищет и пишет
+ * по нему как раньше) — это только представление для экрана. Тот же разбор
+ * есть в public/dashboard.js (mmDisplaySku) — менять нужно оба.
+ */
+export function displaySku(sku: string | null | undefined): string {
+  const m = /^(?:ozon|wb|kaspi)-(.+)$/i.exec(sku ?? '');
+  return m ? m[1] : (sku ?? '');
+}
+
 function toShopProduct(p: any) {
   let images: string[] = [];
   try {
@@ -75,6 +86,7 @@ function toShopProduct(p: any) {
   }
   return {
     sku: p.sku,
+    article: displaySku(p.sku),
     name: p.name,
     category: p.category,
     subcategory: p.subcategory,
@@ -95,6 +107,22 @@ function toShopProduct(p: any) {
   };
 }
 
+/**
+ * Ищет видимый товар по полному sku ИЛИ по короткому артикулу (без префикса
+ * площадки) — покупатель мог передать любое из того, что видел на экране.
+ * Сначала пробуем точное совпадение sku как есть (покрывает и товары витрины вроде MM- и SKU-,
+ * и случай, когда пришёл уже полный внутренний sku); не нашли — пробуем
+ * sku с приставленными префиксами площадок.
+ */
+async function findVisibleProductBySkuOrArticle(param: string) {
+  const trimmed = String(param ?? '').trim();
+  if (!trimmed) return null;
+  const exact = await prisma.product.findFirst({ where: { sku: trimmed, ...SHOP_VISIBLE_WHERE } });
+  if (exact) return exact;
+  const candidates = ['ozon', 'wb', 'kaspi'].map((prefix) => `${prefix}-${trimmed}`);
+  return prisma.product.findFirst({ where: { sku: { in: candidates }, ...SHOP_VISIBLE_WHERE } });
+}
+
 shopRouter.get('/products', async (_req, res) => {
   try {
     const products = await prisma.product.findMany({ where: SHOP_VISIBLE_WHERE });
@@ -107,7 +135,7 @@ shopRouter.get('/products', async (_req, res) => {
 
 shopRouter.get('/products/:sku', async (req, res) => {
   try {
-    const product = await prisma.product.findFirst({ where: { sku: req.params.sku, ...SHOP_VISIBLE_WHERE } });
+    const product = await findVisibleProductBySkuOrArticle(req.params.sku);
     if (!product) return res.status(404).json({ error: 'Товар не найден' });
     res.json(toShopProduct(product));
   } catch (err: any) {
