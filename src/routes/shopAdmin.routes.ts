@@ -7,7 +7,7 @@ import { markShopOrderAsPaid } from './shop.routes';
 import { getSearchAnalytics, getConversionAnalytics, getSeasonalityAnalytics } from '../services/shopAnalytics.service';
 import { generateWaybillPdf, WaybillOrderItem } from '../services/waybill.service';
 import { ozonTypeKey } from '../services/sync.service';
-import { hintCategoryByName, hintRuleCatalogPairs, buildCatalog } from '../services/categoryHints';
+import { hintCategoryByName, hintRuleCatalogPairs, starterCatalogPairs, buildCatalog } from '../services/categoryHints';
 
 export const shopAdminRouter = Router();
 
@@ -666,7 +666,7 @@ shopAdminRouter.put('/ozon-type-map', async (req, res) => {
 
 /**
  * Каталог «категория → её типы» для выпадающих списков в карточке:
- * справочник правил + соответствия из словаря Ozon (уже My Market-значения)
+ * стартовый список + справочник правил + свои типы (ShopCategoryType) + соответствия из словаря Ozon (уже My Market-значения)
  * + пары, реально использованные в товарах. Дерево категорий Ozon не берётся.
  */
 shopAdminRouter.get('/category-catalog', async (_req, res) => {
@@ -677,8 +677,11 @@ shopAdminRouter.get('/category-catalog', async (_req, res) => {
       where: { category: { not: null }, type: { not: null } },
     });
     const mapped = await prisma.ozonTypeMap.findMany({ select: { category: true, type: true } });
+    const custom = await prisma.shopCategoryType.findMany({ select: { category: true, type: true }, orderBy: { createdAt: 'asc' } });
     const categories = buildCatalog([
+      ...starterCatalogPairs(),
       ...hintRuleCatalogPairs(),
+      ...(custom as Array<{ category: string; type: string }>),
       ...(mapped as Array<{ category: string; type: string }>),
       ...(used as Array<{ category: string | null; type: string | null }>),
     ]);
@@ -739,6 +742,37 @@ shopAdminRouter.post('/products/apply-name-categories', async (req, res) => {
   } catch (err: any) {
     logger.error({ err }, '[Shop Admin] POST /products/apply-name-categories упал');
     res.status(500).json({ error: 'Не удалось проставить категории по названиям', details: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * Свой тип, вписанный в карточке («+ Свой тип…»): попадает в каталог своей
+ * категории и в следующий раз уже есть в выпадающем списке. Идемпотентно —
+ * повтор (в том числе с другим регистром) второй раз не создаёт. Подкатегория
+ * здесь не участвует: тип не хранится «вместо» подкатегории и не дублирует её.
+ */
+shopAdminRouter.post('/category-types', async (req, res) => {
+  const parsed = z.object({ category: z.string().min(1).max(200), type: z.string().min(1).max(200) }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const category = parsed.data.category.replace(/\s+/g, ' ').trim();
+  const type = parsed.data.type.replace(/\s+/g, ' ').trim();
+  if (!category || !type) return res.status(400).json({ error: 'Категория и тип не должны быть пустыми' });
+  if (type.length > 60) return res.status(400).json({ error: 'Тип слишком длинный (максимум 60 символов)' });
+  try {
+    // Дубль проверяем по ВСЕМУ каталогу (стартовый список + свои типы), не
+    // только по своей таблице — иначе тип из стартового списка («Краска для
+    // волос» и т.п.) плодил бы лишнюю запись при первом же ручном вводе.
+    const [custom] = await Promise.all([prisma.shopCategoryType.findMany({ select: { category: true, type: true } })]);
+    const catalog = buildCatalog([...starterCatalogPairs(), ...hintRuleCatalogPairs(), ...(custom as Array<{ category: string; type: string }>)]);
+    const existingType = catalog
+      .find((c) => c.category.toLowerCase() === category.toLowerCase())
+      ?.types.find((t) => t.toLowerCase() === type.toLowerCase());
+    if (existingType) return res.json({ ok: true, created: false, type: existingType });
+    const row = await prisma.shopCategoryType.create({ data: { category, type } });
+    res.status(201).json({ ok: true, created: true, type: row.type });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] POST /category-types упал');
+    res.status(500).json({ error: 'Не удалось добавить тип', details: String(err?.message ?? err) });
   }
 });
 

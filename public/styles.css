@@ -326,3 +326,7 @@ body {
 /* --- My Market: выбранная строка запроса в аналитике поиска --- */
 .is-selected-row { background: var(--accent-soft, rgba(59,130,246,0.12)); }
 .is-selected-row:hover { background: var(--accent-soft, rgba(59,130,246,0.18)); }
+
+/* Поле «Свой тип» в карточке: атрибут hidden не должен перебиваться display:flex у label */
+.form-grid label[hidden] { display: none !important; }
+

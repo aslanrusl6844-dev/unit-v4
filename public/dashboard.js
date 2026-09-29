@@ -2181,7 +2181,12 @@ function wireMyMarketTabsOnce() {
       // Тип подтягивается только из выбранной категории; прежний остаётся, лишь если он оттуда же.
       fillMyMarketTypeSelect(category, allowed.includes(prevType) ? prevType : '');
     });
-    form.elements.type.addEventListener('change', () => { myMarketCardCategoryTouched = true; });
+    form.elements.type.addEventListener('change', () => {
+      myMarketCardCategoryTouched = true;
+      const isCustom = form.elements.type.value === MM_CUSTOM_TYPE_OPTION;
+      mmShowCustomTypeField(isCustom);
+      if (isCustom) form.elements.typeCustom.focus();
+    });
     let hintTimer = null;
     form.elements.name.addEventListener('input', () => {
       clearTimeout(hintTimer);
@@ -2421,6 +2426,11 @@ async function loadMyMarketProducts() {
  * витрине, и частично заполненный товар (например, только категория) не
  * должен пропасть из «Без категории».
  */
+// Тот же переключатель, что и config/shopRules.ts на сервере — менять нужно
+// оба сразу. Влияет и на то, можно ли включить «В продаже» без типа, и на то,
+// считается ли товар «Без категории» из-за отсутствия только типа.
+const MY_MARKET_TYPE_REQUIRED_FOR_SALE = false;
+
 function isMyMarketShopProduct(p) {
   if (/^mm-/i.test(p.sku || '')) return true;
   return p.shopPrice != null
@@ -2442,7 +2452,7 @@ function myMarketStatusOf(p) {
   // попадал бы в «Без категории».
   if (!isMyMarketShopProduct(p)) return 'catalog';
   if (p.shopArchived) return 'archived';
-  if (!p.category || !p.type) return 'nocat';
+  if (!p.category || (MY_MARKET_TYPE_REQUIRED_FOR_SALE && !p.type)) return 'nocat';
   return p.shopActive ? 'active' : 'hidden';
 }
 
@@ -2527,7 +2537,7 @@ function renderMyMarketProductsTable() {
       <td class="num" id="mm-reviews-${p.sku}">…</td>
       <td style="white-space:nowrap">
         <button class="link-btn" data-action="edit" data-id="${p.id}" title="Открыть карточку">✎</button>
-        ${p.category && p.type && !p.shopActive && !p.shopArchived
+        ${p.category && (!MY_MARKET_TYPE_REQUIRED_FOR_SALE || p.type) && !p.shopActive && !p.shopArchived
           ? `<button class="link-btn" data-action="onsale" data-id="${p.id}" title="Включить «В продаже»" style="color:var(--accent)">В витрину</button>`
           : ''}
         ${status === 'archived'
@@ -2712,7 +2722,7 @@ async function loadMyMarketCatalog() {
   }
 }
 
-function mmSetSelectOptions(sel, values, selected) {
+function mmSetSelectOptions(sel, values, selected, customOption) {
   sel.innerHTML = '';
   const placeholder = document.createElement('option');
   placeholder.value = '';
@@ -2724,15 +2734,39 @@ function mmSetSelectOptions(sel, values, selected) {
     o.textContent = v;
     sel.appendChild(o);
   });
-  sel.value = selected || '';
+  if (customOption) {
+    const o = document.createElement('option');
+    o.value = MM_CUSTOM_TYPE_OPTION;
+    o.textContent = '+ Свой тип…';
+    sel.appendChild(o);
+  }
+  // Текущее значение может быть типом, которого ещё нет в списке (вписан
+  // руками, каталог ещё не догрузился) — тогда список показывает «+ Свой
+  // тип…», а само значение остаётся в скрытом поле рядом.
+  sel.value = selected && values.includes(selected) ? selected : (selected ? MM_CUSTOM_TYPE_OPTION : '');
 }
 
-/** Список типов = только типы выбранной категории (+ текущее значение, чтобы не потерять его). */
+const MM_CUSTOM_TYPE_OPTION = '__custom__';
+
+/** Показывает/прячет поле «Свой тип» под списком в зависимости от того, стоит
+ *  ли список на «+ Свой тип…». show=false — поле прячется и очищается. */
+function mmShowCustomTypeField(show) {
+  const form = document.getElementById('mymarketProductCardForm');
+  document.getElementById('mmCardTypeCustomWrap').hidden = !show;
+  if (!show) form.elements.typeCustom.value = '';
+}
+
+/** Список типов = только типы выбранной категории, плюс «+ Свой тип…» внизу.
+ *  Если текущий type не входит в список категории (вписан руками либо каталог
+ *  ещё не знает о нём) — список встаёт на «+ Свой тип…», значение уходит в
+ *  соседнее текстовое поле, а не теряется. */
 function fillMyMarketTypeSelect(category, type) {
-  const sel = document.getElementById('mymarketProductCardForm').elements.type;
+  const form = document.getElementById('mymarketProductCardForm');
   const types = [...(myMarketCatalog.find((c) => c.category === category)?.types ?? [])];
-  if (type && !types.includes(type)) types.push(type);
-  mmSetSelectOptions(sel, types, type);
+  const isKnown = !type || types.includes(type);
+  mmSetSelectOptions(form.elements.type, types, type, true);
+  mmShowCustomTypeField(!isKnown);
+  if (!isKnown) form.elements.typeCustom.value = type;
 }
 
 function fillMyMarketCategorySelect(category, type) {
@@ -2773,9 +2807,13 @@ async function refreshMyMarketCardHints() {
 function initMyMarketCardCategoryFields(category, type) {
   myMarketCardCategoryTouched = false;
   fillMyMarketCategorySelect(category, type);
+  // Каталог мог быть ещё не загружен (myMarketCatalog=[]) — тогда list из типов
+  // пуст, и тип уходит в «+ Свой тип…», даже если он на самом деле известный.
+  // Перезаполняем список тем же (исходным!) значением после загрузки каталога —
+  // читать form.elements.type.value здесь нельзя: он уже мог стать '__custom__'.
   loadMyMarketCatalog().then(() => {
-    const form = document.getElementById('mymarketProductCardForm');
-    fillMyMarketCategorySelect(form.elements.category.value, form.elements.type.value);
+    if (myMarketCardCategoryTouched) return; // пользователь уже сам что-то выбрал — не перебиваем
+    fillMyMarketCategorySelect(category, type);
   });
   refreshMyMarketCardHints();
 }
@@ -3028,11 +3066,18 @@ async function saveMyMarketProductCard(e) {
   const id = form.elements.id.value;
   const sku = form.elements.sku.value.trim();
   const category = form.elements.category.value.trim() || null;
-  const type = form.elements.type.value.trim() || null;
+  // Тип — либо из списка, либо (если выбрано «+ Свой тип…») из соседнего текстового
+  // поля. Пустой тип по-прежнему можно сохранить — просто товар не попадёт в
+  // плитку типа своей категории, останется в общей ленте (см. config/shopRules.ts).
+  const typeRaw = form.elements.type.value === MM_CUSTOM_TYPE_OPTION ? form.elements.typeCustom.value : form.elements.type.value;
+  const type = typeRaw.replace(/\s+/g, ' ').trim() || null;
   const shopActive = form.elements.shopActive.checked;
 
-  if (shopActive && (!category || !type)) {
-    document.getElementById('mymarketCardWarning').textContent = 'Нельзя включить «В продаже» без category и type — заполни оба поля.';
+  // Тот же переключатель, что и на сервере (routes/products.routes.ts).
+  if (shopActive && (!category || (MY_MARKET_TYPE_REQUIRED_FOR_SALE && !type))) {
+    document.getElementById('mymarketCardWarning').textContent = MY_MARKET_TYPE_REQUIRED_FOR_SALE
+      ? 'Нельзя включить «В продаже» без category и type — заполни оба поля.'
+      : 'Нельзя включить «В продаже» без заполненной category.';
     switchMyMarketCardTab('attrs');
     return;
   }
@@ -3062,6 +3107,22 @@ async function saveMyMarketProductCard(e) {
     // выбор: пометка «с названия» снимается, синк Ozon это больше не перезаписывает.
     ...(myMarketCardCategoryTouched ? { categorySource: null } : {}),
   };
+
+  // Новый тип, вписанный руками, — сразу в справочник категории, чтобы в
+  // следующий раз он уже был в списке. Не блокирует сохранение карточки: если
+  // запрос не прошёл, тип у товара всё равно сохранится, просто в списке его
+  // придётся вписать ещё раз при следующей карточке.
+  if (category && type && form.elements.type.value === MM_CUSTOM_TYPE_OPTION) {
+    const known = myMarketCatalog.find((c) => c.category === category)?.types ?? [];
+    if (!known.some((t) => t.toLowerCase() === type.toLowerCase())) {
+      try {
+        await api('/shop-admin/category-types', { method: 'POST', body: JSON.stringify({ category, type }) });
+        await loadMyMarketCatalog();
+      } catch (err) {
+        console.warn('Не удалось добавить тип в справочник (товар всё равно сохранится):', err.message);
+      }
+    }
+  }
 
   try {
     if (id) {

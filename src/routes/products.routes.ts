@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../db/prisma';
 import { logger } from '../utils/logger';
 import { getAllKaspiCategoriesWithRates } from '../integrations/kaspi.categories';
+import { SHOP_TYPE_REQUIRED_FOR_SALE } from '../config/shopRules';
 
 export const productsRouter = Router();
 
@@ -328,7 +329,11 @@ productsRouter.put('/:id', async (req, res) => {
     const category = data.category !== undefined ? data.category : existing?.category;
     const type = data.type !== undefined ? data.type : existing?.type;
     const shopPrice = data.shopPrice !== undefined ? data.shopPrice : existing?.shopPrice;
-    if (!category || !type) {
+    if (!category) {
+      return res.status(400).json({ error: 'Нельзя включить «В продаже» без заполненной category' });
+    }
+    // type для продажи обязателен только при SHOP_TYPE_REQUIRED_FOR_SALE (config/shopRules.ts).
+    if (SHOP_TYPE_REQUIRED_FOR_SALE && !type) {
       return res.status(400).json({ error: 'Нельзя включить «В продаже» без заполненных category и type' });
     }
     // Цену Ozon/Kaspi/WB на витрину не подставляем — её задают вручную.

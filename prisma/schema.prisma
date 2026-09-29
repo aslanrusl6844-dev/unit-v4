@@ -477,3 +477,16 @@ model OzonTypeMap {
   updatedAt     DateTime @updatedAt
 }
 
+// Свои типы товаров внутри категории My Market (вписанные в карточке через
+// «+ Свой тип…»). Вместе со стартовым списком из кода и типами, уже
+// используемыми в товарах, образуют каталог для выпадающего списка «Тип».
+// Хранятся отдельно, чтобы тип не пропал из списка, если товар с ним удалили.
+model ShopCategoryType {
+  id        String   @id @default(cuid())
+  category  String
+  type      String
+  createdAt DateTime @default(now())
+
+  @@unique([category, type])
+}
+

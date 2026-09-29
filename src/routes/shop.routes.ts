@@ -7,6 +7,7 @@ import { env } from '../config/env';
 import { logger } from '../utils/logger';
 import { generateWaybillPdf, WaybillAddressError, WaybillOrderItem } from '../services/waybill.service';
 import { sendSms } from '../services/sms.service';
+import { SHOP_TYPE_REQUIRED_FOR_SALE } from '../config/shopRules';
 import { cleanOzonDescription, looksLikeAttributeDump, sanitizeCharacteristics } from '../integrations/ozon.content';
 
 export const shopRouter = Router();
@@ -30,17 +31,21 @@ shopRouter.use((req, res, next) => {
 /** Товар как его видит приложение — ТОЛЬКО поля витрины, цена = shopPrice. */
 /**
  * Товар виден в приложении ТОЛЬКО если продажу включили вручную (shopActive),
- * он не в архиве витрины и заполнены category, type и shopPrice. Один
+ * он не в архиве витрины и заполнены category и shopPrice (и type — если он обязателен, см. config/shopRules.ts). Один
  * общий фильтр для списка, карточки и категорий — чтобы правило нельзя было
  * обойти, включив продажу другим путём (Excel, старые данные и т.п.).
  */
-const SHOP_VISIBLE_WHERE = {
+const SHOP_VISIBLE_BASE = {
   shopActive: true,
   shopArchived: false,
   category: { not: null },
-  type: { not: null },
   shopPrice: { not: null },
 } as const;
+// type в фильтре — только если он обязателен для продажи (config/shopRules.ts).
+// Иначе товар без типа виден в общей ленте категории, но в плитки типа не попадает.
+const SHOP_VISIBLE_WHERE = SHOP_TYPE_REQUIRED_FOR_SALE
+  ? ({ ...SHOP_VISIBLE_BASE, type: { not: null } } as const)
+  : SHOP_VISIBLE_BASE;
 
 function toShopProduct(p: any) {
   let images: string[] = [];

@@ -45,6 +45,8 @@ export const HINT_RULES: HintRule[] = [
   { match: /крем для лица/, type: 'Крем', category: 'Косметика' },
   // «гель» сам по себе — слабое правило: только делает «шампунь-гель» спорным.
   { match: /(?:^|[^а-я])гел[ьяиюе]/, type: 'Гель для душа', category: 'Косметика', weak: true },
+  // Краска для волос: нужны оба слова («краск…» и «волос…») в любом порядке.
+  { match: /краск.*волос|волос.*краск/, type: 'Краска для волос', category: 'Косметика' },
   // Кухня и электроника
   { match: /кофеварк/, type: 'Кофеварка', category: 'Кухня' },
   { match: /наушник/, type: 'Наушники', category: 'Электроника' },
@@ -120,6 +122,23 @@ export interface CatalogCategory {
   types: string[];
 }
 
+/**
+ * Стартовый список типов по категориям (расширяемый): попадает в выпадающий
+ * список «Тип» в карточке независимо от того, есть ли уже товары с таким типом.
+ * Свои типы, вписанные в карточке, добавляются к нему автоматически (таблица
+ * ShopCategoryType). Подкатегория тип не заменяет и не дублирует.
+ */
+export const STARTER_CATALOG: CatalogCategory[] = [
+  {
+    category: 'Косметика',
+    types: ['Шампунь', 'Гель для душа', 'Крем', 'Краска для волос', 'Тоник', 'Пилинг', 'Сыворотка', 'Маска', 'Тушь', 'Помада', 'Палетка', 'Парфюм'],
+  },
+];
+
+export function starterCatalogPairs(): CategoryVariant[] {
+  return STARTER_CATALOG.flatMap((c) => c.types.map((type) => ({ category: c.category, type })));
+}
+
 /** Все пары category/type, которые знает справочник правил. */
 export function hintRuleCatalogPairs(): CategoryVariant[] {
   const pairs: CategoryVariant[] = [];
@@ -132,15 +151,19 @@ export function hintRuleCatalogPairs(): CategoryVariant[] {
 
 /** Собирает каталог «категория → её типы» из любых пар; без дублей, по алфавиту. */
 export function buildCatalog(pairs: Array<{ category: string | null | undefined; type: string | null | undefined }>): CatalogCategory[] {
-  const map = new Map<string, Set<string>>();
+  // Типы внутри категории склеиваются без учёта регистра и лишних пробелов:
+  // «краска для волос» и «Краска для волос» — один тип. Остаётся написание,
+  // встреченное первым (порядок pairs: стартовый список и правила идут раньше своих).
+  const map = new Map<string, Map<string, string>>();
   for (const p of pairs) {
     const category = (p.category ?? '').trim();
-    const type = (p.type ?? '').trim();
+    const type = (p.type ?? '').replace(/\s+/g, ' ').trim();
     if (!category || !type) continue;
-    if (!map.has(category)) map.set(category, new Set());
-    map.get(category)!.add(type);
+    if (!map.has(category)) map.set(category, new Map());
+    const key = type.toLowerCase();
+    if (!map.get(category)!.has(key)) map.get(category)!.set(key, type);
   }
   return Array.from(map.entries())
-    .map(([category, types]) => ({ category, types: Array.from(types).sort((a, b) => a.localeCompare(b, 'ru')) }))
+    .map(([category, types]) => ({ category, types: Array.from(types.values()).sort((a, b) => a.localeCompare(b, 'ru')) }))
     .sort((a, b) => a.category.localeCompare(b.category, 'ru'));
 }
