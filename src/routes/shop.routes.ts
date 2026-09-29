@@ -47,17 +47,6 @@ const SHOP_VISIBLE_WHERE = SHOP_TYPE_REQUIRED_FOR_SALE
   ? ({ ...SHOP_VISIBLE_BASE, type: { not: null } } as const)
   : SHOP_VISIBLE_BASE;
 
-/**
- * Артикул для покупателя/витрины — без префикса площадки. Внутренний sku в
- * базе НЕ меняется (ozon-3245069 остаётся ozon-3245069, синк ищет и пишет
- * по нему как раньше) — это только представление для экрана. Тот же разбор
- * есть в public/dashboard.js (mmDisplaySku) — менять нужно оба.
- */
-export function displaySku(sku: string | null | undefined): string {
-  const m = /^(?:ozon|wb|kaspi)-(.+)$/i.exec(sku ?? '');
-  return m ? m[1] : (sku ?? '');
-}
-
 function toShopProduct(p: any) {
   let images: string[] = [];
   try {
@@ -69,24 +58,25 @@ function toShopProduct(p: any) {
   // уходит — не надо ждать следующего синка. Вписанное руками не трогаем.
   const description = p.descriptionSource === 'ozon' ? (cleanOzonDescription(p.description) || null) : p.description;
   const composition = looksLikeAttributeDump(p.composition) ? null : p.composition;
-  // Характеристики для покупателя — только Тип / Материал / Артикул. Пока синк
-  // не посчитал список, для Ozon-товара собираем минимум из тех данных, что уже есть.
+  // Характеристики для покупателя — только Тип / Материал / Артикул. «Артикул»
+  // здесь — ТОЛЬКО shopArticle (свой, 7 цифр), НЕ ozonOfferId/nmId/kaspiSku —
+  // артикул маркетплейса покупателю не показываем нигде.
   let stored: Array<{ name?: unknown; value?: unknown }> = [];
   try {
     stored = p.characteristics ? JSON.parse(p.characteristics) : [];
   } catch {
     stored = [];
   }
-  let characteristics = sanitizeCharacteristics(stored);
-  if (!characteristics.length) {
-    characteristics = sanitizeCharacteristics([
-      { name: 'Тип', value: p.ozonType },
-      { name: 'Артикул', value: p.ozonOfferId },
-    ]);
-  }
+  let characteristics = sanitizeCharacteristics(stored).filter((c) => c.name !== 'Артикул');
+  const typeChar = characteristics.length ? [] : sanitizeCharacteristics([{ name: 'Тип', value: p.ozonType }]);
+  if (p.shopArticle) characteristics = [...typeChar, ...characteristics, { name: 'Артикул', value: p.shopArticle }];
+  else characteristics = [...typeChar, ...characteristics];
   return {
     sku: p.sku,
-    article: displaySku(p.sku),
+    // Артикул витрины — ТОЛЬКО shopArticle (7 цифр, свой, не производная от sku
+    // и не артикул площадки). Пока не сгенерирован (цена/продажа ещё не
+    // задавались) — null, а не какая-либо часть sku.
+    article: p.shopArticle ?? null,
     name: p.name,
     category: p.category,
     subcategory: p.subcategory,
@@ -108,19 +98,17 @@ function toShopProduct(p: any) {
 }
 
 /**
- * Ищет видимый товар по полному sku ИЛИ по короткому артикулу (без префикса
- * площадки) — покупатель мог передать любое из того, что видел на экране.
- * Сначала пробуем точное совпадение sku как есть (покрывает и товары витрины вроде MM- и SKU-,
- * и случай, когда пришёл уже полный внутренний sku); не нашли — пробуем
- * sku с приставленными префиксами площадок.
+ * Ищет видимый товар по внутреннему sku ИЛИ по артикулу витрины (shopArticle) —
+ * оба ТОЧНЫМ совпадением. Раньше здесь ещё подбирались варианты с префиксами
+ * площадок (ozon-/wb-/kaspi- + то, что ввели) — это фактически позволяло искать
+ * по артикулу МАРКЕТПЛЕЙСА, что как раз запрещено; убрано.
  */
 async function findVisibleProductBySkuOrArticle(param: string) {
   const trimmed = String(param ?? '').trim();
   if (!trimmed) return null;
-  const exact = await prisma.product.findFirst({ where: { sku: trimmed, ...SHOP_VISIBLE_WHERE } });
-  if (exact) return exact;
-  const candidates = ['ozon', 'wb', 'kaspi'].map((prefix) => `${prefix}-${trimmed}`);
-  return prisma.product.findFirst({ where: { sku: { in: candidates }, ...SHOP_VISIBLE_WHERE } });
+  return prisma.product.findFirst({
+    where: { OR: [{ sku: trimmed }, { shopArticle: trimmed }], ...SHOP_VISIBLE_WHERE },
+  });
 }
 
 shopRouter.get('/products', async (_req, res) => {

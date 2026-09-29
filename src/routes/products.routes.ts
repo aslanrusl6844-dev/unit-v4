@@ -4,6 +4,7 @@ import { prisma } from '../db/prisma';
 import { logger } from '../utils/logger';
 import { getAllKaspiCategoriesWithRates } from '../integrations/kaspi.categories';
 import { SHOP_TYPE_REQUIRED_FOR_SALE } from '../config/shopRules';
+import { maybeGenerateShopArticle } from '../services/shopArticle';
 
 export const productsRouter = Router();
 
@@ -80,9 +81,21 @@ productsRouter.post('/', async (req, res) => {
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.flatten() });
   }
+  const data: Record<string, any> = { ...parsed.data };
+  // Та же логика, что и при сохранении карточки (services/shopArticle.ts) —
+  // если новый товар создаётся сразу с ценой или сразу «В продаже», артикул
+  // витрины генерируется здесь же, не дожидаясь первого PUT.
+  if (data.shopPrice !== undefined || data.shopActive === true) {
+    const article = await maybeGenerateShopArticle({
+      currentShopArticle: null, // новый товар — артикула ещё точно нет
+      effectivePrice: data.shopPrice,
+      effectiveActive: data.shopActive,
+    });
+    if (article) data.shopArticle = article;
+  }
   const startedAt = Date.now();
   try {
-    const product = await prisma.product.create({ data: parsed.data });
+    const product = await prisma.product.create({ data });
     logger.info(`[DB] POST /products — ${Date.now() - startedAt}мс, создан: ${product.id}`);
     res.status(201).json(product);
   } catch (err: any) {
@@ -339,6 +352,21 @@ productsRouter.put('/:id', async (req, res) => {
     // Цену Ozon/Kaspi/WB на витрину не подставляем — её задают вручную.
     if (shopPrice == null) {
       return res.status(400).json({ error: 'Нельзя включить «В продаже» без цены на витрине (shopPrice)' });
+    }
+  }
+
+  // Артикул витрины — генерируется один раз (см. services/shopArticle.ts):
+  // при первом сохранении, где в итоге есть цена, либо при включении «В
+  // продаже», и только если ещё не сгенерирован. Дальше не перегенерируется.
+  if (data.shopPrice !== undefined || data.shopActive === true) {
+    const cur = await prisma.product.findUnique({ where: { id: req.params.id }, select: { shopArticle: true, shopPrice: true } });
+    if (cur) {
+      const article = await maybeGenerateShopArticle({
+        currentShopArticle: cur.shopArticle,
+        effectivePrice: data.shopPrice !== undefined ? data.shopPrice : cur.shopPrice,
+        effectiveActive: data.shopActive,
+      });
+      if (article) data.shopArticle = article;
     }
   }
 

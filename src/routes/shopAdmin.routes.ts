@@ -6,6 +6,7 @@ import { logger } from '../utils/logger';
 import { markShopOrderAsPaid } from './shop.routes';
 import { getSearchAnalytics, getConversionAnalytics, getSeasonalityAnalytics } from '../services/shopAnalytics.service';
 import { generateWaybillPdf, WaybillOrderItem } from '../services/waybill.service';
+import { maybeGenerateShopArticle } from '../services/shopArticle';
 import { ozonTypeKey } from '../services/sync.service';
 import { hintCategoryByName, hintRuleCatalogPairs, starterCatalogPairs, buildCatalog } from '../services/categoryHints';
 
@@ -374,11 +375,14 @@ shopAdminRouter.post('/bulk-upsert', async (req, res) => {
   // раз), так что и без этой оптимизации стало бы лучше, но вместе — с
   // хорошим запасом.
   const bodySkus = parsed.data.products.map((r: any) => r?.sku).filter((s: any): s is string => typeof s === 'string' && s.length > 0);
-  const existingSkus = new Set(
+  const existingProducts: Map<string, { sku: string; shopArticle: string | null }> = new Map(
     bodySkus.length
-      ? (await prisma.product.findMany({ where: { sku: { in: bodySkus } }, select: { sku: true } })).map((p) => p.sku)
+      ? (await prisma.product.findMany({ where: { sku: { in: bodySkus } }, select: { sku: true, shopArticle: true } })).map(
+          (p: { sku: string; shopArticle: string | null }) => [p.sku, p],
+        )
       : [],
   );
+  const existingSkus = new Set(existingProducts.keys());
 
   let created = 0;
   let updated = 0;
@@ -410,6 +414,17 @@ shopAdminRouter.post('/bulk-upsert', async (req, res) => {
         // Excel с shopActive=да возвращает товар из архива витрины.
         ...(row.data.shopActive ? { shopArchived: false } : {}),
       };
+      // Артикул витрины — та же логика, что и в карточке (см.
+      // services/shopArticle.ts): строка Excel всегда приходит с заполненной
+      // ценой (обязательное поле шаблона), поэтому генерируется у всех НОВЫХ
+      // товаров и у уже существующих, если артикула ещё не было.
+      const existingArticle = existingProducts.get(row.data.sku)?.shopArticle ?? null;
+      const article = await maybeGenerateShopArticle({
+        currentShopArticle: existingArticle,
+        effectivePrice: data.shopPrice,
+        effectiveActive: data.shopActive,
+      });
+      if (article) (data as Record<string, unknown>).shopArticle = article;
       const wasExisting = existingSkus.has(row.data.sku);
       await prisma.product.upsert({
         where: { sku: row.data.sku },

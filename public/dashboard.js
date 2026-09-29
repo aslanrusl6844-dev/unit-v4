@@ -2427,21 +2427,19 @@ async function loadMyMarketProducts() {
  * должен пропасть из «Без категории».
  */
 /**
- * Артикул для покупателя/витрины — без префикса площадки. Внутренний sku в
- * базе не меняется: ozon-3245069 остаётся ozon-3245069, отображается только
- * 3245069. Если префикса нет (MM-*, SKU-001 и т.п.) — показываем sku как есть.
- * Тот же разбор нужен и на сервере (routes/shop.routes.ts, displaySku) —
- * менять нужно оба.
+ * Артикул витрины для экрана — ТОЛЬКО shopArticle (7 цифр, генерирует сервер,
+ * см. services/shopArticle.ts). НЕ производная от sku и не артикул площадки —
+ * это отдельное значение, не разбор строки. Пока не сгенерирован (у товара
+ * ещё не было ни цены, ни «В продаже») — прочерк, а не какая-то часть sku.
  */
-function mmDisplaySku(sku) {
-  const m = /^(?:ozon|wb|kaspi)-(.+)$/i.exec(sku || '');
-  return m ? m[1] : (sku || '');
+function mmDisplayArticle(p) {
+  return p.shopArticle || '—';
 }
 
 // Тот же переключатель, что и config/shopRules.ts на сервере — менять нужно
-// оба сразу. Влияет и на то, можно ли включить «В продаже» без типа, и на то,
-// считается ли товар «Без категории» из-за отсутствия только типа.
-const MY_MARKET_TYPE_REQUIRED_FOR_SALE = false;
+// оба сразу. Сейчас true: без category и type продажу включить нельзя
+// (явное требование задачи про артикул витрины).
+const MY_MARKET_TYPE_REQUIRED_FOR_SALE = true;
 
 function isMyMarketShopProduct(p) {
   if (/^mm-/i.test(p.sku || '')) return true;
@@ -2509,7 +2507,7 @@ function renderMyMarketProductsTable() {
 
   let rows = myMarketProductsCache;
   if (filter !== 'all') rows = rows.filter((p) => myMarketStatusOf(p) === filter);
-  if (search) rows = rows.filter((p) => p.name.toLowerCase().includes(search) || p.sku.toLowerCase().includes(search));
+  if (search) rows = rows.filter((p) => p.name.toLowerCase().includes(search) || p.sku.toLowerCase().includes(search) || (p.shopArticle && p.shopArticle.includes(search)));
 
   const tbody = document.querySelector('#mymarketProductsTable tbody');
   if (!rows.length) {
@@ -2539,7 +2537,7 @@ function renderMyMarketProductsTable() {
     <tr>
       <td><input type="checkbox" data-select-id="${p.id}" ${myMarketSelectedProductIds.has(p.id) ? 'checked' : ''} /></td>
       <td>${img ? `<img src="${img}" alt="" style="width:36px;height:36px;object-fit:cover;border-radius:6px" />` : '<span style="color:var(--text-faint);font-size:11px">—</span>'}</td>
-      <td class="name-cell">${mmDisplaySku(p.sku)}</td>
+      <td class="name-cell">${mmDisplayArticle(p)}</td>
       <td class="name-cell">${p.name}<br><span style="font-size:10.5px;color:var(--text-faint)">${p.category ?? '—'}${p.type ? ` / ${p.type}` : ''}</span>${myMarketSourceLabels(p).map((l) => `<br><span style="font-size:10.5px;color:${l === 'категория не задана' ? 'var(--warn)' : 'var(--accent)'}">${l}</span>`).join('')}${p.categorySource === 'name' && p.category && p.type ? `<br><span style="font-size:10.5px;color:var(--accent)">категория с названия</span> <button type="button" class="link-btn" data-action="edit-hint" data-id="${p.id}" style="font-size:10px;text-decoration:underline">можно изменить</button>` : ''}</td>
       <td>${statusHtml}</td>
       <td class="num">${p.shopPrice != null ? fmtMoney(p.shopPrice) : '—'}</td>
@@ -2892,8 +2890,7 @@ function openMyMarketProductCard(id) {
   form.elements.id.value = p.id;
   form.elements.sku.value = p.sku;
   const skuHintEl = document.getElementById('mmCardSkuHint');
-  const shortSku = mmDisplaySku(p.sku);
-  skuHintEl.textContent = shortSku !== p.sku ? `на витрине: ${shortSku}` : '';
+  skuHintEl.textContent = p.shopArticle ? `на витрине: ${p.shopArticle}` : '';
   form.elements.name.value = p.name;
   form.elements.shopPrice.value = p.shopPrice ?? '';
   form.elements.shopOldPrice.value = p.shopOldPrice ?? '';
@@ -3187,7 +3184,7 @@ async function loadMyMarketPrices() {
     const tbody = document.querySelector('#mymarketPricesTable tbody');
     tbody.innerHTML = rows.map((p) => `
       <tr data-id="${p.id}">
-        <td class="name-cell">${mmDisplaySku(p.sku)}</td>
+        <td class="name-cell">${mmDisplayArticle(p)}</td>
         <td class="name-cell">${p.name}</td>
         <td class="num"><input class="cost-input" type="number" step="1" data-field="shopPrice" value="${p.shopPrice ?? ''}" placeholder="—" style="width:90px" /></td>
         <td class="num"><input class="cost-input" type="number" step="1" data-field="shopOldPrice" value="${p.shopOldPrice ?? ''}" placeholder="—" style="width:90px" /></td>
