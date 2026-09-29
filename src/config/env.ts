@@ -80,6 +80,11 @@ const envSchema = z.object({
   // SMS_API_KEY SMS честно не отправляется, эндпоинт при этом не падает.
   SMS_PROVIDER: z.preprocess(cleanEnvString, z.string().optional().default('smsc')),
   SMS_API_KEY: z.preprocess(cleanEnvString, z.string().optional().default('')),
+  // Telegram-уведомления о заказах My Market. Нет TELEGRAM_BOT_TOKEN —
+  // уведомления молча не отправляются (заказ создаётся как обычно).
+  // TELEGRAM_CHAT_IDS — один или несколько chat_id через запятую.
+  TELEGRAM_BOT_TOKEN: z.preprocess(cleanEnvString, z.string().optional().default('')),
+  TELEGRAM_CHAT_IDS: z.preprocess(cleanEnvString, z.string().optional().default('')),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -158,4 +163,6 @@ export const env = {
   blobToken: safeData.BLOB_READ_WRITE_TOKEN ?? '',
   smsProvider: safeData.SMS_PROVIDER ?? 'smsc',
   smsApiKey: safeData.SMS_API_KEY ?? '',
+  telegramBotToken: safeData.TELEGRAM_BOT_TOKEN ?? '',
+  telegramChatIds: safeData.TELEGRAM_CHAT_IDS ?? '',
 };

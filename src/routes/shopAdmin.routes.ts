@@ -10,6 +10,7 @@ import { maybeGenerateShopArticle } from '../services/shopArticle';
 import { isValidShopCategory } from '../config/shopCategories';
 import { ozonTypeKey } from '../services/sync.service';
 import { hintCategoryByName, hintRuleCatalogPairs, starterCatalogPairs, buildCatalog } from '../services/categoryHints';
+import { editOrderNotify } from '../lib/telegram';
 
 export const shopAdminRouter = Router();
 
@@ -275,6 +276,13 @@ shopAdminRouter.post('/orders/:id/status', async (req, res) => {
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   try {
     const order = await prisma.shopOrder.update({ where: { id: req.params.id }, data: { status: parsed.data.status } });
+    // Отмена и отсюда (не только через клиентский /orders/:id/cancel) правит
+    // то же Telegram-сообщение. «paid» этот путь не проставляет статус
+    // напрямую через markShopOrderAsPaid, поэтому здесь его не трогаем —
+    // см. отдельную кнопку «Отметить оплаченным».
+    if (parsed.data.status === 'cancelled') {
+      editOrderNotify(order, 'cancelled').catch((err) => logger.error({ err }, '[Telegram] editOrderNotify(cancelled) не должен был бросить исключение'));
+    }
     res.json(order);
   } catch (err: any) {
     res.status(500).json({ error: 'Не удалось изменить статус заказа', details: String(err?.message ?? err) });

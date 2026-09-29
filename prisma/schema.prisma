@@ -368,6 +368,13 @@ model ShopOrder {
   // считаем ошибочные вводы, успешная выдача такой уже не потребует).
   codeAttempts  Int           @default(0)
   payout        CourierPayout?
+
+  // Telegram-уведомление об этом заказе — одно сообщение на заказ (на каждый
+  // chat_id из TELEGRAM_CHAT_IDS), которое потом правится при оплате/отмене,
+  // а не дублируется новым сообщением. JSON: [{chatId, messageId, isPhoto}].
+  // Пусто, если TELEGRAM_BOT_TOKEN не задан или отправка не удалась —
+  // заказ от этого не перестаёт создаваться (см. src/lib/telegram.ts).
+  telegramMessages String?
 }
 
 // Курьер My Market — работает только через API приложения (x-app-key),
@@ -413,13 +420,25 @@ model CourierPayout {
 // Отзыв в приложении — оставляется ТОЛЬКО после того, как заказ, включавший
 // этот товар, получил статус delivered (проверяется на уровне API, не здесь).
 model ShopReview {
-  id        String   @id @default(cuid())
-  sku       String
-  name      String   // имя автора отзыва
-  rating    Int      // 1..5
-  text      String?
-  variant   String?  // если товар продаётся в вариантах (объём/цвет и т.п.)
-  date      DateTime @default(now())
+  id          String   @id @default(cuid())
+  sku         String
+  name        String   // имя автора отзыва (= authorName из приложения)
+  rating      Int      // 1..5
+  text        String?  // старое единое поле; для отзывов из приложения — склейка
+                        // textPros/textCons/comment/tags (см. buildReviewText в
+                        // shop.routes.ts), чтобы старый GET и карточка ничего не
+                        // потеряли. Для более старых записей — как было.
+  variant     String?  // если товар продаётся в вариантах (объём/цвет и т.п.)
+  date        DateTime @default(now())
+  // Поля отзыва из приложения My Market — все необязательны, старые записи
+  // (созданные до этого раунда) их не имеют и не трогаются.
+  orderId     String?  // ShopOrder.id, на который оставлен отзыв
+  authorPhone String?  // нормализованный телефон автора ("7XXXXXXXXXX")
+  textPros    String?
+  textCons    String?
+  tags        String?  // чипы через запятую, как прислало приложение
+
+  @@index([sku])
 }
 
 // Баннер (слайд карусели) на главной приложения My Market — 4 фиксированных

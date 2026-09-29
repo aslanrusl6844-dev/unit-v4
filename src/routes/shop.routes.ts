@@ -11,6 +11,7 @@ import { SHOP_TYPE_REQUIRED_FOR_SALE } from '../config/shopRules';
 import { cleanOzonDescription, looksLikeAttributeDump, sanitizeCharacteristics } from '../integrations/ozon.content';
 import { maybeGenerateShopArticle } from '../services/shopArticle';
 import { SHOP_CATEGORIES, normalizeShopCategory } from '../config/shopCategories';
+import { sendOrderNotify, editOrderNotify } from '../lib/telegram';
 
 export const shopRouter = Router();
 
@@ -234,10 +235,122 @@ shopRouter.get('/banners', async (_req, res) => {
 
 shopRouter.get('/products/:sku/reviews', async (req, res) => {
   try {
-    const reviews = await prisma.shopReview.findMany({ where: { sku: req.params.sku }, orderBy: { date: 'desc' } });
+    const param = req.params.sku;
+    // GET не ломаем: старое поведение (точное совпадение sku) — частный
+    // случай нового. Резолвим параметр по товару (sku ИЛИ shopArticle, как
+    // и везде в приложении) и ищем отзывы по ВСЕМ формам, которыми товар
+    // мог быть известен — включая сырой параметр как есть (чтобы старые
+    // записи, сохранённые кем угодно в любом формате, не потерялись).
+    const product = await prisma.product.findFirst({ where: { OR: [{ sku: param }, { shopArticle: param }] } });
+    const skuCandidates = Array.from(new Set([param, product?.sku, product?.shopArticle].filter((s): s is string => !!s)));
+    const reviews = await prisma.shopReview.findMany({ where: { sku: { in: skuCandidates } }, orderBy: { date: 'desc' } });
     res.json(reviews);
   } catch (err: any) {
     res.status(500).json({ error: 'Не удалось получить отзывы', details: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * Склеивает текст отзыва из приложения в одно поле text — чтобы старый GET
+ * и карточка товара, которые показывают один текст, ничего не теряли.
+ * Пустые части пропускаются; если пусто всё — отзыв всё равно не будет
+ * пустым: подставляется оценка.
+ */
+function buildReviewText(parts: { textPros?: string | null; textCons?: string | null; comment?: string | null; tags?: string | null }, rating: number): string {
+  const lines: string[] = [];
+  if (parts.textPros?.trim()) lines.push(`Плюсы: ${parts.textPros.trim()}`);
+  if (parts.textCons?.trim()) lines.push(`Минусы: ${parts.textCons.trim()}`);
+  if (parts.comment?.trim()) lines.push(parts.comment.trim());
+  if (parts.tags?.trim()) lines.push(`Теги: ${parts.tags.trim()}`);
+  const text = lines.join('\n').trim();
+  return text || `Оценка: ${rating}/5`; // «text не пустой» — гарантируем это здесь, а не отклоняем отзыв без текста
+}
+
+const createShopReviewSchema = z.object({
+  sku: z.string().min(1),
+  orderId: z.string().min(1),
+  rating: z.number(),
+  textPros: z.string().optional().nullable(),
+  textCons: z.string().optional().nullable(),
+  comment: z.string().optional().nullable(),
+  tags: z.union([z.string(), z.array(z.string())]).optional().nullable(),
+  authorName: z.string().optional().nullable(),
+  authorPhone: z.string().min(1),
+});
+
+/**
+ * Отзыв из приложения My Market. Проверки по порядку: rating 1..5, товар
+ * найден (по sku ИЛИ shopArticle — «как в заказах»), заказ существует и
+ * выдан (delivered), телефон совпадает с заказом (после нормализации), этот
+ * товар реально есть в заказе, и такой тройки автор+заказ+товар ещё не было.
+ */
+shopRouter.post('/reviews', async (req, res) => {
+  const parsed = createShopReviewSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const data = parsed.data;
+
+  if (!Number.isInteger(data.rating) || data.rating < 1 || data.rating > 5) {
+    return res.status(400).json({ error: 'rating должен быть целым числом от 1 до 5' });
+  }
+
+  try {
+    const product = await prisma.product.findFirst({ where: { OR: [{ sku: data.sku }, { shopArticle: data.sku }] } });
+    if (!product) return res.status(404).json({ error: 'Товар не найден' });
+
+    const order = await prisma.shopOrder.findUnique({ where: { id: data.orderId } });
+    if (!order) return res.status(404).json({ error: 'Заказ не найден' });
+    if (order.status !== 'delivered') {
+      return res.status(400).json({ error: 'Отзыв можно оставить только на выданный заказ' });
+    }
+    if (!phonesMatch(data.authorPhone, order.phone)) {
+      return res.status(400).json({ error: 'Телефон не совпадает с заказом' });
+    }
+
+    let orderItems: Array<{ sku: string }> = [];
+    try {
+      orderItems = JSON.parse(order.items);
+    } catch {
+      orderItems = [];
+    }
+    // Позиция заказа могла быть сохранена по внутреннему sku ИЛИ по
+    // shopArticle (см. фикс покупки) — сверяем с обеими формами товара.
+    const inOrder = orderItems.some((i) => i.sku === product.sku || (product.shopArticle && i.sku === product.shopArticle));
+    if (!inOrder) {
+      return res.status(400).json({ error: 'Этого товара нет в заказе' });
+    }
+
+    const normalizedPhone = normalizePhone(data.authorPhone);
+    if (!normalizedPhone) return res.status(400).json({ error: 'Некорректный телефон' });
+
+    // Повтор той же тройки автор+заказ+товар — сравниваем orderId и sku
+    // напрямую (уже наши канонические значения) и телефон — ТОЛЬКО в
+    // нормализованном виде (raw-строки сравнивать нельзя, формат записи
+    // может отличаться при том же номере).
+    const existing = await prisma.shopReview.findFirst({
+      where: { sku: product.sku, orderId: data.orderId, authorPhone: normalizedPhone },
+    });
+    if (existing) return res.status(409).json({ error: 'Отзыв уже оставлен' });
+
+    const tags = Array.isArray(data.tags) ? data.tags.filter(Boolean).join(', ') : (data.tags?.trim() || null);
+    const text = buildReviewText({ textPros: data.textPros, textCons: data.textCons, comment: data.comment, tags }, data.rating);
+
+    const review = await prisma.shopReview.create({
+      data: {
+        sku: product.sku,
+        name: data.authorName?.trim() || 'Покупатель',
+        rating: data.rating,
+        text,
+        textPros: data.textPros?.trim() || null,
+        textCons: data.textCons?.trim() || null,
+        tags,
+        orderId: data.orderId,
+        authorPhone: normalizedPhone,
+      },
+    });
+    res.status(201).json(review);
+  } catch (err: any) {
+    logger.error({ err }, '[Shop API] POST /reviews упал');
+    res.status(500).json({ error: 'Не удалось сохранить отзыв', details: String(err?.message ?? err) });
   }
 });
 
@@ -307,6 +420,11 @@ shopRouter.post('/orders', async (req, res) => {
         items: JSON.stringify(parsed.data.items),
       },
     });
+
+    // Telegram — одно сообщение на заказ. Нет токена или сбой сети/API —
+    // молча ничего не делает / пишет в лог, но заказ УЖЕ создан и ответ
+    // клиенту это никак не блокирует и не может провалить.
+    sendOrderNotify(order).catch((err) => logger.error({ err }, '[Telegram] sendOrderNotify не должен был бросить исключение'));
 
     res.status(201).json({ id: order.id, number: order.number, total: order.total, status: order.status });
   } catch (err: any) {
@@ -398,6 +516,10 @@ export async function markShopOrderAsPaid(orderId: string): Promise<
     }),
   ]);
 
+  // Правим то же Telegram-сообщение (если оно было отправлено) — не шлём
+  // новое. Сбой здесь не должен всплыть наружу: оплата уже прошла.
+  editOrderNotify(shopOrder, 'paid').catch((err) => logger.error({ err }, '[Telegram] editOrderNotify(paid) не должен был бросить исключение'));
+
   return { ok: true };
 }
 
@@ -484,6 +606,7 @@ shopRouter.post('/orders/:id/cancel', async (req, res) => {
     }
 
     await prisma.shopOrder.update({ where: { id: order.id }, data: { status: 'cancelled' } });
+    editOrderNotify(order, 'cancelled').catch((err) => logger.error({ err }, '[Telegram] editOrderNotify(cancelled) не должен был бросить исключение'));
     res.json({ ok: true, status: 'cancelled' });
   } catch (err: any) {
     logger.error({ err }, '[Shop API] Ошибка отмены заказа');
