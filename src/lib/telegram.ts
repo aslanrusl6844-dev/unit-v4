@@ -135,6 +135,27 @@ async function telegramApi(method: string, body: Record<string, unknown>): Promi
 }
 
 /**
+ * Служебная проверка настройки Telegram — шлёт одну строку во все настроенные
+ * чаты. Токен нигде не возвращается и не логируется (у telegramApi тоже).
+ * Нет TELEGRAM_BOT_TOKEN — сразу { ok:false, error:'no_token' }, без попытки
+ * достучаться до API.
+ */
+export async function sendTelegramTestMessage(): Promise<{ ok: boolean; chatCount: number; error?: string }> {
+  const ids = chatIds();
+  if (!env.telegramBotToken) return { ok: false, chatCount: ids.length, error: 'no_token' };
+  if (!ids.length) return { ok: false, chatCount: 0, error: 'no_chat_ids' };
+
+  let successCount = 0;
+  for (const chatId of ids) {
+    const res = await telegramApi('sendMessage', { chat_id: chatId, text: 'My Market тест' });
+    if (res.ok) successCount += 1;
+  }
+  return successCount > 0
+    ? { ok: true, chatCount: ids.length }
+    : { ok: false, chatCount: ids.length, error: 'send_failed' };
+}
+
+/**
  * Новое сообщение о заказе — одно на chat_id, photo если есть https-картинка
  * первого товара, иначе просто текст. message_id по каждому chat_id
  * сохраняется в ShopOrder.telegramMessages, чтобы потом править то же
@@ -143,8 +164,12 @@ async function telegramApi(method: string, body: Record<string, unknown>): Promi
  * до вызова этой функции и её результат на это никак не влияет.
  */
 export async function sendOrderNotify(order: TelegramOrderInput): Promise<void> {
-  if (!env.telegramBotToken) return;
   const ids = chatIds();
+  // Диагностика в лог — без самого токена и без chat_id, только факт
+  // настройки: пусто в логах Vercel (как в отчёте) означает, что до сюда
+  // даже не доходит — значит, дело раньше (роут/деплой), а не в самом Telegram.
+  logger.info({ tokenSet: !!env.telegramBotToken, chatIdsCount: ids.length }, '[Telegram] sendOrderNotify старт');
+  if (!env.telegramBotToken) return;
   if (!ids.length) return;
 
   try {
@@ -153,10 +178,17 @@ export async function sendOrderNotify(order: TelegramOrderInput): Promise<void> 
 
     const sent: TelegramMessageRef[] = [];
     for (const chatId of ids) {
-      const res = photoUrl
+      let res = photoUrl
         ? await telegramApi('sendPhoto', { chat_id: chatId, photo: photoUrl, caption, parse_mode: 'HTML' })
         : await telegramApi('sendMessage', { chat_id: chatId, text: caption, parse_mode: 'HTML' });
-      if (res.ok && res.result) sent.push({ chatId, messageId: res.result.message_id, isPhoto: !!photoUrl });
+      let isPhoto = !!photoUrl;
+      // sendPhoto не удался (битая ссылка, Telegram не смог её скачать и т.п.)
+      // — сразу же тем же текстом обычным sendMessage, а не молчим в этот чат.
+      if (photoUrl && !res.ok) {
+        res = await telegramApi('sendMessage', { chat_id: chatId, text: caption, parse_mode: 'HTML' });
+        isPhoto = false;
+      }
+      if (res.ok && res.result) sent.push({ chatId, messageId: res.result.message_id, isPhoto });
     }
     if (sent.length) {
       await prisma.shopOrder.update({ where: { id: order.id }, data: { telegramMessages: JSON.stringify(sent) } });

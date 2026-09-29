@@ -11,7 +11,7 @@ import { SHOP_TYPE_REQUIRED_FOR_SALE } from '../config/shopRules';
 import { cleanOzonDescription, looksLikeAttributeDump, sanitizeCharacteristics } from '../integrations/ozon.content';
 import { maybeGenerateShopArticle } from '../services/shopArticle';
 import { SHOP_CATEGORIES, normalizeShopCategory } from '../config/shopCategories';
-import { sendOrderNotify, editOrderNotify } from '../lib/telegram';
+import { sendOrderNotify, editOrderNotify, sendTelegramTestMessage } from '../lib/telegram';
 
 export const shopRouter = Router();
 
@@ -631,6 +631,20 @@ shopRouter.post('/orders/:id/cancel', async (req, res) => {
   } catch (err: any) {
     logger.error({ err }, '[Shop API] Ошибка отмены заказа');
     res.status(500).json({ error: 'Не удалось отменить заказ', details: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * Служебная проверка настройки Telegram — под тем же x-app-key, что и весь
+ * /api/shop/*. Тело не нужно. Токен в ответе никогда не отдаётся.
+ */
+shopRouter.post('/telegram-test', async (_req, res) => {
+  try {
+    const result = await sendTelegramTestMessage();
+    res.json(result);
+  } catch (err: any) {
+    logger.error({ err }, '[Telegram] /telegram-test упал');
+    res.json({ ok: false, chatCount: 0, error: 'unexpected_error' });
   }
 });
 
