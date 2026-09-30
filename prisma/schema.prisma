@@ -514,3 +514,14 @@ model ShopCategoryType {
   @@unique([category, type])
 }
 
+// Expo push-токен покупателя My Market — привязан к номеру телефона (не к
+// конкретному заказу): один покупатель может оформить несколько заказов, а
+// токен регистрируется один раз через POST /api/shop/profile/push-token и
+// используется для ЛЮБОГО его заказа, где нужно отправить пуш (сейчас —
+// код выдачи при POST /courier/request-code). phone — уже нормализованный
+// (как в заказах, "7XXXXXXXXXX"), поэтому и уникальный.
+model ShopCustomerPushToken {
+  phone     String   @id
+  token     String
+  updatedAt DateTime @updatedAt
+}

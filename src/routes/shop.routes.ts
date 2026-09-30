@@ -12,6 +12,7 @@ import { cleanOzonDescription, looksLikeAttributeDump, sanitizeCharacteristics }
 import { maybeGenerateShopArticle } from '../services/shopArticle';
 import { SHOP_CATEGORIES, normalizeShopCategory } from '../config/shopCategories';
 import { sendOrderNotify, editOrderNotify, sendTelegramTestMessage } from '../lib/telegram';
+import { sendPickupCodePush } from '../lib/expoPush';
 
 export const shopRouter = Router();
 
@@ -1067,11 +1068,42 @@ shopRouter.post('/courier/start', async (req, res) => {
   }
 });
 
+const pushTokenSchema = z.object({
+  phone: z.string().min(1),
+  token: z.string().min(1),
+});
+
+/**
+ * Регистрация Expo push-токена покупателя — привязывается к номеру телефона
+ * (нормализованному так же, как у заказов), не к конкретному заказу. Один
+ * номер — один токен: повторная регистрация с того же телефона просто
+ * обновляет token (последнее устройство побеждает).
+ */
+shopRouter.post('/profile/push-token', async (req, res) => {
+  const parsed = pushTokenSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+
+  const phone = normalizePhone(parsed.data.phone);
+  if (!phone) return res.status(400).json({ error: 'Некорректный телефон' });
+
+  try {
+    await prisma.shopCustomerPushToken.upsert({
+      where: { phone },
+      update: { token: parsed.data.token },
+      create: { phone, token: parsed.data.token },
+    });
+    res.json({ ok: true });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop API] Не удалось сохранить push-токен');
+    res.status(500).json({ error: 'Не удалось сохранить push-токен', details: String(err?.message ?? err) });
+  }
+});
+
 /**
  * Курьер запрашивает код выдачи — генерируется ЗДЕСЬ, впервые (не при
  * оплате). Только для своего заказа в picked/in_transit. Код отдаётся в
- * ответе — дальше это забота приложения показать его покупателю; SMS
- * отправка — отдельная, более поздняя задача, здесь не реализована.
+ * ответе — дальше это забота приложения показать его покупателю; SMS и
+ * Expo push уходят покупателю сразу же, ниже.
  */
 shopRouter.post('/courier/request-code', async (req, res) => {
   const parsed = courierOrderRefSchema.safeParse(req.body);
@@ -1101,6 +1133,10 @@ shopRouter.post('/courier/request-code', async (req, res) => {
     if (customerPhone) {
       const smsText = `My Market. Kod vydachi ${pickupCode}. Nazovite tolko kureru. Zakaz ${order.number}.`;
       await sendSms(customerPhone, smsText);
+      // Expo push — тем же покупателю, тот же код. Нет токена или Expo
+      // ответил ошибкой — sendPickupCodePush сама ловит это и пишет в лог,
+      // не бросая исключение: pickupCode и SMS от этого никак не страдают.
+      await sendPickupCodePush(customerPhone, pickupCode, order.number);
     } else {
       logger.warn({ orderNumber: order.number, phone: order.phone }, '[Shop API] Не удалось нормализовать телефон покупателя для SMS');
     }
