@@ -147,11 +147,69 @@ async function ensureShopArticle<T extends { id: string; shopArticle: string | n
   return { ...product, shopArticle: article };
 }
 
+/**
+ * Рейтинг и число отзывов для списка товаров — ОДИН groupBy на всех сразу
+ * (не запрос на каждый товар), считая по обеим формам sku товара
+ * (внутренний sku И shopArticle — так же, как ищет GET /reviews), иначе
+ * отзывы, сохранённые под ozon-..., не попадут в рейтинг витрины.
+ * rating — среднее, округлённое до 1 знака, нет отзывов → null.
+ * reviewCount — число отзывов, нет → 0.
+ */
+async function getReviewStatsMap(
+  products: Array<{ id: string; sku: string; shopArticle: string | null }>,
+): Promise<Map<string, { rating: number | null; reviewCount: number }>> {
+  const result = new Map<string, { rating: number | null; reviewCount: number }>();
+  for (const p of products) result.set(p.id, { rating: null, reviewCount: 0 });
+  if (!products.length) return result;
+
+  // Один sku-кандидат может (в теории) принадлежать нескольким товарам сразу
+  // только при дублирующихся sku/shopArticle в базе — не должно случаться,
+  // но карта candidate -> [productId] на этот случай не теряет ни одного.
+  const candidateToProductIds = new Map<string, string[]>();
+  for (const p of products) {
+    for (const candidate of [p.sku, p.shopArticle].filter((s): s is string => !!s)) {
+      if (!candidateToProductIds.has(candidate)) candidateToProductIds.set(candidate, []);
+      candidateToProductIds.get(candidate)!.push(p.id);
+    }
+  }
+  const allCandidates = Array.from(candidateToProductIds.keys());
+  if (!allCandidates.length) return result;
+
+  const grouped = await prisma.shopReview.groupBy({
+    by: ['sku'],
+    where: { sku: { in: allCandidates } },
+    _sum: { rating: true },
+    _count: { rating: true },
+  });
+
+  // Суммируем по ТОВАРУ (не по sku-кандидату) — у одного товара отзывы могли
+  // накопиться и под внутренним sku, и под shopArticle одновременно.
+  const sumByProduct = new Map<string, number>();
+  const countByProduct = new Map<string, number>();
+  for (const g of grouped as Array<{ sku: string; _sum: { rating: number | null }; _count: { rating: number } }>) {
+    for (const productId of candidateToProductIds.get(g.sku) ?? []) {
+      sumByProduct.set(productId, (sumByProduct.get(productId) ?? 0) + (g._sum.rating ?? 0));
+      countByProduct.set(productId, (countByProduct.get(productId) ?? 0) + g._count.rating);
+    }
+  }
+  for (const p of products) {
+    const reviewCount = countByProduct.get(p.id) ?? 0;
+    const sum = sumByProduct.get(p.id) ?? 0;
+    result.set(p.id, {
+      reviewCount,
+      rating: reviewCount > 0 ? Math.round((sum / reviewCount) * 10) / 10 : null,
+    });
+  }
+  return result;
+}
+
+
 shopRouter.get('/products', async (_req, res) => {
   try {
     const products = await prisma.product.findMany({ where: SHOP_VISIBLE_WHERE });
     const withArticles = await Promise.all(products.map(ensureShopArticle));
-    res.json(withArticles.map(toShopProduct));
+    const statsMap = await getReviewStatsMap(withArticles);
+    res.json(withArticles.map((p) => ({ ...toShopProduct(p), ...statsMap.get(p.id) })));
   } catch (err: any) {
     logger.error({ err }, '[Shop API] GET /products упал');
     res.status(500).json({ error: 'Не удалось получить товары', details: String(err?.message ?? err) });
@@ -162,7 +220,8 @@ shopRouter.get('/products/:sku', async (req, res) => {
   try {
     const product = await findVisibleProductBySkuOrArticle(req.params.sku);
     if (!product) return res.status(404).json({ error: 'Товар не найден' });
-    res.json(toShopProduct(product));
+    const statsMap = await getReviewStatsMap([product]);
+    res.json({ ...toShopProduct(product), ...statsMap.get(product.id) });
   } catch (err: any) {
     res.status(500).json({ error: 'Не удалось получить товар', details: String(err?.message ?? err) });
   }
