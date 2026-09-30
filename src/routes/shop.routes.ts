@@ -245,7 +245,17 @@ shopRouter.get('/products/:sku/reviews', async (req, res) => {
     const product = await prisma.product.findFirst({ where: { OR: [{ sku: param }, { shopArticle: param }] } });
     const skuCandidates = Array.from(new Set([param, product?.sku, product?.shopArticle].filter((s): s is string => !!s)));
     const reviews = await prisma.shopReview.findMany({ where: { sku: { in: skuCandidates } }, orderBy: { date: 'desc' } });
-    res.json(reviews);
+    // photos — только новое поле; старые отзывы (photos=null) отдают [], а
+    // не null, чтобы карточке не пришлось отдельно проверять null vs массив.
+    res.json(reviews.map((r) => {
+      let photos: string[] = [];
+      try {
+        photos = r.photos ? JSON.parse(r.photos) : [];
+      } catch {
+        photos = [];
+      }
+      return { ...r, photos };
+    }));
   } catch (err: any) {
     res.status(500).json({ error: 'Не удалось получить отзывы', details: String(err?.message ?? err) });
   }
@@ -267,6 +277,61 @@ function buildReviewText(parts: { textPros?: string | null; textCons?: string | 
   return text || `Оценка: ${rating}/5`; // «text не пустой» — гарантируем это здесь, а не отклоняем отзыв без текста
 }
 
+const REVIEW_PHOTO_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+const REVIEW_PHOTO_MAX_MB = 6;
+const REVIEW_PHOTO_MAX_BYTES = REVIEW_PHOTO_MAX_MB * 1024 * 1024;
+const reviewPhotoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: REVIEW_PHOTO_MAX_BYTES } });
+
+/**
+ * Загрузка одного фото отзыва — multipart/form-data, поле файла "file",
+ * поле "sku" (товар, к которому пишут отзыв — определяет путь в Blob).
+ * Тот же принцип, что и /courier/upload-photo: multer вызван вручную (не
+ * как обычный middleware в цепочке), чтобы его ошибки (например, размер)
+ * попадали в try/catch этого хендлера, а не в общий обработчик Express.
+ * Отдаёт только { url } — сохранение в сам отзыв (до 3 таких url) делает
+ * отдельный POST /reviews.
+ */
+shopRouter.post('/reviews/upload-photo', (req, res, next) => {
+  reviewPhotoUpload.single('file')(req, res, (err: any) => {
+    if (err) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(413).json({ error: `Файл слишком большой, максимум ${REVIEW_PHOTO_MAX_MB} МБ` });
+      }
+      logger.error({ err }, '[Shop API] Ошибка чтения multipart-запроса при загрузке фото отзыва');
+      return res.status(400).json({ error: 'Не удалось прочитать файл', details: String(err?.message ?? err) });
+    }
+    next();
+  });
+}, async (req, res) => {
+  const sku = req.body?.sku;
+  if (!sku || typeof sku !== 'string') {
+    return res.status(400).json({ error: 'Поле sku обязательно (товар, к которому фото)' });
+  }
+  const file = (req as any).file as Express.Multer.File | undefined;
+  if (!file) return res.status(400).json({ error: 'Файл не передан (поле "file")' });
+
+  if (!env.blobToken) {
+    return res.status(501).json({ error: 'добавьте Blob', details: 'BLOB_READ_WRITE_TOKEN не задан в переменных окружения — загрузка фото недоступна.' });
+  }
+  if (!REVIEW_PHOTO_TYPES.includes(file.mimetype)) {
+    return res.status(400).json({ error: `Недопустимый формат файла: ${file.mimetype}. Разрешено: ${REVIEW_PHOTO_TYPES.join(', ')}` });
+  }
+
+  try {
+    // sku может содержать что угодно (внутренний sku с точками/слэшами не
+    // ждём, но подчищаем на всякий случай) — путь в Blob должен остаться
+    // предсказуемым и безопасным независимо от того, что передали.
+    const safeSku = sku.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const random = Math.random().toString(36).slice(2, 10);
+    const pathname = `reviews/${safeSku}/${random}.jpg`;
+    const blob = await put(pathname, file.buffer, { access: 'public', contentType: file.mimetype, token: env.blobToken });
+    res.json({ url: blob.url });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop API] Ошибка загрузки фото отзыва');
+    res.status(500).json({ error: 'Не удалось загрузить фото', details: String(err?.message ?? err) });
+  }
+});
+
 const createShopReviewSchema = z.object({
   sku: z.string().min(1),
   orderId: z.string().min(1),
@@ -277,6 +342,9 @@ const createShopReviewSchema = z.object({
   tags: z.union([z.string(), z.array(z.string())]).optional().nullable(),
   authorName: z.string().optional().nullable(),
   authorPhone: z.string().min(1),
+  // 0–3 ссылки на фото с нашего Blob (результат /reviews/upload-photo) —
+  // именно https, не абы какая строка: без валидной ссылки фото не сохранится.
+  photos: z.array(z.string().url().startsWith('https://', 'Фото должно быть https-ссылкой')).max(3, 'Не больше 3 фото').optional(),
 });
 
 /**
@@ -346,9 +414,12 @@ shopRouter.post('/reviews', async (req, res) => {
         tags,
         orderId: data.orderId,
         authorPhone: normalizedPhone,
+        // Текстовый отзыв без фото по-прежнему нормален — photos тогда null,
+        // не "[]" (то же самое для чтения, но null честнее отражает "фото не было").
+        photos: data.photos?.length ? JSON.stringify(data.photos) : null,
       },
     });
-    res.status(201).json(review);
+    res.status(201).json({ ...review, photos: data.photos ?? [] });
   } catch (err: any) {
     logger.error({ err }, '[Shop API] POST /reviews упал');
     res.status(500).json({ error: 'Не удалось сохранить отзыв', details: String(err?.message ?? err) });

@@ -437,6 +437,7 @@ model ShopReview {
   textPros    String?
   textCons    String?
   tags        String?  // чипы через запятую, как прислало приложение
+  photos      String?  // JSON-массив https-URL с нашего Vercel Blob, до 3 штук; null у старых отзывов
 
   @@index([sku])
 }
