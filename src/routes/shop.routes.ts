@@ -1138,6 +1138,33 @@ shopRouter.get('/courier/application', async (req, res) => {
   }
 });
 
+/**
+ * Полный статус курьера по телефону — "none"/"pending"/"approved"/"rejected"
+ * (как в /courier/application) ПЛЮС "registered", когда заявка approved И
+ * в таблице курьеров уже есть активный профиль с ИИН и обоими фото —
+ * то есть регистрация (POST /courier/register) реально прошла. Одобрение
+ * заявки само по себе курьера не создаёт — это отдельный, более поздний шаг,
+ * поэтому approved и registered различаются. Ответ только по этому
+ * телефону, ничего о чужих.
+ */
+shopRouter.get('/courier/me', async (req, res) => {
+  const normalizedPhone = normalizePhone(String(req.query.phone ?? ''));
+  if (!normalizedPhone) return res.status(400).json({ error: 'Некорректный номер телефона' });
+
+  try {
+    const application = await prisma.shopCourierApplication.findUnique({ where: { phone: normalizedPhone } });
+    if (!application) return res.json({ status: 'none' });
+    if (application.status !== 'approved') return res.json({ status: application.status });
+
+    const courier = await prisma.courier.findUnique({ where: { phone: normalizedPhone } });
+    const isRegistered = !!courier && courier.active && !!courier.iin && !!courier.idPhotoUrl && !!courier.facePhotoUrl;
+    res.json({ status: isRegistered ? 'registered' : 'approved' });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop API] GET /courier/me упал');
+    res.status(500).json({ error: 'Не удалось получить статус курьера', details: String(err?.message ?? err) });
+  }
+});
+
 shopRouter.post('/courier/apply', async (req, res) => {
   const parsed = courierApplySchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
