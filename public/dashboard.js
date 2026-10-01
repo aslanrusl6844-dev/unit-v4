@@ -63,14 +63,21 @@ async function api(path, opts = {}) {
   });
   if (!res.ok) {
     let detail = '';
+    let body = null;
     try {
-      const body = await res.clone().json();
+      body = await res.clone().json();
       detail = body?.error ? ` — ${typeof body.error === 'string' ? body.error : JSON.stringify(body.error)}` : '';
       if (body?.details) detail += ` (${body.details})`;
     } catch {
       // тело не JSON — молча пропускаем, оставим базовое сообщение
     }
-    throw new Error(`API error ${res.status}: ${path}${detail}`);
+    const err = new Error(`API error ${res.status}: ${path}${detail}`);
+    // Дополнительно к сообщению — status и разобранное тело, для мест, которым
+    // нужно само содержимое ответа (например, 409 со списком конфликтов), а
+    // не только текст. Старым обработчикам (err.message) ничего не меняет.
+    err.status = res.status;
+    err.body = body;
+    throw err;
   }
   if (res.status === 204) return null;
   return res.json();
@@ -2194,6 +2201,11 @@ function wireMyMarketTabsOnce() {
     });
   })();
   document.getElementById('mmProdApplyNameCatsBtn').addEventListener('click', runMyMarketApplyNameCategories);
+
+  // Вкладка «Варианты» карточки — поиск по уже загруженному списку, без
+  // отдельного запроса к серверу.
+  document.getElementById('mmVariantSearch').addEventListener('input', () => renderMyMarketVariantsTab());
+  document.getElementById('mmSaveVariantsBtn').addEventListener('click', () => runMyMarketSaveVariants());
   document.getElementById('mmProdBulkArchiveBtn').addEventListener('click', () => runMyMarketArchive([...myMarketSelectedProductIds], true));
   document.getElementById('mmProdBulkRestoreBtn').addEventListener('click', () => runMyMarketArchive([...myMarketSelectedProductIds], false));
   document.getElementById('mmProdBulkDeleteBtn').addEventListener('click', () => runMyMarketRemove([...myMarketSelectedProductIds]));
@@ -2704,6 +2716,131 @@ function switchMyMarketCardTab(tab) {
   document.querySelectorAll('#mymarketCardTabs button').forEach((b) => b.classList.toggle('is-active', b.dataset.cardtab === tab));
   document.querySelectorAll('.mm-cardtab').forEach((el) => { el.hidden = el.dataset.cardtabPanel !== tab; });
   if (tab === 'preview') renderMyMarketPreviewCard();
+  if (tab === 'variants') renderMyMarketVariantsTab();
+}
+
+// ---------------------------------------------------------------------
+// Вкладка «Варианты» — несколько РАЗНЫХ товаров (своя цена/остаток/фото/
+// shopArticle у каждого) объединены общим variantGroup. Список строится из
+// уже загруженного myMarketProductsCache — без отдельного запроса к серверу
+// на поиск/листинг; сохраняет только POST /shop-admin/products/:id/variants.
+// ---------------------------------------------------------------------
+let myMarketVariantState = null; // { productId, originalGroup, selectedIds: Set, labels: {} }
+
+function initMyMarketVariantState(current) {
+  const groupMates = current.variantGroup
+    ? myMarketProductsCache.filter((x) => x.variantGroup === current.variantGroup && x.id !== current.id)
+    : [];
+  const labels = {};
+  for (const m of groupMates) labels[m.id] = m.variantLabel || '';
+  labels[current.id] = current.variantLabel || '';
+  myMarketVariantState = {
+    productId: current.id,
+    originalGroup: current.variantGroup || null,
+    selectedIds: new Set(groupMates.map((m) => m.id)),
+    labels,
+  };
+}
+
+function renderMyMarketVariantsTab() {
+  const listEl = document.getElementById('mmVariantList');
+  const saveBtn = document.getElementById('mmSaveVariantsBtn');
+  if (!myMarketEditingProductId) {
+    listEl.innerHTML = '<p class="panel__hint" style="padding:12px;margin:0">Сначала сохраните товар — варианты можно добавить после.</p>';
+    saveBtn.disabled = true;
+    return;
+  }
+  const current = myMarketProductsCache.find((x) => x.id === myMarketEditingProductId);
+  if (!current) return;
+  if (!myMarketVariantState || myMarketVariantState.productId !== myMarketEditingProductId) {
+    initMyMarketVariantState(current);
+  }
+  saveBtn.disabled = false;
+
+  const search = (document.getElementById('mmVariantSearch').value || '').trim().toLowerCase();
+  const matches = (p) => !search || p.name.toLowerCase().includes(search) || (p.shopArticle && p.shopArticle.includes(search));
+  const others = myMarketProductsCache.filter((p) => p.id !== current.id);
+  const sameCategoryType = others.filter((p) => matches(p) && p.category === current.category && p.type === current.type);
+  const rest = others.filter((p) => matches(p) && !(p.category === current.category && p.type === current.type));
+
+  const row = (p, isCurrent) => {
+    const checked = isCurrent || myMarketVariantState.selectedIds.has(p.id);
+    // «Уже в группе …» — только для ЧУЖОЙ группы (не той, что мы сейчас редактируем).
+    const inOtherGroup = p.variantGroup && p.variantGroup !== myMarketVariantState.originalGroup;
+    const img = myMarketFirstImage(p.images) || myMarketFirstImage(p.marketImages);
+    const label = myMarketVariantState.labels[p.id] ?? '';
+    // Подпись текущего товара показываем, только когда группа реально формируется
+    // (есть хоть один отмеченный сверх самого себя) — иначе нечего подписывать.
+    const showLabelInput = checked && (!isCurrent || myMarketVariantState.selectedIds.size > 0);
+    return `
+      <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-bottom:1px solid var(--border)">
+        <input type="checkbox" data-variant-check="${p.id}" ${checked ? 'checked' : ''} ${isCurrent ? 'disabled title="Этот товар всегда в своей группе"' : ''} />
+        ${img ? `<img src="${img}" style="width:36px;height:36px;object-fit:cover;border-radius:6px;flex-shrink:0" onerror="this.style.visibility='hidden'" />` : `<div style="width:36px;height:36px;border-radius:6px;background:var(--bg);flex-shrink:0"></div>`}
+        <div style="flex:1;min-width:0">
+          <div style="font-size:12.5px;${isCurrent ? 'font-weight:600' : ''}">${mmEsc(p.name)}${isCurrent ? ' <span style="color:var(--text-faint);font-size:10.5px">(этот товар)</span>' : ''}</div>
+          <div style="font-size:10.5px;color:var(--text-faint)">${mmEsc(mmDisplayArticle(p))} · ${p.shopPrice != null ? fmtMoney(p.shopPrice) : '—'}${inOtherGroup ? ` · <span style="color:var(--warn)">уже в группе «${mmEsc(p.variantGroup).slice(0, 8)}…»</span>` : ''}</div>
+        </div>
+        ${showLabelInput ? `<input type="text" data-variant-label="${p.id}" value="${mmEsc(label)}" placeholder="Подпись" maxlength="60" style="width:110px" />` : ''}
+      </div>
+    `;
+  };
+
+  const section = (title, rows) => (rows.length ? `<div style="padding:6px 10px;font-size:11px;color:var(--text-faint);background:var(--bg)">${title}</div>${rows.map((p) => row(p, false)).join('')}` : '');
+
+  listEl.innerHTML = row(current, true)
+    + section('Та же категория и тип', sameCategoryType)
+    + section('Остальные товары', rest)
+    + (!sameCategoryType.length && !rest.length ? '<p class="panel__hint" style="padding:12px;margin:0">Ничего не найдено</p>' : '');
+
+  listEl.querySelectorAll('input[data-variant-check]').forEach((cb) => {
+    cb.addEventListener('change', () => {
+      const id = cb.dataset.variantCheck;
+      if (cb.checked) {
+        myMarketVariantState.selectedIds.add(id);
+        if (!(id in myMarketVariantState.labels)) myMarketVariantState.labels[id] = '';
+      } else {
+        myMarketVariantState.selectedIds.delete(id);
+      }
+      renderMyMarketVariantsTab();
+    });
+  });
+  listEl.querySelectorAll('input[data-variant-label]').forEach((inp) => {
+    inp.addEventListener('input', () => { myMarketVariantState.labels[inp.dataset.variantLabel] = inp.value; });
+  });
+}
+
+async function runMyMarketSaveVariants(transferIds) {
+  const btn = document.getElementById('mmSaveVariantsBtn');
+  const statusEl = document.getElementById('mmVariantSaveStatus');
+  btn.disabled = true;
+  statusEl.textContent = 'Сохраняю…';
+  const memberIds = [myMarketVariantState.productId, ...myMarketVariantState.selectedIds];
+  const labels = {};
+  for (const id of memberIds) labels[id] = myMarketVariantState.labels[id] || '';
+  try {
+    await api(`/shop-admin/products/${myMarketVariantState.productId}/variants`, {
+      method: 'POST',
+      body: JSON.stringify({ memberIds, labels, transferIds: transferIds || [] }),
+    });
+    statusEl.textContent = 'Сохранено.';
+    await loadMyMarketProducts(); // обновить кэш — у перенесённых/отключённых товаров тоже сменилась группа
+    myMarketVariantState = null; // пересчитать заново из обновлённого кэша при следующей отрисовке
+    renderMyMarketVariantsTab();
+  } catch (err) {
+    if (err.status === 409 && Array.isArray(err.body?.items) && err.body.items.length) {
+      const names = err.body.items.map((x) => x.name).join(', ');
+      statusEl.textContent = '';
+      if (confirm(`Уже в другой группе: ${names}.\nПеренести их в эту группу?`)) {
+        await runMyMarketSaveVariants(err.body.items.map((x) => x.id));
+        return;
+      }
+      statusEl.textContent = 'Перенос не подтверждён — ничего не сохранено.';
+    } else {
+      statusEl.textContent = 'Ошибка: ' + err.message;
+    }
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 /** Новый товар витрины — пустая карточка, сгенерированный sku вида MM-xxxxxx.
@@ -2885,6 +3022,7 @@ async function runMyMarketApplyNameCategories() {
 
 function openMyMarketNewProductCard() {
   myMarketEditingProductId = null;
+  myMarketVariantState = null; // новый товар ещё не сохранён — вкладка «Варианты» покажет подсказку сохранить сначала
   const form = document.getElementById('mymarketProductCardForm');
   form.reset();
   form.elements.id.value = '';
@@ -2906,6 +3044,7 @@ function openMyMarketProductCard(id) {
   const p = myMarketProductsCache.find((x) => x.id === id);
   if (!p) return;
   myMarketEditingProductId = id;
+  myMarketVariantState = null; // пересчитать с нуля под открываемый товар, не унаследовать от прошлой карточки
   const form = document.getElementById('mymarketProductCardForm');
   form.elements.id.value = p.id;
   form.elements.sku.value = p.sku;

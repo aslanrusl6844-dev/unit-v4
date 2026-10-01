@@ -203,13 +203,63 @@ async function getReviewStatsMap(
   return result;
 }
 
+/**
+ * Варианты одной витрины (цвет/размер) — другие товары с тем же
+ * variantGroup, ТОЛЬКО видимые (shopActive, не архив). Текущий товар тоже
+ * входит в свой собственный массив (если сам видим). Нет группы -> [].
+ * Один запрос на весь список сразу (по всем встреченным variantGroup),
+ * не по одному на товар.
+ */
+function variantToDto(m: { sku: string; shopArticle: string | null; name: string; variantLabel: string | null; shopPrice: number | null; shopOldPrice: number | null; shopStock: number; images: string | null }) {
+  let images: string[] = [];
+  try {
+    images = m.images ? JSON.parse(m.images) : [];
+  } catch {
+    images = [];
+  }
+  return {
+    sku: m.shopArticle ?? m.sku,
+    name: m.name,
+    variantLabel: m.variantLabel,
+    price: m.shopPrice,
+    oldPrice: m.shopOldPrice,
+    stock: m.shopStock,
+    image: images[0] ?? null,
+  };
+}
+
+async function getProductVariantsMap(
+  products: Array<{ id: string; variantGroup: string | null }>,
+): Promise<Map<string, ReturnType<typeof variantToDto>[]>> {
+  const result = new Map<string, ReturnType<typeof variantToDto>[]>();
+  for (const p of products) result.set(p.id, []);
+
+  const groups = Array.from(new Set(products.map((p) => p.variantGroup).filter((g): g is string => !!g)));
+  if (!groups.length) return result;
+
+  const members = await prisma.product.findMany({
+    where: { variantGroup: { in: groups }, shopActive: true, shopArchived: false },
+  });
+  const byGroup = new Map<string, typeof members>();
+  for (const m of members as Array<{ variantGroup: string | null }>) {
+    if (!m.variantGroup) continue;
+    if (!byGroup.has(m.variantGroup)) byGroup.set(m.variantGroup, []);
+    byGroup.get(m.variantGroup)!.push(m);
+  }
+  for (const p of products) {
+    if (!p.variantGroup) continue;
+    result.set(p.id, (byGroup.get(p.variantGroup) ?? []).map(variantToDto));
+  }
+  return result;
+}
 
 shopRouter.get('/products', async (_req, res) => {
   try {
     const products = await prisma.product.findMany({ where: SHOP_VISIBLE_WHERE });
     const withArticles = await Promise.all(products.map(ensureShopArticle));
     const statsMap = await getReviewStatsMap(withArticles);
-    res.json(withArticles.map((p) => ({ ...toShopProduct(p), ...statsMap.get(p.id) })));
+    const variantsMap = await getProductVariantsMap(withArticles);
+    res.json(withArticles.map((p) => ({ ...toShopProduct(p), ...statsMap.get(p.id), variants: variantsMap.get(p.id) })));
   } catch (err: any) {
     logger.error({ err }, '[Shop API] GET /products упал');
     res.status(500).json({ error: 'Не удалось получить товары', details: String(err?.message ?? err) });
@@ -221,7 +271,8 @@ shopRouter.get('/products/:sku', async (req, res) => {
     const product = await findVisibleProductBySkuOrArticle(req.params.sku);
     if (!product) return res.status(404).json({ error: 'Товар не найден' });
     const statsMap = await getReviewStatsMap([product]);
-    res.json({ ...toShopProduct(product), ...statsMap.get(product.id) });
+    const variantsMap = await getProductVariantsMap([product]);
+    res.json({ ...toShopProduct(product), ...statsMap.get(product.id), variants: variantsMap.get(product.id) });
   } catch (err: any) {
     res.status(500).json({ error: 'Не удалось получить товар', details: String(err?.message ?? err) });
   }

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import JSZip from 'jszip';
 import { prisma } from '../db/prisma';
@@ -819,3 +820,93 @@ shopAdminRouter.post('/category-types', async (req, res) => {
   }
 });
 
+// =====================================================================
+// Варианты витрины (цвет/размер) — несколько РАЗНЫХ строк Product с общим
+// variantGroup. Каждая остаётся своим товаром: своя цена, остаток, фото,
+// shopArticle. Этот эндпоинт только расставляет/снимает variantGroup и
+// variantLabel — ничего другого (цену, остаток и т.п.) не трогает.
+// =====================================================================
+
+const saveProductVariantsSchema = z.object({
+  // Все отмеченные товары, ВКЛЮЧАЯ текущий (его checkbox в интерфейсе всегда
+  // отмечен и недоступен для снятия, пока в группе есть кто-то ещё).
+  memberIds: z.array(z.string()).min(1),
+  // Подпись миниатюры на каждый id из memberIds; для кого не прислали —
+  // остаётся прежняя (или пустая у новых).
+  labels: z.record(z.string(), z.string().max(60)).optional().default({}),
+  // id товаров, которые уже состоят в ДРУГОЙ группе — подтверждение явного
+  // переноса. Без этого подтверждения такие товары не трогаем вообще.
+  transferIds: z.array(z.string()).optional().default([]),
+});
+
+/**
+ * Сохранение группы вариантов для товара :id. Алгоритм:
+ *  1. Товары из memberIds, у которых уже есть ЧУЖАЯ группа (не совпадающая
+ *     с текущей группой :id) и которых нет в transferIds — блокируем всё
+ *     сохранение целиком (409) со списком, что именно требует подтверждения
+ *     переноса. Ничего не меняем, пока это не подтверждено явно.
+ *  2. Группа: если у текущего товара она уже есть — используем её; если
+ *     создаём впервые (и в memberIds есть кто-то ещё, не только сам товар) —
+ *     генерируем новую.
+ *  3. Товары, которые БЫЛИ в группе текущего товара, но не вошли в новый
+ *     memberIds (их галочку сняли) — группа и подпись с них снимаются.
+ *  4. Если в итоге в группе остаётся только сам товар (всех остальных
+ *     убрали) — группа у него тоже снимается: группа из одного не нужна.
+ */
+shopAdminRouter.post('/products/:id/variants', async (req, res) => {
+  const parsed = saveProductVariantsSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+
+  const currentId = req.params.id;
+  const memberIds = Array.from(new Set([...parsed.data.memberIds, currentId]));
+  const { labels, transferIds } = parsed.data;
+
+  try {
+    const current = await prisma.product.findUnique({ where: { id: currentId } });
+    if (!current) return res.status(404).json({ error: 'Товар не найден' });
+
+    const members = await prisma.product.findMany({ where: { id: { in: memberIds } } });
+    const foundIds = new Set(members.map((m) => m.id));
+    const notFound = memberIds.filter((id) => !foundIds.has(id));
+    if (notFound.length) return res.status(404).json({ error: 'Некоторые товары не найдены', ids: notFound });
+
+    const needsTransfer = members.filter(
+      (m: { id: string; variantGroup: string | null }) => m.id !== currentId && m.variantGroup && m.variantGroup !== current.variantGroup,
+    );
+    const unconfirmed = needsTransfer.filter((m) => !transferIds.includes(m.id));
+    if (unconfirmed.length) {
+      return res.status(409).json({
+        error: 'Некоторые товары уже в другой группе',
+        items: unconfirmed.map((m: { id: string; name: string; variantGroup: string | null }) => ({ id: m.id, name: m.name, variantGroup: m.variantGroup })),
+      });
+    }
+
+    const otherMemberIds = memberIds.filter((id) => id !== currentId);
+    const targetGroup = otherMemberIds.length ? (current.variantGroup ?? randomUUID()) : null;
+
+    // Сняты с группы: были в группе текущего товара, но не вошли в новый состав.
+    if (current.variantGroup) {
+      await prisma.product.updateMany({
+        where: { variantGroup: current.variantGroup, id: { notIn: memberIds } },
+        data: { variantGroup: null, variantLabel: null },
+      });
+    }
+
+    if (targetGroup) {
+      for (const id of memberIds) {
+        await prisma.product.update({
+          where: { id },
+          data: { variantGroup: targetGroup, variantLabel: labels[id]?.trim() || null },
+        });
+      }
+    } else {
+      // В итоге только сам товар — группа из одного не нужна, снимаем.
+      await prisma.product.update({ where: { id: currentId }, data: { variantGroup: null, variantLabel: null } });
+    }
+
+    res.json({ ok: true, variantGroup: targetGroup });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] POST /products/:id/variants упал');
+    res.status(500).json({ error: 'Не удалось сохранить варианты', details: String(err?.message ?? err) });
+  }
+});

@@ -525,6 +525,7 @@
             <div class="seg" id="mymarketCardTabs">
               <button class="is-active" data-cardtab="info">Информация</button>
               <button data-cardtab="attrs">Характеристики</button>
+              <button data-cardtab="variants">Варианты</button>
               <button data-cardtab="media">Медиа</button>
               <button data-cardtab="preview">Превью</button>
             </div>
@@ -568,7 +569,16 @@
                 <label>Состав<textarea name="composition" rows="2"></textarea></label>
               </div>
 
-              <!-- ---- Медиа ---- -->
+              <!-- ---- Варианты ---- -->
+              <div class="mm-cardtab" data-cardtab-panel="variants" hidden>
+                <p class="panel__hint" style="margin-top:0">Несколько уже созданных товаров (цвет, размер) как варианты одной витрины. Каждый остаётся своим товаром — своя цена, остаток, фото, артикул. Отметь связанные товары и подпиши каждый коротко (например «Фиолетовый», «M»).</p>
+                <input type="text" id="mmVariantSearch" placeholder="Поиск по названию или артикулу витрины" style="width:100%;margin-bottom:10px" />
+                <div id="mmVariantList" style="max-height:360px;overflow-y:auto;border:1px solid var(--border);border-radius:8px"></div>
+                <div style="display:flex;align-items:center;gap:10px;margin-top:10px">
+                  <button type="button" class="btn btn--ghost" id="mmSaveVariantsBtn">Сохранить варианты</button>
+                  <span id="mmVariantSaveStatus" class="panel__hint" style="margin:0"></span>
+                </div>
+              </div>
               <div class="mm-cardtab" data-cardtab-panel="media" hidden>
                 <p class="panel__hint" style="margin-top:0">Первое фото — главное, показывается на главной приложения. JPEG/PNG/WEBP, до 2.5 МБ (ограничение Vercel на размер запроса), до 10 фото. Перетащи миниатюру, чтобы изменить порядок.</p>
                 <div id="mmMediaGrid" class="mm-media-grid"></div>
