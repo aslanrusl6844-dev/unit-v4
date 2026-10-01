@@ -2759,9 +2759,12 @@ function renderMyMarketVariantsTab() {
 
   const search = (document.getElementById('mmVariantSearch').value || '').trim().toLowerCase();
   const matches = (p) => !search || p.name.toLowerCase().includes(search) || (p.shopArticle && p.shopArticle.includes(search));
-  const others = myMarketProductsCache.filter((p) => p.id !== current.id);
-  const sameCategoryType = others.filter((p) => matches(p) && p.category === current.category && p.type === current.type);
-  const rest = others.filter((p) => matches(p) && !(p.category === current.category && p.type === current.type));
+  // ТОЛЬКО та же category и тот же type, что у открытой карточки — никакой
+  // секции «Остальные товары» больше нет: кофеварка в список краски не
+  // попадает ни при каком поиске, список сам по себе уже узкий.
+  const sameCategoryType = myMarketProductsCache.filter(
+    (p) => p.id !== current.id && p.category === current.category && p.type === current.type && matches(p),
+  );
 
   const row = (p, isCurrent) => {
     const checked = isCurrent || myMarketVariantState.selectedIds.has(p.id);
@@ -2769,9 +2772,6 @@ function renderMyMarketVariantsTab() {
     const inOtherGroup = p.variantGroup && p.variantGroup !== myMarketVariantState.originalGroup;
     const img = myMarketFirstImage(p.images) || myMarketFirstImage(p.marketImages);
     const label = myMarketVariantState.labels[p.id] ?? '';
-    // Подпись текущего товара показываем, только когда группа реально формируется
-    // (есть хоть один отмеченный сверх самого себя) — иначе нечего подписывать.
-    const showLabelInput = checked && (!isCurrent || myMarketVariantState.selectedIds.size > 0);
     return `
       <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border-bottom:1px solid var(--border)">
         <input type="checkbox" data-variant-check="${p.id}" ${checked ? 'checked' : ''} ${isCurrent ? 'disabled title="Этот товар всегда в своей группе"' : ''} />
@@ -2780,17 +2780,14 @@ function renderMyMarketVariantsTab() {
           <div style="font-size:12.5px;${isCurrent ? 'font-weight:600' : ''}">${mmEsc(p.name)}${isCurrent ? ' <span style="color:var(--text-faint);font-size:10.5px">(этот товар)</span>' : ''}</div>
           <div style="font-size:10.5px;color:var(--text-faint)">${mmEsc(mmDisplayArticle(p))} · ${p.shopPrice != null ? fmtMoney(p.shopPrice) : '—'}${inOtherGroup ? ` · <span style="color:var(--warn)">уже в группе «${mmEsc(p.variantGroup).slice(0, 8)}…»</span>` : ''}</div>
         </div>
-        ${showLabelInput ? `<input type="text" data-variant-label="${p.id}" value="${mmEsc(label)}" placeholder="Подпись" maxlength="60" style="width:110px" />` : ''}
+        ${checked ? `<input type="text" data-variant-label="${p.id}" value="${mmEsc(label)}" placeholder="Подпись" maxlength="60" style="width:110px" />` : ''}
       </div>
     `;
   };
 
-  const section = (title, rows) => (rows.length ? `<div style="padding:6px 10px;font-size:11px;color:var(--text-faint);background:var(--bg)">${title}</div>${rows.map((p) => row(p, false)).join('')}` : '');
-
   listEl.innerHTML = row(current, true)
-    + section('Та же категория и тип', sameCategoryType)
-    + section('Остальные товары', rest)
-    + (!sameCategoryType.length && !rest.length ? '<p class="panel__hint" style="padding:12px;margin:0">Ничего не найдено</p>' : '');
+    + sameCategoryType.map((p) => row(p, false)).join('')
+    + (!sameCategoryType.length ? `<p class="panel__hint" style="padding:12px;margin:0">${search ? 'Ничего не найдено' : `Других товаров с категорией «${mmEsc(current.category || '—')}» и типом «${mmEsc(current.type || '—')}» пока нет`}</p>` : '');
 
   listEl.querySelectorAll('input[data-variant-check]').forEach((cb) => {
     cb.addEventListener('change', () => {
@@ -2813,6 +2810,7 @@ async function runMyMarketSaveVariants(transferIds) {
   const btn = document.getElementById('mmSaveVariantsBtn');
   const statusEl = document.getElementById('mmVariantSaveStatus');
   btn.disabled = true;
+  statusEl.style.color = '';
   statusEl.textContent = 'Сохраняю…';
   const memberIds = [myMarketVariantState.productId, ...myMarketVariantState.selectedIds];
   const labels = {};
@@ -2822,20 +2820,29 @@ async function runMyMarketSaveVariants(transferIds) {
       method: 'POST',
       body: JSON.stringify({ memberIds, labels, transferIds: transferIds || [] }),
     });
+    statusEl.style.color = '';
     statusEl.textContent = 'Сохранено.';
-    await loadMyMarketProducts(); // обновить кэш — у перенесённых/отключённых товаров тоже сменилась группа
+    // Список перечитываем с СЕРВЕРА (не оставляем локальное предположение) —
+    // у перенесённых/отключённых товаров тоже сменилась группа на бэкенде.
+    await loadMyMarketProducts();
     myMarketVariantState = null; // пересчитать заново из обновлённого кэша при следующей отрисовке
     renderMyMarketVariantsTab();
   } catch (err) {
     if (err.status === 409 && Array.isArray(err.body?.items) && err.body.items.length) {
       const names = err.body.items.map((x) => x.name).join(', ');
+      statusEl.style.color = '';
       statusEl.textContent = '';
       if (confirm(`Уже в другой группе: ${names}.\nПеренести их в эту группу?`)) {
         await runMyMarketSaveVariants(err.body.items.map((x) => x.id));
         return;
       }
+      statusEl.style.color = 'var(--loss)';
       statusEl.textContent = 'Перенос не подтверждён — ничего не сохранено.';
     } else {
+      // Падение запроса — явная красная ошибка, не молчаливый сброс выбора:
+      // отмеченные галочки и подписи в myMarketVariantState остаются как были,
+      // ничего не перечитывается и не затирается.
+      statusEl.style.color = 'var(--loss)';
       statusEl.textContent = 'Ошибка: ' + err.message;
     }
   } finally {
