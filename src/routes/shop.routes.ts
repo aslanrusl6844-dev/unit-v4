@@ -238,11 +238,14 @@ async function getProductVariantsMap(
   if (!groups.length) return result;
 
   const members = await prisma.product.findMany({
-    where: { variantGroup: { in: groups }, shopActive: true, shopArchived: false },
+    // Видимые (shopActive, не архив) И с заполненной подписью — без подписи
+    // товар в ряд вариантов не попадает (так просили: «иначе под миниатюрой
+    // будет непонятно что показывать» — именно это мы и не хотим показывать).
+    where: { variantGroup: { in: groups }, shopActive: true, shopArchived: false, variantLabel: { not: null } },
   });
   const byGroup = new Map<string, typeof members>();
-  for (const m of members as Array<{ variantGroup: string | null }>) {
-    if (!m.variantGroup) continue;
+  for (const m of members as Array<{ variantGroup: string | null; variantLabel: string | null }>) {
+    if (!m.variantGroup || !m.variantLabel) continue; // двойная страховка — не только в where
     if (!byGroup.has(m.variantGroup)) byGroup.set(m.variantGroup, []);
     byGroup.get(m.variantGroup)!.push(m);
   }
