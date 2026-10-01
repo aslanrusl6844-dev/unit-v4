@@ -2356,7 +2356,7 @@ function switchMyMarketTab(tab) {
   if (tab === 'prices') loadMyMarketPrices();
   if (tab === 'orders') loadMyMarketOrders();
   if (tab === 'analytics') loadMyMarketAnalytics();
-  if (tab === 'couriers') loadMyMarketCouriers();
+  if (tab === 'couriers') { loadMyMarketCouriers(); loadMyMarketCourierApplications(); }
   if (tab === 'finance') loadMyMarketFinance();
 }
 
@@ -3800,6 +3800,53 @@ async function loadMyMarketAnalyticsSeasonality() {
 // Курьеры — таблица + карточка с фото (только здесь, не в API курьера)
 // ---------------------------------------------------------------------
 let myMarketCouriersCache = [];
+
+const MM_COURIER_APP_STATUS_LABELS = { pending: 'Ожидает', approved: 'Одобрена', rejected: 'Отказано' };
+
+async function loadMyMarketCourierApplications() {
+  const applications = await api('/shop-admin/courier-applications');
+  const tbody = document.querySelector('#mmCourierApplicationsTable tbody');
+  if (!applications.length) {
+    tbody.innerHTML = `<tr><td colspan="6" style="color:var(--text-faint)">Заявок нет</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = applications.map((a) => {
+    const statusLabel = MM_COURIER_APP_STATUS_LABELS[a.status] ?? a.status;
+    const statusHtml = a.status === 'approved'
+      ? `<span style="color:var(--accent);font-weight:600">● ${statusLabel}</span>`
+      : a.status === 'rejected'
+        ? `<span style="color:var(--loss)">● ${statusLabel}</span>`
+        : `<span>${statusLabel}</span>`;
+    // Повторное решение по уже решённой заявке не запрещаем технически (вдруг
+    // передумали) — кнопки остаются кликабельными даже после approve/reject.
+    return `
+      <tr>
+        <td>${mmEsc(a.phone)}</td>
+        <td class="name-cell">${mmEsc(a.name)}</td>
+        <td>${mmEsc(a.city)}</td>
+        <td>${fmtOrderDateTime(a.createdAt)}</td>
+        <td>${statusHtml}</td>
+        <td style="white-space:nowrap">
+          <button class="link-btn" data-app-action="approve" data-app-id="${a.id}" style="color:var(--accent)">Одобрить</button>
+          <button class="link-btn" data-app-action="reject" data-app-id="${a.id}" style="color:var(--loss)">Отказать</button>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  tbody.querySelectorAll('button[data-app-action]').forEach((btn) => {
+    btn.addEventListener('click', () => runMyMarketCourierApplicationDecision(btn.dataset.appId, btn.dataset.appAction));
+  });
+}
+
+async function runMyMarketCourierApplicationDecision(id, action) {
+  try {
+    await api(`/shop-admin/courier-applications/${id}/${action}`, { method: 'POST' });
+    await loadMyMarketCourierApplications();
+  } catch (err) {
+    alert(`Не удалось ${action === 'approve' ? 'одобрить' : 'отклонить'} заявку: ` + err.message);
+  }
+}
 
 async function loadMyMarketCouriers() {
   const couriers = await api('/shop-admin/couriers');

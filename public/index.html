@@ -766,6 +766,18 @@
         </div>
 
         <div id="mymarketCouriersTab" hidden>
+          <div class="panel" style="margin-bottom:14px">
+            <div class="panel__head"><h2 style="font-size:14px">Заявки на регистрацию</h2></div>
+            <p class="panel__hint" style="margin-top:0">Курьер больше не регистрируется сам — только по одобренной заявке. Без одобрения /courier/register отвечает 403.</p>
+            <div class="table-wrap">
+              <table class="table" id="mmCourierApplicationsTable">
+                <thead>
+                  <tr><th>Телефон</th><th>Имя</th><th>Город</th><th>Дата</th><th>Статус</th><th></th></tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
           <div class="panel">
             <p class="panel__hint">Фото удостоверения и лица видны только здесь — ни один курьерский API-запрос их не отдаёт.</p>
             <input type="text" id="mymarketCouriersSearch" placeholder="Поиск: имя, фамилия, телефон, ИИН" style="max-width:320px;margin-bottom:10px" />

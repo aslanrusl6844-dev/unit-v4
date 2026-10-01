@@ -1014,6 +1014,49 @@ async function findShopOrderByNumberLoosely(raw: string) {
   return null;
 }
 
+const courierApplySchema = z.object({
+  phone: z.string().min(1),
+  name: z.string().min(1),
+  city: z.string().min(1),
+});
+
+/**
+ * Заявка на регистрацию курьера — ПЕРВЫЙ шаг, до POST /courier/register.
+ * Одна заявка на телефон: повторная с того же номера не создаёт вторую
+ * строку, а только освежает имя/город, ПОКА заявка ещё pending (решённую
+ * заявку задним числом не трогаем — админ уже принял решение по ней).
+ * Ответ отдаёт статус ТОЛЬКО этого телефона — ничего о чужих заявках.
+ */
+shopRouter.post('/courier/apply', async (req, res) => {
+  const parsed = courierApplySchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+
+  const normalizedPhone = normalizePhone(parsed.data.phone);
+  if (!normalizedPhone) return res.status(400).json({ error: 'Некорректный номер телефона' });
+
+  try {
+    const existing = await prisma.shopCourierApplication.findUnique({ where: { phone: normalizedPhone } });
+    if (existing) {
+      if (existing.status === 'pending') {
+        const updated = await prisma.shopCourierApplication.update({
+          where: { phone: normalizedPhone },
+          data: { name: parsed.data.name, city: parsed.data.city },
+        });
+        return res.json({ status: updated.status });
+      }
+      // approved/rejected — решение уже принято, повторная заявка его не меняет.
+      return res.json({ status: existing.status });
+    }
+    const created = await prisma.shopCourierApplication.create({
+      data: { phone: normalizedPhone, name: parsed.data.name, city: parsed.data.city, status: 'pending' },
+    });
+    res.status(201).json({ status: created.status });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop API] POST /courier/apply упал');
+    res.status(500).json({ error: 'Не удалось отправить заявку', details: String(err?.message ?? err) });
+  }
+});
+
 const courierRegisterSchema = z.object({
   firstName: z.string().min(1),
   lastName: z.string().min(1),
@@ -1064,6 +1107,18 @@ shopRouter.post('/courier/register', async (req, res) => {
   if (!normalizedPhone) {
     logger.warn({ phone: rawPhone }, '[Shop API] /courier/register отклонён — некорректный номер телефона (400)');
     return res.status(400).json({ error: 'Некорректный номер телефона' });
+  }
+
+  // Курьер больше не регистрируется сам — только по одобренной заявке
+  // (POST /courier/apply + «Одобрить» в админке). Отказ и отсутствие заявки
+  // ведут себя одинаково: 403, регистрация закрыта.
+  const application = await prisma.shopCourierApplication.findUnique({ where: { phone: normalizedPhone } });
+  if (!application || application.status !== 'approved') {
+    logger.warn(
+      { phone: normalizedPhone, applicationStatus: application?.status ?? 'none' },
+      '[Shop API] /courier/register отклонён — телефон не одобрен (403)',
+    );
+    return res.status(403).json({ error: 'Телефон не одобрен для регистрации курьера' });
   }
 
   try {

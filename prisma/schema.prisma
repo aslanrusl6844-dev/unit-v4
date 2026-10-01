@@ -535,3 +535,17 @@ model ShopCustomerPushToken {
   token     String
   updatedAt DateTime @updatedAt
 }
+
+// Заявка на регистрацию курьера My Market — курьер больше не регистрируется
+// сам: сначала заявка (телефон/имя/город), админ одобряет или отказывает, и
+// только после одобрения POST /courier/register пропускает этот телефон.
+// Одна заявка на телефон — повторная не дублирует строку, статус виден.
+model ShopCourierApplication {
+  id         String   @id @default(cuid())
+  phone      String   @unique // нормализованный, как у Courier.phone
+  name       String
+  city       String
+  status     String   @default("pending") // "pending" | "approved" | "rejected"
+  createdAt  DateTime @default(now())
+  reviewedAt DateTime?
+}

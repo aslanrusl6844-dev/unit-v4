@@ -475,6 +475,52 @@ shopAdminRouter.post('/bulk-upsert', async (req, res) => {
 // эндпоинт /api/shop/courier/* (курьерский, x-app-key) их не возвращает.
 // =====================================================================
 
+/**
+ * Заявки на регистрацию курьера — список для вкладки «Курьеры» в админке:
+ * телефон, имя, город, дата, статус. Без кэша — тот же принцип, что и у
+ * списка самих курьеров ниже: это рабочий список, не должен отставать.
+ */
+shopAdminRouter.get('/courier-applications', async (_req, res) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    const applications = await prisma.shopCourierApplication.findMany({ orderBy: { createdAt: 'desc' } });
+    res.json(applications);
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] GET /courier-applications упал');
+    res.status(500).json({ error: 'Не удалось получить заявки курьеров', details: String(err?.message ?? err) });
+  }
+});
+
+/** «Одобрить» — после этого телефон проходит POST /courier/register. */
+shopAdminRouter.post('/courier-applications/:id/approve', async (req, res) => {
+  try {
+    const application = await prisma.shopCourierApplication.update({
+      where: { id: req.params.id },
+      data: { status: 'approved', reviewedAt: new Date() },
+    });
+    res.json(application);
+  } catch (err: any) {
+    if (err?.code === 'P2025') return res.status(404).json({ error: 'Заявка не найдена' });
+    logger.error({ err }, '[Shop Admin] POST /courier-applications/:id/approve упал');
+    res.status(500).json({ error: 'Не удалось одобрить заявку', details: String(err?.message ?? err) });
+  }
+});
+
+/** «Отказать» — регистрация для этого телефона закрыта (403 на /courier/register). */
+shopAdminRouter.post('/courier-applications/:id/reject', async (req, res) => {
+  try {
+    const application = await prisma.shopCourierApplication.update({
+      where: { id: req.params.id },
+      data: { status: 'rejected', reviewedAt: new Date() },
+    });
+    res.json(application);
+  } catch (err: any) {
+    if (err?.code === 'P2025') return res.status(404).json({ error: 'Заявка не найдена' });
+    logger.error({ err }, '[Shop Admin] POST /courier-applications/:id/reject упал');
+    res.status(500).json({ error: 'Не удалось отклонить заявку', details: String(err?.message ?? err) });
+  }
+});
+
 shopAdminRouter.get('/couriers', async (_req, res) => {
   try {
     // Явно без кэша — этот список должен ВСЕГДА показывать актуальное
