@@ -2205,6 +2205,28 @@ function wireMyMarketTabsOnce() {
   // Вкладка «Варианты» карточки — поиск по уже загруженному списку, без
   // отдельного запроса к серверу.
   document.getElementById('mmVariantSearch').addEventListener('input', () => renderMyMarketVariantsTab());
+
+  // Заявки курьеров: подвкладки «Заявки»/«Архив», поиск, пачечный перенос.
+  document.getElementById('mmCourierAppSubTabs').addEventListener('click', (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    document.querySelectorAll('#mmCourierAppSubTabs button').forEach((b) => b.classList.remove('is-active'));
+    btn.classList.add('is-active');
+    document.getElementById('mmCourierAppSearch').value = '';
+    loadMyMarketCourierApplications();
+  });
+  document.getElementById('mmCourierAppSearch').addEventListener('input', () => renderMyMarketCourierApplicationsTable());
+  document.getElementById('mmCourierAppSelectAll').addEventListener('change', (e) => {
+    const box = e.target;
+    document.querySelectorAll('#mmCourierApplicationsTable tbody input[data-courierapp-select]').forEach((cb) => {
+      cb.checked = box.checked;
+      if (box.checked) myMarketSelectedCourierAppIds.add(cb.dataset.courierappSelect);
+      else myMarketSelectedCourierAppIds.delete(cb.dataset.courierappSelect);
+    });
+    renderMyMarketCourierApplicationsTable();
+  });
+  document.getElementById('mmCourierAppBulkArchiveBtn').addEventListener('click', () => runMyMarketCourierAppBulkArchive(true));
+  document.getElementById('mmCourierAppBulkRestoreBtn').addEventListener('click', () => runMyMarketCourierAppBulkArchive(false));
   document.getElementById('mmSaveVariantsBtn').addEventListener('click', () => runMyMarketSaveVariants());
   document.getElementById('mmProdBulkArchiveBtn').addEventListener('click', () => runMyMarketArchive([...myMarketSelectedProductIds], true));
   document.getElementById('mmProdBulkRestoreBtn').addEventListener('click', () => runMyMarketArchive([...myMarketSelectedProductIds], false));
@@ -3802,15 +3824,42 @@ async function loadMyMarketAnalyticsSeasonality() {
 let myMarketCouriersCache = [];
 
 const MM_COURIER_APP_STATUS_LABELS = { pending: 'Ожидает', approved: 'Одобрена', rejected: 'Отказано' };
+let myMarketCourierAppsCache = [];
+let myMarketSelectedCourierAppIds = new Set();
+
+/** Текущая подвкладка: false — «Заявки» (архивные не видны), true — «Архив». */
+function mmCourierAppsArchivedTab() {
+  return document.querySelector('#mmCourierAppSubTabs button.is-active')?.dataset.apparchived === 'true';
+}
 
 async function loadMyMarketCourierApplications() {
-  const applications = await api('/shop-admin/courier-applications');
+  const archived = mmCourierAppsArchivedTab();
+  myMarketCourierAppsCache = await api(`/shop-admin/courier-applications?archived=${archived}`);
+  myMarketSelectedCourierAppIds.clear();
+  renderMyMarketCourierApplicationsTable();
+}
+
+/** Фильтрует уже загруженный список по имени/телефону — без обращения к
+ *  серверу заново. Пустой город у заявки не мешает: он просто не участвует
+ *  в сравнении, только name и phone. */
+function renderMyMarketCourierApplicationsTable() {
+  const query = (document.getElementById('mmCourierAppSearch').value || '').trim().toLowerCase();
+  let rows = myMarketCourierAppsCache;
+  if (query) {
+    rows = rows.filter((a) =>
+      (a.name || '').toLowerCase().includes(query) || (a.phone || '').toLowerCase().includes(query),
+    );
+  }
+
+  const archived = mmCourierAppsArchivedTab();
   const tbody = document.querySelector('#mmCourierApplicationsTable tbody');
-  if (!applications.length) {
-    tbody.innerHTML = `<tr><td colspan="6" style="color:var(--text-faint)">Заявок нет</td></tr>`;
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="7" style="color:var(--text-faint)">${archived ? 'В архиве пусто' : 'Заявок нет'}</td></tr>`;
+    updateMyMarketCourierAppBulkBar([]);
     return;
   }
-  tbody.innerHTML = applications.map((a) => {
+
+  tbody.innerHTML = rows.map((a) => {
     const statusLabel = MM_COURIER_APP_STATUS_LABELS[a.status] ?? a.status;
     const statusHtml = a.status === 'approved'
       ? `<span style="color:var(--accent);font-weight:600">● ${statusLabel}</span>`
@@ -3821,9 +3870,10 @@ async function loadMyMarketCourierApplications() {
     // передумали) — кнопки остаются кликабельными даже после approve/reject.
     return `
       <tr>
+        <td><input type="checkbox" data-courierapp-select="${a.id}" ${myMarketSelectedCourierAppIds.has(a.id) ? 'checked' : ''} /></td>
         <td>${mmEsc(a.phone)}</td>
         <td class="name-cell">${mmEsc(a.name)}</td>
-        <td>${mmEsc(a.city)}</td>
+        <td>${mmEsc(a.city || '—')}</td>
         <td>${fmtOrderDateTime(a.createdAt)}</td>
         <td>${statusHtml}</td>
         <td style="white-space:nowrap">
@@ -3837,6 +3887,39 @@ async function loadMyMarketCourierApplications() {
   tbody.querySelectorAll('button[data-app-action]').forEach((btn) => {
     btn.addEventListener('click', () => runMyMarketCourierApplicationDecision(btn.dataset.appId, btn.dataset.appAction));
   });
+  tbody.querySelectorAll('input[data-courierapp-select]').forEach((box) => {
+    box.addEventListener('change', () => {
+      if (box.checked) myMarketSelectedCourierAppIds.add(box.dataset.courierappSelect);
+      else myMarketSelectedCourierAppIds.delete(box.dataset.courierappSelect);
+      updateMyMarketCourierAppBulkBar(rows);
+    });
+  });
+  updateMyMarketCourierAppBulkBar(rows);
+}
+
+function updateMyMarketCourierAppBulkBar(visibleRows) {
+  const archived = mmCourierAppsArchivedTab();
+  const n = myMarketSelectedCourierAppIds.size;
+  document.getElementById('mmCourierAppSelectedCount').textContent = `Выбрано: ${n}`;
+  const archiveBtn = document.getElementById('mmCourierAppBulkArchiveBtn');
+  const restoreBtn = document.getElementById('mmCourierAppBulkRestoreBtn');
+  archiveBtn.hidden = archived;
+  restoreBtn.hidden = !archived;
+  archiveBtn.disabled = restoreBtn.disabled = n === 0;
+  const selectAll = document.getElementById('mmCourierAppSelectAll');
+  selectAll.checked = visibleRows.length > 0 && n === visibleRows.length;
+  selectAll.indeterminate = n > 0 && n < visibleRows.length;
+}
+
+async function runMyMarketCourierAppBulkArchive(archived) {
+  const ids = [...myMarketSelectedCourierAppIds];
+  if (!ids.length) return;
+  try {
+    await api('/shop-admin/courier-applications/archive', { method: 'POST', body: JSON.stringify({ ids, archived }) });
+    await loadMyMarketCourierApplications();
+  } catch (err) {
+    alert(`Не удалось перенести заявки: ` + err.message);
+  }
 }
 
 async function runMyMarketCourierApplicationDecision(id, action) {

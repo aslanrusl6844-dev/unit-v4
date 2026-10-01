@@ -480,10 +480,16 @@ shopAdminRouter.post('/bulk-upsert', async (req, res) => {
  * телефон, имя, город, дата, статус. Без кэша — тот же принцип, что и у
  * списка самих курьеров ниже: это рабочий список, не должен отставать.
  */
-shopAdminRouter.get('/courier-applications', async (_req, res) => {
+/**
+ * ?archived=true — вкладка «Архив»; без параметра (или false) — «Заявки»
+ * (как раньше), но теперь уже БЕЗ архивных — отклонённые туда больше не
+ * попадают (их архивирует сам /reject), а вручную убранные пачкой — тоже.
+ */
+shopAdminRouter.get('/courier-applications', async (req, res) => {
   try {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-    const applications = await prisma.shopCourierApplication.findMany({ orderBy: { createdAt: 'desc' } });
+    const archived = req.query.archived === 'true';
+    const applications = await prisma.shopCourierApplication.findMany({ where: { archived }, orderBy: { createdAt: 'desc' } });
     res.json(applications);
   } catch (err: any) {
     logger.error({ err }, '[Shop Admin] GET /courier-applications упал');
@@ -491,7 +497,7 @@ shopAdminRouter.get('/courier-applications', async (_req, res) => {
   }
 });
 
-/** «Одобрить» — после этого телефон проходит POST /courier/register. */
+/** «Одобрить» — после этого телефон проходит POST /courier/register. Остаётся в «Заявках» (archived не трогаем). */
 shopAdminRouter.post('/courier-applications/:id/approve', async (req, res) => {
   try {
     const application = await prisma.shopCourierApplication.update({
@@ -506,18 +512,44 @@ shopAdminRouter.post('/courier-applications/:id/approve', async (req, res) => {
   }
 });
 
-/** «Отказать» — регистрация для этого телефона закрыта (403 на /courier/register). */
+/** «Отказать» — регистрация закрыта (403 на /courier/register) И заявка сразу уходит в архив — из «Заявок» её больше не видно. */
 shopAdminRouter.post('/courier-applications/:id/reject', async (req, res) => {
   try {
     const application = await prisma.shopCourierApplication.update({
       where: { id: req.params.id },
-      data: { status: 'rejected', reviewedAt: new Date() },
+      data: { status: 'rejected', reviewedAt: new Date(), archived: true },
     });
     res.json(application);
   } catch (err: any) {
     if (err?.code === 'P2025') return res.status(404).json({ error: 'Заявка не найдена' });
     logger.error({ err }, '[Shop Admin] POST /courier-applications/:id/reject упал');
     res.status(500).json({ error: 'Не удалось отклонить заявку', details: String(err?.message ?? err) });
+  }
+});
+
+const archiveApplicationsSchema = z.object({
+  ids: z.array(z.string()).min(1),
+  archived: z.boolean(),
+});
+
+/**
+ * Пачечный перенос заявок между «Заявки» и «Архив» — кнопка «Убрать в
+ * архив» (archived:true) наверху списка, и обратный перенос из архива
+ * (archived:false). status (pending/approved/rejected) этим не трогается —
+ * только видимость в какой вкладке.
+ */
+shopAdminRouter.post('/courier-applications/archive', async (req, res) => {
+  const parsed = archiveApplicationsSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  try {
+    const result = await prisma.shopCourierApplication.updateMany({
+      where: { id: { in: parsed.data.ids } },
+      data: { archived: parsed.data.archived },
+    });
+    res.json({ ok: true, updated: result.count });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] POST /courier-applications/archive упал');
+    res.status(500).json({ error: 'Не удалось перенести заявки', details: String(err?.message ?? err) });
   }
 });
 

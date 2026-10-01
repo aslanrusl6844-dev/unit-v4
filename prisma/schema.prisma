@@ -548,4 +548,10 @@ model ShopCourierApplication {
   status     String   @default("pending") // "pending" | "approved" | "rejected"
   createdAt  DateTime @default(now())
   reviewedAt DateTime?
+  // «Архив» во вкладке «Курьеры» — отдельно от status: отказ автоматически
+  // архивирует заявку, но архив можно поставить и вручную (пачкой), и
+  // вернуть обратно в «Заявки», не трогая сам status (approved/rejected).
+  archived   Boolean  @default(false)
+
+  @@index([archived])
 }

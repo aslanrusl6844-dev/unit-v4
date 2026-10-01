@@ -769,10 +769,20 @@
           <div class="panel" style="margin-bottom:14px">
             <div class="panel__head"><h2 style="font-size:14px">Заявки на регистрацию</h2></div>
             <p class="panel__hint" style="margin-top:0">Курьер больше не регистрируется сам — только по одобренной заявке. Без одобрения /courier/register отвечает 403.</p>
+            <div class="seg" id="mmCourierAppSubTabs" style="margin-bottom:10px">
+              <button class="is-active" data-apparchived="false">Заявки</button>
+              <button data-apparchived="true">Архив</button>
+            </div>
+            <input type="text" id="mmCourierAppSearch" placeholder="Поиск: имя, телефон" style="max-width:280px;margin-bottom:10px" />
+            <div class="inline-form" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:8px">
+              <span id="mmCourierAppSelectedCount" style="font-size:12.5px;color:var(--text-muted)">Выбрано: 0</span>
+              <button class="btn btn--ghost" id="mmCourierAppBulkArchiveBtn" disabled>Убрать в архив</button>
+              <button class="btn btn--ghost" id="mmCourierAppBulkRestoreBtn" disabled hidden>Вернуть в заявки</button>
+            </div>
             <div class="table-wrap">
               <table class="table" id="mmCourierApplicationsTable">
                 <thead>
-                  <tr><th>Телефон</th><th>Имя</th><th>Город</th><th>Дата</th><th>Статус</th><th></th></tr>
+                  <tr><th style="width:28px"><input type="checkbox" id="mmCourierAppSelectAll" title="Выбрать все в текущем списке" /></th><th>Телефон</th><th>Имя</th><th>Город</th><th>Дата</th><th>Статус</th><th></th></tr>
                 </thead>
                 <tbody></tbody>
               </table>
