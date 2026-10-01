@@ -1188,6 +1188,68 @@ shopRouter.get('/courier/me', async (req, res) => {
   }
 });
 
+/**
+ * Возвраты, которые курьеру ещё нужно забрать — ТОЛЬКО approved (ни pending,
+ * ни rejected, ни уже collected). Адрес — тот же, что у заказа; заказа нет —
+ * address: null, заявку не роняем (та же логика, что в админском списке).
+ */
+shopRouter.get('/courier/returns', async (_req, res) => {
+  try {
+    const returns = await prisma.shopReturn.findMany({
+      where: { status: 'approved' },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true, orderNumber: true, productName: true },
+    });
+    const orderNumbers = Array.from(new Set(returns.map((r: { orderNumber: string }) => r.orderNumber)));
+    const orders = orderNumbers.length
+      ? await prisma.shopOrder.findMany({
+          where: { number: { in: orderNumbers } },
+          select: { number: true, city: true, street: true, house: true, apartment: true, entrance: true, floor: true, intercom: true, phone: true },
+        })
+      : [];
+    const orderByNumber = new Map(orders.map((o: { number: string }) => [o.number, o]));
+
+    res.json(returns.map((r: { id: string; orderNumber: string; productName: string | null }) => {
+      const order = orderByNumber.get(r.orderNumber) as
+        | { city: string; street: string; house: string; apartment: string | null; entrance: string | null; floor: string | null; intercom: string | null; phone: string }
+        | undefined;
+      return {
+        id: r.id,
+        orderNumber: r.orderNumber,
+        productName: r.productName,
+        address: order
+          ? { city: order.city, street: order.street, house: order.house, apartment: order.apartment, entrance: order.entrance, floor: order.floor, intercom: order.intercom }
+          : null,
+        phone: order?.phone ?? null,
+      };
+    }));
+  } catch (err: any) {
+    logger.error({ err }, '[Shop API] GET /courier/returns упал');
+    res.status(500).json({ error: 'Не удалось получить возвраты для курьера', details: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * Курьер забрал товар — approved -> collected. Повторно нельзя: если заявка
+ * уже не approved (неважно, collected, pending или rejected), ответ 409,
+ * статус не трогаем. Заказ и остатки эта кнопка не меняет — только статус
+ * самой заявки на возврат.
+ */
+shopRouter.post('/courier/returns/:id/collect', async (req, res) => {
+  try {
+    const ret = await prisma.shopReturn.findUnique({ where: { id: req.params.id } });
+    if (!ret) return res.status(404).json({ error: 'Заявка не найдена' });
+    if (ret.status !== 'approved') {
+      return res.status(409).json({ error: 'Заявка не в статусе approved — забрать нельзя', status: ret.status });
+    }
+    const updated = await prisma.shopReturn.update({ where: { id: req.params.id }, data: { status: 'collected' } });
+    res.json({ id: updated.id, status: updated.status });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop API] POST /courier/returns/:id/collect упал');
+    res.status(500).json({ error: 'Не удалось отметить забор возврата', details: String(err?.message ?? err) });
+  }
+});
+
 shopRouter.post('/courier/apply', async (req, res) => {
   const parsed = courierApplySchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });

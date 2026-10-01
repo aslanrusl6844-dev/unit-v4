@@ -3944,7 +3944,7 @@ async function runMyMarketCourierApplicationDecision(id, action) {
   }
 }
 
-const MM_RETURN_STATUS_LABELS = { pending: 'Ожидает', approved: 'Одобрен', rejected: 'Отклонён' };
+const MM_RETURN_STATUS_LABELS = { pending: 'Ожидает', approved: 'Одобрен', rejected: 'Отклонён', collected: 'Забрано' };
 let myMarketReturnsCache = [];
 
 /** Текущая подвкладка: pending | approved | rejected. */
@@ -3962,7 +3962,7 @@ function renderMyMarketReturnsTable() {
   const status = mmReturnsStatusTab();
   const rows = myMarketReturnsCache.filter((r) => r.status === status);
   if (!rows.length) {
-    const emptyLabel = { pending: 'Заявок нет', approved: 'Одобренных заявок нет', rejected: 'Отклонённых заявок нет' }[status];
+    const emptyLabel = { pending: 'Заявок нет', approved: 'Одобренных заявок нет', rejected: 'Отклонённых заявок нет', collected: 'Забранных заявок нет' }[status];
     tbody.innerHTML = `<tr><td colspan="6" style="color:var(--text-faint)">${emptyLabel}</td></tr>`;
     return;
   }
@@ -3972,7 +3972,9 @@ function renderMyMarketReturnsTable() {
       ? `<span style="color:var(--accent);font-weight:600">● ${statusLabel}</span>`
       : r.status === 'rejected'
         ? `<span style="color:var(--loss)">● ${statusLabel}</span>`
-        : `<span>${statusLabel}</span>`;
+        : r.status === 'collected'
+          ? `<span style="color:var(--text-muted)">● ${statusLabel}</span>`
+          : `<span>${statusLabel}</span>`;
     return `
       <tr data-return-row="${r.id}" style="cursor:pointer">
         <td>${fmtOrderDateTime(r.createdAt)}</td>
@@ -4023,7 +4025,9 @@ function openMyMarketReturnCard(id) {
       </div>`
     : r.status === 'rejected'
       ? `<p class="panel__hint" style="margin-top:14px">Отказано: ${mmEsc(r.rejectReason || '')}</p>`
-      : `<p class="panel__hint" style="margin-top:14px">Одобрено — покупателю отправлено SMS.</p>`;
+      : r.status === 'collected'
+        ? `<p class="panel__hint" style="margin-top:14px">Товар забран курьером.</p>`
+        : `<p class="panel__hint" style="margin-top:14px">Одобрено — покупателю отправлено SMS.</p>`;
 
   document.getElementById('mmReturnCardBody').innerHTML = `
     <p><b>Заказ:</b> ${mmEsc(r.orderNumber)}</p>
