@@ -445,6 +445,99 @@ shopRouter.post('/reviews/upload-photo', (req, res, next) => {
   }
 });
 
+const RETURN_PHOTO_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+const RETURN_PHOTO_MAX_MB = 6;
+const RETURN_PHOTO_MAX_BYTES = RETURN_PHOTO_MAX_MB * 1024 * 1024;
+const returnPhotoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: RETURN_PHOTO_MAX_BYTES } });
+
+/**
+ * Загрузка одного фото к заявке на возврат — тот же принцип, что и у фото
+ * отзыва: multipart/form-data, поле "file", поле "orderNumber" задаёт путь
+ * в Blob. Отдаёт только { url }; сохранение в саму заявку делает POST /returns.
+ */
+shopRouter.post('/returns/upload-photo', (req, res, next) => {
+  returnPhotoUpload.single('file')(req, res, (err: any) => {
+    if (err) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(413).json({ error: `Файл слишком большой, максимум ${RETURN_PHOTO_MAX_MB} МБ` });
+      }
+      logger.error({ err }, '[Shop API] Ошибка чтения multipart-запроса при загрузке фото возврата');
+      return res.status(400).json({ error: 'Не удалось прочитать файл', details: String(err?.message ?? err) });
+    }
+    next();
+  });
+}, async (req, res) => {
+  const orderNumber = req.body?.orderNumber;
+  if (!orderNumber || typeof orderNumber !== 'string') {
+    return res.status(400).json({ error: 'Поле orderNumber обязательно' });
+  }
+  const file = (req as any).file as Express.Multer.File | undefined;
+  if (!file) return res.status(400).json({ error: 'Файл не передан (поле "file")' });
+
+  if (!env.blobToken) {
+    return res.status(501).json({ error: 'добавьте Blob', details: 'BLOB_READ_WRITE_TOKEN не задан в переменных окружения — загрузка фото недоступна.' });
+  }
+  if (!RETURN_PHOTO_TYPES.includes(file.mimetype)) {
+    return res.status(400).json({ error: `Недопустимый формат файла: ${file.mimetype}. Разрешено: ${RETURN_PHOTO_TYPES.join(', ')}` });
+  }
+
+  try {
+    const safeOrderNumber = orderNumber.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const random = Math.random().toString(36).slice(2, 10);
+    const pathname = `returns/${safeOrderNumber}/${random}.jpg`;
+    const blob = await put(pathname, file.buffer, { access: 'public', contentType: file.mimetype, token: env.blobToken });
+    res.json({ url: blob.url });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop API] Ошибка загрузки фото возврата');
+    res.status(500).json({ error: 'Не удалось загрузить фото', details: String(err?.message ?? err) });
+  }
+});
+
+const createShopReturnSchema = z.object({
+  orderNumber: z.string().min(1),
+  name: z.string().min(1),
+  phone: z.string().min(1),
+  sku: z.string().min(1),
+  reason: z.string().min(1),
+  photos: z.array(z.string().url().startsWith('https://', 'Фото должно быть https-ссылкой')).max(5).optional(),
+  packageOpened: z.boolean().optional().default(false),
+});
+
+/**
+ * Заявка на возврат — пишется СРАЗУ, без проверки заказа/телефона/остатков
+ * (заказы и остатки эта заявка не трогает вообще, см. задачу). productName
+ * — снимок названия товара на момент заявки (по sku ИЛИ shopArticle, как
+ * и везде), чтобы таблица в админке не делала join при каждом чтении;
+ * если товар не нашёлся — просто остаётся null, заявка всё равно пишется.
+ */
+shopRouter.post('/returns', async (req, res) => {
+  const parsed = createShopReturnSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+
+  const normalizedPhone = normalizePhone(parsed.data.phone);
+  if (!normalizedPhone) return res.status(400).json({ error: 'Некорректный номер телефона' });
+
+  try {
+    const product = await prisma.product.findFirst({ where: { OR: [{ sku: parsed.data.sku }, { shopArticle: parsed.data.sku }] } });
+    const ret = await prisma.shopReturn.create({
+      data: {
+        orderNumber: parsed.data.orderNumber,
+        customerName: parsed.data.name,
+        customerPhone: normalizedPhone,
+        sku: parsed.data.sku,
+        productName: product?.name ?? null,
+        reason: parsed.data.reason,
+        photos: parsed.data.photos?.length ? JSON.stringify(parsed.data.photos) : null,
+        packageOpened: parsed.data.packageOpened,
+      },
+    });
+    res.status(201).json({ ...ret, photos: parsed.data.photos ?? [] });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop API] POST /returns упал');
+    res.status(500).json({ error: 'Не удалось отправить заявку на возврат', details: String(err?.message ?? err) });
+  }
+});
+
 const createShopReviewSchema = z.object({
   sku: z.string().min(1),
   orderId: z.string().min(1),

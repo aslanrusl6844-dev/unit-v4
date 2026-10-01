@@ -555,3 +555,24 @@ model ShopCourierApplication {
 
   @@index([archived])
 }
+
+// Заявка на возврат товара My Market. Пишется сразу из приложения, без
+// проверки заказа/телефона/остатков (их не трогаем) — просто фиксируем
+// запрос, дальше решение принимает админ вручную.
+model ShopReturn {
+  id            String    @id @default(cuid())
+  orderNumber   String    // номер заказа, как прислало приложение
+  customerName  String
+  customerPhone String    // нормализованный, как у заказов
+  sku           String    // sku/shopArticle товара, как прислало приложение
+  productName   String?   // снимок названия на момент заявки — без join при чтении таблицы
+  reason        String    // текст причины от покупателя
+  photos        String?   // JSON-массив https-URL (как у отзывов), null если без фото
+  packageOpened Boolean   @default(false)
+  status        String    @default("pending") // "pending" | "approved" | "rejected"
+  rejectReason  String?   // короткая причина отказа — только при status="rejected"
+  createdAt     DateTime  @default(now())
+  reviewedAt    DateTime?
+
+  @@index([status])
+}

@@ -2089,7 +2089,7 @@ let myMarketProductsCache = [];
 let myMarketChartInstance = null;
 let myMarketEditingProductId = null;
 
-const MY_MARKET_TABS = ['home', 'products', 'prices', 'orders', 'analytics', 'couriers', 'finance', 'upload'];
+const MY_MARKET_TABS = ['home', 'products', 'prices', 'orders', 'returns', 'analytics', 'couriers', 'finance', 'upload'];
 
 function wireMyMarketTabsOnce() {
   if (myMarketTabWired) return;
@@ -2274,6 +2274,8 @@ function wireMyMarketTabsOnce() {
 
   // Карточка курьера — модальное окно
   document.getElementById('mmCourierCardClose').addEventListener('click', closeCourierCard);
+  document.getElementById('mmReturnCardClose').addEventListener('click', () => { document.getElementById('mmReturnCardOverlay').hidden = true; });
+  document.getElementById('mmReturnPhotoLightbox').addEventListener('click', () => { document.getElementById('mmReturnPhotoLightbox').hidden = true; });
   document.getElementById('mmCourierCardOverlay').addEventListener('click', (e) => {
     if (e.target.id === 'mmCourierCardOverlay') closeCourierCard();
   });
@@ -2377,6 +2379,7 @@ function switchMyMarketTab(tab) {
   }
   if (tab === 'prices') loadMyMarketPrices();
   if (tab === 'orders') loadMyMarketOrders();
+  if (tab === 'returns') loadMyMarketReturns();
   if (tab === 'analytics') loadMyMarketAnalytics();
   if (tab === 'couriers') { loadMyMarketCouriers(); loadMyMarketCourierApplications(); }
   if (tab === 'finance') loadMyMarketFinance();
@@ -3928,6 +3931,103 @@ async function runMyMarketCourierApplicationDecision(id, action) {
     await loadMyMarketCourierApplications();
   } catch (err) {
     alert(`Не удалось ${action === 'approve' ? 'одобрить' : 'отклонить'} заявку: ` + err.message);
+  }
+}
+
+const MM_RETURN_STATUS_LABELS = { pending: 'Ожидает', approved: 'Одобрен', rejected: 'Отклонён' };
+let myMarketReturnsCache = [];
+
+async function loadMyMarketReturns() {
+  myMarketReturnsCache = await api('/shop-admin/returns');
+  renderMyMarketReturnsTable();
+}
+
+function renderMyMarketReturnsTable() {
+  const tbody = document.querySelector('#mymarketReturnsTable tbody');
+  if (!myMarketReturnsCache.length) {
+    tbody.innerHTML = `<tr><td colspan="6" style="color:var(--text-faint)">Заявок на возврат нет</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = myMarketReturnsCache.map((r) => {
+    const statusLabel = MM_RETURN_STATUS_LABELS[r.status] ?? r.status;
+    const statusHtml = r.status === 'approved'
+      ? `<span style="color:var(--accent);font-weight:600">● ${statusLabel}</span>`
+      : r.status === 'rejected'
+        ? `<span style="color:var(--loss)">● ${statusLabel}</span>`
+        : `<span>${statusLabel}</span>`;
+    return `
+      <tr data-return-row="${r.id}" style="cursor:pointer">
+        <td>${fmtOrderDateTime(r.createdAt)}</td>
+        <td class="name-cell">${mmEsc(r.orderNumber)}</td>
+        <td class="name-cell">${mmEsc(r.productName || r.sku)}</td>
+        <td><a href="tel:${mmEsc(r.customerPhone)}" data-return-phone-link>${mmEsc(r.customerPhone)}</a></td>
+        <td>${r.packageOpened ? 'Вскрыта' : 'Не вскрыта'}</td>
+        <td>${statusHtml}</td>
+      </tr>
+    `;
+  }).join('');
+
+  // Клик по строке открывает карточку, но клик по самому телефону (tel:)
+  // должен звонить, а не открывать карточку поверх — отдельно глушим
+  // всплытие на самой ссылке.
+  tbody.querySelectorAll('a[data-return-phone-link]').forEach((a) => {
+    a.addEventListener('click', (e) => e.stopPropagation());
+  });
+  tbody.querySelectorAll('tr[data-return-row]').forEach((tr) => {
+    tr.addEventListener('click', () => openMyMarketReturnCard(tr.dataset.returnRow));
+  });
+}
+
+function openMyMarketReturnCard(id) {
+  const r = myMarketReturnsCache.find((x) => x.id === id);
+  if (!r) return;
+  const photosHtml = r.photos.length
+    ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">${r.photos.map((url) => `<img src="${url}" data-return-photo="${mmEsc(url)}" style="width:84px;height:84px;object-fit:cover;border-radius:8px;cursor:zoom-in" />`).join('')}</div>`
+    : '<p class="panel__hint">Фото не приложено</p>';
+  const decisionHtml = r.status === 'pending'
+    ? `<div style="display:flex;gap:8px;margin-top:14px">
+        <button class="btn" id="mmReturnApproveBtn" style="background:var(--accent)">Одобрить</button>
+        <button class="btn btn--ghost" id="mmReturnRejectBtn" style="color:var(--loss)">Отказать</button>
+      </div>`
+    : r.status === 'rejected'
+      ? `<p class="panel__hint" style="margin-top:14px">Отказано: ${mmEsc(r.rejectReason || '')}</p>`
+      : `<p class="panel__hint" style="margin-top:14px">Одобрено — покупателю отправлено SMS.</p>`;
+
+  document.getElementById('mmReturnCardBody').innerHTML = `
+    <p><b>Заказ:</b> ${mmEsc(r.orderNumber)}</p>
+    <p><b>Покупатель:</b> ${mmEsc(r.customerName)} · <a href="tel:${mmEsc(r.customerPhone)}">${mmEsc(r.customerPhone)}</a></p>
+    <p><b>Товар:</b> ${mmEsc(r.productName || r.sku)}</p>
+    <p><b>Упаковка:</b> ${r.packageOpened ? 'вскрыта' : 'не вскрыта'}</p>
+    <p><b>Причина:</b> ${mmEsc(r.reason)}</p>
+    ${photosHtml}
+    ${decisionHtml}
+  `;
+  document.getElementById('mmReturnCardBody').querySelectorAll('img[data-return-photo]').forEach((img) => {
+    img.addEventListener('click', () => openMyMarketReturnPhotoLightbox(img.dataset.returnPhoto));
+  });
+  document.getElementById('mmReturnApproveBtn')?.addEventListener('click', () => runMyMarketReturnDecision(r.id, 'approve'));
+  document.getElementById('mmReturnRejectBtn')?.addEventListener('click', () => runMyMarketReturnDecision(r.id, 'reject'));
+  document.getElementById('mmReturnCardOverlay').hidden = false;
+}
+
+function openMyMarketReturnPhotoLightbox(url) {
+  document.getElementById('mmReturnPhotoLightboxImg').src = url;
+  document.getElementById('mmReturnPhotoLightbox').hidden = false;
+}
+
+async function runMyMarketReturnDecision(id, action) {
+  let body;
+  if (action === 'reject') {
+    const reason = prompt('Короткая причина отказа (увидит покупатель):');
+    if (!reason || !reason.trim()) return; // отмена/пусто — ничего не отправляем
+    body = JSON.stringify({ reason: reason.trim() });
+  }
+  try {
+    await api(`/shop-admin/returns/${id}/${action}`, { method: 'POST', body });
+    document.getElementById('mmReturnCardOverlay').hidden = true;
+    await loadMyMarketReturns();
+  } catch (err) {
+    alert(`Не удалось ${action === 'approve' ? 'одобрить' : 'отклонить'} возврат: ` + err.message);
   }
 }
 

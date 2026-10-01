@@ -12,6 +12,7 @@ import { isValidShopCategory } from '../config/shopCategories';
 import { ozonTypeKey } from '../services/sync.service';
 import { hintCategoryByName, hintRuleCatalogPairs, starterCatalogPairs, buildCatalog } from '../services/categoryHints';
 import { editOrderNotify } from '../lib/telegram';
+import { sendSms } from '../services/sms.service';
 
 export const shopAdminRouter = Router();
 
@@ -986,5 +987,83 @@ shopAdminRouter.post('/products/:id/variants', async (req, res) => {
   } catch (err: any) {
     logger.error({ err }, '[Shop Admin] POST /products/:id/variants упал');
     res.status(500).json({ error: 'Не удалось сохранить варианты', details: String(err?.message ?? err) });
+  }
+});
+
+// =====================================================================
+// Возвраты My Market — список и решения. Заказы и остатки не трогаются
+// нигде в этом блоке.
+// =====================================================================
+
+/** Список заявок на возврат — без фильтра по умолчанию, сортировка по дате. */
+shopAdminRouter.get('/returns', async (_req, res) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    const returns = await prisma.shopReturn.findMany({ orderBy: { createdAt: 'desc' } });
+    res.json(returns.map((r: { photos: string | null }) => {
+      let photos: string[] = [];
+      try {
+        photos = r.photos ? JSON.parse(r.photos) : [];
+      } catch {
+        photos = [];
+      }
+      return { ...r, photos };
+    }));
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] GET /returns упал');
+    res.status(500).json({ error: 'Не удалось получить заявки на возврат', details: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * «Одобрить» — SMS покупателю с фиксированным текстом. Заказ и остатки не
+ * меняем: сам забор/приёмку товара и всё, что с ней связано, эта кнопка не
+ * делает — только решение и уведомление.
+ */
+shopAdminRouter.post('/returns/:id/approve', async (req, res) => {
+  try {
+    const ret = await prisma.shopReturn.update({
+      where: { id: req.params.id },
+      data: { status: 'approved', reviewedAt: new Date() },
+    });
+    try {
+      await sendSms(ret.customerPhone, 'Одобрено. Курьер заберёт через 3-4 дня.');
+    } catch (err: any) {
+      // SMS не должно ронять сам ответ — решение уже сохранено.
+      logger.error({ err }, '[Shop Admin] SMS об одобрении возврата не ушло');
+    }
+    let photos: string[] = [];
+    try { photos = ret.photos ? JSON.parse(ret.photos) : []; } catch { photos = []; }
+    res.json({ ...ret, photos });
+  } catch (err: any) {
+    if (err?.code === 'P2025') return res.status(404).json({ error: 'Заявка не найдена' });
+    logger.error({ err }, '[Shop Admin] POST /returns/:id/approve упал');
+    res.status(500).json({ error: 'Не удалось одобрить возврат', details: String(err?.message ?? err) });
+  }
+});
+
+const rejectReturnSchema = z.object({ reason: z.string().min(1).max(300) });
+
+/** «Отказать» — короткая причина обязательна, уходит покупателю SMS-ом. */
+shopAdminRouter.post('/returns/:id/reject', async (req, res) => {
+  const parsed = rejectReturnSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Укажите причину отказа', details: parsed.error.flatten() });
+  try {
+    const ret = await prisma.shopReturn.update({
+      where: { id: req.params.id },
+      data: { status: 'rejected', reviewedAt: new Date(), rejectReason: parsed.data.reason },
+    });
+    try {
+      await sendSms(ret.customerPhone, `Отказано: ${parsed.data.reason}`);
+    } catch (err: any) {
+      logger.error({ err }, '[Shop Admin] SMS об отказе в возврате не ушло');
+    }
+    let photos: string[] = [];
+    try { photos = ret.photos ? JSON.parse(ret.photos) : []; } catch { photos = []; }
+    res.json({ ...ret, photos });
+  } catch (err: any) {
+    if (err?.code === 'P2025') return res.status(404).json({ error: 'Заявка не найдена' });
+    logger.error({ err }, '[Shop Admin] POST /returns/:id/reject упал');
+    res.status(500).json({ error: 'Не удалось отклонить возврат', details: String(err?.message ?? err) });
   }
 });

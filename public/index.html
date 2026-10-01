@@ -445,6 +445,7 @@
           <button data-tab="products">Товары</button>
           <button data-tab="prices">Цены и акции</button>
           <button data-tab="orders">Заказы</button>
+          <button data-tab="returns">Возвраты</button>
           <button data-tab="analytics">Аналитика</button>
           <button data-tab="couriers">Курьеры</button>
           <button data-tab="finance">Финансы</button>
@@ -673,6 +674,37 @@
               </table>
             </div>
           </div>
+        </div>
+
+        <!-- ---- Возвраты ---- -->
+        <div id="mymarketReturnsTab" hidden>
+          <div class="panel">
+            <p class="panel__hint" style="margin-top:0">Клик по строке — причина и фото. Вскрытая/пользованная косметика — повод отказать, но решение принимает админ вручную, не автоматически.</p>
+            <div class="table-wrap">
+              <table class="table" id="mymarketReturnsTable">
+                <thead>
+                  <tr><th>Дата</th><th>Заказ</th><th>Товар</th><th>Телефон</th><th>Упаковка</th><th>Статус</th></tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ---- Карточка возврата ---- -->
+        <div id="mmReturnCardOverlay" class="modal-overlay" hidden>
+          <div class="modal">
+            <div class="modal__head">
+              <h2>Заявка на возврат</h2>
+              <button class="link-btn" id="mmReturnCardClose">✕</button>
+            </div>
+            <div id="mmReturnCardBody"></div>
+          </div>
+        </div>
+
+        <!-- ---- Увеличенное фото возврата ---- -->
+        <div id="mmReturnPhotoLightbox" class="modal-overlay" hidden style="z-index:10000;cursor:zoom-out">
+          <img id="mmReturnPhotoLightboxImg" alt="" style="max-width:92vw;max-height:92vh;border-radius:8px;object-fit:contain" />
         </div>
 
         <!-- ---- Курьеры ---- -->
