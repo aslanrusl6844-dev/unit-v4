@@ -1027,6 +1027,24 @@ const courierApplySchema = z.object({
  * заявку задним числом не трогаем — админ уже принял решение по ней).
  * Ответ отдаёт статус ТОЛЬКО этого телефона — ничего о чужих заявках.
  */
+/**
+ * Статус заявки по телефону — "none", если заявки нет вовсе. Ответ только
+ * по ЭТОМУ телефону, ничего о чужих заявках. Одобрение/отказ не меняет —
+ * чисто чтение.
+ */
+shopRouter.get('/courier/application', async (req, res) => {
+  const normalizedPhone = normalizePhone(String(req.query.phone ?? ''));
+  if (!normalizedPhone) return res.status(400).json({ error: 'Некорректный номер телефона' });
+
+  try {
+    const application = await prisma.shopCourierApplication.findUnique({ where: { phone: normalizedPhone } });
+    res.json({ status: application?.status ?? 'none' });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop API] GET /courier/application упал');
+    res.status(500).json({ error: 'Не удалось получить статус заявки', details: String(err?.message ?? err) });
+  }
+});
+
 shopRouter.post('/courier/apply', async (req, res) => {
   const parsed = courierApplySchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
