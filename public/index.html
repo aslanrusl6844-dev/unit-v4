@@ -679,7 +679,12 @@
         <!-- ---- Возвраты ---- -->
         <div id="mymarketReturnsTab" hidden>
           <div class="panel">
-            <p class="panel__hint" style="margin-top:0">Клик по строке — причина и фото. Вскрытая/пользованная косметика — повод отказать, но решение принимает админ вручную, не автоматически.</p>
+            <p class="panel__hint" style="margin-top:0">Клик по строке — причина, фото, адрес, телефон. Вскрытая/пользованная косметика — повод отказать, но решение принимает админ вручную, не автоматически.</p>
+            <div class="seg" id="mmReturnsStatusTabs" style="margin-bottom:10px">
+              <button class="is-active" data-returnstatus="pending">Ожидает</button>
+              <button data-returnstatus="approved">Одобренные</button>
+              <button data-returnstatus="rejected">Отклонённые</button>
+            </div>
             <div class="table-wrap">
               <table class="table" id="mymarketReturnsTable">
                 <thead>

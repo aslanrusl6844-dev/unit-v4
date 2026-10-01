@@ -1000,14 +1000,36 @@ shopAdminRouter.get('/returns', async (_req, res) => {
   try {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     const returns = await prisma.shopReturn.findMany({ orderBy: { createdAt: 'desc' } });
-    res.json(returns.map((r: { photos: string | null }) => {
+
+    // Адрес заказа — одним запросом на все встреченные orderNumber сразу
+    // (не по одному на заявку). Заказа нет (удалён, опечатка в номере и
+    // т.п.) — адрес просто пустой, заявку это не роняет.
+    const orderNumbers = Array.from(new Set(returns.map((r: { orderNumber: string }) => r.orderNumber)));
+    const orders = orderNumbers.length
+      ? await prisma.shopOrder.findMany({
+          where: { number: { in: orderNumbers } },
+          select: { number: true, city: true, street: true, house: true, apartment: true, entrance: true, floor: true, intercom: true, phone: true },
+        })
+      : [];
+    const orderByNumber = new Map(orders.map((o: { number: string }) => [o.number, o]));
+
+    res.json(returns.map((r: { photos: string | null; orderNumber: string }) => {
       let photos: string[] = [];
       try {
         photos = r.photos ? JSON.parse(r.photos) : [];
       } catch {
         photos = [];
       }
-      return { ...r, photos };
+      const order = orderByNumber.get(r.orderNumber) as
+        | { city: string; street: string; house: string; apartment: string | null; entrance: string | null; floor: string | null; intercom: string | null; phone: string }
+        | undefined;
+      return {
+        ...r,
+        photos,
+        address: order
+          ? { city: order.city, street: order.street, house: order.house, apartment: order.apartment, entrance: order.entrance, floor: order.floor, intercom: order.intercom, phone: order.phone }
+          : null,
+      };
     }));
   } catch (err: any) {
     logger.error({ err }, '[Shop Admin] GET /returns упал');

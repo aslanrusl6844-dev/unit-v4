@@ -538,6 +538,29 @@ shopRouter.post('/returns', async (req, res) => {
   }
 });
 
+/**
+ * Заявки на возврат покупателя — только по его телефону, ничего о чужих.
+ * approved не скрывается — все три статуса видны. Поля — минимум для
+ * экрана покупателя (не адрес, не фото: это для его собственной истории
+ * обращений, не карточка для админа).
+ */
+shopRouter.get('/returns', async (req, res) => {
+  const normalizedPhone = normalizePhone(String(req.query.phone ?? ''));
+  if (!normalizedPhone) return res.status(400).json({ error: 'Некорректный номер телефона' });
+
+  try {
+    const returns = await prisma.shopReturn.findMany({
+      where: { customerPhone: normalizedPhone },
+      orderBy: { createdAt: 'desc' },
+      select: { orderNumber: true, sku: true, productName: true, reason: true, status: true, rejectReason: true },
+    });
+    res.json(returns);
+  } catch (err: any) {
+    logger.error({ err }, '[Shop API] GET /returns упал');
+    res.status(500).json({ error: 'Не удалось получить заявки на возврат', details: String(err?.message ?? err) });
+  }
+});
+
 const createShopReviewSchema = z.object({
   sku: z.string().min(1),
   orderId: z.string().min(1),

@@ -2227,6 +2227,16 @@ function wireMyMarketTabsOnce() {
   });
   document.getElementById('mmCourierAppBulkArchiveBtn').addEventListener('click', () => runMyMarketCourierAppBulkArchive(true));
   document.getElementById('mmCourierAppBulkRestoreBtn').addEventListener('click', () => runMyMarketCourierAppBulkArchive(false));
+
+  // Возвраты: подвкладки Ожидает/Одобренные/Отклонённые — фильтруют уже
+  // загруженный список, без нового запроса к серверу.
+  document.getElementById('mmReturnsStatusTabs').addEventListener('click', (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    document.querySelectorAll('#mmReturnsStatusTabs button').forEach((b) => b.classList.remove('is-active'));
+    btn.classList.add('is-active');
+    renderMyMarketReturnsTable();
+  });
   document.getElementById('mmSaveVariantsBtn').addEventListener('click', () => runMyMarketSaveVariants());
   document.getElementById('mmProdBulkArchiveBtn').addEventListener('click', () => runMyMarketArchive([...myMarketSelectedProductIds], true));
   document.getElementById('mmProdBulkRestoreBtn').addEventListener('click', () => runMyMarketArchive([...myMarketSelectedProductIds], false));
@@ -3937,6 +3947,11 @@ async function runMyMarketCourierApplicationDecision(id, action) {
 const MM_RETURN_STATUS_LABELS = { pending: 'Ожидает', approved: 'Одобрен', rejected: 'Отклонён' };
 let myMarketReturnsCache = [];
 
+/** Текущая подвкладка: pending | approved | rejected. */
+function mmReturnsStatusTab() {
+  return document.querySelector('#mmReturnsStatusTabs button.is-active')?.dataset.returnstatus ?? 'pending';
+}
+
 async function loadMyMarketReturns() {
   myMarketReturnsCache = await api('/shop-admin/returns');
   renderMyMarketReturnsTable();
@@ -3944,11 +3959,14 @@ async function loadMyMarketReturns() {
 
 function renderMyMarketReturnsTable() {
   const tbody = document.querySelector('#mymarketReturnsTable tbody');
-  if (!myMarketReturnsCache.length) {
-    tbody.innerHTML = `<tr><td colspan="6" style="color:var(--text-faint)">Заявок на возврат нет</td></tr>`;
+  const status = mmReturnsStatusTab();
+  const rows = myMarketReturnsCache.filter((r) => r.status === status);
+  if (!rows.length) {
+    const emptyLabel = { pending: 'Заявок нет', approved: 'Одобренных заявок нет', rejected: 'Отклонённых заявок нет' }[status];
+    tbody.innerHTML = `<tr><td colspan="6" style="color:var(--text-faint)">${emptyLabel}</td></tr>`;
     return;
   }
-  tbody.innerHTML = myMarketReturnsCache.map((r) => {
+  tbody.innerHTML = rows.map((r) => {
     const statusLabel = MM_RETURN_STATUS_LABELS[r.status] ?? r.status;
     const statusHtml = r.status === 'approved'
       ? `<span style="color:var(--accent);font-weight:600">● ${statusLabel}</span>`
@@ -3978,6 +3996,20 @@ function renderMyMarketReturnsTable() {
   });
 }
 
+/** Полный адрес заказа — город, улица, дом, кв., подъезд, этаж, домофон.
+ *  Заказ не нашёлся на сервере (address: null) — показываем явно, не молчим. */
+function mmFormatReturnAddress(address) {
+  if (!address) return 'Заказ не найден — адрес неизвестен';
+  const parts = [address.city, address.street, address.house].filter(Boolean).join(', ');
+  const extra = [
+    address.apartment ? `кв. ${address.apartment}` : '',
+    address.entrance ? `подъезд ${address.entrance}` : '',
+    address.floor ? `этаж ${address.floor}` : '',
+    address.intercom ? `домофон ${address.intercom}` : '',
+  ].filter(Boolean).join(', ');
+  return [parts, extra].filter(Boolean).join(' — ');
+}
+
 function openMyMarketReturnCard(id) {
   const r = myMarketReturnsCache.find((x) => x.id === id);
   if (!r) return;
@@ -3996,6 +4028,7 @@ function openMyMarketReturnCard(id) {
   document.getElementById('mmReturnCardBody').innerHTML = `
     <p><b>Заказ:</b> ${mmEsc(r.orderNumber)}</p>
     <p><b>Покупатель:</b> ${mmEsc(r.customerName)} · <a href="tel:${mmEsc(r.customerPhone)}">${mmEsc(r.customerPhone)}</a></p>
+    <p><b>Адрес заказа:</b> ${mmEsc(mmFormatReturnAddress(r.address))}</p>
     <p><b>Товар:</b> ${mmEsc(r.productName || r.sku)}</p>
     <p><b>Упаковка:</b> ${r.packageOpened ? 'вскрыта' : 'не вскрыта'}</p>
     <p><b>Причина:</b> ${mmEsc(r.reason)}</p>
