@@ -7,6 +7,7 @@ import { logger } from '../utils/logger';
 import { markShopOrderAsPaid, normalizePhone } from './shop.routes';
 import { getSearchAnalytics, getConversionAnalytics, getSeasonalityAnalytics } from '../services/shopAnalytics.service';
 import { generateWaybillPdf, WaybillOrderItem } from '../services/waybill.service';
+import { KZ_CITY_WHITELIST, normalizeKzCity } from '../services/shopAnalytics.service';
 import { maybeGenerateShopArticle } from '../services/shopArticle';
 import { isValidShopCategory } from '../config/shopCategories';
 import { ozonTypeKey } from '../services/sync.service';
@@ -321,6 +322,127 @@ shopAdminRouter.get('/orders/waybills-zip', async (req, res) => {
   } catch (err: any) {
     logger.error({ err }, '[Shop Admin] Ошибка сборки ZIP-пачки накладных');
     res.status(500).json({ error: 'Не удалось собрать пачку накладных', details: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * Города для кнопки «Скачать накладные ZIP» — всегда все 14 из того же
+ * списка, что в адресе профиля (KZ_CITY_WHITELIST, см. shopAnalytics), в
+ * том же порядке. В число берутся ТОЛЬКО заказы status=paid, не в архиве,
+ * ещё не скачанные (waybillDownloaded=false). hasDownloadedBefore — был ли
+ * у города хоть один УЖЕ скачанный заказ (для «Скачан» / кнопки «ещё раз»
+ * у города с нулём новых).
+ */
+shopAdminRouter.get('/orders/waybills-cities', async (_req, res) => {
+  try {
+    const orders = await prisma.shopOrder.findMany({
+      where: { status: 'paid', archived: false },
+      select: { city: true, waybillDownloaded: true },
+    });
+    const newCountByCity = new Map<string, number>();
+    const everDownloadedByCity = new Set<string>();
+    for (const o of orders as Array<{ city: string; waybillDownloaded: boolean }>) {
+      const canonical = normalizeKzCity(o.city);
+      if (!canonical) continue; // город не из списка 14 — не выдумываем лишний, просто не считаем
+      if (o.waybillDownloaded) everDownloadedByCity.add(canonical);
+      else newCountByCity.set(canonical, (newCountByCity.get(canonical) ?? 0) + 1);
+    }
+    const cities = KZ_CITY_WHITELIST.map((city) => ({
+      city,
+      newCount: newCountByCity.get(city) ?? 0,
+      hasDownloadedBefore: everDownloadedByCity.has(city),
+    }));
+    res.json(cities);
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] GET /orders/waybills-cities упал');
+    res.status(500).json({ error: 'Не удалось получить список городов', details: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * ZIP накладных ОДНОГО города — либо новых (redownload не передан/false:
+ * status=paid, не в архиве, waybillDownloaded=false), либо уже скачанных
+ * раньше повторно (redownload=true: waybillDownloaded=true). Два города в
+ * один ZIP никогда не попадают — city обязателен и должен быть из списка
+ * 14. После успешной сборки (не redownload) помечаем ВКЛЮЧЁННЫЕ в файл
+ * заказы waybillDownloaded=true — именно включённые, не весь найденный
+ * список: заказ, для которого PDF не собрался, флаг не получает и попадёт
+ * в следующую попытку. Статус заказа, остаток, деньги — нигде не трогаем.
+ */
+shopAdminRouter.get('/orders/waybills-zip-by-city', async (req, res) => {
+  try {
+    const city = String(req.query.city ?? '');
+    if (!KZ_CITY_WHITELIST.includes(city)) {
+      return res.status(400).json({ error: 'Город не из списка 14' });
+    }
+    const redownload = req.query.redownload === 'true';
+
+    const candidates = await prisma.shopOrder.findMany({
+      where: { status: 'paid', archived: false, waybillDownloaded: redownload },
+      orderBy: { createdAt: 'desc' },
+    });
+    const matching = candidates.filter((o: { city: string }) => normalizeKzCity(o.city) === city);
+
+    if (!matching.length) {
+      return res.status(404).json({ error: redownload ? 'Нет ранее скачанных накладных для этого города' : 'Новых накладных для этого города нет' });
+    }
+
+    const batch = matching.slice(0, WAYBILL_ZIP_LIMIT);
+    const zip = new JSZip();
+    let includedCount = 0;
+    const includedIds: string[] = [];
+    for (const order of batch) {
+      let items: WaybillOrderItem[] = [];
+      try {
+        items = (JSON.parse(order.items) as Array<{ sku: string; name: string; quantity: number }>)
+          .map((i) => ({ sku: i.sku, name: i.name, quantity: i.quantity }));
+      } catch {
+        items = [];
+      }
+      try {
+        const pdfBuffer = await generateWaybillPdf({
+          number: order.number,
+          customerName: order.customerName,
+          phone: order.phone,
+          city: order.city,
+          street: order.street,
+          house: order.house,
+          apartment: order.apartment,
+          entrance: order.entrance,
+          floor: order.floor,
+          intercom: order.intercom,
+          items,
+        });
+        zip.file(`waybill-${order.number}.pdf`, pdfBuffer);
+        includedCount += 1;
+        includedIds.push(order.id);
+      } catch (err: any) {
+        logger.warn({ err: String(err?.message ?? err), orderNumber: order.number }, '[Shop Admin] Накладная для заказа не собралась — пропущена в городской ZIP-пачке');
+      }
+    }
+
+    if (!includedCount) {
+      return res.status(500).json({ error: 'Ни одна накладная не собралась' });
+    }
+
+    if (!redownload) {
+      await prisma.shopOrder.updateMany({ where: { id: { in: includedIds } }, data: { waybillDownloaded: true } });
+    }
+
+    const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
+    const now = new Date();
+    const dateStr = `${String(now.getDate()).padStart(2, '0')}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const filename = `${city}_${dateStr}.zip`;
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="waybills.zip"; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    res.setHeader('X-Waybills-Total', String(matching.length));
+    res.setHeader('X-Waybills-Included', String(includedCount));
+    res.setHeader('Access-Control-Expose-Headers', 'X-Waybills-Total, X-Waybills-Included');
+    res.send(zipBuffer);
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] GET /orders/waybills-zip-by-city упал');
+    res.status(500).json({ error: 'Не удалось собрать накладные города', details: String(err?.message ?? err) });
   }
 });
 

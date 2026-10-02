@@ -658,14 +658,35 @@
                 <button data-status="in_transit">В пути</button>
                 <button data-status="delivered">Выдан</button>
                 <button data-status="cancelled">Отменён</button>
+                <button data-status="archived">Архив</button>
+              </div>
+            </div>
+            <div class="inline-form" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-top:10px">
+              <div class="inline-form" style="gap:8px;align-items:center">
+                <input type="text" id="mmOrdersSearch" placeholder="Поиск: номер заказа, товар, артикул" style="width:260px" />
+                <button class="btn btn--ghost" id="mmOrdersBulkArchiveBtn" disabled>В архив</button>
+                <button class="btn btn--ghost" id="mmOrdersBulkDeleteBtn" disabled style="color:var(--loss)">Удалить</button>
               </div>
               <button class="btn btn--ghost" id="mmDownloadWaybillsZipBtn">📦 Скачать накладные ZIP</button>
             </div>
             <div id="mmWaybillsZipStatus" style="margin:6px 0"></div>
+
+            <!-- ---- Накладные ZIP по городу ---- -->
+            <div id="mmWaybillCitiesOverlay" class="modal-overlay" hidden>
+              <div class="modal">
+                <div class="modal__head">
+                  <h2>Накладные по городу</h2>
+                  <button class="link-btn" id="mmWaybillCitiesClose">✕</button>
+                </div>
+                <div id="mmWaybillCitiesBanner" style="margin-bottom:8px"></div>
+                <div id="mmWaybillCitiesList"></div>
+              </div>
+            </div>
             <div class="table-wrap">
               <table class="table" id="mymarketOrdersTable">
                 <thead>
                   <tr>
+                    <th style="width:28px"><input type="checkbox" id="mmOrdersSelectAll" title="Выбрать все на этой вкладке" /></th>
                     <th>№ заказа</th><th>Дата</th><th>Товар</th><th>Клиент</th><th>Телефон</th><th>Адрес</th>
                     <th class="num">Сумма</th><th class="num">Кол-во</th><th>Статус</th><th>Код выдачи</th><th>Курьер / выплата</th><th></th>
                   </tr>

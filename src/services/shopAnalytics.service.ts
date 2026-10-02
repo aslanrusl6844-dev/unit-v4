@@ -26,7 +26,7 @@ function round1(n: number): number {
  * не из списка, считается "без города" (см. normalizeKzCity) — город не
  * выдумываем, если его нет в этом списке.
  */
-const KZ_CITY_WHITELIST = [
+export const KZ_CITY_WHITELIST = [
   'Алматы', 'Астана', 'Шымкент', 'Караганда', 'Актобе', 'Тараз', 'Павлодар',
   'Усть-Каменогорск', 'Семей', 'Атырау', 'Костанай', 'Кызылорда', 'Актау', 'Уральск',
 ];
@@ -35,7 +35,7 @@ for (const c of KZ_CITY_WHITELIST) KZ_CITY_LOOKUP.set(c.toLowerCase(), c);
 KZ_CITY_LOOKUP.set('нур-султан', 'Астана');
 
 /** trim + регистр не важен; не из списка (или пусто) -> null ("без города"). */
-function normalizeKzCity(raw: string | null): string | null {
+export function normalizeKzCity(raw: string | null): string | null {
   if (!raw) return null;
   const key = raw.trim().toLowerCase();
   if (!key) return null;

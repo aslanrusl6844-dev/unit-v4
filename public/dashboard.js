@@ -2107,49 +2107,27 @@ function wireMyMarketTabsOnce() {
     document.querySelectorAll('#mymarketOrderStatusTabs button').forEach((b) => b.classList.remove('is-active'));
     btn.classList.add('is-active');
     document.getElementById('mmWaybillsZipStatus').innerHTML = ''; // сообщение про прошлую пачку неактуально для другой вкладки
+    document.getElementById('mmOrdersSearch').value = '';
     loadMyMarketOrders();
   });
+  document.getElementById('mmOrdersSearch').addEventListener('input', () => renderMyMarketOrdersTable());
+  document.getElementById('mmOrdersSelectAll').addEventListener('change', (e) => {
+    const box = e.target;
+    document.querySelectorAll('#mymarketOrdersTable tbody input[data-order-select]').forEach((cb) => {
+      cb.checked = box.checked;
+      if (box.checked) myMarketSelectedOrderIds.add(cb.dataset.orderSelect);
+      else myMarketSelectedOrderIds.delete(cb.dataset.orderSelect);
+    });
+    renderMyMarketOrdersTable();
+  });
+  document.getElementById('mmOrdersBulkArchiveBtn').addEventListener('click', runMyMarketOrdersBulkArchive);
+  document.getElementById('mmOrdersBulkDeleteBtn').addEventListener('click', runMyMarketOrdersBulkDelete);
 
-  // Пачка накладных ZIP — за текущую открытую вкладку статуса. Тот же PDF,
-  // что и одиночная кнопка «Накладная» в строке — просто собранный пачкой.
-  document.getElementById('mmDownloadWaybillsZipBtn').addEventListener('click', async () => {
-    const status = document.querySelector('#mymarketOrderStatusTabs button.is-active')?.dataset.status || '';
-    const btn = document.getElementById('mmDownloadWaybillsZipBtn');
-    const statusEl = document.getElementById('mmWaybillsZipStatus');
-    btn.disabled = true;
-    statusEl.innerHTML = `<p style="color:var(--text-faint);font-size:12.5px">Собираю накладные…</p>`;
-    try {
-      const res = await fetch(`/api/shop-admin/orders/waybills-zip?status=${encodeURIComponent(status)}`);
-      if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        statusEl.innerHTML = `<p style="color:var(--loss);font-size:12.5px">${body?.error || 'Не удалось собрать накладные'}</p>`;
-        return;
-      }
-
-      const total = Number(res.headers.get('X-Waybills-Total') || '0');
-      const included = Number(res.headers.get('X-Waybills-Included') || '0');
-      const disposition = res.headers.get('Content-Disposition') || '';
-      const match = disposition.match(/filename\*=UTF-8''([^;]+)/);
-      const filename = match ? decodeURIComponent(match[1]) : 'waybills.zip';
-
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-
-      statusEl.innerHTML = total > included
-        ? `<p style="color:var(--warn);font-size:12.5px">Скачано ${included} из ${total}, отфильтруйте или скачайте ещё раз.</p>`
-        : `<p style="color:var(--accent);font-size:12.5px">Скачано ${included} накладных.</p>`;
-    } catch (err) {
-      statusEl.innerHTML = `<p style="color:var(--loss);font-size:12.5px">Ошибка: ${err.message}</p>`;
-    } finally {
-      btn.disabled = false;
-    }
+  // Кнопка больше не качает сразу — открывает список городов (14, как в
+  // адресе профиля). Собственно скачивание — по клику на конкретный город.
+  document.getElementById('mmDownloadWaybillsZipBtn').addEventListener('click', openMyMarketWaybillCities);
+  document.getElementById('mmWaybillCitiesClose').addEventListener('click', () => {
+    document.getElementById('mmWaybillCitiesOverlay').hidden = true;
   });
 
   document.getElementById('mymarketProductFilterTabs').addEventListener('click', (e) => {
@@ -3600,31 +3578,164 @@ function mmSetTabBadges(containerId, datasetKey, counts, colorClass, allowedKeys
   });
 }
 
+let myMarketOrdersCache = [];
+let myMarketOrdersProductBySku = new Map();
+let myMarketSelectedOrderIds = new Set();
+
+function mmOrdersActiveTab() {
+  return document.querySelector('#mymarketOrderStatusTabs button.is-active')?.dataset.status || '';
+}
+
+/**
+ * Модалка «Накладные по городу» — список всегда из тех же 14 городов, что
+ * в адресе профиля (не свой список), в одном и том же порядке, на каждое
+ * открытие перечитывается с сервера.
+ */
+async function openMyMarketWaybillCities() {
+  document.getElementById('mmWaybillCitiesOverlay').hidden = false;
+  document.getElementById('mmWaybillCitiesList').innerHTML = '<p class="panel__hint">Загружаю…</p>';
+  await loadMyMarketWaybillCities();
+}
+
+async function loadMyMarketWaybillCities() {
+  try {
+    const cities = await api('/shop-admin/orders/waybills-cities');
+    renderMyMarketWaybillCities(cities);
+  } catch (err) {
+    document.getElementById('mmWaybillCitiesList').innerHTML = `<p style="color:var(--loss)">Ошибка: ${mmEsc(err.message)}</p>`;
+  }
+}
+
+function renderMyMarketWaybillCities(cities) {
+  const totalNew = cities.reduce((sum, c) => sum + c.newCount, 0);
+  document.getElementById('mmWaybillCitiesBanner').innerHTML = totalNew === 0
+    ? '<p class="panel__hint" style="margin:0">Новых накладных нет</p>'
+    : '';
+
+  document.getElementById('mmWaybillCitiesList').innerHTML = cities.map((c) => {
+    // Четыре состояния: нечего скачивать и никогда не скачивали (серая,
+    // без кнопок); уже всё скачано, новых нет (галочка «Скачан» + «ещё
+    // раз»); есть новые, скачивали раньше («ещё N», без галочки); есть
+    // новые, первый раз (обычный счёт).
+    if (c.newCount === 0 && !c.hasDownloadedBefore) {
+      return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 2px;color:var(--text-faint)">
+        <span>${mmEsc(c.city)}</span><span></span>
+      </div>`;
+    }
+    if (c.newCount === 0 && c.hasDownloadedBefore) {
+      return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 2px;border-bottom:1px solid var(--border)">
+        <span>${mmEsc(c.city)} <span style="color:var(--accent)">✓ Скачан</span></span>
+        <button class="btn btn--ghost" data-city-redownload="${mmEsc(c.city)}">ещё раз</button>
+      </div>`;
+    }
+    const label = c.hasDownloadedBefore ? `${mmEsc(c.city)}, ещё ${c.newCount}` : `${mmEsc(c.city)}, ${c.newCount} заказов`;
+    return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 2px;border-bottom:1px solid var(--border)">
+      <span>${label}</span>
+      <button class="btn" data-city-download="${mmEsc(c.city)}">Скачать</button>
+    </div>`;
+  }).join('');
+
+  document.querySelectorAll('button[data-city-download]').forEach((btn) => {
+    btn.addEventListener('click', () => runMyMarketDownloadCityWaybills(btn.dataset.cityDownload, false));
+  });
+  document.querySelectorAll('button[data-city-redownload]').forEach((btn) => {
+    btn.addEventListener('click', () => runMyMarketDownloadCityWaybills(btn.dataset.cityRedownload, true));
+  });
+}
+
+/** Скачивает ZIP одного города (новые, либо повторно уже скачанные при
+ *  redownload=true), триггерит файл браузеру, затем перечитывает список —
+ *  скачанные только что заказы уходят из «новых» этого города. */
+async function runMyMarketDownloadCityWaybills(city, redownload) {
+  const btn = document.querySelector(
+    redownload ? `button[data-city-redownload="${city}"]` : `button[data-city-download="${city}"]`,
+  );
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetch(`/api/shop-admin/orders/waybills-zip-by-city?city=${encodeURIComponent(city)}&redownload=${redownload}`);
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      alert(body?.error || 'Не удалось собрать накладные');
+      return;
+    }
+    const disposition = res.headers.get('Content-Disposition') || '';
+    const match = disposition.match(/filename\*=UTF-8''([^;]+)/);
+    const filename = match ? decodeURIComponent(match[1]) : `${city}.zip`;
+
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+
+    // Только что скачанные (не redownload) помечены сервером waybillDownloaded —
+    // перечитываем список, чтобы этот город сразу показал новое состояние.
+    await loadMyMarketWaybillCities();
+  } catch (err) {
+    alert('Ошибка: ' + err.message);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 async function loadMyMarketOrders() {
-  const status = document.querySelector('#mymarketOrderStatusTabs button.is-active')?.dataset.status || '';
+  const tab = mmOrdersActiveTab();
+  const isArchiveTab = tab === 'archived';
+  // "Архив" — отдельный запрос (?archived=true), игнорирует status целиком;
+  // остальные вкладки — как раньше (?status=... или "Все" без параметра).
+  const queryPart = isArchiveTab ? '?archived=true' : (tab ? `?status=${tab}` : '');
   // Товары грузим параллельно с заказами — нужны для фото/названия по sku,
   // когда их нет в самом снимке позиции заказа (сейчас там только
   // sku/name/price/quantity, фото там никогда не было). Не трогает
   // GET /shop-admin/orders — он как отдавал items распарсенными, так и отдаёт.
   const [orders, products, orderStatusCounts] = await Promise.all([
-    api(`/shop-admin/orders${status ? `?status=${status}` : ''}`),
+    api(`/shop-admin/orders${queryPart}`),
     api('/products'),
     api('/shop-admin/orders/status-counts'),
   ]);
   mmSetTabBadges('mymarketOrderStatusTabs', 'status', orderStatusCounts, 'mm-tab-badge--green', ['pending_payment', 'paid', 'picked', 'in_transit', 'delivered', 'cancelled']);
   // Ключ и по внутреннему sku, и по shopArticle — позиция заказа могла прийти
   // с любым из двух (приложение теперь показывает покупателю shopArticle).
-  const productBySku = new Map();
+  myMarketOrdersProductBySku = new Map();
   products.forEach((p) => {
-    productBySku.set(p.sku, p);
-    if (p.shopArticle) productBySku.set(p.shopArticle, p);
+    myMarketOrdersProductBySku.set(p.sku, p);
+    if (p.shopArticle) myMarketOrdersProductBySku.set(p.shopArticle, p);
   });
+  myMarketOrdersCache = orders;
+  myMarketSelectedOrderIds.clear();
+  renderMyMarketOrdersTable();
+}
+
+/** Фильтрует уже загруженный список по номеру заказа, названию товара и
+ *  артикулу (sku позиции — для заказов, оформленных после перехода на
+ *  shopArticle, это он и есть). Работает на любой вкладке, включая «Архив». */
+function renderMyMarketOrdersTable() {
+  const isArchiveTab = mmOrdersActiveTab() === 'archived';
+  document.getElementById('mmOrdersBulkArchiveBtn').hidden = isArchiveTab; // кнопки «В архив» в архиве нет
+
+  const query = (document.getElementById('mmOrdersSearch').value || '').trim().toLowerCase();
+  let rows = myMarketOrdersCache;
+  if (query) {
+    rows = rows.filter((o) => {
+      if (o.number.toLowerCase().includes(query)) return true;
+      return (o.items || []).some((item) =>
+        (item.name || '').toLowerCase().includes(query) || (item.sku || '').toLowerCase().includes(query),
+      );
+    });
+  }
+
   const tbody = document.querySelector('#mymarketOrdersTable tbody');
-  if (!orders.length) {
-    tbody.innerHTML = `<tr><td colspan="12" style="color:var(--text-faint)">Заказов нет</td></tr>`;
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="13" style="color:var(--text-faint)">${query ? 'Ничего не найдено' : 'Заказов нет'}</td></tr>`;
+    updateMyMarketOrdersBulkBar([]);
     return;
   }
-  tbody.innerHTML = orders.map((o) => {
+  const productBySku = myMarketOrdersProductBySku;
+  tbody.innerHTML = rows.map((o) => {
     const address = [o.city, o.street, o.house, o.apartment ? `кв. ${o.apartment}` : ''].filter(Boolean).join(', ');
     const isCancelled = o.status === 'cancelled';
     // Накладная — обычная ссылка на тот же URL, что открывается напрямую
@@ -3660,6 +3771,7 @@ async function loadMyMarketOrders() {
     const totalQty = (o.items || []).reduce((sum, item) => sum + (item.quantity > 0 ? item.quantity : 1), 0);
     return `
     <tr>
+      <td><input type="checkbox" data-order-select="${o.id}" ${myMarketSelectedOrderIds.has(o.id) ? 'checked' : ''} /></td>
       <td class="name-cell">${o.number}</td>
       <td>${fmtOrderDateTime(o.createdAt)}</td>
       <td>${itemsCell}</td>
@@ -3703,6 +3815,47 @@ async function loadMyMarketOrders() {
     });
   });
 
+  tbody.querySelectorAll('input[data-order-select]').forEach((box) => {
+    box.addEventListener('change', () => {
+      if (box.checked) myMarketSelectedOrderIds.add(box.dataset.orderSelect);
+      else myMarketSelectedOrderIds.delete(box.dataset.orderSelect);
+      updateMyMarketOrdersBulkBar(rows);
+    });
+  });
+  updateMyMarketOrdersBulkBar(rows);
+}
+
+function updateMyMarketOrdersBulkBar(visibleRows) {
+  const n = myMarketSelectedOrderIds.size;
+  const archiveBtn = document.getElementById('mmOrdersBulkArchiveBtn');
+  const deleteBtn = document.getElementById('mmOrdersBulkDeleteBtn');
+  archiveBtn.disabled = deleteBtn.disabled = n === 0;
+  const selectAll = document.getElementById('mmOrdersSelectAll');
+  selectAll.checked = visibleRows.length > 0 && n === visibleRows.length;
+  selectAll.indeterminate = n > 0 && n < visibleRows.length;
+}
+
+async function runMyMarketOrdersBulkArchive() {
+  const ids = [...myMarketSelectedOrderIds];
+  if (!ids.length) return;
+  try {
+    await api('/shop-admin/orders/archive', { method: 'POST', body: JSON.stringify({ ids }) });
+    await loadMyMarketOrders();
+  } catch (err) {
+    alert('Не удалось перенести заказы в архив: ' + err.message);
+  }
+}
+
+async function runMyMarketOrdersBulkDelete() {
+  const ids = [...myMarketSelectedOrderIds];
+  if (!ids.length) return;
+  if (!confirm(`Удалить ${ids.length} заказов? Вернуть нельзя.`)) return;
+  try {
+    await api('/shop-admin/orders/delete', { method: 'POST', body: JSON.stringify({ ids }) });
+    await loadMyMarketOrders();
+  } catch (err) {
+    alert('Не удалось удалить заказы: ' + err.message);
+  }
 }
 
 // ---------------------------------------------------------------------
