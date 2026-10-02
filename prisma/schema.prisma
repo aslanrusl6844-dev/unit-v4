@@ -545,6 +545,11 @@ model ShopCourierApplication {
   phone      String   @unique // нормализованный, как у Courier.phone
   name       String
   city       String
+  // ИИН — приходит из приглашения (ShopCourierInvite) в момент подачи
+  // заявки, курьер его не вводит сам. У заявок, созданных до этого поля
+  // (до вакансий), остаётся null — не бэкофилим задним числом, данных для
+  // этого нет.
+  iin        String?
   status     String   @default("pending") // "pending" | "approved" | "rejected"
   createdAt  DateTime @default(now())
   reviewedAt DateTime?
@@ -554,6 +559,18 @@ model ShopCourierApplication {
   archived   Boolean  @default(false)
 
   @@index([archived])
+}
+
+// Приглашение («Вакансия») — сервер присылает его на конкретный телефон
+// ДО того, как курьер может вообще подать заявку. Без приглашения
+// POST /courier/apply отвечает 403. Одна запись на телефон: повторная
+// отправка вакансии на тот же номер обновляет её, а не плодит вторую.
+model ShopCourierInvite {
+  phone     String   @id // нормализованный
+  firstName String
+  lastName  String
+  iin       String
+  createdAt DateTime @default(now())
 }
 
 // Заявка на возврат товара My Market. Пишется сразу из приложения, без

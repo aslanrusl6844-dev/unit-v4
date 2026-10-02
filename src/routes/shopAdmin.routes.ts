@@ -4,7 +4,7 @@ import { z } from 'zod';
 import JSZip from 'jszip';
 import { prisma } from '../db/prisma';
 import { logger } from '../utils/logger';
-import { markShopOrderAsPaid } from './shop.routes';
+import { markShopOrderAsPaid, normalizePhone } from './shop.routes';
 import { getSearchAnalytics, getConversionAnalytics, getSeasonalityAnalytics } from '../services/shopAnalytics.service';
 import { generateWaybillPdf, WaybillOrderItem } from '../services/waybill.service';
 import { maybeGenerateShopArticle } from '../services/shopArticle';
@@ -505,6 +505,39 @@ shopAdminRouter.post('/bulk-upsert', async (req, res) => {
  * (как раньше), но теперь уже БЕЗ архивных — отклонённые туда больше не
  * попадают (их архивирует сам /reject), а вручную убранные пачкой — тоже.
  */
+const courierInviteSchema = z.object({
+  firstName: z.string().min(1),
+  lastName: z.string().min(1),
+  phone: z.string().min(1),
+  iin: z.string().min(1),
+});
+
+/**
+ * «Вакансия» — приглашение на конкретный телефон, без которого курьер не
+ * может подать заявку (см. POST /courier/apply). Одна запись на телефон:
+ * повторная отправка на тот же номер обновляет её (новое имя/ИИН тоже
+ * подтянутся), а не создаёт вторую.
+ */
+shopAdminRouter.post('/courier-invites', async (req, res) => {
+  const parsed = courierInviteSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+
+  try {
+    const phone = normalizePhone(parsed.data.phone);
+    if (!phone) return res.status(400).json({ error: 'Некорректный номер телефона' });
+
+    const invite = await prisma.shopCourierInvite.upsert({
+      where: { phone },
+      update: { firstName: parsed.data.firstName, lastName: parsed.data.lastName, iin: parsed.data.iin },
+      create: { phone, firstName: parsed.data.firstName, lastName: parsed.data.lastName, iin: parsed.data.iin },
+    });
+    res.status(201).json(invite);
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] POST /courier-invites упал');
+    res.status(500).json({ error: 'Не удалось отправить вакансию', details: String(err?.message ?? err) });
+  }
+});
+
 shopAdminRouter.get('/courier-applications', async (req, res) => {
   try {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');

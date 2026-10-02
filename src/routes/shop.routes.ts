@@ -860,7 +860,7 @@ shopRouter.post('/orders/:id/paid', async (req, res) => {
  * один и тот же номер, приводятся к одному виду. Возвращает null, если
  * после нормализации не получился похожий на телефон номер (не 10-11 цифр).
  */
-function normalizePhone(raw: string): string | null {
+export function normalizePhone(raw: string): string | null {
   const digits = raw.replace(/\D/g, '');
   if (digits.length === 11 && digits[0] === '8') return '7' + digits.slice(1);
   if (digits.length === 11 && digits[0] === '7') return digits;
@@ -1132,17 +1132,9 @@ async function findShopOrderByNumberLoosely(raw: string) {
 
 const courierApplySchema = z.object({
   phone: z.string().min(1),
-  name: z.string().min(1),
   city: z.string().min(1),
 });
 
-/**
- * Заявка на регистрацию курьера — ПЕРВЫЙ шаг, до POST /courier/register.
- * Одна заявка на телефон: повторная с того же номера не создаёт вторую
- * строку, а только освежает имя/город, ПОКА заявка ещё pending (решённую
- * заявку задним числом не трогаем — админ уже принял решение по ней).
- * Ответ отдаёт статус ТОЛЬКО этого телефона — ничего о чужих заявках.
- */
 /**
  * Статус заявки по телефону — "none", если заявки нет вовсе. Ответ только
  * по ЭТОМУ телефону, ничего о чужих заявках. Одобрение/отказ не меняет —
@@ -1250,6 +1242,36 @@ shopRouter.post('/courier/returns/:id/collect', async (req, res) => {
   }
 });
 
+/**
+ * Вакансия на этот телефон — только она, ничего о чужих. Нет вакансии —
+ * пустой ответ (null), а не 404: это нормальное состояние «сервер ещё не
+ * приглашал этот номер», не ошибка.
+ */
+shopRouter.get('/courier/invite', async (req, res) => {
+  const normalizedPhone = normalizePhone(String(req.query.phone ?? ''));
+  if (!normalizedPhone) return res.status(400).json({ error: 'Некорректный номер телефона' });
+
+  try {
+    const invite = await prisma.shopCourierInvite.findUnique({ where: { phone: normalizedPhone } });
+    res.json(invite ?? null);
+  } catch (err: any) {
+    logger.error({ err }, '[Shop API] GET /courier/invite упал');
+    res.status(500).json({ error: 'Не удалось получить вакансию', details: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * Заявка на регистрацию курьера — ПЕРВЫЙ шаг, до POST /courier/register.
+ * Курьер больше не подаёт заявку сам «с улицы» — без вакансии (приглашения)
+ * на этот телефон отвечаем 403. Имя, фамилия и ИИН берутся из самой
+ * вакансии, не из того, что прислал бы курьер — так заявка в «Заявки»
+ * приходит уже с этими данными; анкету (адрес, авто, фото и т.п.) курьер
+ * заполняет только ПОСЛЕ одобрения, через отдельный POST /courier/register.
+ * Одна заявка на телефон: повторная с того же номера не создаёт вторую
+ * строку, а только освежает город, ПОКА заявка ещё pending (решённую
+ * заявку задним числом не трогаем — админ уже принял решение по ней).
+ * Ответ отдаёт статус ТОЛЬКО этого телефона — ничего о чужих заявках.
+ */
 shopRouter.post('/courier/apply', async (req, res) => {
   const parsed = courierApplySchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
@@ -1258,12 +1280,18 @@ shopRouter.post('/courier/apply', async (req, res) => {
   if (!normalizedPhone) return res.status(400).json({ error: 'Некорректный номер телефона' });
 
   try {
+    const invite = await prisma.shopCourierInvite.findUnique({ where: { phone: normalizedPhone } });
+    if (!invite) {
+      return res.status(403).json({ error: 'На этот телефон нет вакансии — заявка недоступна' });
+    }
+    const name = `${invite.firstName} ${invite.lastName}`.trim();
+
     const existing = await prisma.shopCourierApplication.findUnique({ where: { phone: normalizedPhone } });
     if (existing) {
       if (existing.status === 'pending') {
         const updated = await prisma.shopCourierApplication.update({
           where: { phone: normalizedPhone },
-          data: { name: parsed.data.name, city: parsed.data.city },
+          data: { name, city: parsed.data.city, iin: invite.iin },
         });
         return res.json({ status: updated.status });
       }
@@ -1271,7 +1299,7 @@ shopRouter.post('/courier/apply', async (req, res) => {
       return res.json({ status: existing.status });
     }
     const created = await prisma.shopCourierApplication.create({
-      data: { phone: normalizedPhone, name: parsed.data.name, city: parsed.data.city, status: 'pending' },
+      data: { phone: normalizedPhone, name, city: parsed.data.city, iin: invite.iin, status: 'pending' },
     });
     res.status(201).json({ status: created.status });
   } catch (err: any) {

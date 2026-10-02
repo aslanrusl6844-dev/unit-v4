@@ -2212,9 +2212,14 @@ function wireMyMarketTabsOnce() {
     if (!btn) return;
     document.querySelectorAll('#mmCourierAppSubTabs button').forEach((b) => b.classList.remove('is-active'));
     btn.classList.add('is-active');
+    const isInviteTab = btn.dataset.apptab === 'invite';
+    document.getElementById('mmCourierInvitePanel').hidden = !isInviteTab;
+    document.getElementById('mmCourierAppListWrap').hidden = isInviteTab;
+    if (isInviteTab) return; // форма вакансии — список грузить не нужно
     document.getElementById('mmCourierAppSearch').value = '';
     loadMyMarketCourierApplications();
   });
+  document.getElementById('mmCourierInviteSendBtn').addEventListener('click', runMyMarketSendCourierInvite);
   document.getElementById('mmCourierAppSearch').addEventListener('input', () => renderMyMarketCourierApplicationsTable());
   document.getElementById('mmCourierAppSelectAll').addEventListener('change', (e) => {
     const box = e.target;
@@ -3868,9 +3873,40 @@ let myMarketCourierAppsCache = [];
 let myMarketSelectedCourierAppIds = new Set();
 
 /** Текущая подвкладка: "pending" — Заявки, "active" — Активные (одобренные,
- *  не архивные), "archived" — Архив. */
+ *  не архивные), "archived" — Архив, "invite" — форма вакансии. */
 function mmCourierAppsTab() {
   return document.querySelector('#mmCourierAppSubTabs button.is-active')?.dataset.apptab ?? 'pending';
+}
+
+async function runMyMarketSendCourierInvite() {
+  const firstName = document.getElementById('mmCourierInviteFirstName').value.trim();
+  const lastName = document.getElementById('mmCourierInviteLastName').value.trim();
+  const phone = document.getElementById('mmCourierInvitePhone').value.trim();
+  const iin = document.getElementById('mmCourierInviteIin').value.trim();
+  const statusEl = document.getElementById('mmCourierInviteStatus');
+  if (!firstName || !lastName || !phone || !iin) {
+    statusEl.style.color = 'var(--loss)';
+    statusEl.textContent = 'Заполните все поля.';
+    return;
+  }
+  const btn = document.getElementById('mmCourierInviteSendBtn');
+  btn.disabled = true;
+  statusEl.style.color = '';
+  statusEl.textContent = 'Отправляю…';
+  try {
+    await api('/shop-admin/courier-invites', { method: 'POST', body: JSON.stringify({ firstName, lastName, phone, iin }) });
+    statusEl.style.color = '';
+    statusEl.textContent = 'Вакансия отправлена.';
+    document.getElementById('mmCourierInviteFirstName').value = '';
+    document.getElementById('mmCourierInviteLastName').value = '';
+    document.getElementById('mmCourierInvitePhone').value = '';
+    document.getElementById('mmCourierInviteIin').value = '';
+  } catch (err) {
+    statusEl.style.color = 'var(--loss)';
+    statusEl.textContent = 'Ошибка: ' + err.message;
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function loadMyMarketCourierApplications() {
@@ -3908,7 +3944,7 @@ function renderMyMarketCourierApplicationsTable() {
   const emptyLabel = { pending: 'Заявок нет', active: 'Активных заявок нет', archived: 'В архиве пусто' }[tab];
   const tbody = document.querySelector('#mmCourierApplicationsTable tbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="7" style="color:var(--text-faint)">${emptyLabel}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" style="color:var(--text-faint)">${emptyLabel}</td></tr>`;
     updateMyMarketCourierAppBulkBar([]);
     return;
   }
@@ -3931,6 +3967,7 @@ function renderMyMarketCourierApplicationsTable() {
         <td><input type="checkbox" data-courierapp-select="${a.id}" ${myMarketSelectedCourierAppIds.has(a.id) ? 'checked' : ''} /></td>
         <td>${mmEsc(a.phone)}</td>
         <td class="name-cell">${mmEsc(a.name)}</td>
+        <td>${mmEsc(a.iin || '—')}</td>
         <td>${mmEsc(a.city || '—')}</td>
         <td>${fmtOrderDateTime(a.createdAt)}</td>
         <td>${statusHtml}</td>
