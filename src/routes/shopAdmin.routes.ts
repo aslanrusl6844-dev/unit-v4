@@ -523,12 +523,37 @@ shopAdminRouter.get('/orders/waybills-products-today', async (_req, res) => {
       }
     }
 
+    // Фото — один запрос на ВСЕ встреченные sku сразу (не по товару), тот же
+    // источник, что и в колонке «Товар» таблицы заказов: ищем Product по
+    // sku ИЛИ shopArticle (item.sku может быть любым из двух), берём первую
+    // картинку из product.images. Нет товара/фото — null, не пустая строка.
+    const skus = Array.from(bySku.keys());
+    const matchingProducts = skus.length
+      ? await prisma.product.findMany({
+          where: { OR: [{ sku: { in: skus } }, { shopArticle: { in: skus } }] },
+          select: { sku: true, shopArticle: true, images: true },
+        })
+      : [];
+    const imageBySku = new Map<string, string | null>();
+    for (const mp of matchingProducts as Array<{ sku: string; shopArticle: string | null; images: string | null }>) {
+      let firstImage: string | null = null;
+      try {
+        const arr = mp.images ? JSON.parse(mp.images) : [];
+        firstImage = Array.isArray(arr) && arr[0] ? arr[0] : null;
+      } catch {
+        firstImage = null;
+      }
+      imageBySku.set(mp.sku, firstImage);
+      if (mp.shopArticle) imageBySku.set(mp.shopArticle, firstImage);
+    }
+
     const products = Array.from(bySku.values())
       .sort((a, b) => a.name.localeCompare(b.name, 'ru'))
       .map((p, i) => ({
         number: i + 1,
         sku: p.sku,
         name: p.name,
+        image: imageBySku.get(p.sku) ?? null,
         todayQty: p.todayQty,
         todayCities: Array.from(p.todayCities),
         cities: Array.from(p.cityStats.entries()).map(([city, stats]) => ({ city, ...stats })),
