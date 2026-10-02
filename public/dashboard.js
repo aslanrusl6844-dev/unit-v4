@@ -3606,7 +3606,7 @@ async function loadMyMarketOrders() {
     api('/products'),
     api('/shop-admin/orders/status-counts'),
   ]);
-  mmSetTabBadges('mymarketOrderStatusTabs', 'status', orderStatusCounts, 'mm-tab-badge--green', ['pending_payment', 'paid', 'picked', 'delivered', 'cancelled']);
+  mmSetTabBadges('mymarketOrderStatusTabs', 'status', orderStatusCounts, 'mm-tab-badge--green', ['pending_payment', 'paid', 'picked', 'in_transit', 'delivered', 'cancelled']);
   // Ключ и по внутреннему sku, и по shopArticle — позиция заказа могла прийти
   // с любым из двух (приложение теперь показывает покупателю shopArticle).
   const productBySku = new Map();
@@ -3867,34 +3867,48 @@ const MM_COURIER_APP_STATUS_LABELS = { pending: 'Ожидает', approved: 'О�
 let myMarketCourierAppsCache = [];
 let myMarketSelectedCourierAppIds = new Set();
 
-/** Текущая подвкладка: false — «Заявки» (архивные не видны), true — «Архив». */
-function mmCourierAppsArchivedTab() {
-  return document.querySelector('#mmCourierAppSubTabs button.is-active')?.dataset.apparchived === 'true';
+/** Текущая подвкладка: "pending" — Заявки, "active" — Активные (одобренные,
+ *  не архивные), "archived" — Архив. */
+function mmCourierAppsTab() {
+  return document.querySelector('#mmCourierAppSubTabs button.is-active')?.dataset.apptab ?? 'pending';
 }
 
 async function loadMyMarketCourierApplications() {
-  const archived = mmCourierAppsArchivedTab();
+  const tab = mmCourierAppsTab();
+  // «Заявки» и «Активные» оба смотрят на archived=false — разница только в
+  // status, который фильтруется ниже на клиенте; «Архив» — archived=true.
+  const archived = tab === 'archived';
   myMarketCourierAppsCache = await api(`/shop-admin/courier-applications?archived=${archived}`);
   myMarketSelectedCourierAppIds.clear();
   renderMyMarketCourierApplicationsTable();
 }
 
-/** Фильтрует уже загруженный список по имени/телефону — без обращения к
- *  серверу заново. Пустой город у заявки не мешает: он просто не участвует
- *  в сравнении, только name и phone. */
+/** Фильтрует уже загруженный список по вкладке (статус), имени/телефону —
+ *  без обращения к серверу заново. Пустой город у заявки не мешает поиску:
+ *  он просто не участвует в сравнении, только name и phone. */
 function renderMyMarketCourierApplicationsTable() {
+  const tab = mmCourierAppsTab();
   const query = (document.getElementById('mmCourierAppSearch').value || '').trim().toLowerCase();
   let rows = myMarketCourierAppsCache;
+  if (tab === 'pending') rows = rows.filter((a) => a.status === 'pending');
+  else if (tab === 'active') rows = rows.filter((a) => a.status === 'approved');
+  // tab === 'archived' — показываем всё, что сервер уже отдал как archived=true.
+
+  if (tab === 'active') {
+    // «Появляется в Активные первой строкой» — только что одобренные сверху.
+    rows = [...rows].sort((a, b) => new Date(b.reviewedAt || b.createdAt) - new Date(a.reviewedAt || a.createdAt));
+  }
+
   if (query) {
     rows = rows.filter((a) =>
       (a.name || '').toLowerCase().includes(query) || (a.phone || '').toLowerCase().includes(query),
     );
   }
 
-  const archived = mmCourierAppsArchivedTab();
+  const emptyLabel = { pending: 'Заявок нет', active: 'Активных заявок нет', archived: 'В архиве пусто' }[tab];
   const tbody = document.querySelector('#mmCourierApplicationsTable tbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="7" style="color:var(--text-faint)">${archived ? 'В архиве пусто' : 'Заявок нет'}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" style="color:var(--text-faint)">${emptyLabel}</td></tr>`;
     updateMyMarketCourierAppBulkBar([]);
     return;
   }
@@ -3906,8 +3920,12 @@ function renderMyMarketCourierApplicationsTable() {
       : a.status === 'rejected'
         ? `<span style="color:var(--loss)">● ${statusLabel}</span>`
         : `<span>${statusLabel}</span>`;
-    // Повторное решение по уже решённой заявке не запрещаем технически (вдруг
-    // передумали) — кнопки остаются кликабельными даже после approve/reject.
+    // Кнопки решения — ТОЛЬКО для ещё не решённой (pending) заявки. У
+    // одобренной (во «Активных») их быть не должно — решение уже принято.
+    const decisionCell = a.status === 'pending'
+      ? `<button class="link-btn" data-app-action="approve" data-app-id="${a.id}" style="color:var(--accent)">Одобрить</button>
+         <button class="link-btn" data-app-action="reject" data-app-id="${a.id}" style="color:var(--loss)">Отказать</button>`
+      : '';
     return `
       <tr>
         <td><input type="checkbox" data-courierapp-select="${a.id}" ${myMarketSelectedCourierAppIds.has(a.id) ? 'checked' : ''} /></td>
@@ -3916,10 +3934,7 @@ function renderMyMarketCourierApplicationsTable() {
         <td>${mmEsc(a.city || '—')}</td>
         <td>${fmtOrderDateTime(a.createdAt)}</td>
         <td>${statusHtml}</td>
-        <td style="white-space:nowrap">
-          <button class="link-btn" data-app-action="approve" data-app-id="${a.id}" style="color:var(--accent)">Одобрить</button>
-          <button class="link-btn" data-app-action="reject" data-app-id="${a.id}" style="color:var(--loss)">Отказать</button>
-        </td>
+        <td style="white-space:nowrap">${decisionCell}</td>
       </tr>
     `;
   }).join('');
@@ -3938,7 +3953,7 @@ function renderMyMarketCourierApplicationsTable() {
 }
 
 function updateMyMarketCourierAppBulkBar(visibleRows) {
-  const archived = mmCourierAppsArchivedTab();
+  const archived = mmCourierAppsTab() === 'archived';
   const n = myMarketSelectedCourierAppIds.size;
   document.getElementById('mmCourierAppSelectedCount').textContent = `Выбрано: ${n}`;
   const archiveBtn = document.getElementById('mmCourierAppBulkArchiveBtn');
@@ -4125,7 +4140,7 @@ function renderMyMarketCouriersTable() {
 
   const tbody = document.querySelector('#mymarketCouriersTable tbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="9" style="color:var(--text-faint)">${wantActive ? 'Активных курьеров нет' : 'Заблокированных курьеров нет'}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="11" style="color:var(--text-faint)">${wantActive ? 'Активных курьеров нет' : 'Заблокированных курьеров нет'}</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map((c) => `
@@ -4139,6 +4154,8 @@ function renderMyMarketCouriersTable() {
       <td style="font-size:11px">${c.requisitesType === 'kaspi' ? 'Kaspi' : 'Карта'}: ${c.requisitesValue}</td>
       <td style="font-size:11px">${c.agreeContractAt ? fmtOrderDateTime(c.agreeContractAt) : '—'}</td>
       <td>${c.active ? '<span style="color:var(--accent)">● Активен</span>' : '<span style="color:var(--loss)">● Заблокирован</span>'}</td>
+      <td class="num">${c.ordersClosed ?? 0}</td>
+      <td class="num" style="font-weight:700;color:var(--accent)">${fmtMoney(c.totalEarned ?? 0)}</td>
     </tr>
   `).join('');
 

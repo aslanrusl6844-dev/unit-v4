@@ -579,7 +579,27 @@ shopAdminRouter.get('/couriers', async (_req, res) => {
     // состояние БД, а не что-то, что мог закэшировать браузер/прокси/CDN.
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     const couriers = await prisma.courier.findMany({ orderBy: { createdAt: 'desc' } });
-    res.json(couriers);
+
+    // Закрытые заказы и заработок — один groupBy на ВСЕХ курьеров сразу, не
+    // по запросу на строку. CourierPayout создаётся ровно в момент, когда
+    // заказ переходит в "Выдан" (POST /courier/deliver, одной транзакцией
+    // с order.status='delivered') — значит число строк выплат этого
+    // курьера = число закрытых им заказов, а сумма amount = заработок.
+    const grouped = await prisma.courierPayout.groupBy({ by: ['courierId'], _count: { id: true }, _sum: { amount: true } });
+    const statsByCourier = new Map(
+      (grouped as Array<{ courierId: string; _count: { id: number }; _sum: { amount: number | null } }>).map((g) => [
+        g.courierId,
+        { ordersClosed: g._count.id, totalEarned: g._sum.amount ?? 0 },
+      ]),
+    );
+
+    res.json(
+      couriers.map((c: { id: string }) => ({
+        ...c,
+        ordersClosed: statsByCourier.get(c.id)?.ordersClosed ?? 0,
+        totalEarned: statsByCourier.get(c.id)?.totalEarned ?? 0,
+      })),
+    );
   } catch (err: any) {
     logger.error({ err }, '[Shop Admin] GET /couriers упал');
     res.status(500).json({ error: 'Не удалось получить список курьеров', details: String(err?.message ?? err) });

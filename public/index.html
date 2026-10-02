@@ -808,8 +808,9 @@
             <div class="panel__head"><h2 style="font-size:14px">Заявки на регистрацию</h2></div>
             <p class="panel__hint" style="margin-top:0">Курьер больше не регистрируется сам — только по одобренной заявке. Без одобрения /courier/register отвечает 403.</p>
             <div class="seg" id="mmCourierAppSubTabs" style="margin-bottom:10px">
-              <button class="is-active" data-apparchived="false">Заявки</button>
-              <button data-apparchived="true">Архив</button>
+              <button class="is-active" data-apptab="pending">Заявки</button>
+              <button data-apptab="active">Активные</button>
+              <button data-apptab="archived">Архив</button>
             </div>
             <input type="text" id="mmCourierAppSearch" placeholder="Поиск: имя, телефон" style="max-width:280px;margin-bottom:10px" />
             <div class="inline-form" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:8px">
@@ -839,6 +840,7 @@
                   <tr>
                     <th>Фото</th><th>ФИО</th><th>ИИН</th><th>Телефон</th><th>Адрес</th>
                     <th>Авто</th><th>Реквизиты</th><th>Согласие</th><th>Статус</th>
+                    <th class="num">Заказов закрыл</th><th class="num">Заработал</th>
                   </tr>
                 </thead>
                 <tbody></tbody>
