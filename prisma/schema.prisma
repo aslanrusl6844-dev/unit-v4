@@ -384,6 +384,14 @@ model ShopOrder {
   // Пусто, если TELEGRAM_BOT_TOKEN не задан или отправка не удалась —
   // заказ от этого не перестаёт создаваться (см. src/lib/telegram.ts).
   telegramMessages String?
+
+  // Архив — отдельно от status: не меняет сам статус заказа, остаток, деньги
+  // и выплату курьеру, только убирает заказ из «Все» и рабочих вкладок. См.
+  // вкладку «Архив» в GET /shop-admin/orders (?archived=true) — старые заказы
+  // сами туда не попадают, только вручную через POST /orders/archive.
+  archived      Boolean  @default(false)
+
+  @@index([archived])
 }
 
 // Курьер My Market — работает только через API приложения (x-app-key),

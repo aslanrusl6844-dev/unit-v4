@@ -147,7 +147,8 @@ shopAdminRouter.get('/reviews-count', async (req, res) => {
  */
 shopAdminRouter.get('/orders/status-counts', async (_req, res) => {
   try {
-    const grouped = await prisma.shopOrder.groupBy({ by: ['status'], _count: { status: true } });
+    // Архив в счётчики рабочих вкладок не входит — см. задачу.
+    const grouped = await prisma.shopOrder.groupBy({ by: ['status'], where: { archived: false }, _count: { status: true } });
     const counts: Record<string, number> = {};
     for (const g of grouped as Array<{ status: string; _count: { status: number } }>) {
       counts[g.status] = g._count.status;
@@ -162,10 +163,16 @@ shopAdminRouter.get('/orders/status-counts', async (_req, res) => {
 shopAdminRouter.get('/orders', async (req, res) => {
   try {
     const status = req.query.status as string | undefined;
-    // "Все" (status не передан) — это ВСЕ, КРОМЕ отменённых. Отменённые
-    // заказы видны только на отдельной вкладке "Отменён" (status=cancelled
-    // явно), чтобы не путались с активными на вкладке "Все".
-    const where = status ? { status } : { status: { not: 'cancelled' } };
+    const archivedTab = req.query.archived === 'true';
+    // "Архив" — отдельная вкладка, игнорирует status целиком (там все
+    // архивные вперемешку, каким бы ни был их status). Остальные вкладки
+    // ("Все" и по статусу) теперь ВСЕГДА исключают архивные — заказ,
+    // отправленный в архив, пропадает и из "Все", и из рабочих вкладок.
+    const where = archivedTab
+      ? { archived: true }
+      : status
+        ? { status, archived: false }
+        : { status: { not: 'cancelled' }, archived: false };
     const orders = await prisma.shopOrder.findMany({
       where,
       orderBy: { createdAt: 'desc' },
@@ -176,6 +183,48 @@ shopAdminRouter.get('/orders', async (req, res) => {
   } catch (err: any) {
     logger.error({ err }, '[Shop Admin] GET /orders упал');
     res.status(500).json({ error: 'Не удалось получить заказы', details: String(err?.message ?? err) });
+  }
+});
+
+const orderIdsSchema = z.object({ ids: z.array(z.string()).min(1) });
+
+/**
+ * «В архив» (пачкой) — ТОЛЬКО archived:true, status заказа не трогаем,
+ * остаток/деньги/выплата курьеру тоже не трогаются (это просто флаг
+ * видимости во вкладках, не изменение самого заказа).
+ */
+shopAdminRouter.post('/orders/archive', async (req, res) => {
+  const parsed = orderIdsSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  try {
+    const result = await prisma.shopOrder.updateMany({ where: { id: { in: parsed.data.ids } }, data: { archived: true } });
+    res.json({ ok: true, updated: result.count });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] POST /orders/archive упал');
+    res.status(500).json({ error: 'Не удалось перенести заказы в архив', details: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * Удаление заказов пачкой — безвозвратно (подтверждение на клиенте).
+ * Позиции заказа (items) удаляются сами собой — это JSON-поле на самой
+ * строке ShopOrder, не отдельная таблица. CourierPayout (если был — заказ
+ * уже выдан и выплата начислена) удаляем ПЕРВЫМ в той же транзакции: без
+ * этого внешний ключ orderId не даст удалить сам заказ. Остаток на витрину
+ * нигде здесь не меняем — ни в плюс, ни в минус.
+ */
+shopAdminRouter.post('/orders/delete', async (req, res) => {
+  const parsed = orderIdsSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  try {
+    const [, deleted] = await prisma.$transaction([
+      prisma.courierPayout.deleteMany({ where: { orderId: { in: parsed.data.ids } } }),
+      prisma.shopOrder.deleteMany({ where: { id: { in: parsed.data.ids } } }),
+    ]);
+    res.json({ ok: true, deleted: deleted.count });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] POST /orders/delete упал');
+    res.status(500).json({ error: 'Не удалось удалить заказы', details: String(err?.message ?? err) });
   }
 });
 
