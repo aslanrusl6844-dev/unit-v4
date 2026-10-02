@@ -180,7 +180,7 @@ body {
 
 .seg { display: flex; gap: 3px; background: var(--bg); border-radius: 7px; padding: 3px; margin-bottom: 14px; width: fit-content; }
 .seg--wide { width: 100%; flex-wrap: wrap; }
-.seg button { border: none; background: transparent; color: var(--text-muted); font-size: 12px; padding: 6px 11px; border-radius: 5px; cursor: pointer; }
+.seg button { border: none; background: transparent; color: var(--text-muted); font-size: 12px; position: relative; padding: 6px 11px; border-radius: 5px; cursor: pointer; }
 .seg button.is-active { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,0.06); font-weight: 600; }
 
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
@@ -330,3 +330,24 @@ body {
 /* Поле «Свой тип» в карточке: атрибут hidden не должен перебиваться display:flex у label */
 .form-grid label[hidden] { display: none !important; }
 
+
+/* Значок-счётчик на вкладке (заказы/возвраты) — число текущих заявок этого
+   статуса, не нарастающий итог. Ноль не показываем — элемент просто не
+   создаётся/убирается. Кружок сверху справа от текста вкладки. */
+.mm-tab-badge {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  color: #fff;
+  box-shadow: 0 0 0 2px var(--bg);
+}
+.mm-tab-badge--green { background: #4ADE80; }
+.mm-tab-badge--red { background: #F87171; }

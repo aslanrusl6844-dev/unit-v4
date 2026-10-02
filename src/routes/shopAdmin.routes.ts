@@ -140,6 +140,25 @@ shopAdminRouter.get('/reviews-count', async (req, res) => {
   }
 });
 
+/**
+ * Счётчики по статусам заказа — для значков на вкладках. Один groupBy на
+ * все статусы сразу, не по запросу на каждую вкладку. "Все"/"В пути" сюда
+ * не входят — бейджи нужны только на пяти конкретных вкладках (см. задачу).
+ */
+shopAdminRouter.get('/orders/status-counts', async (_req, res) => {
+  try {
+    const grouped = await prisma.shopOrder.groupBy({ by: ['status'], _count: { status: true } });
+    const counts: Record<string, number> = {};
+    for (const g of grouped as Array<{ status: string; _count: { status: number } }>) {
+      counts[g.status] = g._count.status;
+    }
+    res.json(counts);
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] GET /orders/status-counts упал');
+    res.status(500).json({ error: 'Не удалось получить счётчики заказов', details: String(err?.message ?? err) });
+  }
+});
+
 shopAdminRouter.get('/orders', async (req, res) => {
   try {
     const status = req.query.status as string | undefined;

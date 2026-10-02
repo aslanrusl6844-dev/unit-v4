@@ -3570,16 +3570,43 @@ function renderMyMarketOrderItemsCell(items, productBySku) {
   return `<div style="display:flex;flex-direction:column;gap:6px">${rows.join('')}</div>`;
 }
 
+/**
+ * Значки-счётчики на вкладках (заказы/возвраты) — текущее число заявок в
+ * каждом статусе, не нарастающий итог с полуночи. Ноль — значок убирается,
+ * не показывается как «0». allowedKeys ограничивает, на каких именно
+ * вкладках вообще может быть значок (для заказов это 5 из 7 кнопок — без
+ * «Все» и «В пути», как в задаче).
+ */
+function mmSetTabBadges(containerId, datasetKey, counts, colorClass, allowedKeys) {
+  document.querySelectorAll(`#${containerId} button`).forEach((btn) => {
+    const key = btn.dataset[datasetKey];
+    let badge = btn.querySelector('.mm-tab-badge');
+    const count = allowedKeys.includes(key) ? (counts[key] || 0) : 0;
+    if (!count) {
+      if (badge) badge.remove();
+      return;
+    }
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = `mm-tab-badge ${colorClass}`;
+      btn.appendChild(badge);
+    }
+    badge.textContent = count > 99 ? '99+' : String(count);
+  });
+}
+
 async function loadMyMarketOrders() {
   const status = document.querySelector('#mymarketOrderStatusTabs button.is-active')?.dataset.status || '';
   // Товары грузим параллельно с заказами — нужны для фото/названия по sku,
   // когда их нет в самом снимке позиции заказа (сейчас там только
   // sku/name/price/quantity, фото там никогда не было). Не трогает
   // GET /shop-admin/orders — он как отдавал items распарсенными, так и отдаёт.
-  const [orders, products] = await Promise.all([
+  const [orders, products, orderStatusCounts] = await Promise.all([
     api(`/shop-admin/orders${status ? `?status=${status}` : ''}`),
     api('/products'),
+    api('/shop-admin/orders/status-counts'),
   ]);
+  mmSetTabBadges('mymarketOrderStatusTabs', 'status', orderStatusCounts, 'mm-tab-badge--green', ['pending_payment', 'paid', 'picked', 'delivered', 'cancelled']);
   // Ключ и по внутреннему sku, и по shopArticle — позиция заказа могла прийти
   // с любым из двух (приложение теперь показывает покупателю shopArticle).
   const productBySku = new Map();
@@ -3954,6 +3981,11 @@ function mmReturnsStatusTab() {
 
 async function loadMyMarketReturns() {
   myMarketReturnsCache = await api('/shop-admin/returns');
+  // Список уже содержит ВСЕ статусы разом (сервер не фильтрует эту ручку) —
+  // считаем прямо из него, отдельный запрос на счётчики не нужен.
+  const counts = {};
+  for (const r of myMarketReturnsCache) counts[r.status] = (counts[r.status] || 0) + 1;
+  mmSetTabBadges('mmReturnsStatusTabs', 'returnstatus', counts, 'mm-tab-badge--red', ['pending', 'approved', 'rejected', 'collected']);
   renderMyMarketReturnsTable();
 }
 
