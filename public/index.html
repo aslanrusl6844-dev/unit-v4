@@ -671,15 +671,18 @@
             </div>
             <div id="mmWaybillsZipStatus" style="margin:6px 0"></div>
 
-            <!-- ---- Накладные ZIP по городу ---- -->
+            <!-- ---- Накладные ZIP: города выбранного товара + товары за сегодня ---- -->
             <div id="mmWaybillCitiesOverlay" class="modal-overlay" hidden>
               <div class="modal">
                 <div class="modal__head">
-                  <h2>Накладные по городу</h2>
+                  <h2>Накладные</h2>
                   <button class="link-btn" id="mmWaybillCitiesClose">✕</button>
                 </div>
                 <div id="mmWaybillCitiesBanner" style="margin-bottom:8px"></div>
                 <div id="mmWaybillCitiesList"></div>
+                <hr style="margin:14px 0;border:none;border-top:1px solid var(--border)" />
+                <p class="panel__hint" style="margin-top:0">Товары за сегодня (оплачено)</p>
+                <div id="mmWaybillProductsList"></div>
               </div>
             </div>
             <div class="table-wrap">

@@ -3591,68 +3591,104 @@ function mmOrdersActiveTab() {
  * в адресе профиля (не свой список), в одном и том же порядке, на каждое
  * открытие перечитывается с сервера.
  */
+let myMarketWaybillProductsCache = [];
+let myMarketWaybillSelectedSkus = new Set();
+
 async function openMyMarketWaybillCities() {
   document.getElementById('mmWaybillCitiesOverlay').hidden = false;
-  document.getElementById('mmWaybillCitiesList').innerHTML = '<p class="panel__hint">Загружаю…</p>';
-  await loadMyMarketWaybillCities();
+  myMarketWaybillSelectedSkus = new Set(); // каждое открытие окна — заново, без отметок с прошлого раза
+  document.getElementById('mmWaybillProductsList').innerHTML = '<p class="panel__hint">Загружаю…</p>';
+  await loadMyMarketWaybillProducts();
 }
 
-async function loadMyMarketWaybillCities() {
+async function loadMyMarketWaybillProducts() {
   try {
-    const cities = await api('/shop-admin/orders/waybills-cities');
-    renderMyMarketWaybillCities(cities);
+    myMarketWaybillProductsCache = await api('/shop-admin/orders/waybills-products-today');
+    renderMyMarketWaybillTop();
+    renderMyMarketWaybillProductsList();
   } catch (err) {
-    document.getElementById('mmWaybillCitiesList').innerHTML = `<p style="color:var(--loss)">Ошибка: ${mmEsc(err.message)}</p>`;
+    document.getElementById('mmWaybillProductsList').innerHTML = `<p style="color:var(--loss)">Ошибка: ${mmEsc(err.message)}</p>`;
   }
 }
 
-function renderMyMarketWaybillCities(cities) {
-  const totalNew = cities.reduce((sum, c) => sum + c.newCount, 0);
-  document.getElementById('mmWaybillCitiesBanner').innerHTML = totalNew === 0
-    ? '<p class="panel__hint" style="margin:0">Новых накладных нет</p>'
-    : '';
+/** Верхняя часть — пока ни один товар не отмечен, просто подсказка. Иначе,
+ *  для каждого отмеченного товара — свои города (только те, где этот
+ *  оттенок есть) со штуками и состоянием скачивания. Несколько отмеченных
+ *  товаров — отдельный подзаголовок на каждый, но каждая кнопка «Скачать»
+ *  всё равно ровно один товар + один город в одном ZIP. */
+function renderMyMarketWaybillTop() {
+  const banner = document.getElementById('mmWaybillCitiesBanner');
+  const list = document.getElementById('mmWaybillCitiesList');
 
-  document.getElementById('mmWaybillCitiesList').innerHTML = cities.map((c) => {
-    // Четыре состояния: нечего скачивать и никогда не скачивали (серая,
-    // без кнопок); уже всё скачано, новых нет (галочка «Скачан» + «ещё
-    // раз»); есть новые, скачивали раньше («ещё N», без галочки); есть
-    // новые, первый раз (обычный счёт).
-    if (c.newCount === 0 && !c.hasDownloadedBefore) {
-      return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 2px;color:var(--text-faint)">
-        <span>${mmEsc(c.city)}, 0 заказов</span><span></span>
-      </div>`;
-    }
-    if (c.newCount === 0 && c.hasDownloadedBefore) {
+  if (!myMarketWaybillSelectedSkus.size) {
+    banner.innerHTML = '';
+    list.innerHTML = '<p class="panel__hint" style="margin:0">Отметь товар</p>';
+    return;
+  }
+
+  const selectedProducts = myMarketWaybillProductsCache.filter((p) => myMarketWaybillSelectedSkus.has(p.sku));
+  banner.innerHTML = '';
+  list.innerHTML = selectedProducts.map((p) => {
+    const header = selectedProducts.length > 1 ? `<p style="font-size:12.5px;font-weight:600;margin:10px 0 4px">${mmEsc(p.name)}</p>` : '';
+    const rows = p.cities.map((c) => {
+      // Те же три состояния, что и раньше у города — просто теперь на
+      // пару (товар, город), а не на город в целом. Город без этого
+      // оттенка в cities вообще не попадает — сюда довозить нечего.
+      if (c.newQty === 0 && c.hasDownloadedBefore) {
+        return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 2px;border-bottom:1px solid var(--border)">
+          <span>${mmEsc(c.city)} <span style="color:var(--accent)">✓ Скачан</span></span>
+          <button class="btn btn--ghost" data-wb-sku="${mmEsc(p.sku)}" data-wb-city="${mmEsc(c.city)}" data-wb-redownload="true">ещё раз</button>
+        </div>`;
+      }
+      const label = c.hasDownloadedBefore ? `${mmEsc(c.city)} ещё ${c.newQty}` : `${mmEsc(c.city)} ${c.newQty}`;
       return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 2px;border-bottom:1px solid var(--border)">
-        <span>${mmEsc(c.city)} <span style="color:var(--accent)">✓ Скачан</span></span>
-        <button class="btn btn--ghost" data-city-redownload="${mmEsc(c.city)}">ещё раз</button>
+        <span>${label}</span>
+        <button class="btn" data-wb-sku="${mmEsc(p.sku)}" data-wb-city="${mmEsc(c.city)}" data-wb-redownload="false">Скачать</button>
       </div>`;
-    }
-    const label = c.hasDownloadedBefore ? `${mmEsc(c.city)}, ещё ${c.newCount}` : `${mmEsc(c.city)}, ${c.newCount} заказов`;
-    return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 2px;border-bottom:1px solid var(--border)">
-      <span>${label}</span>
-      <button class="btn" data-city-download="${mmEsc(c.city)}">Скачать</button>
-    </div>`;
+    }).join('');
+    return header + rows;
   }).join('');
 
-  document.querySelectorAll('button[data-city-download]').forEach((btn) => {
-    btn.addEventListener('click', () => runMyMarketDownloadCityWaybills(btn.dataset.cityDownload, false));
-  });
-  document.querySelectorAll('button[data-city-redownload]').forEach((btn) => {
-    btn.addEventListener('click', () => runMyMarketDownloadCityWaybills(btn.dataset.cityRedownload, true));
+  list.querySelectorAll('button[data-wb-sku]').forEach((btn) => {
+    btn.addEventListener('click', () => runMyMarketDownloadProductCityWaybills(btn.dataset.wbSku, btn.dataset.wbCity, btn.dataset.wbRedownload === 'true'));
   });
 }
 
-/** Скачивает ZIP одного города (новые, либо повторно уже скачанные при
- *  redownload=true), триггерит файл браузеру, затем перечитывает список —
- *  скачанные только что заказы уходят из «новых» этого города. */
-async function runMyMarketDownloadCityWaybills(city, redownload) {
-  const btn = document.querySelector(
-    redownload ? `button[data-city-redownload="${city}"]` : `button[data-city-download="${city}"]`,
-  );
+/** Нижняя часть — товары за сегодня, один оттенок/артикул = одна строка.
+ *  Галочка, без кнопки «Скачать» — скачивание только у города сверху. */
+function renderMyMarketWaybillProductsList() {
+  const el = document.getElementById('mmWaybillProductsList');
+  if (!myMarketWaybillProductsCache.length) {
+    el.innerHTML = '<p class="panel__hint">Сегодня оплаченных заказов нет</p>';
+    return;
+  }
+  el.innerHTML = myMarketWaybillProductsCache.map((p) => {
+    const citiesLabel = p.todayCities.length ? p.todayCities.join(' и ') : '—';
+    const checked = myMarketWaybillSelectedSkus.has(p.sku);
+    return `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 2px;border-bottom:1px solid var(--border)">
+        <span>${p.number}. ${mmEsc(p.name)}, ${p.todayQty} шт, ${mmEsc(citiesLabel)}</span>
+        <input type="checkbox" data-wb-product-select="${mmEsc(p.sku)}" ${checked ? 'checked' : ''} />
+      </div>
+    `;
+  }).join('');
+  el.querySelectorAll('input[data-wb-product-select]').forEach((cb) => {
+    cb.addEventListener('change', () => {
+      if (cb.checked) myMarketWaybillSelectedSkus.add(cb.dataset.wbProductSelect);
+      else myMarketWaybillSelectedSkus.delete(cb.dataset.wbProductSelect);
+      renderMyMarketWaybillTop();
+    });
+  });
+}
+
+/** Скачивает ZIP ровно одного товара в ровно одном городе (новые, либо
+ *  повторно уже скачанные при redownload=true), триггерит файл браузеру,
+ *  затем перечитывает весь список — город этой пары уходит из «новых». */
+async function runMyMarketDownloadProductCityWaybills(sku, city, redownload) {
+  const btn = document.querySelector(`button[data-wb-sku="${sku}"][data-wb-city="${city}"][data-wb-redownload="${redownload}"]`);
   if (btn) btn.disabled = true;
   try {
-    const res = await fetch(`/api/shop-admin/orders/waybills-zip-by-city?city=${encodeURIComponent(city)}&redownload=${redownload}`);
+    const res = await fetch(`/api/shop-admin/orders/waybills-zip-by-product-city?sku=${encodeURIComponent(sku)}&city=${encodeURIComponent(city)}&redownload=${redownload}`);
     if (!res.ok) {
       const body = await res.json().catch(() => null);
       alert(body?.error || 'Не удалось собрать накладные');
@@ -3672,9 +3708,10 @@ async function runMyMarketDownloadCityWaybills(city, redownload) {
     a.remove();
     URL.revokeObjectURL(url);
 
-    // Только что скачанные (не redownload) помечены сервером waybillDownloaded —
-    // перечитываем список, чтобы этот город сразу показал новое состояние.
-    await loadMyMarketWaybillCities();
+    // Перечитываем весь список товаров+городов с сервера — у этой пары
+    // поменялось состояние скачивания, остальные отмеченные товары тоже
+    // должны остаться отмеченными и показать актуальные числа.
+    await loadMyMarketWaybillProducts();
   } catch (err) {
     alert('Ошибка: ' + err.message);
   } finally {

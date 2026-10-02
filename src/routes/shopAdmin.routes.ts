@@ -446,6 +446,176 @@ shopAdminRouter.get('/orders/waybills-zip-by-city', async (req, res) => {
   }
 });
 
+/** Короткий файловый «слаг» из названия товара — только буквы/цифры,
+ *  пробелы на дефис, нижний регистр, не бесконечной длины. Не пытаемся
+ *  угадать «главное слово» (краска/kiwi и т.п.) — просто всё название. */
+function waybillProductSlug(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-zа-яё0-9]+/gi, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40) || 'товар';
+}
+
+function startOfToday(): Date {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+interface TodayOrderItem {
+  sku: string;
+  name: string;
+  quantity: number;
+}
+
+/**
+ * Загружает сегодняшние оплаченные (status=paid, не в архиве) заказы с их
+ * позициями, один раз — дальше оба соседних эндпоинта (список товаров и
+ * ZIP по товару+городу) работают с одним и тем же куском данных, не делая
+ * вторую выборку с чуть другими условиями.
+ */
+async function loadTodayPaidOrders() {
+  const orders = await prisma.shopOrder.findMany({
+    where: { status: 'paid', archived: false, createdAt: { gte: startOfToday() } },
+  });
+  return orders.map((o: { items: string }) => {
+    let items: TodayOrderItem[] = [];
+    try {
+      items = JSON.parse(o.items);
+    } catch {
+      items = [];
+    }
+    return { ...o, parsedItems: items };
+  });
+}
+
+/**
+ * Товары, по которым СЕГОДНЯ есть оплаченный заказ — один оттенок/артикул
+ * (sku) = одна строка, не смешиваем. Для каждого — суммарно штук и список
+ * городов за сегодня (для строки списка), и отдельно по каждому городу —
+ * ещё не скачанные/уже скачанные (для верхней части окна после галочки).
+ */
+shopAdminRouter.get('/orders/waybills-products-today', async (_req, res) => {
+  try {
+    const orders = await loadTodayPaidOrders();
+
+    const bySku = new Map<
+      string,
+      { sku: string; name: string; todayQty: number; todayCities: Set<string>; cityStats: Map<string, { newQty: number; hasDownloadedBefore: boolean }> }
+    >();
+    for (const o of orders as Array<{ city: string; waybillDownloaded: boolean; parsedItems: TodayOrderItem[] }>) {
+      const canonicalCity = normalizeKzCity(o.city);
+      for (const item of o.parsedItems) {
+        if (!item.sku) continue;
+        if (!bySku.has(item.sku)) {
+          bySku.set(item.sku, { sku: item.sku, name: item.name, todayQty: 0, todayCities: new Set(), cityStats: new Map() });
+        }
+        const entry = bySku.get(item.sku)!;
+        entry.todayQty += item.quantity;
+        if (canonicalCity) {
+          entry.todayCities.add(canonicalCity);
+          if (!entry.cityStats.has(canonicalCity)) entry.cityStats.set(canonicalCity, { newQty: 0, hasDownloadedBefore: false });
+          const cityEntry = entry.cityStats.get(canonicalCity)!;
+          if (o.waybillDownloaded) cityEntry.hasDownloadedBefore = true;
+          else cityEntry.newQty += item.quantity;
+        }
+      }
+    }
+
+    const products = Array.from(bySku.values())
+      .sort((a, b) => a.name.localeCompare(b.name, 'ru'))
+      .map((p, i) => ({
+        number: i + 1,
+        sku: p.sku,
+        name: p.name,
+        todayQty: p.todayQty,
+        todayCities: Array.from(p.todayCities),
+        cities: Array.from(p.cityStats.entries()).map(([city, stats]) => ({ city, ...stats })),
+      }));
+    res.json(products);
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] GET /orders/waybills-products-today упал');
+    res.status(500).json({ error: 'Не удалось получить товары за сегодня', details: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * ZIP накладных ОДНОГО товара (sku) В ОДНОМ городе — за сегодня. Другой
+ * оттенок/артикул и другой город в этот файл никогда не попадают. Как и у
+ * обычного городского ZIP: redownload=false — ещё не скачанные, true —
+ * повторно уже скачанные; отмечаем waybillDownloaded только у реально
+ * включённых в файл заказов, статус заказа не трогаем.
+ */
+shopAdminRouter.get('/orders/waybills-zip-by-product-city', async (req, res) => {
+  try {
+    const sku = String(req.query.sku ?? '');
+    const city = String(req.query.city ?? '');
+    if (!sku) return res.status(400).json({ error: 'Не указан товар' });
+    if (!KZ_CITY_WHITELIST.includes(city)) return res.status(400).json({ error: 'Город не из списка 14' });
+    const redownload = req.query.redownload === 'true';
+
+    const orders = await loadTodayPaidOrders();
+    const matching = (orders as Array<{ id: string; number: string; city: string; waybillDownloaded: boolean; parsedItems: TodayOrderItem[]; customerName: string; phone: string; street: string; house: string; apartment: string | null; entrance: string | null; floor: string | null; intercom: string | null }>)
+      .filter((o) => o.waybillDownloaded === redownload && normalizeKzCity(o.city) === city && o.parsedItems.some((i) => i.sku === sku));
+
+    if (!matching.length) {
+      return res.status(404).json({ error: redownload ? 'Нет ранее скачанных накладных для этого товара и города' : 'Новых накладных для этого товара и города нет' });
+    }
+
+    const batch = matching.slice(0, WAYBILL_ZIP_LIMIT);
+    const zip = new JSZip();
+    let includedCount = 0;
+    const includedIds: string[] = [];
+    for (const order of batch) {
+      try {
+        const pdfBuffer = await generateWaybillPdf({
+          number: order.number,
+          customerName: order.customerName,
+          phone: order.phone,
+          city: order.city,
+          street: order.street,
+          house: order.house,
+          apartment: order.apartment,
+          entrance: order.entrance,
+          floor: order.floor,
+          intercom: order.intercom,
+          items: order.parsedItems.map((i) => ({ sku: i.sku, name: i.name, quantity: i.quantity })),
+        });
+        zip.file(`waybill-${order.number}.pdf`, pdfBuffer);
+        includedCount += 1;
+        includedIds.push(order.id);
+      } catch (err: any) {
+        logger.warn({ err: String(err?.message ?? err), orderNumber: order.number }, '[Shop Admin] Накладная для заказа не собралась — пропущена в ZIP товара+города');
+      }
+    }
+
+    if (!includedCount) {
+      return res.status(500).json({ error: 'Ни одна накладная не собралась' });
+    }
+
+    if (!redownload) {
+      await prisma.shopOrder.updateMany({ where: { id: { in: includedIds } }, data: { waybillDownloaded: true } });
+    }
+
+    const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
+    const now = new Date();
+    const dateStr = `${String(now.getDate()).padStart(2, '0')}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const productName = matching[0].parsedItems.find((i) => i.sku === sku)?.name ?? 'товар';
+    const filename = `${city}_${waybillProductSlug(productName)}_${dateStr}.zip`;
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="waybills.zip"; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    res.setHeader('X-Waybills-Total', String(matching.length));
+    res.setHeader('X-Waybills-Included', String(includedCount));
+    res.setHeader('Access-Control-Expose-Headers', 'X-Waybills-Total, X-Waybills-Included');
+    res.send(zipBuffer);
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] GET /orders/waybills-zip-by-product-city упал');
+    res.status(500).json({ error: 'Не удалось собрать накладные товара', details: String(err?.message ?? err) });
+  }
+});
+
 shopAdminRouter.get('/orders/:id', async (req, res) => {
   try {
     const order = await prisma.shopOrder.findUnique({ where: { id: req.params.id } });
