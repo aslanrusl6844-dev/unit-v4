@@ -3619,7 +3619,7 @@ function renderMyMarketWaybillCities(cities) {
     // новые, первый раз (обычный счёт).
     if (c.newCount === 0 && !c.hasDownloadedBefore) {
       return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 2px;color:var(--text-faint)">
-        <span>${mmEsc(c.city)}</span><span></span>
+        <span>${mmEsc(c.city)}, 0 заказов</span><span></span>
       </div>`;
     }
     if (c.newCount === 0 && c.hasDownloadedBefore) {
