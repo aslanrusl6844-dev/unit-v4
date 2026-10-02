@@ -3665,9 +3665,23 @@ function renderMyMarketWaybillProductsList() {
   el.innerHTML = myMarketWaybillProductsCache.map((p) => {
     const citiesLabel = p.todayCities.length ? p.todayCities.join(' и ') : '—';
     const checked = myMarketWaybillSelectedSkus.has(p.sku);
+    // Фото приходит готовым с сервера (p.image) — та же логика резолва
+    // (sku/shopArticle -> первая картинка), что и в таблице заказов, но
+    // посчитана один раз в GET /orders/waybills-products-today, не здесь.
+    const imageUrl = p.image || null;
+    const initial = (p.name[0] || '?').toUpperCase();
+    const photoHtml = imageUrl
+      ? `<div style="position:relative;width:48px;height:48px;flex-shrink:0">
+          <img src="${imageUrl}" alt="" style="width:48px;height:48px;object-fit:cover;border-radius:8px;display:block" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" />
+          <div style="display:none;width:48px;height:48px;border-radius:8px;background:var(--bg);align-items:center;justify-content:center;color:var(--text-faint);font-weight:600;position:absolute;top:0;left:0">${initial}</div>
+        </div>`
+      : `<div style="width:48px;height:48px;border-radius:8px;background:var(--bg);display:flex;align-items:center;justify-content:center;color:var(--text-faint);font-weight:600;flex-shrink:0">${initial}</div>`;
     return `
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 2px;border-bottom:1px solid var(--border)">
-        <span>${p.number}. ${mmEsc(p.name)}, ${p.todayQty} шт, ${mmEsc(citiesLabel)}</span>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 2px;border-bottom:1px solid var(--border)">
+        <div style="display:flex;align-items:center;gap:8px;min-width:0">
+          ${photoHtml}
+          <span>${p.number}. ${mmEsc(p.name)}, ${p.todayQty} шт, ${mmEsc(citiesLabel)}</span>
+        </div>
         <input type="checkbox" data-wb-product-select="${mmEsc(p.sku)}" ${checked ? 'checked' : ''} />
       </div>
     `;
