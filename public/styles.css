@@ -331,23 +331,14 @@ body {
 .form-grid label[hidden] { display: none !important; }
 
 
-/* Значок-счётчик на вкладке (заказы/возвраты) — число текущих заявок этого
-   статуса, не нарастающий итог. Ноль не показываем — элемент просто не
-   создаётся/убирается. Кружок сверху справа от текста вкладки. */
+/* Цифра на вкладке (заказы/возвраты) — число текущих заявок этого статуса,
+   не нарастающий итог с полуночи. Ноль не показываем — элемент просто не
+   создаётся/убирается. Никакого кружка/фона — просто число рядом с текстом
+   вкладки, чуть крупнее самого текста. */
 .mm-tab-badge {
-  position: absolute;
-  top: -5px;
-  right: -5px;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  border-radius: 999px;
-  font-size: 10px;
+  margin-left: 5px;
+  font-size: 1.2em;
   font-weight: 700;
-  line-height: 16px;
-  text-align: center;
-  color: #fff;
-  box-shadow: 0 0 0 2px var(--bg);
 }
-.mm-tab-badge--green { background: #4ADE80; }
-.mm-tab-badge--red { background: #F87171; }
+.mm-tab-badge--green { color: #22C55E; }
+.mm-tab-badge--red { color: #F87171; }

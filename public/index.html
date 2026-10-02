@@ -811,20 +811,37 @@
               <button class="is-active" data-apptab="pending">Заявки</button>
               <button data-apptab="active">Активные</button>
               <button data-apptab="archived">Архив</button>
+              <button data-apptab="invite">Вакансия</button>
             </div>
-            <input type="text" id="mmCourierAppSearch" placeholder="Поиск: имя, телефон" style="max-width:280px;margin-bottom:10px" />
-            <div class="inline-form" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:8px">
-              <span id="mmCourierAppSelectedCount" style="font-size:12.5px;color:var(--text-muted)">Выбрано: 0</span>
-              <button class="btn btn--ghost" id="mmCourierAppBulkArchiveBtn" disabled>Убрать в архив</button>
-              <button class="btn btn--ghost" id="mmCourierAppBulkRestoreBtn" disabled hidden>Вернуть в заявки</button>
+
+            <!-- ---- Вакансия: приглашение на телефон, без него /courier/apply = 403 ---- -->
+            <div id="mmCourierInvitePanel" hidden>
+              <p class="panel__hint" style="margin-top:0">Приглашение привязано к телефону. Без него курьер не может подать заявку. Повторная отправка на тот же номер обновляет запись.</p>
+              <div class="form-grid" style="max-width:420px">
+                <label>Имя<input type="text" id="mmCourierInviteFirstName" /></label>
+                <label>Фамилия<input type="text" id="mmCourierInviteLastName" /></label>
+                <label>Телефон<input type="text" id="mmCourierInvitePhone" placeholder="+7..." /></label>
+                <label>ИИН<input type="text" id="mmCourierInviteIin" maxlength="12" /></label>
+              </div>
+              <button class="btn" id="mmCourierInviteSendBtn" style="margin-top:10px">Отправить</button>
+              <span id="mmCourierInviteStatus" class="panel__hint" style="margin-left:10px"></span>
             </div>
-            <div class="table-wrap">
-              <table class="table" id="mmCourierApplicationsTable">
-                <thead>
-                  <tr><th style="width:28px"><input type="checkbox" id="mmCourierAppSelectAll" title="Выбрать все в текущем списке" /></th><th>Телефон</th><th>Имя</th><th>Город</th><th>Дата</th><th>Статус</th><th></th></tr>
-                </thead>
+
+            <div id="mmCourierAppListWrap">
+              <input type="text" id="mmCourierAppSearch" placeholder="Поиск: имя, телефон" style="max-width:280px;margin-bottom:10px" />
+              <div class="inline-form" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:8px">
+                <span id="mmCourierAppSelectedCount" style="font-size:12.5px;color:var(--text-muted)">Выбрано: 0</span>
+                <button class="btn btn--ghost" id="mmCourierAppBulkArchiveBtn" disabled>Убрать в архив</button>
+                <button class="btn btn--ghost" id="mmCourierAppBulkRestoreBtn" disabled hidden>Вернуть в заявки</button>
+              </div>
+              <div class="table-wrap">
+                <table class="table" id="mmCourierApplicationsTable">
+                  <thead>
+                    <tr><th style="width:28px"><input type="checkbox" id="mmCourierAppSelectAll" title="Выбрать все в текущем списке" /></th><th>Телефон</th><th>Имя</th><th>ИИН</th><th>Город</th><th>Дата</th><th>Статус</th><th></th></tr>
+                  </thead>
                 <tbody></tbody>
               </table>
+            </div>
             </div>
           </div>
           <div class="panel">
