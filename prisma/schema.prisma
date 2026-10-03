@@ -607,3 +607,90 @@ model ShopReturn {
 
   @@index([status])
 }
+
+// =====================================================================
+// «Двор» — полка у двери (хозяюшка/овощная/пекарня/магазин у дома), НЕ
+// четвёртый маркетплейс и не курьерская доставка. Один магазин = один
+// номер телефона = одна полка. Оплата — прямой перевод покупателя на
+// номер магазина, сверяется продавцом вручную («Оплата есть»), эквайринга
+// и комиссии платформы здесь нет. Отдельные таблицы, Kaspi/Ozon/WB и
+// курьерскую доставку (Courier, ShopOrder и т.д.) не трогают и не
+// пересекаются с ними ни одной связью.
+// =====================================================================
+
+model YardShop {
+  id        String    @id @default(cuid())
+  phone     String    @unique // нормализованный — один магазин = один номер, как у курьера
+  name      String
+  kind      String    // "home" | "grocery" | "bakery" | "hozyayushka"
+  lat       Float?    // булавка — магазин ставит один раз, радиус 500 м считается от неё
+  lng       Float?
+  address   String?
+  active    Boolean   @default(true)
+  paidUntil DateTime? // подписка 500 ₸/мес, админ продлевает вручную
+  createdAt DateTime  @default(now())
+
+  items    YardItem[]
+  orders   YardOrder[]
+}
+
+model YardItem {
+  id     String   @id @default(cuid())
+  shopId String
+  shop   YardShop @relation(fields: [shopId], references: [id])
+  name   String
+  price  Float
+  stock  Int      @default(0)
+  photo  String?
+  active Boolean  @default(true)
+
+  @@index([shopId])
+}
+
+model YardOrder {
+  id         String   @id @default(cuid())
+  publicId   String   @unique // "YD-ГГММДД-NNNN"
+  shopId     String
+  shop       YardShop @relation(fields: [shopId], references: [id])
+  buyerPhone String   // нормализованный
+  buyerName  String
+  address    String?
+  lat        Float?
+  lng        Float?
+  total      Float
+  // waiting_payment -> paid -> accepted -> (at_door) -> done
+  //                              \-> no_payment (из waiting_payment, гасит заказ)
+  //                               \-> not_picked | out_of_stock (из accepted, возврат на полку)
+  status     String   @default("waiting_payment")
+  createdAt  DateTime @default(now())
+
+  items    YardOrderItem[]
+  messages YardMessage[]
+
+  @@index([shopId])
+  @@index([buyerPhone])
+}
+
+model YardOrderItem {
+  id      String    @id @default(cuid())
+  orderId String
+  order   YardOrder @relation(fields: [orderId], references: [id])
+  itemId  String?   // ссылка на YardItem на момент заказа; позиция могла потом измениться/удалиться
+  name    String    // снимок названия на момент заказа
+  price   Float     // снимок цены на момент заказа
+  qty     Int
+
+  @@index([orderId])
+}
+
+model YardMessage {
+  id        String    @id @default(cuid())
+  orderId   String
+  order     YardOrder @relation(fields: [orderId], references: [id])
+  from      String    // "buyer" | "shop"
+  text      String?
+  imageUrl  String?   // скрин чека и т.п.
+  createdAt DateTime  @default(now())
+
+  @@index([orderId])
+}

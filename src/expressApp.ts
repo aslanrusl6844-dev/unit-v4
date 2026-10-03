@@ -18,6 +18,8 @@ import { nichesRouter } from './routes/niches.routes';
 import { shopRouter } from './routes/shop.routes';
 import { shopAdminRouter } from './routes/shopAdmin.routes';
 import { shopMediaRouter } from './routes/shopMedia.routes';
+import { yardRouter } from './routes/yard.routes';
+import { yardAdminRouter } from './routes/yardAdmin.routes';
 
 /**
  * Собранное Express-приложение без вызова .listen(). Используется двумя
@@ -114,6 +116,11 @@ app.use('/api/niches', nichesRouter);
 app.use('/api/shop/admin', shopMediaRouter);
 app.use('/api/shop', shopRouter);
 app.use('/api/shop-admin', shopAdminRouter);
+// «Двор» — своя подсистема внутри приложения покупателя (x-app-key — её
+// собственная проверка внутри yardRouter), и свой админский раздел,
+// полностью отдельный от shopAdminRouter/shopRouter выше.
+app.use('/api/shop', yardRouter);
+app.use('/api/yard-admin', yardAdminRouter);
 
 // Дашборд (статика) — актуально только для локальной разработки, см. комментарий выше.
 app.use(express.static(path.join(__dirname, '..', 'public')));
