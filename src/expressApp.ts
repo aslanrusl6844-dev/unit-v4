@@ -18,6 +18,8 @@ import { nichesRouter } from './routes/niches.routes';
 import { shopRouter } from './routes/shop.routes';
 import { shopAdminRouter } from './routes/shopAdmin.routes';
 import { shopMediaRouter } from './routes/shopMedia.routes';
+import { yardRouter } from './routes/yard.routes';
+import { yardAdminRouter } from './routes/yardAdmin.routes';
 
 /**
  * Собранное Express-приложение без вызова .listen(). Используется двумя
@@ -114,6 +116,12 @@ app.use('/api/niches', nichesRouter);
 app.use('/api/shop/admin', shopMediaRouter);
 app.use('/api/shop', shopRouter);
 app.use('/api/shop-admin', shopAdminRouter);
+// «Двор» — своя подсистема, свои таблицы, свои заказы, свои деньги. Не
+// четвёртый маркетплейс и не полка My Market: x-app-key — собственная
+// проверка внутри yardRouter, API-пути /api/shop/yard/..., админский
+// раздел полностью отдельный от shopAdminRouter/shopRouter выше.
+app.use('/api/shop', yardRouter);
+app.use('/api/yard-admin', yardAdminRouter);
 
 // Дашборд (статика) — актуально только для локальной разработки, см. комментарий выше.
 app.use(express.static(path.join(__dirname, '..', 'public')));

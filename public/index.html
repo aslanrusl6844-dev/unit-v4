@@ -450,6 +450,7 @@
           <button data-tab="couriers">Курьеры</button>
           <button data-tab="finance">Финансы</button>
           <button data-tab="upload">Загрузка Excel</button>
+          <button data-tab="yard" style="background:#DC2626;color:#fff">Магазин или Двор</button>
         </div>
 
         <!-- ---- Главная ---- -->
@@ -1001,6 +1002,62 @@
           </div>
 
           <div id="mmUploadReport"></div>
+        </div>
+
+        <!-- ---- Двор: отдельная подсистема (свои таблицы, свои заказы, свои деньги), ---- -->
+        <!-- ---- внутри админки только позиционирована как крайняя вкладка My Market. ---- -->
+        <div id="mymarketYardTab" hidden>
+          <p class="panel__hint" style="margin-top:0">Полка у двери: хозяюшка, овощная, пекарня, магазин у дома. Не четвёртый маркетплейс и не полка My Market — оплата напрямую продавцу, без эквайринга.</p>
+
+          <div class="seg" id="yardTabs">
+            <button class="is-active" data-yardtab="shops">Магазины</button>
+            <button data-yardtab="items">Полки</button>
+            <button data-yardtab="orders">Заказы</button>
+          </div>
+
+          <!-- ---- Магазины ---- -->
+          <div id="yardShopsTab">
+            <div class="panel">
+              <p class="panel__hint" style="margin-top:0">Подписка 500 ₸/мес — продляется вручную, с пакета комиссию не берём. Без действующей подписки магазин не виден покупателям.</p>
+              <div class="table-wrap">
+                <table class="table" id="yardShopsTable">
+                  <thead>
+                    <tr><th>Название</th><th>Вид</th><th>Телефон</th><th>Адрес</th><th>Булавка</th><th>Подписка до</th><th>Статус</th><th></th></tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <!-- ---- Полки ---- -->
+          <div id="yardItemsTab" hidden>
+            <div class="panel">
+              <div class="table-wrap">
+                <table class="table" id="yardItemsTable">
+                  <thead>
+                    <tr><th>Фото</th><th>Товар</th><th>Магазин</th><th class="num">Цена</th><th class="num">Остаток</th><th>Статус</th></tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <!-- ---- Заказы ---- -->
+          <div id="yardOrdersTab" hidden>
+            <div class="panel">
+              <div style="margin-bottom:10px" id="yardTurnoverSummary"></div>
+              <div class="table-wrap">
+                <table class="table" id="yardOrdersTable">
+                  <thead>
+                    <tr><th>№</th><th>Дата</th><th>Магазин</th><th>Покупатель</th><th class="num">Сумма</th><th>Статус</th><th>Чек</th><th></th></tr>
+                  </thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 

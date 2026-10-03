@@ -19,13 +19,11 @@ yardAdminRouter.get('/shops', async (_req, res) => {
 });
 
 const subscriptionSchema = z.object({
-  // Либо прямая дата (админ сам решает), либо продление на N месяцев от
-  // max(сейчас, текущий paidUntil) — удобнее для «продлить ещё на месяц».
   paidUntil: z.string().datetime().optional(),
   months: z.number().int().positive().optional(),
 }).refine((d) => d.paidUntil || d.months, { message: 'Укажите paidUntil или months' });
 
-/** Подписка 500 ₸/мес — вручную, админ сам проставляет paidUntil. */
+/** Подписка 500 ₸/мес — вручную, админ сам проставляет paidUntil. С пакета комиссию не берём. */
 yardAdminRouter.post('/shops/:id/subscription', async (req, res) => {
   const parsed = subscriptionSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
@@ -78,7 +76,7 @@ yardAdminRouter.get('/items', async (_req, res) => {
 
 /**
  * Все заказы разом — для вкладки «Заказы». Скрин чека — последнее сообщение
- * с imageUrl в чате заказа (не отдельное поле на YardOrder — схема его не
+ * с imageUrl в чате заказа (схема YardOrder отдельного поля для чека не
  * предусматривает, чек идёт через YardMessage).
  */
 yardAdminRouter.get('/orders', async (_req, res) => {
@@ -102,8 +100,8 @@ yardAdminRouter.get('/orders', async (_req, res) => {
 
 /**
  * Оборот двора — отдельно от юнит-экономики APP: комиссия 0, налог не
- * считаем (деньги идут покупатель -> магазин напрямую, эквайринга ещё нет).
- * Эта цифра нигде не подмешивается в существующие финансовые расчёты APP.
+ * считаем. Эта цифра нигде не подмешивается в существующие финансовые
+ * расчёты APP/Kaspi/Ozon/WB.
  */
 yardAdminRouter.get('/turnover', async (_req, res) => {
   try {

@@ -19,8 +19,8 @@ import {
 export const yardRouter = Router();
 
 /**
- * Тот же x-app-key, что и у всего /api/shop/* — «Двор» живёт в приложении
- * покупателя, не отдельным продуктом.
+ * Тот же x-app-key, что и у всего /api/shop/* — «Двор» живёт под тем же
+ * приложением покупателя, путь /api/shop/yard/....
  */
 yardRouter.use((req, res, next) => {
   if (!env.shopAppKey) {
@@ -40,20 +40,18 @@ function parseLatLng(latRaw: unknown, lngRaw: unknown): { lat: number; lng: numb
   return { lat, lng };
 }
 
-/** Три товара полки для предпросмотра в списке дворов — только активные, с остатком. */
+/** Три товара полки для предпросмотра в списке дворов — только активные. */
 async function previewItems(shopId: string) {
-  const items = await prisma.yardItem.findMany({
+  return prisma.yardItem.findMany({
     where: { shopId, active: true },
     orderBy: { id: 'asc' },
     take: 3,
     select: { name: true, price: true, photo: true },
   });
-  return items;
 }
 
 /**
- * Магазины в радиусе 500 м — имя, вид, метры, 3 товара. БЕЗ телефона —
- * «Соседние цены не светим» касается списка выбора, не отдельной полки.
+ * Магазины в радиусе 500 м — имя, вид, метры, 3 товара. БЕЗ телефона.
  * Подписка просрочена/магазин выключен — в список не попадает.
  */
 yardRouter.get('/yard/nearby', async (req, res) => {
@@ -127,8 +125,9 @@ const createOrderSchema = z.object({
 });
 
 /**
- * Создание заказа — остаток НЕ списываем (это происходит только при
- * подтверждении оплаты продавцом). Телефон магазина в ответ не кладём.
+ * Создание заказа — остаток НЕ списываем (только при подтверждении оплаты).
+ * Телефон магазина в ответ не кладём. У покупателя кнопки отмены нет —
+ * никакого endpoint на отмену заказа в этом файле намеренно нет.
  */
 yardRouter.post('/yard/orders', async (req, res) => {
   const parsed = createOrderSchema.safeParse(req.body);
@@ -204,7 +203,7 @@ function toBuyerOrderDto(order: any) {
   };
 }
 
-/** Заказы покупателя — только его собственные, по телефону. */
+/** Заказы покупателя — только его собственные, по телефону. Чужой номер чужой полки не видит. */
 yardRouter.get('/yard/orders', async (req, res) => {
   const normalizedPhone = normalizePhone(String(req.query.phone ?? ''));
   if (!normalizedPhone) return res.status(400).json({ error: 'Некорректный номер телефона' });
@@ -254,7 +253,7 @@ yardRouter.post('/yard/orders/:id/receipt', async (req, res) => {
 
 const messageSchema = z.object({ phone: z.string().min(1), text: z.string().min(1).max(1000) });
 
-/** Сообщение в чат заказа — тот же принцип: чат только внутри заказа, не публично. */
+/** Сообщение в чат заказа — чат только внутри заказа, не публично. */
 yardRouter.post('/yard/orders/:id/message', async (req, res) => {
   const parsed = messageSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
@@ -273,9 +272,8 @@ yardRouter.post('/yard/orders/:id/message', async (req, res) => {
 
 /**
  * Кабинет «Я магазин» — по телефону. Нет такого магазина ещё — не ошибка,
- * просто shop:null (ещё не зарегистрировался). Заказы отдаём с телефоном
- * покупателя ТОЛЬКО с accepted и дальше — то же правило, что и у покупателя,
- * симметрично.
+ * просто shop:null. Заказы отдаём с телефоном покупателя ТОЛЬКО с accepted
+ * и дальше — то же правило, что у покупателя, симметрично.
  */
 yardRouter.get('/yard/mine', async (req, res) => {
   const normalizedPhone = normalizePhone(String(req.query.phone ?? ''));
@@ -405,7 +403,7 @@ async function requireYardShopOwner(
   return { order };
 }
 
-/** «Оплата есть/нет» — только продавец своего заказа. */
+/** «Оплата есть/нет» — только продавец своего заказа. Полка списывается ТОЛЬКО по «Оплата есть». */
 yardRouter.post('/yard/orders/:id/payment', async (req, res) => {
   const parsed = paymentSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });

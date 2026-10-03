@@ -2089,7 +2089,7 @@ let myMarketProductsCache = [];
 let myMarketChartInstance = null;
 let myMarketEditingProductId = null;
 
-const MY_MARKET_TABS = ['home', 'products', 'prices', 'orders', 'returns', 'analytics', 'couriers', 'finance', 'upload'];
+const MY_MARKET_TABS = ['home', 'products', 'prices', 'orders', 'returns', 'analytics', 'couriers', 'finance', 'upload', 'yard'];
 
 function wireMyMarketTabsOnce() {
   if (myMarketTabWired) return;
@@ -2376,6 +2376,7 @@ function switchMyMarketTab(tab) {
   if (tab === 'analytics') loadMyMarketAnalytics();
   if (tab === 'couriers') { loadMyMarketCouriers(); loadMyMarketCourierApplications(); }
   if (tab === 'finance') loadMyMarketFinance();
+  if (tab === 'yard') loadYardPage();
 }
 
 async function loadMyMarketPage() {
@@ -5450,3 +5451,217 @@ async function loadMyMarketOzonTypeMap() {
 }
 
 
+
+// =====================================================================
+// «Двор» — полка у двери (хозяюшка/овощная/пекарня/магазин у дома).
+// Отдельная подсистема: свои таблицы, свой API (/api/yard-admin/*).
+// Внутри админки только ПОЗИЦИОНИРОВАН как крайняя вкладка My Market —
+// Kaspi/Ozon/WB/курьера/накладную/код выдачи/список товаров My Market
+// не затрагивает.
+// =====================================================================
+const YARD_KIND_LABELS = { home: 'Магазин у дома', grocery: 'Овощная', bakery: 'Пекарня', hozyayushka: 'Хозяюшка' };
+const YARD_STATUS_LABELS = {
+  waiting_payment: 'Ждёт оплаты',
+  paid: 'Оплачен',
+  accepted: 'Принят',
+  at_door: 'У двери',
+  done: 'Выдан',
+  no_payment: 'Оплаты нет',
+  not_picked: 'Не забрали',
+  out_of_stock: 'Нет в наличии',
+};
+
+let yardShopsCache = [];
+let yardItemsCache = [];
+let yardOrdersCache = [];
+let yardTabsWired = false;
+
+function wireYardTabsOnce() {
+  if (yardTabsWired) return;
+  yardTabsWired = true;
+  document.getElementById('yardTabs').addEventListener('click', (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    document.querySelectorAll('#yardTabs button').forEach((b) => b.classList.remove('is-active'));
+    btn.classList.add('is-active');
+    document.getElementById('yardShopsTab').hidden = btn.dataset.yardtab !== 'shops';
+    document.getElementById('yardItemsTab').hidden = btn.dataset.yardtab !== 'items';
+    document.getElementById('yardOrdersTab').hidden = btn.dataset.yardtab !== 'orders';
+  });
+}
+
+async function loadYardPage() {
+  wireYardTabsOnce();
+  await Promise.all([loadYardShops(), loadYardItems(), loadYardOrders(), loadYardTurnover()]);
+}
+
+async function loadYardShops() {
+  yardShopsCache = await api('/yard-admin/shops');
+  renderYardShopsTable();
+}
+
+function renderYardShopsTable() {
+  const tbody = document.querySelector('#yardShopsTable tbody');
+  if (!yardShopsCache.length) {
+    tbody.innerHTML = `<tr><td colspan="8" style="color:var(--text-faint)">Магазинов двора ещё нет</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = yardShopsCache.map((s) => {
+    const isLive = s.active && s.paidUntil && new Date(s.paidUntil) > new Date();
+    const paidUntilLabel = s.paidUntil ? fmtOrderDateTime(s.paidUntil) : '—';
+    const pinLabel = s.lat != null && s.lng != null ? `${s.lat.toFixed(4)}, ${s.lng.toFixed(4)}` : '— не поставлена';
+    return `
+      <tr>
+        <td class="name-cell">${mmEsc(s.name)}</td>
+        <td>${YARD_KIND_LABELS[s.kind] ?? s.kind}</td>
+        <td>${mmEsc(s.phone)}</td>
+        <td style="font-size:11px">${mmEsc(s.address || '—')}</td>
+        <td style="font-size:11px">${pinLabel}</td>
+        <td>${paidUntilLabel}</td>
+        <td>${isLive ? '<span style="color:var(--accent)">● Видим покупателям</span>' : '<span style="color:var(--loss)">● Не виден (нет подписки)</span>'}</td>
+        <td style="white-space:nowrap">
+          <button class="link-btn" data-yard-extend="${s.id}" style="color:var(--accent)">+1 мес</button>
+          <button class="link-btn" data-yard-toggle-active="${s.id}" data-yard-active="${s.active}">${s.active ? 'Выключить' : 'Включить'}</button>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  tbody.querySelectorAll('button[data-yard-extend]').forEach((btn) => {
+    btn.addEventListener('click', () => runYardExtendSubscription(btn.dataset.yardExtend));
+  });
+  tbody.querySelectorAll('button[data-yard-toggle-active]').forEach((btn) => {
+    btn.addEventListener('click', () => runYardToggleActive(btn.dataset.yardToggleActive, btn.dataset.yardActive !== 'true'));
+  });
+}
+
+async function runYardExtendSubscription(shopId) {
+  try {
+    await api(`/yard-admin/shops/${shopId}/subscription`, { method: 'POST', body: JSON.stringify({ months: 1 }) });
+    await loadYardShops();
+  } catch (err) {
+    alert('Не удалось продлить подписку: ' + err.message);
+  }
+}
+
+async function runYardToggleActive(shopId, nextActive) {
+  try {
+    await api(`/yard-admin/shops/${shopId}/active`, { method: 'POST', body: JSON.stringify({ active: nextActive }) });
+    await loadYardShops();
+  } catch (err) {
+    alert('Не удалось изменить статус магазина: ' + err.message);
+  }
+}
+
+async function loadYardItems() {
+  yardItemsCache = await api('/yard-admin/items');
+  renderYardItemsTable();
+}
+
+function renderYardItemsTable() {
+  const tbody = document.querySelector('#yardItemsTable tbody');
+  if (!yardItemsCache.length) {
+    tbody.innerHTML = `<tr><td colspan="6" style="color:var(--text-faint)">Товаров на полках ещё нет</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = yardItemsCache.map((i) => `
+    <tr>
+      <td>${i.photo ? `<img src="${i.photo}" alt="" style="width:40px;height:40px;object-fit:cover;border-radius:6px" onerror="this.style.visibility='hidden'" />` : '<span style="color:var(--text-faint)">—</span>'}</td>
+      <td class="name-cell">${mmEsc(i.name)}</td>
+      <td>${mmEsc(i.shop?.name ?? '—')}</td>
+      <td class="num">${fmtMoney(i.price)}</td>
+      <td class="num">${i.stock}</td>
+      <td>${i.active ? '<span style="color:var(--accent)">● Активен</span>' : '<span style="color:var(--text-faint)">● Скрыт</span>'}</td>
+    </tr>
+  `).join('');
+}
+
+async function loadYardTurnover() {
+  try {
+    const t = await api('/yard-admin/turnover');
+    document.getElementById('yardTurnoverSummary').innerHTML =
+      `<span class="panel__hint" style="margin:0">Оборот двора: <b>${fmtMoney(t.turnover)}</b> (${t.orderCount} заказов, комиссия 0 — отдельно от юнит-экономики APP)</span>`;
+  } catch {
+    document.getElementById('yardTurnoverSummary').innerHTML = '';
+  }
+}
+
+async function loadYardOrders() {
+  yardOrdersCache = await api('/yard-admin/orders');
+  renderYardOrdersTable();
+}
+
+function renderYardOrdersTable() {
+  const tbody = document.querySelector('#yardOrdersTable tbody');
+  if (!yardOrdersCache.length) {
+    tbody.innerHTML = `<tr><td colspan="8" style="color:var(--text-faint)">Заказов двора ещё нет</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = yardOrdersCache.map((o) => {
+    const statusLabel = YARD_STATUS_LABELS[o.status] ?? o.status;
+    let actionsHtml = '';
+    if (o.status === 'waiting_payment') {
+      actionsHtml = `
+        <button class="link-btn" data-yard-pay="${o.id}" data-yard-pay-ok="true" style="color:var(--accent)">Оплата есть</button>
+        <button class="link-btn" data-yard-pay="${o.id}" data-yard-pay-ok="false" style="color:var(--loss)">Оплаты нет</button>
+      `;
+    } else if (o.status === 'paid') {
+      actionsHtml = `<button class="link-btn" data-yard-accept="${o.id}" style="color:var(--accent)">Принял</button>`;
+    } else if (o.status === 'accepted' || o.status === 'at_door') {
+      actionsHtml = `
+        <button class="link-btn" data-yard-close="${o.id}" data-yard-close-status="done" style="color:var(--accent)">Выдан</button>
+        <button class="link-btn" data-yard-close="${o.id}" data-yard-close-status="not_picked">Не забрали</button>
+        <button class="link-btn" data-yard-close="${o.id}" data-yard-close-status="out_of_stock" style="color:var(--loss)">Нет в наличии</button>
+      `;
+    }
+    return `
+      <tr>
+        <td style="font-size:11px">${mmEsc(o.publicId)}</td>
+        <td>${fmtOrderDateTime(o.createdAt)}</td>
+        <td class="name-cell">${mmEsc(o.shop?.name ?? '—')}</td>
+        <td>${mmEsc(o.buyerName)}</td>
+        <td class="num">${fmtMoney(o.total)}</td>
+        <td>${mmEsc(statusLabel)}</td>
+        <td>${o.receiptUrl ? `<a href="${o.receiptUrl}" target="_blank" rel="noopener">Скрин</a>` : '—'}</td>
+        <td style="white-space:nowrap">${actionsHtml}</td>
+      </tr>
+    `;
+  }).join('');
+
+  tbody.querySelectorAll('button[data-yard-pay]').forEach((btn) => {
+    btn.addEventListener('click', () => runYardOrderPayment(btn.dataset.yardPay, btn.dataset.yardPayOk === 'true'));
+  });
+  tbody.querySelectorAll('button[data-yard-accept]').forEach((btn) => {
+    btn.addEventListener('click', () => runYardOrderAccept(btn.dataset.yardAccept));
+  });
+  tbody.querySelectorAll('button[data-yard-close]').forEach((btn) => {
+    btn.addEventListener('click', () => runYardOrderClose(btn.dataset.yardClose, btn.dataset.yardCloseStatus));
+  });
+}
+
+async function runYardOrderPayment(orderId, ok) {
+  try {
+    await api(`/yard-admin/orders/${orderId}/payment`, { method: 'POST', body: JSON.stringify({ ok }) });
+    await Promise.all([loadYardOrders(), loadYardItems(), loadYardTurnover()]);
+  } catch (err) {
+    alert('Не удалось отметить оплату: ' + err.message);
+  }
+}
+
+async function runYardOrderAccept(orderId) {
+  try {
+    await api(`/yard-admin/orders/${orderId}/accept`, { method: 'POST' });
+    await loadYardOrders();
+  } catch (err) {
+    alert('Не удалось принять заказ: ' + err.message);
+  }
+}
+
+async function runYardOrderClose(orderId, status) {
+  try {
+    await api(`/yard-admin/orders/${orderId}/close`, { method: 'POST', body: JSON.stringify({ status }) });
+    await Promise.all([loadYardOrders(), loadYardItems()]);
+  } catch (err) {
+    alert('Не удалось закрыть заказ: ' + err.message);
+  }
+}
