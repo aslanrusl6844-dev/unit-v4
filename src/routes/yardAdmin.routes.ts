@@ -104,10 +104,12 @@ yardAdminRouter.post('/applications/:id/reject', async (req, res) => {
 // Магазины, Полки, Заказы — без изменений от исходной логики.
 // =====================================================================
 
-yardAdminRouter.get('/shops', async (_req, res) => {
+yardAdminRouter.get('/shops', async (req, res) => {
   try {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-    const shops = await prisma.yardShop.findMany({ orderBy: { createdAt: 'desc' } });
+    // По умолчанию — только живые; архив — отдельным запросом ?archived=true.
+    const archived = req.query.archived === 'true';
+    const shops = await prisma.yardShop.findMany({ where: { archived }, orderBy: { createdAt: 'desc' } });
     res.json(shops);
   } catch (err: any) {
     logger.error({ err }, '[Yard Admin] GET /shops упал');
@@ -158,10 +160,15 @@ yardAdminRouter.post('/shops/:id/active', async (req, res) => {
   }
 });
 
-yardAdminRouter.get('/items', async (_req, res) => {
+yardAdminRouter.get('/items', async (req, res) => {
   try {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-    const items = await prisma.yardItem.findMany({ include: { shop: { select: { name: true } } } });
+    // Товары архивного магазина «лежат» внутри его архива — ни в живом списке, ни в архиве полок их нет.
+    const archived = req.query.archived === 'true';
+    const items = await prisma.yardItem.findMany({
+      where: { archived, shop: { archived: false } },
+      include: { shop: { select: { name: true } } },
+    });
     res.json(items);
   } catch (err: any) {
     logger.error({ err }, '[Yard Admin] GET /items упал');
@@ -169,10 +176,12 @@ yardAdminRouter.get('/items', async (_req, res) => {
   }
 });
 
-yardAdminRouter.get('/orders', async (_req, res) => {
+yardAdminRouter.get('/orders', async (req, res) => {
   try {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    const archived = req.query.archived === 'true';
     const orders = await prisma.yardOrder.findMany({
+      where: { archived, shop: { archived: false } },
       include: { items: true, shop: { select: { name: true, phone: true } }, messages: true },
       orderBy: { createdAt: 'desc' },
     });
@@ -185,6 +194,139 @@ yardAdminRouter.get('/orders', async (_req, res) => {
   } catch (err: any) {
     logger.error({ err }, '[Yard Admin] GET /orders упал');
     res.status(500).json({ error: 'Не удалось получить заказы двора', details: String(err?.message ?? err) });
+  }
+});
+
+// =====================================================================
+// Архив / возврат из архива / удаление / переименование.
+// Работают ТОЛЬКО с теми id, которые прислал админ (отмеченные галочкой) —
+// «без галочки строки не трогаем». Удаление стирает записи с сервера.
+// =====================================================================
+const idsSchema = z.object({ ids: z.array(z.string().min(1)).min(1).max(500) });
+const idsArchiveSchema = idsSchema.extend({ archived: z.boolean() });
+const shelvesSchema = z.object({ shopIds: z.array(z.string().min(1)).min(1).max(500) });
+const shelvesArchiveSchema = shelvesSchema.extend({ archived: z.boolean() });
+const shelvesDeleteSchema = shelvesSchema.extend({ archived: z.boolean() });
+
+/** Магазины: в архив (archived:true) / вернуть (archived:false). Архивный магазин покупателям не виден. */
+yardAdminRouter.post('/shops/archive', async (req, res) => {
+  const parsed = idsArchiveSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+  try {
+    const r = await prisma.yardShop.updateMany({ where: { id: { in: parsed.data.ids } }, data: { archived: parsed.data.archived } });
+    res.json({ updated: r.count });
+  } catch (err: any) {
+    logger.error({ err }, '[Yard Admin] POST /shops/archive упал');
+    res.status(500).json({ error: 'Не удалось изменить архив магазинов', details: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * Магазины: удалить с сервера. Внешние ключи RESTRICT, поэтому порядок от
+ * дочерних к родителю: сообщения заказов -> позиции заказов -> заказы ->
+ * чат магазина -> товары полки -> магазин. Заявка/вакансия по этому телефону
+ * остаются как были (их ведёт вкладка «Заявки»).
+ */
+yardAdminRouter.post('/shops/delete', async (req, res) => {
+  const parsed = idsSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+  try {
+    const ids = parsed.data.ids;
+    const orders = await prisma.yardOrder.findMany({ where: { shopId: { in: ids } }, select: { id: true } });
+    const orderIds = orders.map((o: { id: string }) => o.id);
+    const [, , , , , shops] = await prisma.$transaction([
+      prisma.yardMessage.deleteMany({ where: { orderId: { in: orderIds } } }),
+      prisma.yardOrderItem.deleteMany({ where: { orderId: { in: orderIds } } }),
+      prisma.yardOrder.deleteMany({ where: { shopId: { in: ids } } }),
+      prisma.yardShopMessage.deleteMany({ where: { shopId: { in: ids } } }),
+      prisma.yardItem.deleteMany({ where: { shopId: { in: ids } } }),
+      prisma.yardShop.deleteMany({ where: { id: { in: ids } } }),
+    ]);
+    res.json({ deleted: shops.count });
+  } catch (err: any) {
+    logger.error({ err }, '[Yard Admin] POST /shops/delete упал');
+    res.status(500).json({ error: 'Не удалось удалить магазины', details: String(err?.message ?? err) });
+  }
+});
+
+/** Полки (строка = полка магазина): в архив / вернуть. Затрагивает все товары магазина в нужном состоянии. */
+yardAdminRouter.post('/items/archive', async (req, res) => {
+  const parsed = shelvesArchiveSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+  try {
+    const r = await prisma.yardItem.updateMany({
+      where: { shopId: { in: parsed.data.shopIds }, archived: !parsed.data.archived },
+      data: { archived: parsed.data.archived },
+    });
+    res.json({ updated: r.count });
+  } catch (err: any) {
+    logger.error({ err }, '[Yard Admin] POST /items/archive упал');
+    res.status(500).json({ error: 'Не удалось изменить архив полок', details: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * Полки: удалить товары выбранных магазинов — живые (archived:false, из общего
+ * списка) или архивные (archived:true, из архива). Позиции уже сделанных
+ * заказов хранят снимок названия/цены и ссылаются на товар без внешнего
+ * ключа, поэтому заказы остаются целыми.
+ */
+yardAdminRouter.post('/items/delete', async (req, res) => {
+  const parsed = shelvesDeleteSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+  try {
+    const r = await prisma.yardItem.deleteMany({ where: { shopId: { in: parsed.data.shopIds }, archived: parsed.data.archived } });
+    res.json({ deleted: r.count });
+  } catch (err: any) {
+    logger.error({ err }, '[Yard Admin] POST /items/delete упал');
+    res.status(500).json({ error: 'Не удалось удалить товары', details: String(err?.message ?? err) });
+  }
+});
+
+/** Заказы: в архив / вернуть. Статус, остаток и деньги не трогаем. */
+yardAdminRouter.post('/orders/archive', async (req, res) => {
+  const parsed = idsArchiveSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+  try {
+    const r = await prisma.yardOrder.updateMany({ where: { id: { in: parsed.data.ids } }, data: { archived: parsed.data.archived } });
+    res.json({ updated: r.count });
+  } catch (err: any) {
+    logger.error({ err }, '[Yard Admin] POST /orders/archive упал');
+    res.status(500).json({ error: 'Не удалось изменить архив заказов', details: String(err?.message ?? err) });
+  }
+});
+
+/** Заказы: удалить с сервера вместе с позициями и перепиской по заказу. Остаток на полку не возвращается. */
+yardAdminRouter.post('/orders/delete', async (req, res) => {
+  const parsed = idsSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+  try {
+    const ids = parsed.data.ids;
+    const [, , orders] = await prisma.$transaction([
+      prisma.yardMessage.deleteMany({ where: { orderId: { in: ids } } }),
+      prisma.yardOrderItem.deleteMany({ where: { orderId: { in: ids } } }),
+      prisma.yardOrder.deleteMany({ where: { id: { in: ids } } }),
+    ]);
+    res.json({ deleted: orders.count });
+  } catch (err: any) {
+    logger.error({ err }, '[Yard Admin] POST /orders/delete упал');
+    res.status(500).json({ error: 'Не удалось удалить заказы', details: String(err?.message ?? err) });
+  }
+});
+
+const renameShopSchema = z.object({ name: z.string().trim().min(1).max(100) });
+
+/** Открыть магазин, поправить название и сохранить. Больше ничего в магазине эта правка не меняет. */
+yardAdminRouter.post('/shops/:id/rename', async (req, res) => {
+  const parsed = renameShopSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Название не может быть пустым', details: parsed.error.flatten() });
+  try {
+    const shop = await prisma.yardShop.update({ where: { id: req.params.id }, data: { name: parsed.data.name } });
+    res.json(shop);
+  } catch (err: any) {
+    if (err?.code === 'P2025') return res.status(404).json({ error: 'Магазин не найден' });
+    logger.error({ err }, '[Yard Admin] POST /shops/:id/rename упал');
+    res.status(500).json({ error: 'Не удалось переименовать магазин', details: String(err?.message ?? err) });
   }
 });
 

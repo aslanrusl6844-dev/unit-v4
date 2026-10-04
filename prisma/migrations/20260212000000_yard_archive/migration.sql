@@ -1,0 +1,8 @@
+-- AlterTable
+ALTER TABLE "YardShop" ADD COLUMN IF NOT EXISTS "archived" BOOLEAN NOT NULL DEFAULT false;
+
+-- AlterTable
+ALTER TABLE "YardItem" ADD COLUMN IF NOT EXISTS "archived" BOOLEAN NOT NULL DEFAULT false;
+
+-- AlterTable
+ALTER TABLE "YardOrder" ADD COLUMN IF NOT EXISTS "archived" BOOLEAN NOT NULL DEFAULT false;

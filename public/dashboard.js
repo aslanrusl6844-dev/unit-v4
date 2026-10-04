@@ -5492,8 +5492,10 @@ function wireYardTabsOnce() {
     document.getElementById('yardShopsTab').hidden = btn.dataset.yardtab !== 'shops';
     document.getElementById('yardItemsTab').hidden = btn.dataset.yardtab !== 'items';
     document.getElementById('yardOrdersTab').hidden = btn.dataset.yardtab !== 'orders';
+    document.getElementById('yardArchiveTab').hidden = btn.dataset.yardtab !== 'archive';
   });
   document.getElementById('yardInviteSendBtn').addEventListener('click', runYardSendInvite);
+  wireYardToolbars();
 }
 
 async function loadYardPage() {
@@ -5588,44 +5590,183 @@ async function runYardApplicationDecision(id, action) {
   }
 }
 
+// =====================================================================
+// Магазины / Полки / Заказы / Архив — общий каркас: поиск по названию
+// магазина, галочка в каждой строке, «отметить все», «В архив», «Удалить».
+// Действие применяется ТОЛЬКО к отмеченным строкам; архив — отдельная
+// вкладка справа, в общих списках его нет. Контексты (tc):
+//   live:shops | live:items | live:orders | archive (внутри — подвкладки)
+// =====================================================================
+let yardShopsArchiveCache = [];
+let yardItemsArchiveCache = [];
+let yardOrdersArchiveCache = [];
+let yardArchiveKind = 'shops'; // shops | items | orders
+const yardSelection = {};      // ключ контекста -> Set отмеченных id
+
+function yardCtxInfo(tc) {
+  if (tc === 'archive') return { mode: 'archive', kind: yardArchiveKind, key: `archive:${yardArchiveKind}` };
+  const [mode, kind] = tc.split(':');
+  return { mode, kind, key: tc };
+}
+function yardToolbarEl(tc) { return document.querySelector(`[data-yard-toolbar="${tc}"]`); }
+function yardSelSet(key) {
+  if (!yardSelection[key]) yardSelection[key] = new Set();
+  return yardSelection[key];
+}
+function yardSearchQuery(tc) {
+  return (yardToolbarEl(tc).querySelector('[data-yard-search]').value || '').trim().toLowerCase();
+}
+function yardNameMatches(name, q) { return !q || String(name || '').toLowerCase().includes(q); }
+
+/** Строки контекста, уже отфильтрованные поиском по названию магазина. */
+function yardRows(tc) {
+  const { mode, kind } = yardCtxInfo(tc);
+  const q = yardSearchQuery(tc);
+  if (kind === 'shops') {
+    return (mode === 'live' ? yardShopsCache : yardShopsArchiveCache).filter((s) => yardNameMatches(s.name, q));
+  }
+  if (kind === 'orders') {
+    return (mode === 'live' ? yardOrdersCache : yardOrdersArchiveCache).filter((o) => yardNameMatches(o.shop?.name, q));
+  }
+  return yardShelfGroups(mode).filter((g) => yardNameMatches(g.name, q));
+}
+/** Что можно отметить: у пустой полки нечего архивировать/удалять — галочка у неё выключена. */
+function yardSelectableIds(tc) {
+  const { kind } = yardCtxInfo(tc);
+  return yardRows(tc).filter((r) => kind !== 'items' || r.items.length > 0).map((r) => r.id);
+}
+
+/** Счётчик, «отметить все», кнопки. Скрытые поиском строки из отмеченных выпадают — под действие они не попадут. */
+function yardSyncToolbar(tc) {
+  const tb = yardToolbarEl(tc);
+  const { key } = yardCtxInfo(tc);
+  const sel = yardSelSet(key);
+  const ids = yardSelectableIds(tc);
+  for (const id of [...sel]) if (!ids.includes(id)) sel.delete(id);
+  tb.querySelector('[data-yard-selected]').textContent = `Выбрано: ${sel.size}`;
+  const all = tb.querySelector('[data-yard-selectall]');
+  all.disabled = ids.length === 0;
+  all.checked = ids.length > 0 && sel.size === ids.length;
+  all.indeterminate = sel.size > 0 && sel.size < ids.length;
+  tb.querySelectorAll('[data-yard-act]').forEach((b) => { b.disabled = sel.size === 0; });
+}
+function yardWireRowChecks(container, tc) {
+  const { key } = yardCtxInfo(tc);
+  container.querySelectorAll('input[data-yard-row]').forEach((cb) => {
+    cb.addEventListener('change', () => {
+      const sel = yardSelSet(key);
+      if (cb.checked) sel.add(cb.dataset.yardRow); else sel.delete(cb.dataset.yardRow);
+      yardSyncToolbar(tc);
+    });
+  });
+}
+function yardRender(tc) {
+  if (tc === 'live:shops') renderYardShopsTable();
+  else if (tc === 'live:items') renderYardShelves();
+  else if (tc === 'live:orders') renderYardOrdersTable();
+  else renderYardArchive();
+}
+
+function wireYardToolbars() {
+  document.querySelectorAll('[data-yard-toolbar]').forEach((tb) => {
+    const tc = tb.dataset.yardToolbar;
+    tb.querySelector('[data-yard-search]').addEventListener('input', () => yardRender(tc));
+    tb.querySelector('[data-yard-selectall]').addEventListener('change', (e) => {
+      const { key } = yardCtxInfo(tc);
+      yardSelection[key] = e.target.checked ? new Set(yardSelectableIds(tc)) : new Set();
+      yardRender(tc);
+    });
+    tb.querySelectorAll('[data-yard-act]').forEach((btn) => {
+      btn.addEventListener('click', () => runYardBulk(tc, btn.dataset.yardAct));
+    });
+  });
+  document.getElementById('yardArchiveSubTabs').addEventListener('click', (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    document.querySelectorAll('#yardArchiveSubTabs button').forEach((b) => b.classList.remove('is-active'));
+    btn.classList.add('is-active');
+    yardArchiveKind = btn.dataset.yardarchive;
+    yardToolbarEl('archive').querySelector('[data-yard-search]').value = '';
+    renderYardArchive();
+  });
+  document.getElementById('yardShopCardClose').addEventListener('click', () => {
+    document.getElementById('yardShopCardOverlay').hidden = true;
+  });
+  document.getElementById('yardShopCardSave').addEventListener('click', saveYardShopCard);
+}
+
+/** «В архив» / «Вернуть» / «Удалить» — только для отмеченных. Удаление стирает записи на сервере. */
+async function runYardBulk(tc, act) {
+  const { mode, kind, key } = yardCtxInfo(tc);
+  const ids = [...yardSelSet(key)];
+  if (!ids.length) return; // без галочки ничего не трогаем
+  try {
+    if (act === 'delete') {
+      if (!window.confirm(`Удалить ${ids.length}?`)) return;
+      const body = kind === 'items' ? { shopIds: ids, archived: mode === 'archive' } : { ids };
+      await api(`/yard-admin/${kind}/delete`, { method: 'POST', body: JSON.stringify(body) });
+    } else {
+      const archived = act === 'archive';
+      const body = kind === 'items' ? { shopIds: ids, archived } : { ids, archived };
+      await api(`/yard-admin/${kind}/archive`, { method: 'POST', body: JSON.stringify(body) });
+    }
+    yardSelSet(key).clear();
+    await Promise.all([loadYardShops(), loadYardItems(), loadYardOrders(), loadYardTurnover()]);
+  } catch (err) {
+    alert('Не удалось выполнить действие: ' + err.message);
+  }
+}
+
 // ---- Магазины ----
 async function loadYardShops() {
-  yardShopsCache = await api('/yard-admin/shops');
+  const [live, archived] = await Promise.all([api('/yard-admin/shops'), api('/yard-admin/shops?archived=true')]);
+  yardShopsCache = live;
+  yardShopsArchiveCache = archived;
   renderYardShopsTable();
   renderYardShelves();
+  renderYardArchive();
 }
 
 function renderYardShopsTable() {
   const tbody = document.querySelector('#yardShopsTable tbody');
-  if (!yardShopsCache.length) {
-    tbody.innerHTML = `<tr><td colspan="6" style="color:var(--text-faint)">Магазинов двора ещё нет</td></tr>`;
+  const rows = yardRows('live:shops');
+  const sel = yardSelSet('live:shops');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="7" style="color:var(--text-faint)">${yardShopsCache.length ? 'Ничего не найдено' : 'Магазинов двора ещё нет'}</td></tr>`;
+    yardSyncToolbar('live:shops');
     return;
   }
-  tbody.innerHTML = yardShopsCache.map((s) => {
+  tbody.innerHTML = rows.map((s) => {
     const isLive = s.active && s.paidUntil && new Date(s.paidUntil) > new Date();
     const paidUntilLabel = s.paidUntil ? fmtOrderDateTime(s.paidUntil) : '—';
     const pinLabel = `${s.lat.toFixed(4)}, ${s.lng.toFixed(4)}`;
     return `
       <tr>
-        <td class="name-cell">${mmEsc(s.name)}</td>
+        <td><input type="checkbox" data-yard-row="${mmEsc(s.id)}" ${sel.has(s.id) ? 'checked' : ''} /></td>
+        <td class="name-cell"><button class="link-btn" data-yard-open="${mmEsc(s.id)}" title="Открыть и поправить название">${mmEsc(s.name)}</button></td>
         <td>${mmEsc(s.phone)}</td>
         <td style="font-size:11px">${pinLabel}</td>
         <td>${paidUntilLabel}</td>
         <td>${isLive ? '<span style="color:var(--accent)">● Видим покупателям</span>' : '<span style="color:var(--loss)">● Не виден (нет подписки)</span>'}</td>
         <td style="white-space:nowrap">
-          <button class="link-btn" data-yard-extend="${s.id}" style="color:var(--accent)">+1 мес</button>
-          <button class="link-btn" data-yard-toggle-active="${s.id}" data-yard-active="${s.active}">${s.active ? 'Выключить' : 'Включить'}</button>
+          <button class="link-btn" data-yard-extend="${mmEsc(s.id)}" style="color:var(--accent)">+1 мес</button>
+          <button class="link-btn" data-yard-toggle-active="${mmEsc(s.id)}" data-yard-active="${s.active}">${s.active ? 'Выключить' : 'Включить'}</button>
         </td>
       </tr>
     `;
   }).join('');
 
+  yardWireRowChecks(tbody, 'live:shops');
+  tbody.querySelectorAll('button[data-yard-open]').forEach((btn) => {
+    btn.addEventListener('click', () => openYardShopCard(btn.dataset.yardOpen));
+  });
   tbody.querySelectorAll('button[data-yard-extend]').forEach((btn) => {
     btn.addEventListener('click', () => runYardExtendSubscription(btn.dataset.yardExtend));
   });
   tbody.querySelectorAll('button[data-yard-toggle-active]').forEach((btn) => {
     btn.addEventListener('click', () => runYardToggleActive(btn.dataset.yardToggleActive, btn.dataset.yardActive !== 'true'));
   });
+  yardSyncToolbar('live:shops');
 }
 
 async function runYardExtendSubscription(shopId) {
@@ -5646,16 +5787,60 @@ async function runYardToggleActive(shopId, nextActive) {
   }
 }
 
+// ---- Карточка магазина: открыть, поправить название, сохранить ----
+let yardShopCardId = null;
+
+function openYardShopCard(id) {
+  const shop = [...yardShopsCache, ...yardShopsArchiveCache].find((s) => s.id === id);
+  if (!shop) return;
+  yardShopCardId = id;
+  document.getElementById('yardShopCardName').value = shop.name;
+  document.getElementById('yardShopCardInfo').innerHTML =
+    `Телефон: ${mmEsc(shop.phone)} · Булавка: ${shop.lat.toFixed(4)}, ${shop.lng.toFixed(4)} · Подписка до: ${shop.paidUntil ? fmtOrderDateTime(shop.paidUntil) : '—'}`;
+  document.getElementById('yardShopCardStatus').textContent = '';
+  document.getElementById('yardShopCardOverlay').hidden = false;
+}
+
+async function saveYardShopCard() {
+  const statusEl = document.getElementById('yardShopCardStatus');
+  const name = document.getElementById('yardShopCardName').value.trim();
+  if (!yardShopCardId) return;
+  if (!name) {
+    statusEl.style.color = 'var(--loss)';
+    statusEl.textContent = 'Название не может быть пустым.';
+    return;
+  }
+  const btn = document.getElementById('yardShopCardSave');
+  btn.disabled = true;
+  statusEl.style.color = '';
+  statusEl.textContent = 'Сохраняю…';
+  try {
+    await api(`/yard-admin/shops/${yardShopCardId}/rename`, { method: 'POST', body: JSON.stringify({ name }) });
+    document.getElementById('yardShopCardOverlay').hidden = true;
+    // Название магазина показывается ещё и в полках и заказах — перечитываем их тоже.
+    await Promise.all([loadYardShops(), loadYardItems(), loadYardOrders()]);
+  } catch (err) {
+    statusEl.style.color = 'var(--loss)';
+    statusEl.textContent = 'Ошибка: ' + err.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 // ---- Полки ----
-// Сгруппированы по магазину (не плоская таблица). Данные те же, что и раньше:
-// товары — GET /yard-admin/items (shopId и category приходят в каждой строке),
-// магазины (в том числе пустые) — уже загруженный yardShopsCache. Нового
-// адреса нет.
-let yardExpandedShelves = new Set(); // id магазинов, чья полка сейчас раскрыта
+// Строка = полка магазина (не отдельный товар). Сгруппированы по магазину:
+// сверху название, мелко «N товаров · остаток K», кнопка «Показать всё» у
+// каждого магазина раскрывает только его товары. Данные те же:
+// GET /yard-admin/items (живые и ?archived=true) + список магазинов.
+let yardExpandedShelves = new Set();        // раскрытые полки общего списка
+let yardExpandedShelvesArchive = new Set(); // раскрытые полки в архиве
 
 async function loadYardItems() {
-  yardItemsCache = await api('/yard-admin/items');
+  const [live, archived] = await Promise.all([api('/yard-admin/items'), api('/yard-admin/items?archived=true')]);
+  yardItemsCache = live;
+  yardItemsArchiveCache = archived;
   renderYardShelves();
+  renderYardArchive();
 }
 
 /** 1 товар, 2 товара, 5 товаров. */
@@ -5667,19 +5852,30 @@ function yardPlural(n, one, few, many) {
   return many;
 }
 
-/** Группы «магазин -> его товары». Пустой магазин (товаров нет) тоже попадает в список. */
-function yardShelfGroups() {
+/**
+ * Группы «магазин -> его товары».
+ * live: живые магазины (пустой магазин тоже в списке); полка, целиком ушедшая в архив, из общего списка пропадает.
+ * archive: только магазины, у которых есть архивные товары.
+ */
+function yardShelfGroups(mode) {
+  if (mode === 'archive') {
+    const byShop = new Map();
+    for (const item of yardItemsArchiveCache) {
+      if (!byShop.has(item.shopId)) byShop.set(item.shopId, { id: item.shopId, name: item.shop?.name ?? '—', items: [] });
+      byShop.get(item.shopId).items.push(item);
+    }
+    return Array.from(byShop.values());
+  }
+  const archivedShopIds = new Set(yardItemsArchiveCache.map((i) => i.shopId));
   const byShop = new Map();
   for (const shop of yardShopsCache) byShop.set(shop.id, { id: shop.id, name: shop.name, items: [] });
   for (const item of yardItemsCache) {
     if (!byShop.has(item.shopId)) {
-      // Товар магазина, которого нет в списке магазинов (не должно случаться) —
-      // не теряем, показываем отдельной группой под его же названием.
       byShop.set(item.shopId, { id: item.shopId, name: item.shop?.name ?? '—', items: [] });
     }
     byShop.get(item.shopId).items.push(item);
   }
-  return Array.from(byShop.values());
+  return Array.from(byShop.values()).filter((g) => g.items.length > 0 || !archivedShopIds.has(g.id));
 }
 
 function yardShelfSummary(group) {
@@ -5689,23 +5885,18 @@ function yardShelfSummary(group) {
   return `${n} ${yardPlural(n, 'товар', 'товара', 'товаров')} · остаток ${stock}`;
 }
 
-function renderYardShelves() {
-  const list = document.getElementById('yardShelvesList');
-  const groups = yardShelfGroups();
-
-  // Раскрытыми остаются только существующие магазины (на случай, если магазин пропал).
-  const knownIds = new Set(groups.map((g) => g.id));
-  yardExpandedShelves = new Set([...yardExpandedShelves].filter((id) => knownIds.has(id)));
-
+/** Карточки полок (общий список и архив). tc — контекст для галочек, expanded — набор раскрытых. */
+function renderYardShelvesInto(list, tc, groups, expanded, emptyText) {
+  const sel = yardSelSet(yardCtxInfo(tc).key);
   if (!groups.length) {
-    list.innerHTML = `<p class="panel__hint" style="margin:0">Магазинов двора ещё нет</p>`;
+    list.innerHTML = `<p class="panel__hint" style="margin:0">${emptyText}</p>`;
+    yardSyncToolbar(tc);
     return;
   }
-
   list.innerHTML = groups.map((g) => {
     const hasItems = g.items.length > 0;
-    // У пустого магазина раскрывать нечего: «Полка пуста» написано под названием, кнопки нет.
-    const open = hasItems && yardExpandedShelves.has(g.id);
+    // У пустого магазина раскрывать и архивировать нечего: «Полка пуста» под названием, кнопки нет, галочка выключена.
+    const open = hasItems && expanded.has(g.id);
     const body = !open ? '' : `
       <div class="table-wrap" style="margin-top:8px">
         <table class="table">
@@ -5727,6 +5918,7 @@ function renderYardShelves() {
     return `
       <div class="yard-shelf" data-yard-shelf="${mmEsc(g.id)}" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+          <input type="checkbox" data-yard-row="${mmEsc(g.id)}" ${sel.has(g.id) ? 'checked' : ''} ${hasItems ? '' : 'disabled title="На пустой полке нечего архивировать или удалять"'} />
           <div data-yard-shelf-toggle="${mmEsc(g.id)}" role="button" tabindex="0" aria-expanded="${open}" style="cursor:pointer;flex:1;min-width:0">
             <div style="font-weight:600">${mmEsc(g.name)}</div>
             <div style="font-size:11.5px;color:var(--text-faint);margin-top:2px">${yardShelfSummary(g)}</div>
@@ -5739,16 +5931,14 @@ function renderYardShelves() {
   }).join('');
 
   const toggle = (id) => {
-    if (yardExpandedShelves.has(id)) yardExpandedShelves.delete(id);
-    else yardExpandedShelves.add(id);
-    renderYardShelves();
+    if (expanded.has(id)) expanded.delete(id); else expanded.add(id);
+    yardRender(tc);
   };
   // Кнопка «Показать всё» — раскрывает/сворачивает только товары СВОЕГО магазина.
   list.querySelectorAll('[data-yard-shelf-btn]').forEach((el) => {
     el.addEventListener('click', () => toggle(el.dataset.yardShelfBtn));
   });
-  // Тап по названию/подписи работает так же, как кнопка (как и в прошлой версии).
-  // У пустого магазина раскрывать нечего — там тап ничего не делает.
+  // Тап по названию/подписи работает так же, как кнопка; у пустого магазина тап ничего не делает.
   list.querySelectorAll('[data-yard-shelf-toggle]').forEach((el) => {
     const id = el.dataset.yardShelfToggle;
     const group = groups.find((g) => g.id === id);
@@ -5758,6 +5948,19 @@ function renderYardShelves() {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(id); }
     });
   });
+  yardWireRowChecks(list, tc);
+  yardSyncToolbar(tc);
+}
+
+function renderYardShelves() {
+  const groups = yardRows('live:items');
+  // Раскрытыми остаются только существующие магазины (на случай, если магазин пропал).
+  const known = new Set(groups.map((g) => g.id));
+  yardExpandedShelves = new Set([...yardExpandedShelves].filter((id) => known.has(id)));
+  renderYardShelvesInto(
+    document.getElementById('yardShelvesList'), 'live:items', groups, yardExpandedShelves,
+    yardShopsCache.length ? 'Ничего не найдено' : 'Магазинов двора ещё нет',
+  );
 }
 
 // ---- Заказы ----
@@ -5772,17 +5975,23 @@ async function loadYardTurnover() {
 }
 
 async function loadYardOrders() {
-  yardOrdersCache = await api('/yard-admin/orders');
+  const [live, archived] = await Promise.all([api('/yard-admin/orders'), api('/yard-admin/orders?archived=true')]);
+  yardOrdersCache = live;
+  yardOrdersArchiveCache = archived;
   renderYardOrdersTable();
+  renderYardArchive();
 }
 
 function renderYardOrdersTable() {
   const tbody = document.querySelector('#yardOrdersTable tbody');
-  if (!yardOrdersCache.length) {
-    tbody.innerHTML = `<tr><td colspan="8" style="color:var(--text-faint)">Заказов двора ещё нет</td></tr>`;
+  const rows = yardRows('live:orders');
+  const sel = yardSelSet('live:orders');
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="9" style="color:var(--text-faint)">${yardOrdersCache.length ? 'Ничего не найдено' : 'Заказов двора ещё нет'}</td></tr>`;
+    yardSyncToolbar('live:orders');
     return;
   }
-  tbody.innerHTML = yardOrdersCache.map((o) => {
+  tbody.innerHTML = rows.map((o) => {
     const statusLabel = YARD_STATUS_LABELS[o.status] ?? o.status;
     let actionsHtml = '';
     if (o.status === 'waiting_payment') {
@@ -5801,6 +6010,7 @@ function renderYardOrdersTable() {
     }
     return `
       <tr>
+        <td><input type="checkbox" data-yard-row="${mmEsc(o.id)}" ${sel.has(o.id) ? 'checked' : ''} /></td>
         <td style="font-size:11px">${mmEsc(o.publicId)}</td>
         <td>${fmtOrderDateTime(o.createdAt)}</td>
         <td class="name-cell">${mmEsc(o.shop?.name ?? '—')}</td>
@@ -5813,6 +6023,7 @@ function renderYardOrdersTable() {
     `;
   }).join('');
 
+  yardWireRowChecks(tbody, 'live:orders');
   tbody.querySelectorAll('button[data-yard-pay]').forEach((btn) => {
     btn.addEventListener('click', () => runYardOrderPayment(btn.dataset.yardPay, btn.dataset.yardPayOk === 'true'));
   });
@@ -5822,6 +6033,7 @@ function renderYardOrdersTable() {
   tbody.querySelectorAll('button[data-yard-close]').forEach((btn) => {
     btn.addEventListener('click', () => runYardOrderClose(btn.dataset.yardClose, btn.dataset.yardCloseStatus));
   });
+  yardSyncToolbar('live:orders');
 }
 
 async function runYardOrderPayment(orderId, ok) {
@@ -5849,4 +6061,57 @@ async function runYardOrderClose(orderId, status) {
   } catch (err) {
     alert('Не удалось закрыть заказ: ' + err.message);
   }
+}
+
+// ---- Архив (вкладка справа): магазины / полки / заказы, которые убрали из общих списков ----
+function renderYardArchive() {
+  const list = document.getElementById('yardArchiveList');
+  const rows = yardRows('archive');
+  const sel = yardSelSet(yardCtxInfo('archive').key);
+  const kind = yardArchiveKind;
+
+  if (kind === 'items') {
+    renderYardShelvesInto(list, 'archive', rows, yardExpandedShelvesArchive, 'В архиве полок пусто');
+    return;
+  }
+  if (!rows.length) {
+    const total = kind === 'shops' ? yardShopsArchiveCache.length : yardOrdersArchiveCache.length;
+    list.innerHTML = `<p class="panel__hint" style="margin:0">${total ? 'Ничего не найдено' : (kind === 'shops' ? 'В архиве магазинов пусто' : 'В архиве заказов пусто')}</p>`;
+    yardSyncToolbar('archive');
+    return;
+  }
+  if (kind === 'shops') {
+    list.innerHTML = `
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th style="width:28px"></th><th>Название</th><th>Телефон</th><th>Булавка</th><th>Подписка до</th></tr></thead>
+        <tbody>${rows.map((s) => `
+          <tr>
+            <td><input type="checkbox" data-yard-row="${mmEsc(s.id)}" ${sel.has(s.id) ? 'checked' : ''} /></td>
+            <td class="name-cell">${mmEsc(s.name)}</td>
+            <td>${mmEsc(s.phone)}</td>
+            <td style="font-size:11px">${s.lat.toFixed(4)}, ${s.lng.toFixed(4)}</td>
+            <td>${s.paidUntil ? fmtOrderDateTime(s.paidUntil) : '—'}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table></div>`;
+  } else {
+    list.innerHTML = `
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th style="width:28px"></th><th>№</th><th>Дата</th><th>Магазин</th><th>Покупатель</th><th class="num">Сумма</th><th>Статус</th><th>Чек</th></tr></thead>
+        <tbody>${rows.map((o) => `
+          <tr>
+            <td><input type="checkbox" data-yard-row="${mmEsc(o.id)}" ${sel.has(o.id) ? 'checked' : ''} /></td>
+            <td style="font-size:11px">${mmEsc(o.publicId)}</td>
+            <td>${fmtOrderDateTime(o.createdAt)}</td>
+            <td class="name-cell">${mmEsc(o.shop?.name ?? '—')}</td>
+            <td>${mmEsc(o.buyerName)}</td>
+            <td class="num">${fmtMoney(o.total)}</td>
+            <td>${mmEsc(YARD_STATUS_LABELS[o.status] ?? o.status)}</td>
+            <td>${o.receiptUrl ? `<a href="${o.receiptUrl}" target="_blank" rel="noopener">Скрин</a>` : '—'}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table></div>`;
+  }
+  yardWireRowChecks(list, 'archive');
+  yardSyncToolbar('archive');
 }

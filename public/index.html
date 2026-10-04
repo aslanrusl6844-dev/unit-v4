@@ -1210,6 +1210,7 @@
           <button data-yardtab="shops">Магазины</button>
           <button data-yardtab="items">Полки</button>
           <button data-yardtab="orders">Заказы</button>
+          <button data-yardtab="archive">Архив</button>
         </div>
 
         <!-- ---- Вакансия ---- -->
@@ -1245,10 +1246,17 @@
         <div id="yardShopsTab" hidden>
           <div class="panel">
             <p class="panel__hint" style="margin-top:0">Подписка 500 ₸/мес — продляется вручную, с пакета комиссию не берём. Без действующей подписки магазин не виден покупателям.</p>
+            <div class="yard-toolbar" data-yard-toolbar="live:shops" style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:10px">
+              <input type="text" data-yard-search placeholder="Поиск по названию магазина" style="max-width:260px" />
+              <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer"><input type="checkbox" data-yard-selectall /> отметить все</label>
+              <span data-yard-selected style="font-size:12.5px;color:var(--text-muted)">Выбрано: 0</span>
+              <button class="btn btn--ghost" data-yard-act="archive" disabled>В архив</button>
+              <button class="btn btn--ghost" data-yard-act="delete" disabled style="color:var(--loss)">Удалить</button>
+            </div>
             <div class="table-wrap">
               <table class="table" id="yardShopsTable">
                 <thead>
-                  <tr><th>Название</th><th>Телефон</th><th>Булавка</th><th>Подписка до</th><th>Статус</th><th></th></tr>
+                  <tr><th style="width:28px"></th><th>Название</th><th>Телефон</th><th>Булавка</th><th>Подписка до</th><th>Статус</th><th></th></tr>
                 </thead>
                 <tbody></tbody>
               </table>
@@ -1259,6 +1267,13 @@
         <!-- ---- Полки ---- -->
         <div id="yardItemsTab" hidden>
           <div class="panel">
+            <div class="yard-toolbar" data-yard-toolbar="live:items" style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:10px">
+              <input type="text" data-yard-search placeholder="Поиск по названию магазина" style="max-width:260px" />
+              <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer"><input type="checkbox" data-yard-selectall /> отметить все</label>
+              <span data-yard-selected style="font-size:12.5px;color:var(--text-muted)">Выбрано: 0</span>
+              <button class="btn btn--ghost" data-yard-act="archive" disabled>В архив</button>
+              <button class="btn btn--ghost" data-yard-act="delete" disabled style="color:var(--loss)">Удалить</button>
+            </div>
             <div id="yardShelvesList"></div>
           </div>
         </div>
@@ -1267,17 +1282,61 @@
         <div id="yardOrdersTab" hidden>
           <div class="panel">
             <div style="margin-bottom:10px" id="yardTurnoverSummary"></div>
+            <div class="yard-toolbar" data-yard-toolbar="live:orders" style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:10px">
+              <input type="text" data-yard-search placeholder="Поиск по названию магазина" style="max-width:260px" />
+              <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer"><input type="checkbox" data-yard-selectall /> отметить все</label>
+              <span data-yard-selected style="font-size:12.5px;color:var(--text-muted)">Выбрано: 0</span>
+              <button class="btn btn--ghost" data-yard-act="archive" disabled>В архив</button>
+              <button class="btn btn--ghost" data-yard-act="delete" disabled style="color:var(--loss)">Удалить</button>
+            </div>
             <div class="table-wrap">
               <table class="table" id="yardOrdersTable">
                 <thead>
-                  <tr><th>№</th><th>Дата</th><th>Магазин</th><th>Покупатель</th><th class="num">Сумма</th><th>Статус</th><th>Чек</th><th></th></tr>
+                  <tr><th style="width:28px"></th><th>№</th><th>Дата</th><th>Магазин</th><th>Покупатель</th><th class="num">Сумма</th><th>Статус</th><th>Чек</th><th></th></tr>
                 </thead>
                 <tbody></tbody>
               </table>
             </div>
           </div>
         </div>
-      </section>
+      
+        <!-- ---- Архив: отдельная вкладка справа, в общих списках его нет ---- -->
+        <div id="yardArchiveTab" hidden>
+          <div class="panel">
+            <div class="seg" id="yardArchiveSubTabs" style="margin-bottom:10px">
+              <button class="is-active" data-yardarchive="shops">Магазины</button>
+              <button data-yardarchive="items">Полки</button>
+              <button data-yardarchive="orders">Заказы</button>
+            </div>
+            <div class="yard-toolbar" data-yard-toolbar="archive" style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:10px">
+              <input type="text" data-yard-search placeholder="Поиск по названию магазина" style="max-width:260px" />
+              <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer"><input type="checkbox" data-yard-selectall /> отметить все</label>
+              <span data-yard-selected style="font-size:12.5px;color:var(--text-muted)">Выбрано: 0</span>
+              <button class="btn btn--ghost" data-yard-act="restore" disabled>Вернуть</button>
+              <button class="btn btn--ghost" data-yard-act="delete" disabled style="color:var(--loss)">Удалить</button>
+            </div>
+            <div id="yardArchiveList"></div>
+          </div>
+        </div>
+
+        <!-- ---- Карточка магазина: открыть, поправить название, сохранить ---- -->
+        <div id="yardShopCardOverlay" class="modal-overlay" hidden>
+          <div class="modal">
+            <div class="modal__head">
+              <h2>Магазин</h2>
+              <button class="link-btn" id="yardShopCardClose">✕</button>
+            </div>
+            <div class="form-grid" style="max-width:420px">
+              <label>Название<input type="text" id="yardShopCardName" maxlength="100" /></label>
+            </div>
+            <div id="yardShopCardInfo" class="panel__hint"></div>
+            <div style="margin-top:10px">
+              <button class="btn" id="yardShopCardSave">Сохранить</button>
+              <span id="yardShopCardStatus" class="panel__hint" style="margin-left:10px"></span>
+            </div>
+          </div>
+        </div>
+</section>
 
     </div>
   </main>

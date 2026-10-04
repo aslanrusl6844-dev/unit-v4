@@ -658,6 +658,9 @@ model YardShop {
   active    Boolean     @default(true)
   paidUntil DateTime?   // подписка 500 ₸/мес, админ продлевает вручную, с пакета комиссию не берём
   createdAt DateTime    @default(now())
+  // Архив — убирает магазин из общего списка админки и с глаз покупателей.
+  // Возвращается из архива; «Удалить» стирает строку с сервера.
+  archived  Boolean     @default(false)
 
   items     YardItem[]
   orders    YardOrder[]
@@ -678,6 +681,8 @@ model YardItem {
   // Категория — свободная строка от продавца, списка в коде/схеме нет.
   // null у товаров, созданных до появления поля.
   category String?
+  // Архив полки: у всех товаров магазина сразу. Покупателям архивный товар не виден.
+  archived Boolean @default(false)
 
   @@index([shopId])
 }
@@ -699,6 +704,8 @@ model YardOrder {
   // Кода выдачи курьера тут нет — несут сами, до двери за 10 минут.
   status     String   @default("waiting_payment")
   createdAt  DateTime @default(now())
+  // Архив — только прячет заказ из общего списка админки, на статус/остаток/деньги не влияет.
+  archived   Boolean  @default(false)
 
   items    YardOrderItem[]
   messages YardMessage[]

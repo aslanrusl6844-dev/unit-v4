@@ -139,7 +139,7 @@ function parseLatLng(latRaw: unknown, lngRaw: unknown): { lat: number; lng: numb
 /** Три товара полки для предпросмотра в списке дворов — только активные. */
 async function previewItems(shopId: string) {
   return prisma.yardItem.findMany({
-    where: { shopId, active: true },
+    where: { shopId, active: true, archived: false },
     orderBy: { id: 'asc' },
     take: 3,
     select: { name: true, price: true, photo: true },
@@ -190,7 +190,7 @@ yardRouter.get('/yard/shop/:id', async (req, res) => {
     if (distance > YARD_RADIUS_METERS) {
       return res.status(403).json({ error: 'Вы вне радиуса 500 м от этого двора' });
     }
-    const items = await prisma.yardItem.findMany({ where: { shopId: shop.id, active: true }, orderBy: { id: 'asc' } });
+    const items = await prisma.yardItem.findMany({ where: { shopId: shop.id, active: true, archived: false }, orderBy: { id: 'asc' } });
     res.json({
       id: shop.id,
       name: shop.name,
@@ -239,7 +239,7 @@ yardRouter.post('/yard/orders', async (req, res) => {
     if (distance > YARD_RADIUS_METERS) return res.status(403).json({ error: 'Вы вне радиуса 500 м от этого двора' });
 
     const itemIds = parsed.data.items.map((i) => i.itemId);
-    const shelfItems = await prisma.yardItem.findMany({ where: { id: { in: itemIds }, shopId: shop.id, active: true } });
+    const shelfItems = await prisma.yardItem.findMany({ where: { id: { in: itemIds }, shopId: shop.id, active: true, archived: false } });
     const shelfById = new Map(shelfItems.map((i: { id: string }) => [i.id, i]));
 
     const orderItemsData: Array<{ itemId: string; name: string; price: number; qty: number }> = [];
