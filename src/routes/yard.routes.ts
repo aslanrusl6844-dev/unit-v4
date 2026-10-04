@@ -365,6 +365,116 @@ yardRouter.post('/yard/orders/:id/message', async (req, res) => {
   }
 });
 
+// =====================================================================
+// Чат магазина БЕЗ заказа. Клиент пишет магазину до покупки, продавец
+// отвечает. Ветка переписки = (магазин, телефон клиента). Каждый пишет и
+// читает только со своего телефона; чужой магазин и чужие ветки не читаются.
+// Телефон магазина в ответах не отдаётся никогда. Заказы, полки и
+// существующий чат ЗАКАЗА (YardMessage) не затрагиваются.
+// =====================================================================
+
+const shopMessageSchema = z.object({
+  shopId: z.string().min(1),
+  buyerPhone: z.string().min(1),
+  // Кто пишет. Не передан — пишет сам клиент (phone = buyerPhone). Продавец
+  // передаёт свой телефон, а в buyerPhone — клиента, которому отвечает.
+  phone: z.string().min(1).optional(),
+  text: z.string().max(1000).optional(),
+  imageUrl: z.string().url().optional(),
+});
+
+/**
+ * Написать магазину / ответить клиенту. Клиент пишет в живой магазин (подписка
+ * действует). Продавец отвечает только в ветку, где клиент уже писал первым —
+ * по этому методу нельзя написать на произвольный номер.
+ */
+yardRouter.post('/yard/shops/:id/messages', async (req, res) => {
+  const parsed = shopMessageSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+  if (parsed.data.shopId !== req.params.id) return res.status(400).json({ error: 'shopId в теле не совпадает с адресом' });
+
+  const buyerPhone = normalizePhone(parsed.data.buyerPhone);
+  if (!buyerPhone) return res.status(400).json({ error: 'Некорректный номер клиента' });
+  const senderPhone = parsed.data.phone ? normalizePhone(parsed.data.phone) : buyerPhone;
+  if (!senderPhone) return res.status(400).json({ error: 'Некорректный номер отправителя' });
+  const text = parsed.data.text?.trim() || null;
+  const imageUrl = parsed.data.imageUrl ?? null;
+  if (!text && !imageUrl) return res.status(400).json({ error: 'Нужен text или imageUrl' });
+
+  try {
+    const shop = await prisma.yardShop.findUnique({ where: { id: req.params.id } });
+    if (!shop) return res.status(404).json({ error: 'Двор не найден' });
+
+    let from: 'buyer' | 'shop';
+    if (senderPhone === shop.phone) {
+      if (buyerPhone === shop.phone) return res.status(400).json({ error: 'Укажите номер клиента, которому отвечаете' });
+      const buyerWroteFirst = await prisma.yardShopMessage.findFirst({
+        where: { shopId: shop.id, buyerPhone, from: 'buyer' },
+      });
+      if (!buyerWroteFirst) return res.status(403).json({ error: 'Этот клиент вам не писал' });
+      from = 'shop';
+    } else if (senderPhone === buyerPhone) {
+      if (!yardShopIsLive(shop)) return res.status(404).json({ error: 'Двор не найден' });
+      from = 'buyer';
+    } else {
+      return res.status(403).json({ error: 'Писать можно только со своего номера' });
+    }
+
+    const message = await prisma.yardShopMessage.create({
+      data: { shopId: shop.id, buyerPhone, from, text, imageUrl },
+    });
+    res.status(201).json({ id: message.id, from: message.from, text: message.text, imageUrl: message.imageUrl, createdAt: message.createdAt });
+  } catch (err: any) {
+    logger.error({ err }, '[Yard] POST /yard/shops/:id/messages упал');
+    res.status(500).json({ error: 'Не удалось отправить сообщение', details: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * Читать переписку. ?phone= — кто читает (обязателен). Клиент видит только
+ * свою ветку с этим магазином. Продавец (phone = телефон магазина) видит
+ * входящие своего магазина: всю переписку или одну ветку, если указан
+ * ?buyerPhone=. Чужой магазин и чужие ветки — 403.
+ */
+yardRouter.get('/yard/shops/:id/messages', async (req, res) => {
+  const reader = normalizePhone(String(req.query.phone ?? ''));
+  if (!reader) return res.status(400).json({ error: 'Укажите свой номер телефона (phone)' });
+  const buyerQuery = req.query.buyerPhone ? normalizePhone(String(req.query.buyerPhone)) : null;
+  if (req.query.buyerPhone && !buyerQuery) return res.status(400).json({ error: 'Некорректный номер клиента' });
+
+  try {
+    const shop = await prisma.yardShop.findUnique({ where: { id: req.params.id } });
+    if (!shop) return res.status(404).json({ error: 'Двор не найден' });
+
+    const isSeller = reader === shop.phone;
+    if (!isSeller) {
+      if (buyerQuery && buyerQuery !== reader) return res.status(403).json({ error: 'Чужая переписка недоступна' });
+      if (!yardShopIsLive(shop)) return res.status(404).json({ error: 'Двор не найден' });
+    }
+
+    const where = isSeller
+      ? { shopId: shop.id, ...(buyerQuery ? { buyerPhone: buyerQuery } : {}) }
+      : { shopId: shop.id, buyerPhone: reader };
+    const latest = await prisma.yardShopMessage.findMany({ where, orderBy: { createdAt: 'desc' }, take: 200 });
+    const messages = [...latest].reverse();
+
+    res.json(
+      messages.map((m: any) => ({
+        id: m.id,
+        from: m.from,
+        text: m.text,
+        imageUrl: m.imageUrl,
+        createdAt: m.createdAt,
+        // Продавцу нужно знать, чья это ветка; клиент и так знает, что это его.
+        ...(isSeller ? { buyerPhone: m.buyerPhone } : {}),
+      })),
+    );
+  } catch (err: any) {
+    logger.error({ err }, '[Yard] GET /yard/shops/:id/messages упал');
+    res.status(500).json({ error: 'Не удалось получить сообщения', details: String(err?.message ?? err) });
+  }
+});
+
 /**
  * Кабинет «Я магазин» — по телефону. YardShop существует ТОЛЬКО после
  * одобрения заявки (создаётся в POST /yard-admin/applications/:id/approve)

@@ -661,6 +661,9 @@ model YardShop {
 
   items     YardItem[]
   orders    YardOrder[]
+  // Чат магазина без покупки (см. YardShopMessage). Только обратная сторона
+  // связи в Prisma — в таблице YardShop новых колонок нет.
+  shopMessages YardShopMessage[]
 }
 
 model YardItem {
@@ -726,4 +729,21 @@ model YardMessage {
   createdAt DateTime  @default(now())
 
   @@index([orderId])
+}
+
+// Чат магазина БЕЗ заказа: клиент пишет магазину до покупки, продавец отвечает.
+// Отдельно от YardMessage (тот привязан к заказу и не меняется). Ветка
+// переписки = (shopId, buyerPhone). Писать можно только со своего телефона:
+// клиент — как buyerPhone, продавец — со своего (YardShop.phone).
+model YardShopMessage {
+  id         String   @id @default(cuid())
+  shopId     String
+  shop       YardShop @relation(fields: [shopId], references: [id])
+  buyerPhone String   // нормализованный, телефон клиента — ключ ветки
+  from       String   // "buyer" | "shop"
+  text       String?
+  imageUrl   String?
+  createdAt  DateTime @default(now())
+
+  @@index([shopId, buyerPhone])
 }
