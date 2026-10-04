@@ -2,11 +2,108 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../db/prisma';
 import { logger } from '../utils/logger';
+import { normalizePhone } from './shop.routes';
 import { yardApplyPayment, yardApplyAccept, yardApplyClose, YardTransitionError } from '../services/yard.service';
 
 export const yardAdminRouter = Router();
 
-/** Магазины «Двора» — для вкладки «Магазины». */
+// =====================================================================
+// Вакансия — админ сам вписывает телефон/имя/фамилию/ИИН.
+// =====================================================================
+const inviteSchema = z.object({
+  phone: z.string().min(1),
+  firstName: z.string().min(1),
+  lastName: z.string().min(1),
+  iin: z.string().min(1),
+});
+
+/** Одна запись на телефон — повторная отправка на тот же номер обновляет её. */
+yardAdminRouter.post('/invites', async (req, res) => {
+  const parsed = inviteSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+  try {
+    const phone = normalizePhone(parsed.data.phone);
+    if (!phone) return res.status(400).json({ error: 'Некорректный номер телефона' });
+
+    const invite = await prisma.yardInvite.upsert({
+      where: { phone },
+      update: { firstName: parsed.data.firstName, lastName: parsed.data.lastName, iin: parsed.data.iin },
+      create: { phone, firstName: parsed.data.firstName, lastName: parsed.data.lastName, iin: parsed.data.iin },
+    });
+    res.status(201).json(invite);
+  } catch (err: any) {
+    logger.error({ err }, '[Yard Admin] POST /invites упал');
+    res.status(500).json({ error: 'Не удалось отправить вакансию', details: String(err?.message ?? err) });
+  }
+});
+
+// =====================================================================
+// Заявки — список, «Одобрить»/«Отказать». Одобрение открывает кабинет,
+// создавая YardShop из данных заявки.
+// =====================================================================
+
+yardAdminRouter.get('/applications', async (_req, res) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    const applications = await prisma.yardApplication.findMany({ orderBy: { createdAt: 'desc' } });
+    res.json(applications);
+  } catch (err: any) {
+    logger.error({ err }, '[Yard Admin] GET /applications упал');
+    res.status(500).json({ error: 'Не удалось получить заявки двора', details: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * «Одобрить» — ровно здесь открывается кабинет: создаём (или обновляем,
+ * если уже была раньше при повторном одобрении) YardShop из данных
+ * заявки. До этого вызова товары грузить было нельзя (POST
+ * /yard/mine/items отвечал 404 — не было YardShop для этого телефона).
+ */
+yardAdminRouter.post('/applications/:id/approve', async (req, res) => {
+  try {
+    const application = await prisma.yardApplication.findUnique({ where: { id: req.params.id } });
+    if (!application) return res.status(404).json({ error: 'Заявка не найдена' });
+
+    const [updatedApplication] = await prisma.$transaction([
+      prisma.yardApplication.update({ where: { id: req.params.id }, data: { status: 'approved', reviewedAt: new Date() } }),
+      prisma.yardShop.upsert({
+        where: { phone: application.phone },
+        update: { name: application.shopName, photo: application.shopPhoto, lat: application.lat, lng: application.lng },
+        create: {
+          phone: application.phone,
+          name: application.shopName,
+          photo: application.shopPhoto,
+          lat: application.lat,
+          lng: application.lng,
+        },
+      }),
+    ]);
+    res.json(updatedApplication);
+  } catch (err: any) {
+    logger.error({ err }, '[Yard Admin] POST /applications/:id/approve упал');
+    res.status(500).json({ error: 'Не удалось одобрить заявку', details: String(err?.message ?? err) });
+  }
+});
+
+/** «Отказать» — кабинет не открывается, YardShop не создаётся. */
+yardAdminRouter.post('/applications/:id/reject', async (req, res) => {
+  try {
+    const application = await prisma.yardApplication.update({
+      where: { id: req.params.id },
+      data: { status: 'rejected', reviewedAt: new Date() },
+    });
+    res.json(application);
+  } catch (err: any) {
+    if (err?.code === 'P2025') return res.status(404).json({ error: 'Заявка не найдена' });
+    logger.error({ err }, '[Yard Admin] POST /applications/:id/reject упал');
+    res.status(500).json({ error: 'Не удалось отклонить заявку', details: String(err?.message ?? err) });
+  }
+});
+
+// =====================================================================
+// Магазины, Полки, Заказы — без изменений от исходной логики.
+// =====================================================================
+
 yardAdminRouter.get('/shops', async (_req, res) => {
   try {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
@@ -48,7 +145,6 @@ yardAdminRouter.post('/shops/:id/subscription', async (req, res) => {
 
 const toggleActiveSchema = z.object({ active: z.boolean() });
 
-/** Включить/выключить магазин вручную (отдельно от подписки). */
 yardAdminRouter.post('/shops/:id/active', async (req, res) => {
   const parsed = toggleActiveSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
@@ -62,11 +158,10 @@ yardAdminRouter.post('/shops/:id/active', async (req, res) => {
   }
 });
 
-/** Все полки разом — для вкладки «Полки», с именем магазина для контекста. */
 yardAdminRouter.get('/items', async (_req, res) => {
   try {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-    const items = await prisma.yardItem.findMany({ include: { shop: { select: { name: true, kind: true } } } });
+    const items = await prisma.yardItem.findMany({ include: { shop: { select: { name: true } } } });
     res.json(items);
   } catch (err: any) {
     logger.error({ err }, '[Yard Admin] GET /items упал');
@@ -74,16 +169,11 @@ yardAdminRouter.get('/items', async (_req, res) => {
   }
 });
 
-/**
- * Все заказы разом — для вкладки «Заказы». Скрин чека — последнее сообщение
- * с imageUrl в чате заказа (схема YardOrder отдельного поля для чека не
- * предусматривает, чек идёт через YardMessage).
- */
 yardAdminRouter.get('/orders', async (_req, res) => {
   try {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     const orders = await prisma.yardOrder.findMany({
-      include: { items: true, shop: { select: { name: true, phone: true, kind: true } }, messages: true },
+      include: { items: true, shop: { select: { name: true, phone: true } }, messages: true },
       orderBy: { createdAt: 'desc' },
     });
     res.json(
@@ -98,11 +188,7 @@ yardAdminRouter.get('/orders', async (_req, res) => {
   }
 });
 
-/**
- * Оборот двора — отдельно от юнит-экономики APP: комиссия 0, налог не
- * считаем. Эта цифра нигде не подмешивается в существующие финансовые
- * расчёты APP/Kaspi/Ozon/WB.
- */
+/** Оборот двора — отдельно от юнит-экономики APP: комиссия 0, налог не считаем. */
 yardAdminRouter.get('/turnover', async (_req, res) => {
   try {
     const paidStatuses = ['paid', 'accepted', 'at_door', 'done'];
@@ -115,7 +201,6 @@ yardAdminRouter.get('/turnover', async (_req, res) => {
   }
 });
 
-/** Те же действия, что у продавца, но без привязки к телефону — админ может за любой магазин. */
 const paymentSchema = z.object({ ok: z.boolean() });
 yardAdminRouter.post('/orders/:id/payment', async (req, res) => {
   const parsed = paymentSchema.safeParse(req.body);

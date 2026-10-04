@@ -33,6 +33,102 @@ yardRouter.use((req, res, next) => {
   next();
 });
 
+// =====================================================================
+// Вакансия -> Заявка -> Одобрение -> Кабинет (та же логика, что у вакансии
+// курьера: YardInvite/YardApplication зеркалят ShopCourierInvite/
+// ShopCourierApplication).
+// =====================================================================
+
+/**
+ * Вакансия на этот телефон — только она, ничего о чужих. Нет вакансии —
+ * пустой ответ (null): в приложении раздел «Двор» для этого номера пустой,
+ * кнопки подачи заявки нет.
+ */
+yardRouter.get('/yard/invite', async (req, res) => {
+  const normalizedPhone = normalizePhone(String(req.query.phone ?? ''));
+  if (!normalizedPhone) return res.status(400).json({ error: 'Некорректный номер телефона' });
+  try {
+    const invite = await prisma.yardInvite.findUnique({ where: { phone: normalizedPhone } });
+    res.json(invite ?? null);
+  } catch (err: any) {
+    logger.error({ err }, '[Yard] GET /yard/invite упал');
+    res.status(500).json({ error: 'Не удалось получить вакансию', details: String(err?.message ?? err) });
+  }
+});
+
+const applySchema = z.object({
+  phone: z.string().min(1),
+  shopName: z.string().min(1),
+  shopPhoto: z.string().url().optional().nullable(),
+  lat: z.number(),
+  lng: z.number(),
+});
+
+/**
+ * Заявка на магазин — без вакансии на этот телефон отвечаем 403. Имя,
+ * фамилия и ИИН берутся из вакансии, не из того, что прислал бы заявитель.
+ * Одна заявка на телефон: повторная с того же номера, пока ещё pending,
+ * обновляет название/фото/точку, решённую заявку задним числом не трогает.
+ */
+yardRouter.post('/yard/apply', async (req, res) => {
+  const parsed = applySchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+  const normalizedPhone = normalizePhone(parsed.data.phone);
+  if (!normalizedPhone) return res.status(400).json({ error: 'Некорректный номер телефона' });
+
+  try {
+    const invite = await prisma.yardInvite.findUnique({ where: { phone: normalizedPhone } });
+    if (!invite) return res.status(403).json({ error: 'На этот телефон нет вакансии — заявка недоступна' });
+
+    const existing = await prisma.yardApplication.findUnique({ where: { phone: normalizedPhone } });
+    if (existing) {
+      if (existing.status === 'pending') {
+        const updated = await prisma.yardApplication.update({
+          where: { phone: normalizedPhone },
+          data: { shopName: parsed.data.shopName, shopPhoto: parsed.data.shopPhoto ?? null, lat: parsed.data.lat, lng: parsed.data.lng },
+        });
+        return res.json({ status: updated.status });
+      }
+      return res.json({ status: existing.status }); // approved/rejected — решение уже принято
+    }
+    const created = await prisma.yardApplication.create({
+      data: {
+        phone: normalizedPhone,
+        firstName: invite.firstName,
+        lastName: invite.lastName,
+        iin: invite.iin,
+        shopName: parsed.data.shopName,
+        shopPhoto: parsed.data.shopPhoto ?? null,
+        lat: parsed.data.lat,
+        lng: parsed.data.lng,
+        status: 'pending',
+      },
+    });
+    res.status(201).json({ status: created.status });
+  } catch (err: any) {
+    logger.error({ err }, '[Yard] POST /yard/apply упал');
+    res.status(500).json({ error: 'Не удалось отправить заявку', details: String(err?.message ?? err) });
+  }
+});
+
+/** Статус заявки по телефону — "none", если заявки нет вовсе. Только по этому номеру, ничего о чужих. */
+yardRouter.get('/yard/me', async (req, res) => {
+  const normalizedPhone = normalizePhone(String(req.query.phone ?? ''));
+  if (!normalizedPhone) return res.status(400).json({ error: 'Некорректный номер телефона' });
+  try {
+    const application = await prisma.yardApplication.findUnique({ where: { phone: normalizedPhone } });
+    res.json({ status: application?.status ?? 'none' });
+  } catch (err: any) {
+    logger.error({ err }, '[Yard] GET /yard/me упал');
+    res.status(500).json({ error: 'Не удалось получить статус заявки', details: String(err?.message ?? err) });
+  }
+});
+
+// =====================================================================
+// Кабинет и полка — открываются только после одобрения (YardShop создаётся
+// исключительно через POST /yard-admin/applications/:id/approve).
+// =====================================================================
+
 function parseLatLng(latRaw: unknown, lngRaw: unknown): { lat: number; lng: number } | null {
   const lat = Number(latRaw);
   const lng = Number(lngRaw);
@@ -51,7 +147,7 @@ async function previewItems(shopId: string) {
 }
 
 /**
- * Магазины в радиусе 500 м — имя, вид, метры, 3 товара. БЕЗ телефона.
+ * Магазины в радиусе 500 м — имя, метры, 3 товара. БЕЗ телефона.
  * Подписка просрочена/магазин выключен — в список не попадает.
  */
 yardRouter.get('/yard/nearby', async (req, res) => {
@@ -59,10 +155,10 @@ yardRouter.get('/yard/nearby', async (req, res) => {
   if (!point) return res.status(400).json({ error: 'Некорректные координаты' });
 
   try {
-    const shops = await prisma.yardShop.findMany({ where: { lat: { not: null }, lng: { not: null } } });
-    const nearby = (shops as Array<{ id: string; name: string; kind: string; lat: number | null; lng: number | null; active: boolean; paidUntil: Date | null }>)
+    const shops = await prisma.yardShop.findMany({});
+    const nearby = (shops as Array<{ id: string; name: string; photo: string | null; lat: number; lng: number; active: boolean; paidUntil: Date | null }>)
       .filter((s) => yardShopIsLive(s))
-      .map((s) => ({ ...s, meters: yardDistanceMeters(point.lat, point.lng, s.lat!, s.lng!) }))
+      .map((s) => ({ ...s, meters: yardDistanceMeters(point.lat, point.lng, s.lat, s.lng) }))
       .filter((s) => s.meters <= YARD_RADIUS_METERS)
       .sort((a, b) => a.meters - b.meters);
 
@@ -70,7 +166,7 @@ yardRouter.get('/yard/nearby', async (req, res) => {
       nearby.map(async (s) => ({
         id: s.id,
         name: s.name,
-        kind: s.kind,
+        photo: s.photo,
         meters: Math.round(s.meters),
         items: await previewItems(s.id),
       })),
@@ -90,7 +186,7 @@ yardRouter.get('/yard/shop/:id', async (req, res) => {
   try {
     const shop = await prisma.yardShop.findUnique({ where: { id: req.params.id } });
     if (!shop || !yardShopIsLive(shop)) return res.status(404).json({ error: 'Двор не найден' });
-    const distance = yardDistanceMeters(point.lat, point.lng, shop.lat!, shop.lng!);
+    const distance = yardDistanceMeters(point.lat, point.lng, shop.lat, shop.lng);
     if (distance > YARD_RADIUS_METERS) {
       return res.status(403).json({ error: 'Вы вне радиуса 500 м от этого двора' });
     }
@@ -98,8 +194,7 @@ yardRouter.get('/yard/shop/:id', async (req, res) => {
     res.json({
       id: shop.id,
       name: shop.name,
-      kind: shop.kind,
-      address: shop.address,
+      photo: shop.photo,
       items: items.map((i: { id: string; name: string; price: number; stock: number; photo: string | null }) => ({
         id: i.id,
         name: i.name,
@@ -127,7 +222,7 @@ const createOrderSchema = z.object({
 /**
  * Создание заказа — остаток НЕ списываем (только при подтверждении оплаты).
  * Телефон магазина в ответ не кладём. У покупателя кнопки отмены нет —
- * никакого endpoint на отмену заказа в этом файле намеренно нет.
+ * эндпоинта на отмену заказа в этом файле намеренно нет.
  */
 yardRouter.post('/yard/orders', async (req, res) => {
   const parsed = createOrderSchema.safeParse(req.body);
@@ -139,7 +234,7 @@ yardRouter.post('/yard/orders', async (req, res) => {
   try {
     const shop = await prisma.yardShop.findUnique({ where: { id: parsed.data.shopId } });
     if (!shop || !yardShopIsLive(shop)) return res.status(404).json({ error: 'Двор не найден' });
-    const distance = yardDistanceMeters(parsed.data.lat, parsed.data.lng, shop.lat!, shop.lng!);
+    const distance = yardDistanceMeters(parsed.data.lat, parsed.data.lng, shop.lat, shop.lng);
     if (distance > YARD_RADIUS_METERS) return res.status(403).json({ error: 'Вы вне радиуса 500 м от этого двора' });
 
     const itemIds = parsed.data.items.map((i) => i.itemId);
@@ -177,7 +272,7 @@ yardRouter.post('/yard/orders', async (req, res) => {
       status: order.status,
       total: order.total,
       items: order.items,
-      shop: { id: shop.id, name: shop.name, kind: shop.kind },
+      shop: { id: shop.id, name: shop.name },
     });
   } catch (err: any) {
     logger.error({ err }, '[Yard] POST /yard/orders упал');
@@ -197,7 +292,6 @@ function toBuyerOrderDto(order: any) {
     shop: {
       id: order.shop.id,
       name: order.shop.name,
-      kind: order.shop.kind,
       phone: phoneVisible ? order.shop.phone : null,
     },
   };
@@ -271,9 +365,10 @@ yardRouter.post('/yard/orders/:id/message', async (req, res) => {
 });
 
 /**
- * Кабинет «Я магазин» — по телефону. Нет такого магазина ещё — не ошибка,
- * просто shop:null. Заказы отдаём с телефоном покупателя ТОЛЬКО с accepted
- * и дальше — то же правило, что у покупателя, симметрично.
+ * Кабинет «Я магазин» — по телефону. YardShop существует ТОЛЬКО после
+ * одобрения заявки (создаётся в POST /yard-admin/applications/:id/approve)
+ * — до одобрения здесь просто shop:null, не ошибка. Заказы отдаём с
+ * телефоном покупателя ТОЛЬКО с accepted и дальше — симметрично покупателю.
  */
 yardRouter.get('/yard/mine', async (req, res) => {
   const normalizedPhone = normalizePhone(String(req.query.phone ?? ''));
@@ -309,42 +404,6 @@ yardRouter.get('/yard/mine', async (req, res) => {
   }
 });
 
-const mineSchema = z.object({
-  phone: z.string().min(1),
-  name: z.string().min(1),
-  kind: z.enum(['home', 'grocery', 'bakery', 'hozyayushka']),
-  address: z.string().optional(),
-  lat: z.number().optional(),
-  lng: z.number().optional(),
-});
-
-/** Создание/правка профиля своего двора — одна запись на телефон (upsert). */
-yardRouter.post('/yard/mine', async (req, res) => {
-  const parsed = mineSchema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
-  const normalizedPhone = normalizePhone(parsed.data.phone);
-  if (!normalizedPhone) return res.status(400).json({ error: 'Некорректный номер телефона' });
-
-  try {
-    const data = {
-      name: parsed.data.name,
-      kind: parsed.data.kind,
-      address: parsed.data.address,
-      ...(parsed.data.lat !== undefined ? { lat: parsed.data.lat } : {}),
-      ...(parsed.data.lng !== undefined ? { lng: parsed.data.lng } : {}),
-    };
-    const shop = await prisma.yardShop.upsert({
-      where: { phone: normalizedPhone },
-      update: data,
-      create: { phone: normalizedPhone, ...data },
-    });
-    res.json(shop);
-  } catch (err: any) {
-    logger.error({ err }, '[Yard] POST /yard/mine упал');
-    res.status(500).json({ error: 'Не удалось сохранить магазин', details: String(err?.message ?? err) });
-  }
-});
-
 const mineItemSchema = z.object({
   phone: z.string().min(1),
   id: z.string().optional(),
@@ -355,7 +414,12 @@ const mineItemSchema = z.object({
   active: z.boolean().optional().default(true),
 });
 
-/** Добавить/поправить одну позицию полки — только владелец (по телефону). */
+/**
+ * Добавить/поправить одну позицию полки — только владелец (по телефону),
+ * и только если его YardShop уже существует (а значит, заявка одобрена).
+ * До одобрения товары грузить нельзя — 404 по тому же принципу, что и у
+ * курьера до одобрения заявки.
+ */
 yardRouter.post('/yard/mine/items', async (req, res) => {
   const parsed = mineItemSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
@@ -364,7 +428,7 @@ yardRouter.post('/yard/mine/items', async (req, res) => {
 
   try {
     const shop = await prisma.yardShop.findUnique({ where: { phone: normalizedPhone } });
-    if (!shop) return res.status(404).json({ error: 'Сначала создайте свой двор (POST /yard/mine)' });
+    if (!shop) return res.status(404).json({ error: 'Заявка ещё не одобрена — товары грузить нельзя' });
 
     const itemData = {
       name: parsed.data.name,

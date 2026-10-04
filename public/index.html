@@ -39,6 +39,7 @@
       <div class="nav-group-label">Система</div>
       <button class="nav-item" data-page="notifications"><i class="ni">🔔</i>Уведомления</button>
       <button class="nav-item" data-page="settings"><i class="ni">⚙</i>Настройки</button>
+      <button class="nav-item" data-page="yard" style="background:#DC2626;color:#fff">Магазин или Двор</button>
     </nav>
 
     <div class="sidebar__foot" id="syncStatusMini">—</div>
@@ -450,7 +451,6 @@
           <button data-tab="couriers">Курьеры</button>
           <button data-tab="finance">Финансы</button>
           <button data-tab="upload">Загрузка Excel</button>
-          <button data-tab="yard" style="background:#DC2626;color:#fff">Магазин или Двор</button>
         </div>
 
         <!-- ---- Главная ---- -->
@@ -1003,62 +1003,6 @@
 
           <div id="mmUploadReport"></div>
         </div>
-
-        <!-- ---- Двор: отдельная подсистема (свои таблицы, свои заказы, свои деньги), ---- -->
-        <!-- ---- внутри админки только позиционирована как крайняя вкладка My Market. ---- -->
-        <div id="mymarketYardTab" hidden>
-          <p class="panel__hint" style="margin-top:0">Полка у двери: хозяюшка, овощная, пекарня, магазин у дома. Не четвёртый маркетплейс и не полка My Market — оплата напрямую продавцу, без эквайринга.</p>
-
-          <div class="seg" id="yardTabs">
-            <button class="is-active" data-yardtab="shops">Магазины</button>
-            <button data-yardtab="items">Полки</button>
-            <button data-yardtab="orders">Заказы</button>
-          </div>
-
-          <!-- ---- Магазины ---- -->
-          <div id="yardShopsTab">
-            <div class="panel">
-              <p class="panel__hint" style="margin-top:0">Подписка 500 ₸/мес — продляется вручную, с пакета комиссию не берём. Без действующей подписки магазин не виден покупателям.</p>
-              <div class="table-wrap">
-                <table class="table" id="yardShopsTable">
-                  <thead>
-                    <tr><th>Название</th><th>Вид</th><th>Телефон</th><th>Адрес</th><th>Булавка</th><th>Подписка до</th><th>Статус</th><th></th></tr>
-                  </thead>
-                  <tbody></tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-
-          <!-- ---- Полки ---- -->
-          <div id="yardItemsTab" hidden>
-            <div class="panel">
-              <div class="table-wrap">
-                <table class="table" id="yardItemsTable">
-                  <thead>
-                    <tr><th>Фото</th><th>Товар</th><th>Магазин</th><th class="num">Цена</th><th class="num">Остаток</th><th>Статус</th></tr>
-                  </thead>
-                  <tbody></tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-
-          <!-- ---- Заказы ---- -->
-          <div id="yardOrdersTab" hidden>
-            <div class="panel">
-              <div style="margin-bottom:10px" id="yardTurnoverSummary"></div>
-              <div class="table-wrap">
-                <table class="table" id="yardOrdersTable">
-                  <thead>
-                    <tr><th>№</th><th>Дата</th><th>Магазин</th><th>Покупатель</th><th class="num">Сумма</th><th>Статус</th><th>Чек</th><th></th></tr>
-                  </thead>
-                  <tbody></tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        </div>
       </section>
 
 
@@ -1250,6 +1194,95 @@
         <div class="panel">
           <div class="panel__head"><h2>Расписание фоновых задач</h2></div>
           <p id="settingsCronInfo" class="panel__hint">—</p>
+        </div>
+      </section>
+
+
+      <!-- ============ МАГАЗИН ИЛИ ДВОР ============ -->
+      <!-- Отдельная подсистема: свои таблицы, свои заказы, свои деньги.   -->
+      <!-- Не четвёртый маркетплейс и не полка My Market.                  -->
+      <section class="page" id="page-yard" hidden>
+        <div class="page__head"><h1>Магазин или Двор</h1><p>Полка у двери: хозяюшка, овощная, пекарня, магазин у дома. Оплата напрямую продавцу, без эквайринга.</p></div>
+
+        <div class="seg" id="yardTabs">
+          <button class="is-active" data-yardtab="invite">Вакансия</button>
+          <button data-yardtab="applications">Заявки</button>
+          <button data-yardtab="shops">Магазины</button>
+          <button data-yardtab="items">Полки</button>
+          <button data-yardtab="orders">Заказы</button>
+        </div>
+
+        <!-- ---- Вакансия ---- -->
+        <div id="yardInviteTab">
+          <div class="panel">
+            <p class="panel__hint" style="margin-top:0">Мы сами вписываем телефон, имя, фамилию и ИИН человека. Без этой записи на номер в приложении раздел «Двор» пустой, кнопки подачи заявки нет.</p>
+            <div class="form-grid" style="max-width:420px">
+              <label>Телефон<input type="text" id="yardInvitePhone" placeholder="+7..." /></label>
+              <label>Имя<input type="text" id="yardInviteFirstName" /></label>
+              <label>Фамилия<input type="text" id="yardInviteLastName" /></label>
+              <label>ИИН<input type="text" id="yardInviteIin" maxlength="12" /></label>
+            </div>
+            <button class="btn" id="yardInviteSendBtn" style="margin-top:10px">Отправить</button>
+            <span id="yardInviteStatus" class="panel__hint" style="margin-left:10px"></span>
+          </div>
+        </div>
+
+        <!-- ---- Заявки ---- -->
+        <div id="yardApplicationsTab" hidden>
+          <div class="panel">
+            <div class="table-wrap">
+              <table class="table" id="yardApplicationsTable">
+                <thead>
+                  <tr><th>Телефон</th><th>Имя</th><th>ИИН</th><th>Название магазина</th><th>Фото</th><th>Точка</th><th>Дата</th><th>Статус</th><th></th></tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ---- Магазины ---- -->
+        <div id="yardShopsTab" hidden>
+          <div class="panel">
+            <p class="panel__hint" style="margin-top:0">Подписка 500 ₸/мес — продляется вручную, с пакета комиссию не берём. Без действующей подписки магазин не виден покупателям.</p>
+            <div class="table-wrap">
+              <table class="table" id="yardShopsTable">
+                <thead>
+                  <tr><th>Название</th><th>Телефон</th><th>Булавка</th><th>Подписка до</th><th>Статус</th><th></th></tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ---- Полки ---- -->
+        <div id="yardItemsTab" hidden>
+          <div class="panel">
+            <div class="table-wrap">
+              <table class="table" id="yardItemsTable">
+                <thead>
+                  <tr><th>Фото</th><th>Товар</th><th>Магазин</th><th class="num">Цена</th><th class="num">Остаток</th><th>Статус</th></tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ---- Заказы ---- -->
+        <div id="yardOrdersTab" hidden>
+          <div class="panel">
+            <div style="margin-bottom:10px" id="yardTurnoverSummary"></div>
+            <div class="table-wrap">
+              <table class="table" id="yardOrdersTable">
+                <thead>
+                  <tr><th>№</th><th>Дата</th><th>Магазин</th><th>Покупатель</th><th class="num">Сумма</th><th>Статус</th><th>Чек</th><th></th></tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
         </div>
       </section>
 

@@ -611,20 +611,50 @@ model ShopReturn {
 // =====================================================================
 // «Двор» — полка у двери (хозяюшка/овощная/пекарня/магазин у дома), НЕ
 // четвёртый маркетплейс и не полка My Market. Свои таблицы, свои заказы,
-// свои деньги — ни одной связи с Product/ShopOrder/Courier/CourierPayout
-// и остальными моделями выше. Оплата — прямой перевод покупателя на номер
-// магазина, продавец сверяет вручную («Оплата есть»), эквайринга и
-// комиссии платформы здесь нет.
+// свои деньги — ни одной связи с Product/ShopOrder/Courier и остальными
+// моделями выше. Регистрация магазина — та же логика, что у вакансии
+// курьера (YardInvite/YardApplication зеркалят ShopCourierInvite/
+// ShopCourierApplication): админ вписывает номер вручную — только тогда
+// в приложении появляется форма заявки на этот номер.
 // =====================================================================
+
+// «Вакансия» — админ вручную вписывает телефон/имя/фамилию/ИИН. Без этой
+// записи на номер в приложении раздел «Двор» пустой, кнопки подачи
+// заявки нет. Одна запись на телефон: повторная отправка обновляет её.
+model YardInvite {
+  phone     String   @id // нормализованный
+  firstName String
+  lastName  String
+  iin       String
+  createdAt DateTime @default(now())
+}
+
+// «Заявка» — человек с приглашённым номером видит имя/фамилию/ИИН уже
+// заполненными (из YardInvite) и сам дописывает название и фото магазина
+// и точку на карте. Без одобрения кабинет («Я магазин», полка) не
+// открывается — см. YardShop, создаётся только при approve.
+model YardApplication {
+  id         String    @id @default(cuid())
+  phone      String    @unique // нормализованный
+  firstName  String    // из вакансии, не вводится заявителем
+  lastName   String    // из вакансии
+  iin        String    // из вакансии
+  shopName   String
+  shopPhoto  String?
+  lat        Float
+  lng        Float
+  status     String    @default("pending") // "pending" | "approved" | "rejected"
+  createdAt  DateTime  @default(now())
+  reviewedAt DateTime?
+}
 
 model YardShop {
   id        String      @id @default(cuid())
-  phone     String      @unique // нормализованный — один магазин = один номер
+  phone     String      @unique // один телефон — одна полка
   name      String
-  kind      String      // "home" | "grocery" | "bakery" | "hozyayushka"
-  lat       Float?      // булавка — магазин ставит один раз, радиус 500 м считает сервер от неё
-  lng       Float?
-  address   String?
+  photo     String?
+  lat       Float
+  lng       Float       // радиус 500 м считает сервер от этой точки
   active    Boolean     @default(true)
   paidUntil DateTime?   // подписка 500 ₸/мес, админ продлевает вручную, с пакета комиссию не берём
   createdAt DateTime    @default(now())

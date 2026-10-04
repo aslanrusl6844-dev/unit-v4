@@ -104,6 +104,7 @@ const PAGE_LOADERS = {
   demping: loadDempingPage,
   notifications: loadNotificationsPage,
   settings: loadSettingsPage,
+  yard: loadYardPage,
 };
 
 function showPage(pageName) {
@@ -2089,7 +2090,7 @@ let myMarketProductsCache = [];
 let myMarketChartInstance = null;
 let myMarketEditingProductId = null;
 
-const MY_MARKET_TABS = ['home', 'products', 'prices', 'orders', 'returns', 'analytics', 'couriers', 'finance', 'upload', 'yard'];
+const MY_MARKET_TABS = ['home', 'products', 'prices', 'orders', 'returns', 'analytics', 'couriers', 'finance', 'upload'];
 
 function wireMyMarketTabsOnce() {
   if (myMarketTabWired) return;
@@ -2376,7 +2377,6 @@ function switchMyMarketTab(tab) {
   if (tab === 'analytics') loadMyMarketAnalytics();
   if (tab === 'couriers') { loadMyMarketCouriers(); loadMyMarketCourierApplications(); }
   if (tab === 'finance') loadMyMarketFinance();
-  if (tab === 'yard') loadYardPage();
 }
 
 async function loadMyMarketPage() {
@@ -5453,13 +5453,14 @@ async function loadMyMarketOzonTypeMap() {
 
 
 // =====================================================================
-// «Двор» — полка у двери (хозяюшка/овощная/пекарня/магазин у дома).
-// Отдельная подсистема: свои таблицы, свой API (/api/yard-admin/*).
-// Внутри админки только ПОЗИЦИОНИРОВАН как крайняя вкладка My Market —
-// Kaspi/Ozon/WB/курьера/накладную/код выдачи/список товаров My Market
-// не затрагивает.
+// «Магазин или Двор» — отдельный верхнеуровневый раздел (не вложен в My
+// Market: прошлый раз общий код переключения вкладок My Market вызывал
+// не тот экран). Свои таблицы, свой API (/api/yard-admin/*). Регистрация
+// магазина — та же логика, что у вакансии курьера: сначала админ вручную
+// вписывает телефон/имя/фамилию/ИИН («Вакансия»), только тогда в
+// приложении появляется форма подачи заявки («Заявки» — одобрить/отказать),
+// и только после одобрения открывается кабинет с полкой.
 // =====================================================================
-const YARD_KIND_LABELS = { home: 'Магазин у дома', grocery: 'Овощная', bakery: 'Пекарня', hozyayushka: 'Хозяюшка' };
 const YARD_STATUS_LABELS = {
   waiting_payment: 'Ждёт оплаты',
   paid: 'Оплачен',
@@ -5470,7 +5471,9 @@ const YARD_STATUS_LABELS = {
   not_picked: 'Не забрали',
   out_of_stock: 'Нет в наличии',
 };
+const YARD_APPLICATION_STATUS_LABELS = { pending: 'Ожидает', approved: 'Одобрена', rejected: 'Отклонена' };
 
+let yardApplicationsCache = [];
 let yardShopsCache = [];
 let yardItemsCache = [];
 let yardOrdersCache = [];
@@ -5484,17 +5487,108 @@ function wireYardTabsOnce() {
     if (!btn) return;
     document.querySelectorAll('#yardTabs button').forEach((b) => b.classList.remove('is-active'));
     btn.classList.add('is-active');
+    document.getElementById('yardInviteTab').hidden = btn.dataset.yardtab !== 'invite';
+    document.getElementById('yardApplicationsTab').hidden = btn.dataset.yardtab !== 'applications';
     document.getElementById('yardShopsTab').hidden = btn.dataset.yardtab !== 'shops';
     document.getElementById('yardItemsTab').hidden = btn.dataset.yardtab !== 'items';
     document.getElementById('yardOrdersTab').hidden = btn.dataset.yardtab !== 'orders';
   });
+  document.getElementById('yardInviteSendBtn').addEventListener('click', runYardSendInvite);
 }
 
 async function loadYardPage() {
   wireYardTabsOnce();
-  await Promise.all([loadYardShops(), loadYardItems(), loadYardOrders(), loadYardTurnover()]);
+  await Promise.all([loadYardApplications(), loadYardShops(), loadYardItems(), loadYardOrders(), loadYardTurnover()]);
 }
 
+// ---- Вакансия ----
+async function runYardSendInvite() {
+  const phone = document.getElementById('yardInvitePhone').value.trim();
+  const firstName = document.getElementById('yardInviteFirstName').value.trim();
+  const lastName = document.getElementById('yardInviteLastName').value.trim();
+  const iin = document.getElementById('yardInviteIin').value.trim();
+  const statusEl = document.getElementById('yardInviteStatus');
+  if (!phone || !firstName || !lastName || !iin) {
+    statusEl.style.color = 'var(--loss)';
+    statusEl.textContent = 'Заполните все поля.';
+    return;
+  }
+  const btn = document.getElementById('yardInviteSendBtn');
+  btn.disabled = true;
+  statusEl.style.color = '';
+  statusEl.textContent = 'Отправляю…';
+  try {
+    await api('/yard-admin/invites', { method: 'POST', body: JSON.stringify({ phone, firstName, lastName, iin }) });
+    statusEl.style.color = '';
+    statusEl.textContent = 'Вакансия отправлена.';
+    document.getElementById('yardInvitePhone').value = '';
+    document.getElementById('yardInviteFirstName').value = '';
+    document.getElementById('yardInviteLastName').value = '';
+    document.getElementById('yardInviteIin').value = '';
+  } catch (err) {
+    statusEl.style.color = 'var(--loss)';
+    statusEl.textContent = 'Ошибка: ' + err.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ---- Заявки ----
+async function loadYardApplications() {
+  yardApplicationsCache = await api('/yard-admin/applications');
+  renderYardApplicationsTable();
+}
+
+function renderYardApplicationsTable() {
+  const tbody = document.querySelector('#yardApplicationsTable tbody');
+  if (!yardApplicationsCache.length) {
+    tbody.innerHTML = `<tr><td colspan="9" style="color:var(--text-faint)">Заявок пока нет</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = yardApplicationsCache.map((a) => {
+    const statusLabel = YARD_APPLICATION_STATUS_LABELS[a.status] ?? a.status;
+    const statusHtml = a.status === 'approved'
+      ? `<span style="color:var(--accent);font-weight:600">● ${statusLabel}</span>`
+      : a.status === 'rejected'
+        ? `<span style="color:var(--loss)">● ${statusLabel}</span>`
+        : `<span>${statusLabel}</span>`;
+    const decisionCell = a.status === 'pending'
+      ? `<button class="link-btn" data-yard-app-approve="${a.id}" style="color:var(--accent)">Одобрить</button>
+         <button class="link-btn" data-yard-app-reject="${a.id}" style="color:var(--loss)">Отказать</button>`
+      : '';
+    return `
+      <tr>
+        <td>${mmEsc(a.phone)}</td>
+        <td class="name-cell">${mmEsc(a.firstName)} ${mmEsc(a.lastName)}</td>
+        <td>${mmEsc(a.iin)}</td>
+        <td class="name-cell">${mmEsc(a.shopName)}</td>
+        <td>${a.shopPhoto ? `<img src="${a.shopPhoto}" alt="" style="width:36px;height:36px;object-fit:cover;border-radius:6px" onerror="this.style.visibility='hidden'" />` : '—'}</td>
+        <td style="font-size:11px">${a.lat.toFixed(4)}, ${a.lng.toFixed(4)}</td>
+        <td>${fmtOrderDateTime(a.createdAt)}</td>
+        <td>${statusHtml}</td>
+        <td style="white-space:nowrap">${decisionCell}</td>
+      </tr>
+    `;
+  }).join('');
+
+  tbody.querySelectorAll('button[data-yard-app-approve]').forEach((btn) => {
+    btn.addEventListener('click', () => runYardApplicationDecision(btn.dataset.yardAppApprove, 'approve'));
+  });
+  tbody.querySelectorAll('button[data-yard-app-reject]').forEach((btn) => {
+    btn.addEventListener('click', () => runYardApplicationDecision(btn.dataset.yardAppReject, 'reject'));
+  });
+}
+
+async function runYardApplicationDecision(id, action) {
+  try {
+    await api(`/yard-admin/applications/${id}/${action}`, { method: 'POST' });
+    await Promise.all([loadYardApplications(), loadYardShops()]);
+  } catch (err) {
+    alert(`Не удалось ${action === 'approve' ? 'одобрить' : 'отклонить'} заявку: ` + err.message);
+  }
+}
+
+// ---- Магазины ----
 async function loadYardShops() {
   yardShopsCache = await api('/yard-admin/shops');
   renderYardShopsTable();
@@ -5503,19 +5597,17 @@ async function loadYardShops() {
 function renderYardShopsTable() {
   const tbody = document.querySelector('#yardShopsTable tbody');
   if (!yardShopsCache.length) {
-    tbody.innerHTML = `<tr><td colspan="8" style="color:var(--text-faint)">Магазинов двора ещё нет</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" style="color:var(--text-faint)">Магазинов двора ещё нет</td></tr>`;
     return;
   }
   tbody.innerHTML = yardShopsCache.map((s) => {
     const isLive = s.active && s.paidUntil && new Date(s.paidUntil) > new Date();
     const paidUntilLabel = s.paidUntil ? fmtOrderDateTime(s.paidUntil) : '—';
-    const pinLabel = s.lat != null && s.lng != null ? `${s.lat.toFixed(4)}, ${s.lng.toFixed(4)}` : '— не поставлена';
+    const pinLabel = `${s.lat.toFixed(4)}, ${s.lng.toFixed(4)}`;
     return `
       <tr>
         <td class="name-cell">${mmEsc(s.name)}</td>
-        <td>${YARD_KIND_LABELS[s.kind] ?? s.kind}</td>
         <td>${mmEsc(s.phone)}</td>
-        <td style="font-size:11px">${mmEsc(s.address || '—')}</td>
         <td style="font-size:11px">${pinLabel}</td>
         <td>${paidUntilLabel}</td>
         <td>${isLive ? '<span style="color:var(--accent)">● Видим покупателям</span>' : '<span style="color:var(--loss)">● Не виден (нет подписки)</span>'}</td>
@@ -5553,6 +5645,7 @@ async function runYardToggleActive(shopId, nextActive) {
   }
 }
 
+// ---- Полки ----
 async function loadYardItems() {
   yardItemsCache = await api('/yard-admin/items');
   renderYardItemsTable();
@@ -5576,6 +5669,7 @@ function renderYardItemsTable() {
   `).join('');
 }
 
+// ---- Заказы ----
 async function loadYardTurnover() {
   try {
     const t = await api('/yard-admin/turnover');
