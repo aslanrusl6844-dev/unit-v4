@@ -100,6 +100,26 @@ yardAdminRouter.post('/applications/:id/reject', async (req, res) => {
   }
 });
 
+const deleteApplicationsSchema = z.object({ ids: z.array(z.string().min(1)).min(1).max(500) });
+
+/**
+ * Удалить заявки пачкой (только отмеченные галочкой) — стирает записи на
+ * сервере. Удаляется ТОЛЬКО сама заявка: магазин, созданный при одобрении,
+ * остаётся (им управляют вкладки «Магазины»/«Архив»), вакансия тоже. Если
+ * заявку удалили, человек с приглашённым номером сможет подать новую.
+ */
+yardAdminRouter.post('/applications/delete', async (req, res) => {
+  const parsed = deleteApplicationsSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+  try {
+    const r = await prisma.yardApplication.deleteMany({ where: { id: { in: parsed.data.ids } } });
+    res.json({ deleted: r.count });
+  } catch (err: any) {
+    logger.error({ err }, '[Yard Admin] POST /applications/delete упал');
+    res.status(500).json({ error: 'Не удалось удалить заявки', details: String(err?.message ?? err) });
+  }
+});
+
 // =====================================================================
 // Магазины, Полки, Заказы — без изменений от исходной логики.
 // =====================================================================
