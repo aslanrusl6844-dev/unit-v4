@@ -5592,6 +5592,7 @@ async function runYardApplicationDecision(id, action) {
 async function loadYardShops() {
   yardShopsCache = await api('/yard-admin/shops');
   renderYardShopsTable();
+  renderYardShelves();
 }
 
 function renderYardShopsTable() {
@@ -5646,27 +5647,117 @@ async function runYardToggleActive(shopId, nextActive) {
 }
 
 // ---- Полки ----
+// Сгруппированы по магазину (не плоская таблица). Данные те же, что и раньше:
+// товары — GET /yard-admin/items (shopId и category приходят в каждой строке),
+// магазины (в том числе пустые) — уже загруженный yardShopsCache. Нового
+// адреса нет.
+let yardExpandedShelves = new Set(); // id магазинов, чья полка сейчас раскрыта
+
 async function loadYardItems() {
   yardItemsCache = await api('/yard-admin/items');
-  renderYardItemsTable();
+  renderYardShelves();
 }
 
-function renderYardItemsTable() {
-  const tbody = document.querySelector('#yardItemsTable tbody');
-  if (!yardItemsCache.length) {
-    tbody.innerHTML = `<tr><td colspan="6" style="color:var(--text-faint)">Товаров на полках ещё нет</td></tr>`;
+/** 1 товар, 2 товара, 5 товаров. */
+function yardPlural(n, one, few, many) {
+  const m10 = n % 10;
+  const m100 = n % 100;
+  if (m10 === 1 && m100 !== 11) return one;
+  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+  return many;
+}
+
+/** Группы «магазин -> его товары». Пустой магазин (товаров нет) тоже попадает в список. */
+function yardShelfGroups() {
+  const byShop = new Map();
+  for (const shop of yardShopsCache) byShop.set(shop.id, { id: shop.id, name: shop.name, items: [] });
+  for (const item of yardItemsCache) {
+    if (!byShop.has(item.shopId)) {
+      // Товар магазина, которого нет в списке магазинов (не должно случаться) —
+      // не теряем, показываем отдельной группой под его же названием.
+      byShop.set(item.shopId, { id: item.shopId, name: item.shop?.name ?? '—', items: [] });
+    }
+    byShop.get(item.shopId).items.push(item);
+  }
+  return Array.from(byShop.values());
+}
+
+function yardShelfSummary(group) {
+  if (!group.items.length) return 'Полка пуста';
+  const stock = group.items.reduce((sum, i) => sum + (Number(i.stock) || 0), 0);
+  const n = group.items.length;
+  return `${n} ${yardPlural(n, 'товар', 'товара', 'товаров')} · остаток ${stock}`;
+}
+
+function renderYardShelves() {
+  const list = document.getElementById('yardShelvesList');
+  const groups = yardShelfGroups();
+
+  // Раскрытыми остаются только существующие магазины (на случай, если магазин пропал).
+  const knownIds = new Set(groups.map((g) => g.id));
+  yardExpandedShelves = new Set([...yardExpandedShelves].filter((id) => knownIds.has(id)));
+
+  if (!groups.length) {
+    list.innerHTML = `<p class="panel__hint" style="margin:0">Магазинов двора ещё нет</p>`;
     return;
   }
-  tbody.innerHTML = yardItemsCache.map((i) => `
-    <tr>
-      <td>${i.photo ? `<img src="${i.photo}" alt="" style="width:40px;height:40px;object-fit:cover;border-radius:6px" onerror="this.style.visibility='hidden'" />` : '<span style="color:var(--text-faint)">—</span>'}</td>
-      <td class="name-cell">${mmEsc(i.name)}</td>
-      <td>${mmEsc(i.shop?.name ?? '—')}</td>
-      <td class="num">${fmtMoney(i.price)}</td>
-      <td class="num">${i.stock}</td>
-      <td>${i.active ? '<span style="color:var(--accent)">● Активен</span>' : '<span style="color:var(--text-faint)">● Скрыт</span>'}</td>
-    </tr>
-  `).join('');
+
+  list.innerHTML = groups.map((g) => {
+    const hasItems = g.items.length > 0;
+    // У пустого магазина раскрывать нечего: «Полка пуста» написано под названием, кнопки нет.
+    const open = hasItems && yardExpandedShelves.has(g.id);
+    const body = !open ? '' : `
+      <div class="table-wrap" style="margin-top:8px">
+        <table class="table">
+          <thead><tr><th>Фото</th><th>Товар</th><th>Категория</th><th class="num">Цена</th><th class="num">Остаток</th><th>Статус</th></tr></thead>
+          <tbody>
+            ${g.items.map((i) => `
+              <tr>
+                <td>${i.photo ? `<img src="${mmEsc(i.photo)}" alt="" style="width:40px;height:40px;object-fit:cover;border-radius:6px" onerror="this.style.visibility='hidden'" />` : '<span style="color:var(--text-faint)">—</span>'}</td>
+                <td class="name-cell">${mmEsc(i.name)}</td>
+                <td>${i.category ? mmEsc(i.category) : '<span style="color:var(--text-faint)">—</span>'}</td>
+                <td class="num">${fmtMoney(i.price)}</td>
+                <td class="num">${i.stock}</td>
+                <td>${i.active ? '<span style="color:var(--accent)">● Активен</span>' : '<span style="color:var(--text-faint)">● Скрыт</span>'}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>`;
+    return `
+      <div class="yard-shelf" data-yard-shelf="${mmEsc(g.id)}" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+          <div data-yard-shelf-toggle="${mmEsc(g.id)}" role="button" tabindex="0" aria-expanded="${open}" style="cursor:pointer;flex:1;min-width:0">
+            <div style="font-weight:600">${mmEsc(g.name)}</div>
+            <div style="font-size:11.5px;color:var(--text-faint);margin-top:2px">${yardShelfSummary(g)}</div>
+          </div>
+          ${hasItems ? `<button class="btn btn--ghost" data-yard-shelf-btn="${mmEsc(g.id)}">${open ? 'Свернуть' : 'Показать всё'}</button>` : ''}
+        </div>
+        ${body}
+      </div>
+    `;
+  }).join('');
+
+  const toggle = (id) => {
+    if (yardExpandedShelves.has(id)) yardExpandedShelves.delete(id);
+    else yardExpandedShelves.add(id);
+    renderYardShelves();
+  };
+  // Кнопка «Показать всё» — раскрывает/сворачивает только товары СВОЕГО магазина.
+  list.querySelectorAll('[data-yard-shelf-btn]').forEach((el) => {
+    el.addEventListener('click', () => toggle(el.dataset.yardShelfBtn));
+  });
+  // Тап по названию/подписи работает так же, как кнопка (как и в прошлой версии).
+  // У пустого магазина раскрывать нечего — там тап ничего не делает.
+  list.querySelectorAll('[data-yard-shelf-toggle]').forEach((el) => {
+    const id = el.dataset.yardShelfToggle;
+    const group = groups.find((g) => g.id === id);
+    if (!group || !group.items.length) return;
+    el.addEventListener('click', () => toggle(id));
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(id); }
+    });
+  });
 }
 
 // ---- Заказы ----
