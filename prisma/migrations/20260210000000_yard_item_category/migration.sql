@@ -1,2 +1,1 @@
--- AlterTable
-ALTER TABLE "YardItem" ADD COLUMN "category" TEXT;
+ALTER TABLE "YardItem" ADD COLUMN IF NOT EXISTS "category" TEXT;
