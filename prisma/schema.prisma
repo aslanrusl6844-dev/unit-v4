@@ -672,6 +672,9 @@ model YardItem {
   stock  Int      @default(0)
   photo  String?
   active Boolean  @default(true)
+  // Категория — свободная строка от продавца, списка в коде/схеме нет.
+  // null у товаров, созданных до появления поля.
+  category String?
 
   @@index([shopId])
 }

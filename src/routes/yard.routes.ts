@@ -195,12 +195,13 @@ yardRouter.get('/yard/shop/:id', async (req, res) => {
       id: shop.id,
       name: shop.name,
       photo: shop.photo,
-      items: items.map((i: { id: string; name: string; price: number; stock: number; photo: string | null }) => ({
+      items: items.map((i: { id: string; name: string; price: number; stock: number; photo: string | null; category: string | null }) => ({
         id: i.id,
         name: i.name,
         price: i.price,
         stock: i.stock,
         photo: i.photo,
+        category: i.category,
       })),
     });
   } catch (err: any) {
@@ -412,6 +413,9 @@ const mineItemSchema = z.object({
   stock: z.number().int().nonnegative(),
   photo: z.string().url().optional().nullable(),
   active: z.boolean().optional().default(true),
+  // Категория — свободная строка, фиксированного списка нет. Не передали
+  // (undefined) — при правке старое значение остаётся; пустая строка/null — сброс.
+  category: z.string().max(100).optional().nullable(),
 });
 
 /**
@@ -438,13 +442,19 @@ yardRouter.post('/yard/mine/items', async (req, res) => {
       active: parsed.data.active,
     };
 
+    const categoryProvided = parsed.data.category !== undefined;
+    const category = (parsed.data.category ?? '').trim() || null;
+
     if (parsed.data.id) {
       const existing = await prisma.yardItem.findUnique({ where: { id: parsed.data.id } });
       if (!existing || existing.shopId !== shop.id) return res.status(404).json({ error: 'Товар не найден на вашей полке' });
-      const updated = await prisma.yardItem.update({ where: { id: parsed.data.id }, data: itemData });
+      const updated = await prisma.yardItem.update({
+        where: { id: parsed.data.id },
+        data: { ...itemData, ...(categoryProvided ? { category } : {}) },
+      });
       return res.json(updated);
     }
-    const created = await prisma.yardItem.create({ data: { ...itemData, shopId: shop.id } });
+    const created = await prisma.yardItem.create({ data: { ...itemData, category, shopId: shop.id } });
     res.status(201).json(created);
   } catch (err: any) {
     logger.error({ err }, '[Yard] POST /yard/mine/items упал');
