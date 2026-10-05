@@ -1231,10 +1231,21 @@
         <!-- ---- Заявки ---- -->
         <div id="yardApplicationsTab" hidden>
           <div class="panel">
+            <div class="seg" id="yardAppsSubTabs" style="margin-bottom:10px">
+              <button class="is-active" data-yardapps="pending">Новые</button>
+              <button data-yardapps="approved">Одобренные</button>
+              <button data-yardapps="rejected">Отклонённые</button>
+            </div>
+            <div class="yard-toolbar" data-yard-toolbar="apps" style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:10px">
+              <input type="text" data-yard-search placeholder="Поиск по имени и названию магазина" style="max-width:300px" />
+              <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer"><input type="checkbox" data-yard-selectall /> отметить все</label>
+              <span data-yard-selected style="font-size:12.5px;color:var(--text-muted)">Выбрано: 0</span>
+              <button class="btn btn--ghost" data-yard-act="delete" disabled style="color:var(--loss)">Удалить</button>
+            </div>
             <div class="table-wrap">
               <table class="table" id="yardApplicationsTable">
                 <thead>
-                  <tr><th>Телефон</th><th>Имя</th><th>ИИН</th><th>Название магазина</th><th>Фото</th><th>Точка</th><th>Дата</th><th>Статус</th><th></th></tr>
+                  <tr><th style="width:28px"></th><th>Телефон</th><th>Имя</th><th>ИИН</th><th>Название магазина</th><th>Фото</th><th>Точка</th><th>Дата</th><th id="yardAppsLastTh"></th></tr>
                 </thead>
                 <tbody></tbody>
               </table>

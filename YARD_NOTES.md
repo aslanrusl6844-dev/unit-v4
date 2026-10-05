@@ -77,3 +77,12 @@ binaries.prisma.sh). Миграции проверены на реальном P
 Новый эндпоинт `POST /api/yard-admin/applications/delete` (`{ids}`, стирает записи на сервере). Удаляется только сама заявка:
 магазин, созданный при одобрении, и вакансия остаются. Данные те же — `GET /api/yard-admin/applications`.
 Вкладка «Вакансия», Kaspi, Ozon, WB, My Market и курьер не менялись.
+
+## Если на проде всё ещё старая версия
+Сборка на Vercel — `npm run build && npx prisma migrate deploy` (см. `vercel.json`). Если этот шаг падает, Vercel не
+публикует новую версию и отдаёт последнюю успешную. Проверка и лечение:
+1. Vercel → Deployments → последний деплой → Build Logs: ищите `P3009` или ошибку миграции.
+2. Если Prisma пометила `20260209000000_yard` упавшей — `npx prisma migrate resolve --rolled-back 20260209000000_yard`
+   (с `DATABASE_URL`/`DIRECT_URL` прода), затем `npx prisma migrate deploy` и новый деплой.
+3. Что проверить на проде после деплоя: `curl -s https://unit-v4.vercel.app/ | grep -c 'data-yardapps'` → должно быть 3.
+   Если вместе со «Заявками» нет и «Архива» справа, и полок по магазинам — деплой не обновился целиком.

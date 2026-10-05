@@ -5536,49 +5536,70 @@ async function runYardSendInvite() {
 }
 
 // ---- Заявки ----
+// Три раздела: «Новые» (pending), «Одобренные» (approved), «Отклонённые»
+// (rejected). Заявка живёт ровно в одном разделе — общего списка нет.
+// «Одобрить» переводит новую заявку в «Одобренные» (и создаёт магазин),
+// «Отклонить» — в «Отклонённые». Данные те же: GET /yard-admin/applications.
+let yardAppsSection = 'pending';
+const YARD_APPS_EMPTY = {
+  pending: 'Новых заявок нет',
+  approved: 'Одобренных заявок нет',
+  rejected: 'Отклонённых заявок нет',
+};
+
 async function loadYardApplications() {
   yardApplicationsCache = await api('/yard-admin/applications');
   renderYardApplicationsTable();
 }
 
+/** Поиск заявки: по имени, фамилии (и «имя фамилия») и по названию магазина. */
+function yardAppMatches(a, q) {
+  if (!q) return true;
+  return [a.firstName, a.lastName, `${a.firstName} ${a.lastName}`, a.shopName]
+    .some((v) => String(v || '').toLowerCase().includes(q));
+}
+
 function renderYardApplicationsTable() {
   const tbody = document.querySelector('#yardApplicationsTable tbody');
-  if (!yardApplicationsCache.length) {
-    tbody.innerHTML = `<tr><td colspan="9" style="color:var(--text-faint)">Заявок пока нет</td></tr>`;
+  const section = yardAppsSection;
+  const rows = yardRows('apps');
+  const sel = yardSelSet(`apps:${section}`);
+  document.getElementById('yardAppsLastTh').textContent = section === 'pending' ? '' : 'Решение';
+
+  if (!rows.length) {
+    const inSection = yardApplicationsCache.some((a) => a.status === section);
+    tbody.innerHTML = `<tr><td colspan="9" style="color:var(--text-faint)">${inSection ? 'Ничего не найдено' : YARD_APPS_EMPTY[section]}</td></tr>`;
+    yardSyncToolbar('apps');
     return;
   }
-  tbody.innerHTML = yardApplicationsCache.map((a) => {
-    const statusLabel = YARD_APPLICATION_STATUS_LABELS[a.status] ?? a.status;
-    const statusHtml = a.status === 'approved'
-      ? `<span style="color:var(--accent);font-weight:600">● ${statusLabel}</span>`
-      : a.status === 'rejected'
-        ? `<span style="color:var(--loss)">● ${statusLabel}</span>`
-        : `<span>${statusLabel}</span>`;
-    const decisionCell = a.status === 'pending'
-      ? `<button class="link-btn" data-yard-app-approve="${a.id}" style="color:var(--accent)">Одобрить</button>
-         <button class="link-btn" data-yard-app-reject="${a.id}" style="color:var(--loss)">Отказать</button>`
-      : '';
+  tbody.innerHTML = rows.map((a) => {
+    const lastCell = section === 'pending'
+      ? `<button class="link-btn" data-yard-app-approve="${mmEsc(a.id)}" style="color:var(--accent)">Одобрить</button>
+         <button class="link-btn" data-yard-app-reject="${mmEsc(a.id)}" style="color:var(--loss)">Отклонить</button>`
+      : (a.reviewedAt ? fmtOrderDateTime(a.reviewedAt) : '—');
     return `
       <tr>
+        <td><input type="checkbox" data-yard-row="${mmEsc(a.id)}" ${sel.has(a.id) ? 'checked' : ''} /></td>
         <td>${mmEsc(a.phone)}</td>
         <td class="name-cell">${mmEsc(a.firstName)} ${mmEsc(a.lastName)}</td>
         <td>${mmEsc(a.iin)}</td>
         <td class="name-cell">${mmEsc(a.shopName)}</td>
-        <td>${a.shopPhoto ? `<img src="${a.shopPhoto}" alt="" style="width:36px;height:36px;object-fit:cover;border-radius:6px" onerror="this.style.visibility='hidden'" />` : '—'}</td>
+        <td>${a.shopPhoto ? `<img src="${mmEsc(a.shopPhoto)}" alt="" style="width:36px;height:36px;object-fit:cover;border-radius:6px" onerror="this.style.visibility='hidden'" />` : '—'}</td>
         <td style="font-size:11px">${a.lat.toFixed(4)}, ${a.lng.toFixed(4)}</td>
         <td>${fmtOrderDateTime(a.createdAt)}</td>
-        <td>${statusHtml}</td>
-        <td style="white-space:nowrap">${decisionCell}</td>
+        <td style="white-space:nowrap">${lastCell}</td>
       </tr>
     `;
   }).join('');
 
+  yardWireRowChecks(tbody, 'apps');
   tbody.querySelectorAll('button[data-yard-app-approve]').forEach((btn) => {
     btn.addEventListener('click', () => runYardApplicationDecision(btn.dataset.yardAppApprove, 'approve'));
   });
   tbody.querySelectorAll('button[data-yard-app-reject]').forEach((btn) => {
     btn.addEventListener('click', () => runYardApplicationDecision(btn.dataset.yardAppReject, 'reject'));
   });
+  yardSyncToolbar('apps');
 }
 
 async function runYardApplicationDecision(id, action) {
@@ -5589,6 +5610,7 @@ async function runYardApplicationDecision(id, action) {
     alert(`Не удалось ${action === 'approve' ? 'одобрить' : 'отклонить'} заявку: ` + err.message);
   }
 }
+
 
 // =====================================================================
 // Магазины / Полки / Заказы / Архив — общий каркас: поиск по названию
@@ -5604,6 +5626,7 @@ let yardArchiveKind = 'shops'; // shops | items | orders
 const yardSelection = {};      // ключ контекста -> Set отмеченных id
 
 function yardCtxInfo(tc) {
+  if (tc === 'apps') return { mode: 'apps', kind: yardAppsSection, key: `apps:${yardAppsSection}` };
   if (tc === 'archive') return { mode: 'archive', kind: yardArchiveKind, key: `archive:${yardArchiveKind}` };
   const [mode, kind] = tc.split(':');
   return { mode, kind, key: tc };
@@ -5622,6 +5645,7 @@ function yardNameMatches(name, q) { return !q || String(name || '').toLowerCase(
 function yardRows(tc) {
   const { mode, kind } = yardCtxInfo(tc);
   const q = yardSearchQuery(tc);
+  if (mode === 'apps') return yardApplicationsCache.filter((a) => a.status === kind && yardAppMatches(a, q));
   if (kind === 'shops') {
     return (mode === 'live' ? yardShopsCache : yardShopsArchiveCache).filter((s) => yardNameMatches(s.name, q));
   }
@@ -5664,6 +5688,7 @@ function yardRender(tc) {
   if (tc === 'live:shops') renderYardShopsTable();
   else if (tc === 'live:items') renderYardShelves();
   else if (tc === 'live:orders') renderYardOrdersTable();
+  else if (tc === 'apps') renderYardApplicationsTable();
   else renderYardArchive();
 }
 
@@ -5679,6 +5704,15 @@ function wireYardToolbars() {
     tb.querySelectorAll('[data-yard-act]').forEach((btn) => {
       btn.addEventListener('click', () => runYardBulk(tc, btn.dataset.yardAct));
     });
+  });
+  document.getElementById('yardAppsSubTabs').addEventListener('click', (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    document.querySelectorAll('#yardAppsSubTabs button').forEach((b) => b.classList.remove('is-active'));
+    btn.classList.add('is-active');
+    yardAppsSection = btn.dataset.yardapps;
+    yardToolbarEl('apps').querySelector('[data-yard-search]').value = '';
+    renderYardApplicationsTable();
   });
   document.getElementById('yardArchiveSubTabs').addEventListener('click', (e) => {
     const btn = e.target.closest('button');
@@ -5701,6 +5735,14 @@ async function runYardBulk(tc, act) {
   const ids = [...yardSelSet(key)];
   if (!ids.length) return; // без галочки ничего не трогаем
   try {
+    if (mode === 'apps') {
+      if (act !== 'delete') return;
+      if (!window.confirm(`Удалить ${ids.length}?`)) return;
+      await api('/yard-admin/applications/delete', { method: 'POST', body: JSON.stringify({ ids }) });
+      yardSelSet(key).clear();
+      await loadYardApplications();
+      return;
+    }
     if (act === 'delete') {
       if (!window.confirm(`Удалить ${ids.length}?`)) return;
       const body = kind === 'items' ? { shopIds: ids, archived: mode === 'archive' } : { ids };
