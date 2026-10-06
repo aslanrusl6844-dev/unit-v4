@@ -20,6 +20,7 @@ import { shopAdminRouter } from './routes/shopAdmin.routes';
 import { shopMediaRouter } from './routes/shopMedia.routes';
 import { yardRouter } from './routes/yard.routes';
 import { yardAdminRouter } from './routes/yardAdmin.routes';
+import { wholesalersRouter } from './routes/wholesalers.routes';
 
 /**
  * Собранное Express-приложение без вызова .listen(). Используется двумя
@@ -122,6 +123,8 @@ app.use('/api/shop-admin', shopAdminRouter);
 // раздел полностью отдельный от shopAdminRouter/shopRouter выше.
 app.use('/api/shop', yardRouter);
 app.use('/api/yard-admin', yardAdminRouter);
+// Оптовики раздела «Товары» — полки по оптовикам, перенос товара, накладные (PDF/ZIP).
+app.use('/api/wholesalers', wholesalersRouter);
 
 // Дашборд (статика) — актуально только для локальной разработки, см. комментарий выше.
 app.use(express.static(path.join(__dirname, '..', 'public')));

@@ -754,3 +754,32 @@ model YardShopMessage {
 
   @@index([shopId, buyerPhone])
 }
+
+// =====================================================================
+// Оптовики (раздел «Товары», Kaspi / Ozon / WB): у каждого оптовика своя
+// полка товаров. Привязка «товар -> оптовик» хранится ОТДЕЛЬНОЙ таблицей и
+// не добавляет ни одного поля в Product — каталог, синхронизация и расчёт
+// комиссии/логистики/налога о полках ничего не знают. Товар без записи в
+// WholesalerProduct — на полке «Без оптовика» (так новые товары из
+// синхронизации попадают туда сами, пока их не перенесут).
+// =====================================================================
+model Wholesaler {
+  id        String   @id @default(cuid())
+  firstName String
+  lastName  String
+  createdAt DateTime @default(now())
+
+  products  WholesalerProduct[]
+}
+
+model WholesalerProduct {
+  // productId — первичный ключ: один товар может лежать только на одной
+  // полке, «переместить» = перезаписать эту строку (у старого пропадает сам).
+  // Внешнего ключа на Product нет намеренно (модель Product не меняется).
+  productId    String     @id
+  wholesalerId String
+  wholesaler   Wholesaler @relation(fields: [wholesalerId], references: [id])
+  assignedAt   DateTime   @default(now())
+
+  @@index([wholesalerId])
+}

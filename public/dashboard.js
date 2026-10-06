@@ -1132,8 +1132,10 @@ function parseSpreadsheetFile(file) {
 
 async function loadProductsPage() {
   wireProductsFormOnce();
+  wireWholesalersOnce();
   await loadKaspiCategoriesIntoSelect(document.getElementById('kaspiTopCategorySelect'));
-  await loadProductsAdminTable();
+  // loadWholesalers сам показывает ошибку в интерфейсе и не бросает — общая таблица от неё не зависит.
+  await Promise.all([loadProductsAdminTable(), loadWholesalers()]);
 }
 
 async function loadProductsAdminTable() {
@@ -1437,6 +1439,7 @@ function renderProductsTableHead(marketplaces) {
 }
 
 function renderProductsAdminTable() {
+  renderWholesalerShelves(); // полки оптовиков — те же кэши и тот же фильтр, что и у таблицы ниже
   const filter = document.querySelector('#productStatusTabs button.is-active')?.dataset.filter || 'active';
   let products = allProductsCache;
   if (filter === 'active') products = products.filter((p) => p.active !== false);
@@ -6156,4 +6159,406 @@ function renderYardArchive() {
   }
   yardWireRowChecks(list, 'archive');
   yardSyncToolbar('archive');
+}
+
+// =====================================================================
+// Оптовики раздела «Товары» (Kaspi / Ozon / WB): у каждого оптовика своя
+// полка товаров. Данные те же, что у общей таблицы (allProductsCache и
+// productsForecastCache — комиссия, логистика, налог, прибыль считаются
+// там же и здесь НЕ пересчитываются), фильтр площадки сверху действует и
+// на полки. Привязка «товар -> оптовик» — отдельная таблица на сервере
+// (/api/wholesalers): товар без привязки лежит на «Без оптовика» — так
+// новый товар из синхронизации попадает туда сам. Прежняя таблица
+// каталога осталась во вкладке «Общая таблица».
+// =====================================================================
+const wholesalersState = { loaded: false, error: null, wholesalers: [], assignments: {} };
+const wsOpenShelves = new Set();     // ключи раскрытых полок: 'none' или id оптовика
+const wsSelectedShelves = new Set(); // id оптовиков, отмеченных для ZIP накладных
+const wsRowLimits = new Map();       // `${полка}|${площадка}` -> сколько строк показано
+const WS_ROWS_STEP = 100;
+let wsWired = false;
+
+const wsEsc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+function wsPlural(n, one, few, many) {
+  const m10 = n % 10;
+  const m100 = n % 100;
+  if (m10 === 1 && m100 !== 11) return one;
+  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+  return many;
+}
+
+function wsSetStatus(text, kind) {
+  const el = document.getElementById('wholesalerStatus');
+  if (!el) return;
+  el.style.color = kind === 'error' ? 'var(--loss)' : kind === 'warn' ? 'var(--warn)' : 'var(--text-muted)';
+  el.textContent = text || '';
+}
+
+async function loadWholesalers() {
+  try {
+    const data = await api('/wholesalers');
+    wholesalersState.wholesalers = data.wholesalers;
+    wholesalersState.assignments = data.assignments;
+    wholesalersState.error = null;
+    wholesalersState.loaded = true;
+  } catch (err) {
+    // Не молчим: ошибка видна прямо на месте полок, общая таблица при этом работает.
+    wholesalersState.error = err.message || String(err);
+    wholesalersState.loaded = false;
+  }
+  renderWholesalerShelves();
+}
+
+/** Товары под фильтрами страницы: вкладка «Активные/Сняты/Все» и площадка сверху — те же, что у общей таблицы. */
+function wsVisibleProducts() {
+  const filter = document.querySelector('#productStatusTabs button.is-active')?.dataset.filter || 'active';
+  let products = allProductsCache;
+  if (filter === 'active') products = products.filter((p) => p.active !== false);
+  if (filter === 'inactive') products = products.filter((p) => p.active === false);
+  if (state.marketplace) products = products.filter((p) => isLinkedToMarketplace(p, state.marketplace));
+  return products;
+}
+
+/** Полки: «Без оптовика» первой (туда падают новые товары), дальше оптовики в порядке добавления. */
+function wsGroups() {
+  const groups = [{ key: 'none', name: 'Без оптовика', wholesaler: null, products: [] }];
+  const byId = new Map();
+  for (const w of wholesalersState.wholesalers) {
+    const g = { key: w.id, name: `${w.firstName} ${w.lastName}`, wholesaler: w, products: [] };
+    groups.push(g);
+    byId.set(w.id, g);
+  }
+  for (const p of wsVisibleProducts()) {
+    const g = byId.get(wholesalersState.assignments[p.id]) || groups[0];
+    g.products.push(p);
+  }
+  return groups;
+}
+
+function wsFirstImage(p) {
+  for (const raw of [p.marketImages, p.images]) {
+    try {
+      const arr = raw ? JSON.parse(raw) : [];
+      if (Array.isArray(arr) && arr[0]) return arr[0];
+    } catch { /* битый JSON — пробуем следующий источник */ }
+  }
+  return null;
+}
+
+function wsPhotoHtml(p) {
+  const url = wsFirstImage(p);
+  const initial = wsEsc((p.name || '?')[0].toUpperCase());
+  const box = 'width:40px;height:40px;border-radius:6px;background:var(--bg);align-items:center;justify-content:center;color:var(--text-faint);font-weight:600';
+  return url
+    ? `<div style="position:relative;width:40px;height:40px"><img src="${wsEsc(url)}" alt="" style="width:40px;height:40px;object-fit:cover;border-radius:6px;display:block" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" /><div style="display:none;${box};position:absolute;top:0;left:0">${initial}</div></div>`
+    : `<div style="display:flex;${box}">${initial}</div>`;
+}
+
+/** Числа — ровно те же поля прогноза и тот же вид, что у общей таблицы (см. renderForecastCells). */
+function wsNumberCells(p, mp) {
+  const fc = productsForecastCache.get(`${p.id}:${mp}`);
+  const badge = (fc?.source === 'historical-average' || fc?.source === 'kaspi-tariff-default')
+    ? ' <span style="color:var(--text-faint);font-size:10px">≈</span>' : '';
+  const price = fc?.referencePrice != null ? fmtMoney(fc.referencePrice) : '—';
+  const commission = fc?.estCommission != null
+    ? `${fmtMoney(fc.estCommission)}${fc.estCommissionRate != null ? ` <span style="color:var(--text-faint);font-size:10px">(${fc.estCommissionRate}%)</span>` : ''}${badge}`
+    : '—';
+  const logistics = fc?.estLogistics != null ? fmtMoney(fc.estLogistics) + (mp === 'WB' ? '' : badge) : '—';
+  const tax = fc?.estTax != null ? fmtMoney(fc.estTax) : '—';
+  const profitCls = fc?.estPayout != null ? (fc.estPayout >= 0 ? 'pos' : 'neg') : '';
+  const profit = fc?.estPayout != null ? fmtMoney(fc.estPayout) : '—';
+  return `<td class="num">${price}</td><td class="num">${commission}</td><td class="num">${logistics}</td><td class="num">${tax}</td><td class="num ${profitCls}">${profit}</td>`;
+}
+
+function wsArticle(p, mp) {
+  return mp === 'KASPI' ? p.kaspiSku : mp === 'OZON' ? p.ozonOfferId : mp === 'WB' ? p.wbArticle : null;
+}
+
+/** Таблица одной площадки внутри раскрытой полки (mp = null — товары без привязки к площадкам). */
+function wsTableHtml(group, mp, products) {
+  if (mp) {
+    products = [...products].sort((a, b) => {
+      const pa = productsForecastCache.get(`${a.id}:${mp}`)?.estPayout;
+      const pb = productsForecastCache.get(`${b.id}:${mp}`)?.estPayout;
+      if (pa == null && pb == null) return 0;
+      if (pa == null) return 1;
+      if (pb == null) return -1;
+      return pa - pb; // как в общей таблице: убыточные наверх
+    });
+  }
+  const limitKey = `${group.key}|${mp || 'none'}`;
+  const limit = wsRowLimits.get(limitKey) || WS_ROWS_STEP;
+  const shown = products.slice(0, limit);
+  const rest = products.length - shown.length;
+  const head = `${mp ? `<span class="dot dot--${mp.toLowerCase()}"></span> ${mpLabel(mp)}` : 'Без площадки'} · ${products.length}`;
+  const rows = shown.map((p) => `
+    <tr data-ws-row="${wsEsc(p.id)}">
+      <td><button class="link-btn" data-ws-move="${wsEsc(p.id)}" data-ws-shelf="${wsEsc(group.key)}">Переместить</button></td>
+      <td>${wsPhotoHtml(p)}</td>
+      <td class="name-cell">${wsEsc(p.name)}</td>
+      <td class="name-cell">${wsEsc(p.sku)}</td>
+      <td class="name-cell" style="font-size:11px">${wsEsc(mp ? (wsArticle(p, mp) ?? '—') : '—')}</td>
+      <td class="num">${fmtMoney(p.costPrice)}</td>
+      ${mp ? wsNumberCells(p, mp) : '<td class="num">—</td>'.repeat(5)}
+      <td>${mp ? `<button class="link-btn" data-ws-pdf="${wsEsc(p.id)}" data-ws-mp="${mp}" title="Накладная PDF на последний заказ этого товара на ${mpLabel(mp)}">Накладная</button>` : ''}</td>
+    </tr>`).join('');
+  return `
+    <div style="margin:10px 0 4px;font-weight:600;font-size:12.5px">${head}</div>
+    <div class="table-wrap">
+      <table class="table">
+        <thead><tr><th></th><th>Фото</th><th>Название</th><th>SKU</th><th>Артикул</th><th class="num">Себестоимость</th><th class="num">Цена</th><th class="num">Комиссия</th><th class="num">Логистика</th><th class="num">Налог</th><th class="num">Прибыль</th><th></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    ${rest > 0 ? `<div style="margin-top:6px"><button class="btn btn--ghost" data-ws-more="${wsEsc(limitKey)}">Показать ещё (осталось ${rest})</button></div>` : ''}`;
+}
+
+/** Содержимое раскрытой полки. Одна площадка выбрана — одна таблица; «Всё вместе» — таблица на каждую площадку отдельно, не смешивая. */
+function wsShelfBody(group) {
+  if (state.marketplace) {
+    return wsTableHtml(group, state.marketplace, group.products);
+  }
+  const parts = ['KASPI', 'OZON', 'WB']
+    .map((mp) => ({ mp, items: group.products.filter((p) => isLinkedToMarketplace(p, mp)) }))
+    .filter((x) => x.items.length)
+    .map((x) => wsTableHtml(group, x.mp, x.items));
+  const unlinked = group.products.filter((p) => !isLinkedToMarketplace(p, 'KASPI') && !isLinkedToMarketplace(p, 'OZON') && !isLinkedToMarketplace(p, 'WB'));
+  if (unlinked.length) parts.push(wsTableHtml(group, null, unlinked));
+  return parts.join('');
+}
+
+function renderWholesalerShelves() {
+  const list = document.getElementById('wholesalerShelvesList');
+  if (!list) return;
+  try {
+    if (wholesalersState.error) {
+      list.innerHTML = `<p style="color:var(--loss);margin:0">Не удалось загрузить оптовиков: ${wsEsc(wholesalersState.error)}. Общая таблица работает — вкладка «Общая таблица».
+        <button class="btn btn--ghost" id="wholesalerRetryBtn" style="margin-left:8px">Повторить</button></p>`;
+      document.getElementById('wholesalerRetryBtn').addEventListener('click', loadWholesalers);
+      wsUpdateToolbar();
+      return;
+    }
+    if (!wholesalersState.loaded) {
+      list.innerHTML = '<p class="panel__hint" style="margin:0">Загружаю полки…</p>';
+      wsUpdateToolbar();
+      return;
+    }
+    const groups = wsGroups();
+    const known = new Set(wholesalersState.wholesalers.map((w) => w.id));
+    for (const id of [...wsSelectedShelves]) if (!known.has(id)) wsSelectedShelves.delete(id);
+
+    list.innerHTML = groups.map((g) => {
+      const n = g.products.length;
+      const open = n > 0 && wsOpenShelves.has(g.key);
+      return `
+        <div class="ws-shelf" data-ws-shelf="${wsEsc(g.key)}" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+            ${g.wholesaler ? `<input type="checkbox" data-ws-select="${wsEsc(g.key)}" title="Отметить полку для ZIP накладных" ${wsSelectedShelves.has(g.key) ? 'checked' : ''} />` : '<span style="display:inline-block;width:13px"></span>'}
+            <div style="flex:1;min-width:160px">
+              <div style="font-weight:600">${wsEsc(g.name)}</div>
+              <div style="font-size:11.5px;color:var(--text-faint);margin-top:2px">${n ? `${n} ${wsPlural(n, 'товар', 'товара', 'товаров')}` : 'Полка пуста'}</div>
+            </div>
+            ${g.wholesaler ? `<button class="btn btn--ghost" data-ws-zip="${wsEsc(g.key)}">📦 Накладные ZIP</button>` : ''}
+            ${n ? `<button class="btn btn--ghost" data-ws-toggle="${wsEsc(g.key)}">${open ? 'Свернуть' : 'Показать товары'}</button>` : ''}
+          </div>
+          ${open ? wsShelfBody(g) : ''}
+        </div>`;
+    }).join('');
+    wsUpdateToolbar();
+  } catch (err) {
+    // Любая ошибка отрисовки полок видна на месте и не ломает общую таблицу.
+    list.innerHTML = `<p style="color:var(--loss);margin:0">Ошибка отрисовки полок: ${wsEsc(err.message || err)}</p>`;
+  }
+}
+
+function wsUpdateToolbar() {
+  const count = document.getElementById('wholesalerSelectedCount');
+  const btn = document.getElementById('wholesalerZipSelectedBtn');
+  if (count) count.textContent = `Выбрано полок: ${wsSelectedShelves.size}`;
+  if (btn) btn.disabled = wsSelectedShelves.size === 0;
+}
+
+/** Параметры накладных: площадка и период — те же, что выбраны сверху на странице. */
+function wsWaybillQuery(extra) {
+  const params = new URLSearchParams({ ...extra, marketplace: state.marketplace || '' });
+  if (state.from) params.set('from', state.from);
+  if (state.to) params.set('to', state.to);
+  return params.toString();
+}
+
+async function wsDownload(url, fallbackName) {
+  const res = await fetch(`/api${url}`);
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.error || `Ошибка ${res.status}`);
+  }
+  const disposition = res.headers.get('Content-Disposition') || '';
+  const m = disposition.match(/filename\*=UTF-8''([^;]+)/);
+  const filename = m ? decodeURIComponent(m[1]) : fallbackName;
+  const blob = await res.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = objectUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(objectUrl);
+  return {
+    filename,
+    total: Number(res.headers.get('X-Waybills-Total') || 0),
+    included: Number(res.headers.get('X-Waybills-Included') || 0),
+    failed: Number(res.headers.get('X-Waybills-Failed') || 0),
+  };
+}
+
+async function wsDownloadZip(url, btn) {
+  if (btn) btn.disabled = true;
+  wsSetStatus('Собираю накладные…');
+  try {
+    const r = await wsDownload(url, 'waybills.zip');
+    if (r.failed > 0) wsSetStatus(`Скачано ${r.included} из ${r.total}: ${r.failed} накладных не собрались (см. журнал сервера).`, 'warn');
+    else if (r.included < r.total) wsSetStatus(`Скачано ${r.included} из ${r.total} — в один ZIP входит не больше ${r.included}. Сузьте период сверху или скачайте по одной полке.`, 'warn');
+    else wsSetStatus(`Скачано накладных: ${r.included}.`);
+  } catch (err) {
+    wsSetStatus(`Накладные: ${err.message}`, 'error');
+    alert('Не удалось скачать накладные: ' + err.message);
+  } finally {
+    if (btn) btn.disabled = false;
+    wsUpdateToolbar();
+  }
+}
+
+async function wsDownloadPdf(productId, mp, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    await wsDownload(`/wholesalers/products/${encodeURIComponent(productId)}/waybill.pdf?marketplace=${mp}`, 'waybill.pdf');
+    wsSetStatus('Накладная скачана.');
+  } catch (err) {
+    wsSetStatus(`Накладная: ${err.message}`, 'error');
+    alert('Не удалось скачать накладную: ' + err.message);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+/** «Переместить»: вместо кнопки появляется выбор другого оптовика (или «Без оптовика»). */
+function wsOpenMove(btn) {
+  const shelf = btn.dataset.wsShelf;
+  const options = [];
+  if (shelf !== 'none') options.push({ value: '__none__', label: 'Без оптовика' });
+  for (const w of wholesalersState.wholesalers) {
+    if (w.id !== shelf) options.push({ value: w.id, label: `${w.firstName} ${w.lastName}` });
+  }
+  if (!options.length) {
+    alert('Сначала добавьте оптовика (кнопка «Добавить оптовика» под полками).');
+    return;
+  }
+  const select = document.createElement('select');
+  select.dataset.wsMoveSelect = btn.dataset.wsMove;
+  select.innerHTML = '<option value="" selected disabled>Куда?</option>' + options.map((o) => `<option value="${wsEsc(o.value)}">${wsEsc(o.label)}</option>`).join('');
+  select.addEventListener('blur', () => { if (select.isConnected) renderWholesalerShelves(); });
+  btn.replaceWith(select);
+  select.focus();
+}
+
+async function wsMoveProduct(productId, value) {
+  try {
+    await api('/wholesalers/move', { method: 'POST', body: JSON.stringify({ productId, wholesalerId: value === '__none__' ? null : value }) });
+    await loadWholesalers(); // перечитываем только привязки; товары и прогноз не трогаем — цифры не меняются
+    wsSetStatus('Товар перемещён.');
+  } catch (err) {
+    wsSetStatus(`Перенос: ${err.message}`, 'error');
+    alert('Не удалось переместить товар: ' + err.message);
+    renderWholesalerShelves();
+  }
+}
+
+function wireWholesalersOnce() {
+  if (wsWired) return;
+  wsWired = true;
+
+  document.getElementById('productsViewTabs').addEventListener('click', (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    document.querySelectorAll('#productsViewTabs button').forEach((b) => b.classList.remove('is-active'));
+    btn.classList.add('is-active');
+    const shelves = btn.dataset.productsview === 'shelves';
+    document.getElementById('productsShelvesView').hidden = !shelves;
+    document.getElementById('productsFlatView').hidden = shelves;
+  });
+
+  const form = document.getElementById('wholesalerAddForm');
+  document.getElementById('wholesalerAddBtn').addEventListener('click', () => {
+    form.hidden = false;
+    document.getElementById('wholesalerFirstName').focus();
+  });
+  document.getElementById('wholesalerAddCancel').addEventListener('click', () => {
+    form.hidden = true;
+    form.reset();
+    document.getElementById('wholesalerAddStatus').textContent = '';
+  });
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const statusEl = document.getElementById('wholesalerAddStatus');
+    const firstName = document.getElementById('wholesalerFirstName').value.trim();
+    const lastName = document.getElementById('wholesalerLastName').value.trim();
+    if (!firstName || !lastName) {
+      statusEl.style.color = 'var(--loss)';
+      statusEl.textContent = 'Впишите имя и фамилию.';
+      return;
+    }
+    const saveBtn = document.getElementById('wholesalerAddSave');
+    saveBtn.disabled = true;
+    statusEl.style.color = '';
+    statusEl.textContent = 'Сохраняю…';
+    try {
+      await api('/wholesalers', { method: 'POST', body: JSON.stringify({ firstName, lastName }) });
+      form.reset();
+      form.hidden = true;
+      statusEl.textContent = '';
+      await loadWholesalers();
+      wsSetStatus(`Оптовик «${firstName} ${lastName}» добавлен.`);
+    } catch (err) {
+      statusEl.style.color = 'var(--loss)';
+      statusEl.textContent = 'Ошибка: ' + err.message;
+    } finally {
+      saveBtn.disabled = false;
+    }
+  });
+
+  document.getElementById('wholesalerZipSelectedBtn').addEventListener('click', (e) => {
+    if (!wsSelectedShelves.size) return;
+    wsDownloadZip(`/wholesalers/waybills.zip?${wsWaybillQuery({ ids: [...wsSelectedShelves].join(',') })}`, e.currentTarget);
+  });
+
+  const list = document.getElementById('wholesalerShelvesList');
+  list.addEventListener('click', (e) => {
+    const t = e.target.closest('button');
+    if (!t) return;
+    if (t.dataset.wsToggle) {
+      const key = t.dataset.wsToggle;
+      if (wsOpenShelves.has(key)) wsOpenShelves.delete(key); else wsOpenShelves.add(key);
+      renderWholesalerShelves();
+    } else if (t.dataset.wsMore) {
+      wsRowLimits.set(t.dataset.wsMore, (wsRowLimits.get(t.dataset.wsMore) || WS_ROWS_STEP) + WS_ROWS_STEP);
+      renderWholesalerShelves();
+    } else if (t.dataset.wsMove) {
+      wsOpenMove(t);
+    } else if (t.dataset.wsZip) {
+      wsDownloadZip(`/wholesalers/${encodeURIComponent(t.dataset.wsZip)}/waybills.zip?${wsWaybillQuery({})}`, t);
+    } else if (t.dataset.wsPdf) {
+      wsDownloadPdf(t.dataset.wsPdf, t.dataset.wsMp, t);
+    }
+  });
+  list.addEventListener('change', (e) => {
+    const el = e.target;
+    if (el.dataset && el.dataset.wsSelect) {
+      if (el.checked) wsSelectedShelves.add(el.dataset.wsSelect); else wsSelectedShelves.delete(el.dataset.wsSelect);
+      wsUpdateToolbar();
+    } else if (el.dataset && el.dataset.wsMoveSelect && el.value) {
+      wsMoveProduct(el.dataset.wsMoveSelect, el.value);
+    }
+  });
 }

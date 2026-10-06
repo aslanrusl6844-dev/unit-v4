@@ -264,6 +264,41 @@
             <button data-filter="inactive">Сняты с продажи</button>
             <button data-filter="all">Все</button>
           </div>
+          <div class="seg" id="productsViewTabs" style="margin:10px 0">
+            <button class="is-active" data-productsview="shelves">Полки оптовиков</button>
+            <button data-productsview="table">Общая таблица</button>
+          </div>
+
+          <!-- ---- Полки оптовиков: у каждого оптовика своя полка, «Без оптовика» — для новых товаров ---- -->
+          <div id="productsShelvesView">
+            <div class="inline-form" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px">
+              <span id="wholesalerSelectedCount" style="font-size:12.5px;color:var(--text-muted)">Выбрано полок: 0</span>
+              <button class="btn btn--ghost" id="wholesalerZipSelectedBtn" disabled>📦 Накладные ZIP по выбранным</button>
+            </div>
+            <div id="wholesalerStatus" style="margin:0 0 8px;font-size:12.5px"></div>
+            <div id="wholesalerShelvesList"></div>
+            <div id="wholesalerAddWrap" style="margin-top:12px">
+              <button class="btn" id="wholesalerAddBtn">Добавить оптовика</button>
+              <form class="inline-form" id="wholesalerAddForm" hidden style="margin-top:8px">
+                <input id="wholesalerFirstName" placeholder="Имя" maxlength="60" required />
+                <input id="wholesalerLastName" placeholder="Фамилия" maxlength="60" required />
+                <button class="btn btn--accent" type="submit" id="wholesalerAddSave">Сохранить</button>
+                <button class="btn btn--ghost" type="button" id="wholesalerAddCancel">Отмена</button>
+                <span id="wholesalerAddStatus" style="font-size:12.5px"></span>
+              </form>
+            </div>
+            <p class="panel__hint">
+              Каждый товар лежит ровно на одной полке. Новые товары из синхронизации попадают на «Без оптовика»,
+              пока вы не перенесёте их кнопкой «Переместить» слева у строки. Числа в таблице полки — те же, что в
+              «Общей таблице» (прогноз по выбранной сверху площадке); при переносе они не меняются. Площадки
+              Kaspi / Ozon / WB внутри полки не смешиваются: фильтр сверху остаётся. Накладная — по одной (PDF) и
+              пачкой (ZIP) на заказы за период сверху, город берётся из заказа; отменённые и возвращённые заказы
+              пропускаются.
+            </p>
+          </div>
+
+          <!-- ---- Общая таблица: прежний каталог без изменений (массовые действия, категории, правка цен) ---- -->
+          <div id="productsFlatView" hidden>
           <div class="inline-form" style="justify-content:space-between;align-items:center">
             <div style="display:flex;gap:14px;align-items:center">
               <span id="productsSelectedCount" style="font-size:12.5px;color:var(--text-muted)">Выбрано: 0</span>
@@ -291,6 +326,7 @@
             чисел. «—» в столбце «Цена» означает, что товар не привязан к этой площадке или для него ещё
             нет известной текущей цены.
           </p>
+          </div>
         </div>
       </section>
 
