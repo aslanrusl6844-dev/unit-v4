@@ -6174,6 +6174,7 @@ function renderYardArchive() {
 const wholesalersState = { loaded: false, error: null, wholesalers: [], assignments: {} };
 const wsOpenShelves = new Set();     // ключи раскрытых полок: 'none' или id оптовика
 const wsSelectedShelves = new Set(); // id оптовиков, отмеченных для ZIP накладных
+const wsSelectedProducts = new Set(); // id товаров, отмеченных для пачки
 const wsRowLimits = new Map();       // `${полка}|${площадка}` -> сколько строк показано
 const WS_ROWS_STEP = 100;
 let wsWired = false;
@@ -6396,7 +6397,8 @@ function wsTableHtml(group, mp, products) {
   const head = `${mp ? `<span class="dot dot--${mp.toLowerCase()}"></span> ${mpLabel(mp)}` : 'Без площадки'} · ${products.length}`;
   const rows = shown.map((p) => `
     <tr data-ws-row="${wsEsc(p.id)}">
-      <td><button class="link-btn" data-ws-move="${wsEsc(p.id)}" data-ws-shelf="${wsEsc(group.key)}">Переместить</button></td>
+      <td><input type="checkbox" data-ws-product="${wsEsc(p.id)}" title="Отметить товар" ${wsSelectedProducts.has(p.id) ? 'checked' : ''} /></td>
+      <td><button class="link-btn" data-ws-move="${wsEsc(p.id)}" data-ws-shelf="${wsEsc(group.key)}" data-ws-mp="${wsEsc(mp || '')}">Переместить</button></td>
       <td>${wsPhotoHtml(p)}</td>
       <td class="name-cell">${wsEsc(p.name)}</td>
       <td class="name-cell">${wsEsc(p.sku)}</td>
@@ -6514,7 +6516,7 @@ function renderWholesalerShelves() {
     const known = new Set(wholesalersState.wholesalers.map((w) => w.id));
     for (const id of [...wsSelectedShelves]) if (!known.has(id)) wsSelectedShelves.delete(id);
 
-    list.innerHTML = groups.map((g) => {
+    list.innerHTML = wsBulkBar() + groups.map((g) => {
       const n = g.products.length;
       const open = n > 0 && wsOpenShelves.has(g.key);
       return `
@@ -6620,10 +6622,13 @@ async function wsDownloadPdf(productId, mp, btn) {
 /** «Переместить»: вместо кнопки появляется выбор другого оптовика (или «Без оптовика»). */
 function wsOpenMove(btn) {
   const shelf = btn.dataset.wsShelf;
+  const mp = state.marketplace || btn.dataset.wsMp || '';
   const options = [];
-  if (shelf !== 'none') options.push({ value: '__none__', label: 'Без оптовика' });
+  if (shelf !== 'none' && !String(shelf).startsWith('none:')) options.push({ value: '__none__', label: 'Без оптовика' });
   for (const w of wholesalersState.wholesalers) {
-    if (w.id !== shelf) options.push({ value: w.id, label: wsDisplayName(w) });
+    if (w.id === shelf) continue;
+    if (mp && wsMpOf(w) !== mp) continue;
+    options.push({ value: w.id, label: wsDisplayName(w) });
   }
   if (!options.length) {
     alert('Сначала добавьте оптовика (кнопка «Добавить оптовика» под полками).');
@@ -6637,16 +6642,61 @@ function wsOpenMove(btn) {
   select.focus();
 }
 
-async function wsMoveProduct(productId, value) {
+async function wsMoveProduct(productId, value, marketplace) {
+  const mp = marketplace || state.marketplace;
+  if (!mp) {
+    wsSetStatus('Сначала выбери Kaspi, Ozon или WB', 'warn');
+    return;
+  }
   try {
-    await api('/wholesalers/move', { method: 'POST', body: JSON.stringify({ productId, wholesalerId: value === '__none__' ? null : value }) });
-    await loadWholesalers(); // перечитываем только привязки; товары и прогноз не трогаем — цифры не меняются
+    await api('/wholesalers/move', { method: 'POST', body: JSON.stringify({ productId, marketplace: mp, wholesalerId: value === '__none__' ? null : value }) });
+    wsSelectedProducts.delete(productId);
+    await loadWholesalers();
     wsSetStatus('Товар перемещён.');
   } catch (err) {
     wsSetStatus(`Перенос: ${err.message}`, 'error');
     alert('Не удалось переместить товар: ' + err.message);
     renderWholesalerShelves();
   }
+}
+
+async function wsMoveMany(value) {
+  const mp = state.marketplace;
+  if (!mp) { wsSetStatus('Сначала выбери Kaspi, Ozon или WB', 'warn'); return; }
+  const ids = [...wsSelectedProducts];
+  if (!ids.length) { wsSetStatus('Отметь товары галочкой', 'warn'); return; }
+  const btn = document.getElementById('wsBulkMoveBtn');
+  if (btn) btn.disabled = true;
+  let ok = 0;
+  let fail = 0;
+  for (const productId of ids) {
+    try {
+      await api('/wholesalers/move', { method: 'POST', body: JSON.stringify({ productId, marketplace: mp, wholesalerId: value === '__none__' ? null : value }) });
+      wsSelectedProducts.delete(productId);
+      ok++;
+    } catch {
+      fail++;
+    }
+  }
+  await loadWholesalers();
+  wsSetStatus(fail ? `Перенесено: ${ok}. Не удалось: ${fail}` : `Перенесено товаров: ${ok}`, fail ? 'error' : undefined);
+}
+
+function wsBulkBar() {
+  if (!state.marketplace) return '';
+  const opts = wholesalersState.wholesalers
+    .filter((w) => wsMpOf(w) === state.marketplace)
+    .map((w) => `<option value="${wsEsc(w.id)}">${wsEsc(wsDisplayName(w))}</option>`)
+    .join('');
+  return `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 10px">
+    <span id="wsBulkCount" style="font-size:12.5px;color:var(--text-muted)">Выбрано товаров: ${wsSelectedProducts.size}</span>
+    <select id="wsBulkTarget">
+      <option value="" selected disabled>Кому переместить</option>
+      <option value="__none__">Без оптовика</option>
+      ${opts}
+    </select>
+    <button class="btn" type="button" id="wsBulkMoveBtn" data-ws-bulk-move="1" ${wsSelectedProducts.size ? '' : 'disabled'}>Переместить выбранные</button>
+  </div>`;
 }
 
 function wireWholesalersOnce() {
@@ -6739,6 +6789,10 @@ function wireWholesalersOnce() {
     } else if (t.dataset.wsMore) {
       wsRowLimits.set(t.dataset.wsMore, (wsRowLimits.get(t.dataset.wsMore) || WS_ROWS_STEP) + WS_ROWS_STEP);
       renderWholesalerShelves();
+    } else if (t.dataset.wsBulkMove) {
+      const sel = document.getElementById('wsBulkTarget');
+      if (!sel || !sel.value) { wsSetStatus('Выбери, кому переместить', 'warn'); return; }
+      wsMoveMany(sel.value);
     } else if (t.dataset.wsMove) {
       wsOpenMove(t);
     } else if (t.dataset.wsZip) {
@@ -6762,8 +6816,14 @@ function wireWholesalersOnce() {
     if (el.dataset && el.dataset.wsSelect) {
       if (el.checked) wsSelectedShelves.add(el.dataset.wsSelect); else wsSelectedShelves.delete(el.dataset.wsSelect);
       wsUpdateToolbar();
+    } else if (el.dataset && el.dataset.wsProduct) {
+      if (el.checked) wsSelectedProducts.add(el.dataset.wsProduct); else wsSelectedProducts.delete(el.dataset.wsProduct);
+      const n = document.getElementById('wsBulkCount');
+      if (n) n.textContent = 'Выбрано товаров: ' + wsSelectedProducts.size;
+      const b = document.getElementById('wsBulkMoveBtn');
+      if (b) b.disabled = wsSelectedProducts.size === 0;
     } else if (el.dataset && el.dataset.wsMoveSelect && el.value) {
-      wsMoveProduct(el.dataset.wsMoveSelect, el.value);
+      wsMoveProduct(el.dataset.wsMoveSelect, el.value, el.dataset.wsMp || state.marketplace);
     }
   });
 }
