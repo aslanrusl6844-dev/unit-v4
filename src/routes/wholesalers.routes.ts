@@ -54,9 +54,13 @@ wholesalersRouter.get('/', async (_req, res) => {
   }
 });
 
+/** Телефон необязателен: пустая строка = «нет телефона» (хранится как null). */
+const phoneField = z.string().trim().max(40).optional().nullable().transform((v) => (v ? v : null));
+
 const createSchema = z.object({
   firstName: z.string().trim().min(1).max(60),
   lastName: z.string().trim().min(1).max(60),
+  phone: phoneField,
 });
 
 /** Добавить оптовика — имя и фамилию вписывает сам пользователь. Количество не ограничено. */
@@ -69,6 +73,37 @@ wholesalersRouter.post('/', async (req, res) => {
   } catch (err: any) {
     logger.error({ err }, '[Wholesalers] POST / упал');
     res.status(500).json({ error: 'Не удалось добавить оптовика', details: String(err?.message ?? err) });
+  }
+});
+
+const updateSchema = z.object({
+  firstName: z.string().trim().min(1).max(60).optional(),
+  lastName: z.string().trim().min(1).max(60).optional(),
+  phone: phoneField,
+});
+
+/**
+ * Переименовать оптовика / сменить телефон. Меняются только переданные поля;
+ * пустые имя или фамилия не принимаются. Товары полки привязаны к id оптовика,
+ * поэтому ни привязки, ни продажи, ни накладные при этом не сбрасываются.
+ */
+wholesalersRouter.patch('/:id', async (req, res) => {
+  const parsed = updateSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Имя и фамилия не могут быть пустыми', details: parsed.error.flatten() });
+  const data: { firstName?: string; lastName?: string; phone?: string | null } = {};
+  if (parsed.data.firstName !== undefined) data.firstName = parsed.data.firstName;
+  if (parsed.data.lastName !== undefined) data.lastName = parsed.data.lastName;
+  // phone меняем, только если поле реально прислано (в т.ч. пустое — это очистка телефона).
+  if (req.body && Object.prototype.hasOwnProperty.call(req.body, 'phone')) data.phone = parsed.data.phone ?? null;
+  if (!Object.keys(data).length) return res.status(400).json({ error: 'Нечего менять' });
+  try {
+    const exists = await prisma.wholesaler.findUnique({ where: { id: req.params.id }, select: { id: true } });
+    if (!exists) return res.status(404).json({ error: 'Оптовик не найден' });
+    const wholesaler = await prisma.wholesaler.update({ where: { id: req.params.id }, data });
+    res.json(wholesaler);
+  } catch (err: any) {
+    logger.error({ err }, '[Wholesalers] PATCH /:id упал');
+    res.status(500).json({ error: 'Не удалось сохранить оптовика', details: String(err?.message ?? err) });
   }
 });
 

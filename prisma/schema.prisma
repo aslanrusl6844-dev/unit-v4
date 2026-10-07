@@ -767,6 +767,7 @@ model Wholesaler {
   id        String   @id @default(cuid())
   firstName String
   lastName  String
+  phone     String?
   createdAt DateTime @default(now())
 
   products  WholesalerProduct[]
