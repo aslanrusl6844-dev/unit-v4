@@ -6667,19 +6667,18 @@ async function wsMoveMany(value) {
   if (!ids.length) { wsSetStatus('Отметь товары галочкой', 'warn'); return; }
   const btn = document.getElementById('wsBulkMoveBtn');
   if (btn) btn.disabled = true;
-  let ok = 0;
-  let fail = 0;
-  for (const productId of ids) {
-    try {
-      await api('/wholesalers/move', { method: 'POST', body: JSON.stringify({ productId, marketplace: mp, wholesalerId: value === '__none__' ? null : value }) });
-      wsSelectedProducts.delete(productId);
-      ok++;
-    } catch {
-      fail++;
-    }
+  wsSetStatus('Переношу ' + ids.length + '…');
+  try {
+    const res = await api('/wholesalers/move-many', { method: 'POST', body: JSON.stringify({ productIds: ids, marketplace: mp, wholesalerId: value === '__none__' ? null : value }) });
+    wsSelectedProducts.clear();
+    if (value && value !== '__none__') wsOpenShelves.add(value);
+    await loadWholesalers();
+    wsSetStatus('Перенесено товаров: ' + (res.moved || 0) + (res.skipped ? '. Пропущено: ' + res.skipped : ''));
+  } catch (err) {
+    wsSetStatus('Перенос: ' + err.message, 'error');
+    alert('Не удалось переместить: ' + err.message);
+    if (btn) btn.disabled = false;
   }
-  await loadWholesalers();
-  wsSetStatus(fail ? `Перенесено: ${ok}. Не удалось: ${fail}` : `Перенесено товаров: ${ok}`, fail ? 'error' : undefined);
 }
 
 function wsBulkBar() {
