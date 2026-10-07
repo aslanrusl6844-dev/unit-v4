@@ -6296,17 +6296,44 @@ async function wsSaveEdit() {
   }
 }
 
+function wsMpOf(w) {
+  return w.marketplace || 'KASPI';
+}
+
+function wsProductMp(p) {
+  if (p.kaspiSku) return 'KASPI';
+  if (p.ozonOfferId) return 'OZON';
+  if (p.wbArticle) return 'WB';
+  return 'KASPI';
+}
+
 function wsGroups() {
-  const groups = [{ key: 'none', name: 'Без оптовика', wholesaler: null, products: [] }];
+  const selected = state.marketplace || '';
+  const wholesalers = wholesalersState.wholesalers.filter((w) => !selected || wsMpOf(w) === selected);
+  const groups = [];
+  if (selected) {
+    groups.push({ key: 'none', name: 'Без оптовика', wholesaler: null, products: [] });
+  } else {
+    for (const mp of ['KASPI', 'OZON', 'WB']) {
+      groups.push({ key: 'none:' + mp, name: 'Без оптовика · ' + mpLabel(mp), wholesaler: null, products: [] });
+    }
+  }
   const byId = new Map();
-  for (const w of wholesalersState.wholesalers) {
-    const g = { key: w.id, name: wsDisplayName(w), wholesaler: w, products: [] };
+  for (const w of wholesalers) {
+    const suffix = selected ? '' : ' · ' + mpLabel(wsMpOf(w));
+    const g = { key: w.id, name: wsDisplayName(w) + suffix, wholesaler: w, products: [] };
     groups.push(g);
     byId.set(w.id, g);
   }
   for (const p of wsVisibleProducts()) {
-    const g = byId.get(wholesalersState.assignments[p.id]) || groups[0];
-    g.products.push(p);
+    const mp = selected || wsProductMp(p);
+    const assigned = wholesalersState.assignments[p.id] || wholesalersState.assignments[mp + ':' + p.id];
+    const g = byId.get(assigned);
+    if (g) g.products.push(p);
+    else {
+      const none = selected ? groups[0] : (groups.find((x) => x.key === 'none:' + mp) || groups[0]);
+      none.products.push(p);
+    }
   }
   return groups;
 }
@@ -6638,6 +6665,10 @@ function wireWholesalersOnce() {
 
   const form = document.getElementById('wholesalerAddForm');
   document.getElementById('wholesalerAddBtn').addEventListener('click', () => {
+    if (!state.marketplace) {
+      wsSetStatus('Сначала выбери Kaspi, Ozon или WB', 'warn');
+      return;
+    }
     form.hidden = false;
     document.getElementById('wholesalerFirstName').focus();
   });
@@ -6662,7 +6693,12 @@ function wireWholesalersOnce() {
     statusEl.style.color = '';
     statusEl.textContent = 'Сохраняю…';
     try {
-      await api('/wholesalers', { method: 'POST', body: JSON.stringify({ firstName, lastName, phone }) });
+      if (!state.marketplace) {
+        statusEl.style.color = 'var(--loss)';
+        statusEl.textContent = 'Сначала выбери Kaspi, Ozon или WB';
+        return;
+      }
+      await api('/wholesalers', { method: 'POST', body: JSON.stringify({ firstName, lastName, phone, marketplace: state.marketplace }) });
       form.reset();
       form.hidden = true;
       statusEl.textContent = '';
