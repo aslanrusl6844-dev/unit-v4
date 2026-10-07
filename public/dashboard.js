@@ -6175,6 +6175,7 @@ const wholesalersState = { loaded: false, error: null, wholesalers: [], assignme
 const wsOpenShelves = new Set();     // ключи раскрытых полок: 'none' или id оптовика
 const wsSelectedShelves = new Set(); // id оптовиков, отмеченных для ZIP накладных
 const wsSelectedProducts = new Set(); // id товаров, отмеченных для пачки
+let wsBulkTargetValue = '';
 const wsRowLimits = new Map();       // `${полка}|${площадка}` -> сколько строк показано
 const WS_ROWS_STEP = 100;
 let wsWired = false;
@@ -6681,17 +6682,26 @@ async function wsMoveMany(value) {
   }
 }
 
+function wsShelfProductIds() {
+  const ids = [];
+  for (const g of wsGroups()) for (const p of g.products) if (p.id) ids.push(p.id);
+  return ids;
+}
+
 function wsBulkBar() {
   if (!state.marketplace) return '';
+  const ids = wsShelfProductIds();
+  const allOn = ids.length > 0 && ids.every((id) => wsSelectedProducts.has(id));
   const opts = wholesalersState.wholesalers
     .filter((w) => wsMpOf(w) === state.marketplace)
-    .map((w) => `<option value="${wsEsc(w.id)}">${wsEsc(wsDisplayName(w))}</option>`)
+    .map((w) => `<option value="${wsEsc(w.id)}" ${w.id === wsBulkTargetValue ? 'selected' : ''}>${wsEsc(wsDisplayName(w))}</option>`)
     .join('');
   return `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 10px">
+    <label style="font-size:12.5px;display:flex;align-items:center;gap:6px"><input type="checkbox" data-ws-all="1" ${allOn ? 'checked' : ''} /> Все ${ids.length}</label>
     <span id="wsBulkCount" style="font-size:12.5px;color:var(--text-muted)">Выбрано товаров: ${wsSelectedProducts.size}</span>
-    <select id="wsBulkTarget">
-      <option value="" selected disabled>Кому переместить</option>
-      <option value="__none__">Без оптовика</option>
+    <select id="wsBulkTarget" data-ws-bulk-target="1">
+      <option value="" ${wsBulkTargetValue ? '' : 'selected'} disabled>Кому переместить</option>
+      <option value="__none__" ${wsBulkTargetValue === '__none__' ? 'selected' : ''}>Без оптовика</option>
       ${opts}
     </select>
     <button class="btn" type="button" id="wsBulkMoveBtn" data-ws-bulk-move="1" ${wsSelectedProducts.size ? '' : 'disabled'}>Переместить выбранные</button>
@@ -6815,12 +6825,24 @@ function wireWholesalersOnce() {
     if (el.dataset && el.dataset.wsSelect) {
       if (el.checked) wsSelectedShelves.add(el.dataset.wsSelect); else wsSelectedShelves.delete(el.dataset.wsSelect);
       wsUpdateToolbar();
+    } else if (el.dataset && el.dataset.wsAll) {
+      const ids = wsShelfProductIds();
+      if (el.checked) ids.forEach((id) => wsSelectedProducts.add(id));
+      else ids.forEach((id) => wsSelectedProducts.delete(id));
+      renderWholesalerShelves();
+    } else if (el.dataset && el.dataset.wsBulkTarget) {
+      wsBulkTargetValue = el.value;
     } else if (el.dataset && el.dataset.wsProduct) {
       if (el.checked) wsSelectedProducts.add(el.dataset.wsProduct); else wsSelectedProducts.delete(el.dataset.wsProduct);
       const n = document.getElementById('wsBulkCount');
       if (n) n.textContent = 'Выбрано товаров: ' + wsSelectedProducts.size;
       const b = document.getElementById('wsBulkMoveBtn');
       if (b) b.disabled = wsSelectedProducts.size === 0;
+      const all = document.querySelector('[data-ws-all]');
+      if (all) {
+        const ids = wsShelfProductIds();
+        all.checked = ids.length > 0 && ids.every((id) => wsSelectedProducts.has(id));
+      }
     } else if (el.dataset && el.dataset.wsMoveSelect && el.value) {
       wsMoveProduct(el.dataset.wsMoveSelect, el.value, el.dataset.wsMp || state.marketplace);
     }
