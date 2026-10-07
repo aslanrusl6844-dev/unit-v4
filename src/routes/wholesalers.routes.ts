@@ -37,16 +37,18 @@ const WHOLESALER_ZIP_LIMIT = 150;
 // Полки: список оптовиков, привязки, добавление, перенос товара
 // ---------------------------------------------------------------------
 
-/** Оптовики (в порядке добавления) и привязки товаров: { [productId]: wholesalerId }. */
+/** Оптовики (в порядке добавления, у каждого своя площадка) и привязки товаров: { 'KASPI:<productId>': wholesalerId }. */
 wholesalersRouter.get('/', async (_req, res) => {
   try {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     const [wholesalers, links] = await Promise.all([
       prisma.wholesaler.findMany({ orderBy: { createdAt: 'asc' } }),
-      prisma.wholesalerProduct.findMany({ select: { productId: true, wholesalerId: true } }),
+      prisma.wholesalerProduct.findMany({ select: { productId: true, marketplace: true, wholesalerId: true } }),
     ]);
+    // Оптовики у каждой площадки свои, и один товар может стоять на полке и у Kaspi, и у Ozon:
+    // привязка хранится на пару «товар + площадка», ключ в ответе — «KASPI:<id товара>».
     const assignments: Record<string, string> = {};
-    for (const l of links as Array<{ productId: string; wholesalerId: string }>) assignments[l.productId] = l.wholesalerId;
+    for (const l of links as Array<{ productId: string; marketplace: string; wholesalerId: string }>) assignments[`${l.marketplace}:${l.productId}`] = l.wholesalerId;
     res.json({ wholesalers, assignments });
   } catch (err: any) {
     logger.error({ err }, '[Wholesalers] GET / упал');
@@ -57,16 +59,23 @@ wholesalersRouter.get('/', async (_req, res) => {
 /** Телефон необязателен: пустая строка = «нет телефона» (хранится как null). */
 const phoneField = z.string().trim().max(40).optional().nullable().transform((v) => (v ? v : null));
 
+const marketplaceEnum = z.enum(['KASPI', 'OZON', 'WB']);
+
 const createSchema = z.object({
   firstName: z.string().trim().min(1).max(60),
   lastName: z.string().trim().min(1).max(60),
   phone: phoneField,
+  /** Оптовик принадлежит ровно одной площадке — той, что выбрана сверху. «Всё вместе» добавлять нельзя. */
+  marketplace: marketplaceEnum,
 });
 
 /** Добавить оптовика — имя и фамилию вписывает сам пользователь. Количество не ограничено. */
 wholesalersRouter.post('/', async (req, res) => {
   const parsed = createSchema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: 'Укажите имя и фамилию оптовика', details: parsed.error.flatten() });
+  if (!parsed.success) {
+    const noMp = !req.body || !marketplaceEnum.safeParse(req.body.marketplace).success;
+    return res.status(400).json({ error: noMp ? 'Сначала выбери Kaspi, Ozon или WB' : 'Укажите имя и фамилию оптовика', details: parsed.error.flatten() });
+  }
   try {
     const wholesaler = await prisma.wholesaler.create({ data: parsed.data });
     res.status(201).json(wholesaler);
@@ -130,13 +139,15 @@ wholesalersRouter.delete('/:id', async (req, res) => {
 
 const moveSchema = z.object({
   productId: z.string().min(1),
+  /** Площадка полки: привязка хранится на пару «товар + площадка». */
+  marketplace: marketplaceEnum,
   /** id оптовика; null — вернуть товар на полку «Без оптовика». */
   wholesalerId: z.string().min(1).nullable(),
 });
 
 /**
- * Переместить товар на полку другого оптовика. Один товар — одна полка:
- * запись перезаписывается, у прежнего оптовика товар пропадает сам. Сам товар
+ * Переместить товар на полку другого оптовика ТОЙ ЖЕ площадки. Один товар — одна
+ * полка на площадку: запись перезаписывается, у прежнего оптовика товар пропадает сам. Сам товар
  * (себестоимость, цены, комиссия, логистика, налог) не меняется — меняется
  * только эта привязка.
  */
@@ -144,22 +155,29 @@ wholesalersRouter.post('/move', async (req, res) => {
   const parsed = moveSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
   try {
-    const { productId, wholesalerId } = parsed.data;
-    const product = await prisma.product.findUnique({ where: { id: productId }, select: { id: true } });
+    const { productId, wholesalerId, marketplace } = parsed.data;
+    const product: any = await prisma.product.findUnique({
+      where: { id: productId },
+      select: { id: true, kaspiSku: true, ozonOfferId: true, wbArticle: true },
+    });
     if (!product) return res.status(404).json({ error: 'Товар не найден' });
+    // Товар чужой площадки на полку не кладём.
+    const own = marketplace === 'KASPI' ? product.kaspiSku : marketplace === 'OZON' ? product.ozonOfferId : product.wbArticle;
+    if (!own) return res.status(400).json({ error: 'Этот товар не относится к выбранной площадке' });
 
     if (wholesalerId === null) {
-      await prisma.wholesalerProduct.deleteMany({ where: { productId } });
-      return res.json({ productId, wholesalerId: null });
+      await prisma.wholesalerProduct.deleteMany({ where: { productId, marketplace } });
+      return res.json({ productId, marketplace, wholesalerId: null });
     }
-    const wholesaler = await prisma.wholesaler.findUnique({ where: { id: wholesalerId }, select: { id: true } });
+    const wholesaler: any = await prisma.wholesaler.findUnique({ where: { id: wholesalerId }, select: { id: true, marketplace: true } });
     if (!wholesaler) return res.status(404).json({ error: 'Оптовик не найден' });
+    if (wholesaler.marketplace !== marketplace) return res.status(400).json({ error: 'Оптовик другой площадки' });
     await prisma.wholesalerProduct.upsert({
-      where: { productId },
+      where: { productId_marketplace: { productId, marketplace } },
       update: { wholesalerId, assignedAt: new Date() },
-      create: { productId, wholesalerId },
+      create: { productId, marketplace, wholesalerId },
     });
-    res.json({ productId, wholesalerId });
+    res.json({ productId, marketplace, wholesalerId });
   } catch (err: any) {
     logger.error({ err }, '[Wholesalers] POST /move упал');
     res.status(500).json({ error: 'Не удалось переместить товар', details: String(err?.message ?? err) });
@@ -211,11 +229,13 @@ const ORDER_INCLUDE = {
 
 /** Накладные одной полки: заказы за период по товарам этого оптовика, по каждой выбранной площадке отдельно. */
 async function collectJobs(
-  wholesaler: { id: string; firstName: string; lastName: string },
-  marketplaces: WholesalerWaybillMarketplace[],
+  wholesaler: { id: string; firstName: string; lastName: string; marketplace?: string },
+  allMarketplaces: WholesalerWaybillMarketplace[],
   from: Date,
   to: Date,
 ): Promise<WaybillJob[]> {
+  // Оптовик принадлежит одной площадке — накладные только по ней (чужие площадки не смешиваем).
+  const marketplaces = allMarketplaces.filter((m) => !wholesaler.marketplace || m === wholesaler.marketplace);
   const links: Array<{ productId: string }> = await prisma.wholesalerProduct.findMany({
     where: { wholesalerId: wholesaler.id },
     select: { productId: true },
@@ -301,7 +321,7 @@ wholesalersRouter.get('/waybills.zip', async (req, res) => {
     if (!marketplaces) return res.status(400).json({ error: 'Площадка должна быть KASPI, OZON или WB' });
     const ids = String(req.query.ids ?? '').split(',').map((s) => s.trim()).filter(Boolean);
     if (!ids.length) return res.status(400).json({ error: 'Не выбрано ни одной полки' });
-    const wholesalers: Array<{ id: string; firstName: string; lastName: string }> = await prisma.wholesaler.findMany({
+    const wholesalers: Array<{ id: string; firstName: string; lastName: string; marketplace?: string }> = await prisma.wholesaler.findMany({
       where: { id: { in: ids } },
       orderBy: { createdAt: 'asc' },
     });
@@ -360,7 +380,7 @@ wholesalersRouter.get('/products/:productId/waybill.pdf', async (req, res) => {
     const marketplace = marketplaces[0];
     const productId = req.params.productId;
 
-    const link: any = await prisma.wholesalerProduct.findUnique({ where: { productId }, include: { wholesaler: true } });
+    const link: any = await prisma.wholesalerProduct.findUnique({ where: { productId_marketplace: { productId, marketplace } }, include: { wholesaler: true } });
     let sameShelfIds = new Set<string>([productId]);
     let wholesalerName = 'Без оптовика';
     if (link) {

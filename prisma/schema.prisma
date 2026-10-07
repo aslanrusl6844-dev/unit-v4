@@ -768,6 +768,8 @@ model Wholesaler {
   firstName String
   lastName  String
   phone     String?
+  // Площадка оптовика: KASPI | OZON | WB. Списки оптовиков у площадок раздельные.
+  marketplace String @default("KASPI")
   createdAt DateTime @default(now())
 
   products  WholesalerProduct[]
@@ -777,10 +779,13 @@ model WholesalerProduct {
   // productId — первичный ключ: один товар может лежать только на одной
   // полке, «переместить» = перезаписать эту строку (у старого пропадает сам).
   // Внешнего ключа на Product нет намеренно (модель Product не меняется).
-  productId    String     @id
+  productId    String
+  // Площадка полки: один товар может стоять на полке Kaspi и отдельно на полке Ozon.
+  marketplace  String
   wholesalerId String
   wholesaler   Wholesaler @relation(fields: [wholesalerId], references: [id])
   assignedAt   DateTime   @default(now())
 
+  @@id([productId, marketplace])
   @@index([wholesalerId])
 }
