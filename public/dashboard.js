@@ -6221,11 +6221,86 @@ function wsVisibleProducts() {
 }
 
 /** Полки: «Без оптовика» первой (туда падают новые товары), дальше оптовики в порядке добавления. */
+/** «АСЛАН ТУШКЕЕВ (+7 705 356 1035)»; без телефона — только имя и фамилия, без скобок. */
+function wsDisplayName(w) {
+  const phone = String(w.phone || '').trim();
+  return `${w.firstName} ${w.lastName}${phone ? ` (${phone})` : ''}`;
+}
+
+/** «Удалить выбранных»: стираются только оптовик и привязка; товары падают на «Без оптовика». */
+async function wsDeleteSelected() {
+  const ids = [...wsSelectedShelves];
+  if (!ids.length) return;
+  const text = ids.length === 1
+    ? 'Удалить оптовика? Товары уйдут на полку Без оптовика'
+    : `Удалить оптовиков: ${ids.length}? Товары уйдут на полку Без оптовика`;
+  if (!confirm(text)) return;
+  const btn = document.getElementById('wholesalerDeleteSelectedBtn');
+  if (btn) btn.disabled = true;
+  const failed = [];
+  for (const id of ids) {
+    try {
+      await api(`/wholesalers/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      wsSelectedShelves.delete(id);
+      wsOpenShelves.delete(id);
+      if (wsEditing && wsEditing.key === id) wsEditing = null;
+    } catch (err) {
+      // 404 — оптовика уже нет (удалён в другой вкладке): для нас это то же самое.
+      if (/\b404\b/.test(String(err.message))) { wsSelectedShelves.delete(id); wsOpenShelves.delete(id); } else failed.push(err.message || String(err));
+    }
+  }
+  await loadWholesalers();
+  const done = ids.length - failed.length;
+  wsSetStatus(failed.length
+    ? `Удалено: ${done}. Не удалось: ${failed.length} — ${failed[0]}`
+    : `Удалено оптовиков: ${done}. Их товары теперь на полке «Без оптовика».`, failed.length ? 'error' : undefined);
+}
+
+// Редактирование оптовика на месте («Переименовать»). Черновик хранится вне DOM,
+// чтобы перерисовка полок (например, когда догрузились продажи) не стирала набранное.
+let wsEditing = null; // { key, firstName, lastName, phone, error, saving }
+
+function wsEditFormHtml(g) {
+  const d = wsEditing;
+  return `<form data-ws-edit-form="${wsEsc(g.key)}" class="inline-form" style="flex:1;min-width:220px;gap:6px;flex-wrap:wrap">
+      <input data-ws-edit-field="firstName" placeholder="Имя" maxlength="60" value="${wsEsc(d.firstName)}" required />
+      <input data-ws-edit-field="lastName" placeholder="Фамилия" maxlength="60" value="${wsEsc(d.lastName)}" required />
+      <input data-ws-edit-field="phone" placeholder="Телефон (можно пустым)" maxlength="40" inputmode="tel" value="${wsEsc(d.phone)}" />
+      <button class="btn btn--accent" type="submit" ${d.saving ? 'disabled' : ''}>Сохранить</button>
+      <button class="btn btn--ghost" type="button" data-ws-edit-cancel="1">Отмена</button>
+      <span data-ws-edit-error style="font-size:12px;color:var(--loss)">${wsEsc(d.error || '')}</span>
+    </form>`;
+}
+
+async function wsSaveEdit() {
+  const d = wsEditing;
+  if (!d || d.saving) return;
+  const firstName = d.firstName.trim();
+  const lastName = d.lastName.trim();
+  if (!firstName || !lastName) {
+    d.error = 'Имя и фамилия не могут быть пустыми.';
+    renderWholesalerShelves();
+    return;
+  }
+  d.saving = true; d.error = '';
+  renderWholesalerShelves();
+  try {
+    await api(`/wholesalers/${encodeURIComponent(d.key)}`, { method: 'PATCH', body: JSON.stringify({ firstName, lastName, phone: d.phone.trim() }) });
+    wsEditing = null;
+    await loadWholesalers();
+    wsSetStatus(`Оптовик «${firstName} ${lastName}» сохранён.`);
+  } catch (err) {
+    d.saving = false;
+    d.error = 'Ошибка: ' + (err.message || err);
+    renderWholesalerShelves();
+  }
+}
+
 function wsGroups() {
   const groups = [{ key: 'none', name: 'Без оптовика', wholesaler: null, products: [] }];
   const byId = new Map();
   for (const w of wholesalersState.wholesalers) {
-    const g = { key: w.id, name: `${w.firstName} ${w.lastName}`, wholesaler: w, products: [] };
+    const g = { key: w.id, name: wsDisplayName(w), wholesaler: w, products: [] };
     groups.push(g);
     byId.set(w.id, g);
   }
@@ -6408,9 +6483,12 @@ function renderWholesalerShelves() {
           <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
             ${g.wholesaler ? `<input type="checkbox" data-ws-select="${wsEsc(g.key)}" title="Отметить полку для ZIP накладных" ${wsSelectedShelves.has(g.key) ? 'checked' : ''} />` : '<span style="display:inline-block;width:13px"></span>'}
             <div style="flex:1;min-width:160px">
-              <div style="font-weight:600">${wsEsc(g.name)}</div>
+              ${wsEditing && wsEditing.key === g.key
+                ? wsEditFormHtml(g)
+                : `<div style="font-weight:600">${wsEsc(g.name)}</div>`}
               <div style="font-size:11.5px;color:var(--text-faint);margin-top:2px">${n ? `${n} ${wsPlural(n, 'товар', 'товара', 'товаров')}` : 'Полка пуста'}</div>
             </div>
+            ${g.wholesaler && !(wsEditing && wsEditing.key === g.key) ? `<button class="btn btn--ghost" data-ws-rename="${wsEsc(g.key)}">Переименовать</button>` : ''}
             ${g.wholesaler ? `<button class="btn btn--ghost" data-ws-zip="${wsEsc(g.key)}">📦 Накладные ZIP</button>` : ''}
             ${n ? `<button class="btn btn--ghost" data-ws-toggle="${wsEsc(g.key)}">${open ? 'Свернуть' : 'Показать товары'}</button>` : ''}
           </div>
@@ -6430,6 +6508,8 @@ function renderWholesalerShelves() {
 function wsUpdateToolbar() {
   const count = document.getElementById('wholesalerSelectedCount');
   const btn = document.getElementById('wholesalerZipSelectedBtn');
+  const delBtn = document.getElementById('wholesalerDeleteSelectedBtn');
+  if (delBtn) delBtn.disabled = wsSelectedShelves.size === 0;
   if (count) count.textContent = `Выбрано полок: ${wsSelectedShelves.size}`;
   if (btn) btn.disabled = wsSelectedShelves.size === 0;
 }
@@ -6504,7 +6584,7 @@ function wsOpenMove(btn) {
   const options = [];
   if (shelf !== 'none') options.push({ value: '__none__', label: 'Без оптовика' });
   for (const w of wholesalersState.wholesalers) {
-    if (w.id !== shelf) options.push({ value: w.id, label: `${w.firstName} ${w.lastName}` });
+    if (w.id !== shelf) options.push({ value: w.id, label: wsDisplayName(w) });
   }
   if (!options.length) {
     alert('Сначала добавьте оптовика (кнопка «Добавить оптовика» под полками).');
@@ -6559,6 +6639,7 @@ function wireWholesalersOnce() {
     const statusEl = document.getElementById('wholesalerAddStatus');
     const firstName = document.getElementById('wholesalerFirstName').value.trim();
     const lastName = document.getElementById('wholesalerLastName').value.trim();
+    const phone = document.getElementById('wholesalerPhone').value.trim();
     if (!firstName || !lastName) {
       statusEl.style.color = 'var(--loss)';
       statusEl.textContent = 'Впишите имя и фамилию.';
@@ -6569,7 +6650,7 @@ function wireWholesalersOnce() {
     statusEl.style.color = '';
     statusEl.textContent = 'Сохраняю…';
     try {
-      await api('/wholesalers', { method: 'POST', body: JSON.stringify({ firstName, lastName }) });
+      await api('/wholesalers', { method: 'POST', body: JSON.stringify({ firstName, lastName, phone }) });
       form.reset();
       form.hidden = true;
       statusEl.textContent = '';
@@ -6583,6 +6664,8 @@ function wireWholesalersOnce() {
     }
   });
 
+  document.getElementById('wholesalerDeleteSelectedBtn').addEventListener('click', () => wsDeleteSelected());
+
   document.getElementById('wholesalerZipSelectedBtn').addEventListener('click', (e) => {
     if (!wsSelectedShelves.size) return;
     wsDownloadZip(`/wholesalers/waybills.zip?${wsWaybillQuery({ ids: [...wsSelectedShelves].join(',') })}`, e.currentTarget);
@@ -6592,7 +6675,16 @@ function wireWholesalersOnce() {
   list.addEventListener('click', (e) => {
     const t = e.target.closest('button');
     if (!t) return;
-    if (t.dataset.wsToggle) {
+    if (t.dataset.wsRename) {
+      const w = wholesalersState.wholesalers.find((x) => x.id === t.dataset.wsRename);
+      if (w) {
+        wsEditing = { key: w.id, firstName: w.firstName, lastName: w.lastName, phone: w.phone || '', error: '', saving: false };
+        renderWholesalerShelves();
+      }
+    } else if (t.dataset.wsEditCancel) {
+      wsEditing = null;
+      renderWholesalerShelves();
+    } else if (t.dataset.wsToggle) {
       const key = t.dataset.wsToggle;
       if (wsOpenShelves.has(key)) wsOpenShelves.delete(key); else wsOpenShelves.add(key);
       renderWholesalerShelves();
@@ -6605,6 +6697,16 @@ function wireWholesalersOnce() {
       wsDownloadZip(`/wholesalers/${encodeURIComponent(t.dataset.wsZip)}/waybills.zip?${wsWaybillQuery({})}`, t);
     } else if (t.dataset.wsPdf) {
       wsDownloadPdf(t.dataset.wsPdf, t.dataset.wsMp, t);
+    }
+  });
+  list.addEventListener('input', (e) => {
+    const f = e.target && e.target.dataset && e.target.dataset.wsEditField;
+    if (f && wsEditing) wsEditing[f] = e.target.value;
+  });
+  list.addEventListener('submit', (e) => {
+    if (e.target && e.target.dataset && e.target.dataset.wsEditForm) {
+      e.preventDefault();
+      wsSaveEdit();
     }
   });
   list.addEventListener('change', (e) => {

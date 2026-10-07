@@ -274,6 +274,7 @@
             <div class="inline-form" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px">
               <span id="wholesalerSelectedCount" style="font-size:12.5px;color:var(--text-muted)">Выбрано полок: 0</span>
               <button class="btn btn--ghost" id="wholesalerZipSelectedBtn" disabled>📦 Накладные ZIP по выбранным</button>
+              <button class="btn btn--ghost" id="wholesalerDeleteSelectedBtn" disabled style="color:var(--loss)">Удалить выбранных</button>
             </div>
             <div id="wholesalerStatus" style="margin:0 0 8px;font-size:12.5px"></div>
             <div id="wholesalerShelvesList"></div>
@@ -282,6 +283,7 @@
               <form class="inline-form" id="wholesalerAddForm" hidden style="margin-top:8px">
                 <input id="wholesalerFirstName" placeholder="Имя" maxlength="60" required />
                 <input id="wholesalerLastName" placeholder="Фамилия" maxlength="60" required />
+                <input id="wholesalerPhone" placeholder="Телефон (можно пустым)" maxlength="40" inputmode="tel" />
                 <button class="btn btn--accent" type="submit" id="wholesalerAddSave">Сохранить</button>
                 <button class="btn btn--ghost" type="button" id="wholesalerAddCancel">Отмена</button>
                 <span id="wholesalerAddStatus" style="font-size:12.5px"></span>
