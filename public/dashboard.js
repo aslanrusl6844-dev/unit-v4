@@ -6328,6 +6328,58 @@ function wsShelfBody(group) {
   return parts.join('');
 }
 
+// ---- Продажи оптовика (маленький экран справа у открытой полки) ----
+// Берём ГОТОВЫЕ цифры из того же /analytics/by-product, что кормит «Финансы» и
+// «Популярные товары»: за период и площадку, выбранные сверху. Комиссия,
+// логистика, налог заново НЕ считаются. В сумму идут только товары этой полки
+// (сопоставление по SKU), чужие продажи не входят.
+const wsStats = { key: null, rows: null, loading: false, error: null };
+
+function wsStatsKey() {
+  return `${state.from || ''}|${state.to || ''}|${state.marketplace || ''}`;
+}
+
+function wsEnsureStats() {
+  const key = wsStatsKey();
+  if (wsStats.key === key && (wsStats.loading || wsStats.rows || wsStats.error)) return;
+  Object.assign(wsStats, { key, rows: null, loading: true, error: null });
+  api(`/analytics/by-product?${qs({ from: state.from, to: state.to, marketplace: state.marketplace })}`)
+    .then((rows) => { if (wsStats.key === key) { wsStats.rows = Array.isArray(rows) ? rows : []; wsStats.loading = false; } })
+    .catch((err) => { if (wsStats.key === key) { wsStats.error = err.message || String(err); wsStats.loading = false; } })
+    .finally(() => { if (wsStats.key === key) renderWholesalerShelves(); });
+}
+
+/** Суммы по товарам одной полки. cogs = себестоимость проданного = сколько причитается оптовику. */
+function wsShelfTotals(group) {
+  const bySku = new Map((wsStats.rows || []).map((r) => [r.sku, r]));
+  const t = { quantity: 0, revenue: 0, cogs: 0, profit: 0 };
+  for (const p of group.products) {
+    const r = bySku.get(p.sku);
+    if (!r) continue;
+    t.quantity += r.quantity || 0;
+    t.revenue += r.revenue || 0;
+    t.cogs += r.cogs || 0;
+    t.profit += r.netProfit || 0;
+  }
+  return t;
+}
+
+function wsStatsHtml(group) {
+  wsEnsureStats();
+  const box = (inner) => `<aside data-ws-stats="${wsEsc(group.key)}" style="flex:0 0 210px;border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-top:10px;font-size:12.5px">
+      <div style="font-weight:600;margin-bottom:6px">Продажи: ${wsEsc(group.name)}</div>${inner}</aside>`;
+  if (wsStats.error) return box(`<div style="color:var(--loss)">Не удалось загрузить: ${wsEsc(wsStats.error)}</div>`);
+  if (!wsStats.rows) return box('<div style="color:var(--text-faint)">Загружаю…</div>');
+  const t = wsShelfTotals(group);
+  const row = (label, val, cls) => `<div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0"><span style="color:var(--text-muted)">${label}</span><b class="${cls || ''}">${val}</b></div>`;
+  return box(`
+      ${row('Продано, шт', fmt.format(t.quantity))}
+      ${row('Выручка', fmtMoney(t.revenue))}
+      ${row('Себестоимость к выплате', fmtMoney(t.cogs))}
+      ${row('Прибыль', fmtMoney(t.profit), t.profit >= 0 ? 'pos' : 'neg')}
+      <div style="margin-top:6px;font-size:10.5px;color:var(--text-faint)">За период и площадку сверху. Только товары этой полки; цифры те же, что в «Финансы».</div>`);
+}
+
 function renderWholesalerShelves() {
   const list = document.getElementById('wholesalerShelvesList');
   if (!list) return;
@@ -6362,7 +6414,10 @@ function renderWholesalerShelves() {
             ${g.wholesaler ? `<button class="btn btn--ghost" data-ws-zip="${wsEsc(g.key)}">📦 Накладные ZIP</button>` : ''}
             ${n ? `<button class="btn btn--ghost" data-ws-toggle="${wsEsc(g.key)}">${open ? 'Свернуть' : 'Показать товары'}</button>` : ''}
           </div>
-          ${open ? wsShelfBody(g) : ''}
+          ${open ? `<div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap">
+            <div style="flex:1 1 520px;min-width:0">${wsShelfBody(g)}</div>
+            ${wsStatsHtml(g)}
+          </div>` : ''}
         </div>`;
     }).join('');
     wsUpdateToolbar();

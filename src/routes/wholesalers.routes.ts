@@ -5,7 +5,20 @@ import { prisma } from '../db/prisma';
 import { logger } from '../utils/logger';
 import { almatyStartOfDay, almatyEndOfDay, almatyNow, ALMATY_TZ } from '../utils/timezone';
 import dayjs from 'dayjs';
-import { generateWholesalerWaybillPdf, WholesalerWaybillMarketplace, WholesalerWaybillItem } from '../services/wholesalerWaybill.service';
+// Только типы — при сборке стираются и в рантайме ничего не подключают.
+import type { WholesalerWaybillMarketplace, WholesalerWaybillItem, WholesalerWaybillInput } from '../services/wholesalerWaybill.service';
+
+/**
+ * Генератор накладных (pdfkit, bwip-js, шрифты) подключается ЛЕНИВО — только в
+ * момент скачивания накладной. Список оптовиков, добавление и перенос товара
+ * от него не зависят: даже если файл сервиса или его библиотеки недоступны,
+ * функция стартует, а ошибка будет только у самой накладной (её ловят
+ * обработчики ниже и отдают понятное сообщение).
+ */
+async function generateWholesalerWaybillPdf(input: WholesalerWaybillInput): Promise<Buffer> {
+  const mod = await import('../services/wholesalerWaybill.service');
+  return mod.generateWholesalerWaybillPdf(input);
+}
 
 /**
  * Оптовики раздела «Товары» (Kaspi / Ozon / WB): полки товаров по оптовикам.
