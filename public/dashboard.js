@@ -6439,6 +6439,17 @@ function wsShelfTotals(group) {
   return t;
 }
 
+/**
+ * Красное «+N» после имени на полке — то же «Продано, шт», что показывает экран
+ * справа (за период и площадку сверху, только товары этой полки). Ноль не пишем;
+ * пока продажи грузятся или не загрузились — ничего не показываем.
+ */
+function wsSoldBadge(group) {
+  if (!wsStats.rows) return '';
+  const q = wsShelfTotals(group).quantity;
+  return q > 0 ? ` <span class="ws-sold" style="color:var(--loss);font-weight:600;margin-left:6px">+${fmt.format(q)}</span>` : '';
+}
+
 function wsStatsHtml(group) {
   wsEnsureStats();
   const box = (inner) => `<aside data-ws-stats="${wsEsc(group.key)}" style="flex:0 0 210px;border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-top:10px;font-size:12.5px">
@@ -6472,6 +6483,7 @@ function renderWholesalerShelves() {
       return;
     }
     const groups = wsGroups();
+    wsEnsureStats(); // продажи нужны для красного «+N» у подписи каждой полки, не только у открытой
     const known = new Set(wholesalersState.wholesalers.map((w) => w.id));
     for (const id of [...wsSelectedShelves]) if (!known.has(id)) wsSelectedShelves.delete(id);
 
@@ -6485,7 +6497,7 @@ function renderWholesalerShelves() {
             <div style="flex:1;min-width:160px">
               ${wsEditing && wsEditing.key === g.key
                 ? wsEditFormHtml(g)
-                : `<div style="font-weight:600">${wsEsc(g.name)}</div>`}
+                : `<div style="font-weight:600"><span class="ws-name">${wsEsc(g.name)}</span>${wsSoldBadge(g)}</div>`}
               <div style="font-size:11.5px;color:var(--text-faint);margin-top:2px">${n ? `${n} ${wsPlural(n, 'товар', 'товара', 'товаров')}` : 'Полка пуста'}</div>
             </div>
             ${g.wholesaler && !(wsEditing && wsEditing.key === g.key) ? `<button class="btn btn--ghost" data-ws-rename="${wsEsc(g.key)}">Переименовать</button>` : ''}
