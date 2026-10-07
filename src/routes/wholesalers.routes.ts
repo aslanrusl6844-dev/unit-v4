@@ -107,6 +107,27 @@ wholesalersRouter.patch('/:id', async (req, res) => {
   }
 });
 
+/**
+ * Удалить оптовика. Стираются ТОЛЬКО он сам и его привязки товаров
+ * (WholesalerProduct). Товары, заказы, продажи и синхронизация не затрагиваются:
+ * товар без привязки по правилу полок лежит на «Без оптовика».
+ */
+wholesalersRouter.delete('/:id', async (req, res) => {
+  try {
+    const id = req.params.id;
+    const exists = await prisma.wholesaler.findUnique({ where: { id }, select: { id: true } });
+    if (!exists) return res.status(404).json({ error: 'Оптовик не найден' });
+    await prisma.$transaction([
+      prisma.wholesalerProduct.deleteMany({ where: { wholesalerId: id } }),
+      prisma.wholesaler.delete({ where: { id } }),
+    ]);
+    res.json({ ok: true, id });
+  } catch (err: any) {
+    logger.error({ err }, '[Wholesalers] DELETE /:id упал');
+    res.status(500).json({ error: 'Не удалось удалить оптовика', details: String(err?.message ?? err) });
+  }
+});
+
 const moveSchema = z.object({
   productId: z.string().min(1),
   /** id оптовика; null — вернуть товар на полку «Без оптовика». */
