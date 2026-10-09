@@ -670,7 +670,7 @@
         <!-- ---- Каталог: справочник типов и их картинок (GET /api/shop/catalog-types) ---- -->
         <div id="mymarketCatalogTab" hidden>
           <div class="panel">
-            <div class="panel__head"><h2>Типы каталога приложения</h2></div>
+            <div class="panel__head" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><h2>Типы каталога приложения</h2><button type="button" class="btn btn--ghost" id="catImportBtn" title="Занести типы, которые система уже знает; картинки пустые">Импорт из приложения</button></div>
             <p class="panel__hint">Типы и картинки, которые приложение My Market показывает в правой колонке каталога. Тип виден в приложении, даже если товаров с ним ещё нет. Товары и их категория/тип этим экраном не меняются.</p>
             <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
               <div id="catCategoryList" style="flex:0 0 250px;max-width:100%"></div>

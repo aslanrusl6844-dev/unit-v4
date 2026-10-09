@@ -1551,6 +1551,58 @@ shopAdminRouter.get('/catalog-types', async (_req, res) => {
   }
 });
 
+/**
+ * «Импорт из приложения»: заводит в справочнике типы, которые система уже знает
+ * (тот же набор, что в выпадающем «Тип» карточки товара): стартовый список,
+ * правила названий, свои типы, соответствия Ozon и пары category/type, реально
+ * стоящие у товаров. Картинки пустые. Безопасно повторять: что уже есть в
+ * справочнике (в том числе скрытое) пропускается, ничего не дублируется и не
+ * перезаписывается; товары не меняются. Разделы вне списка из 23 пропускаются.
+ */
+shopAdminRouter.post('/catalog-types/import', async (_req, res) => {
+  try {
+    const used = await prisma.product.groupBy({
+      by: ['category', 'type'],
+      where: { category: { not: null }, type: { not: null } },
+    });
+    const mapped = await prisma.ozonTypeMap.findMany({ select: { category: true, type: true } });
+    const custom = await prisma.shopCategoryType.findMany({ select: { category: true, type: true } });
+    const catalog = buildCatalog([
+      ...starterCatalogPairs(),
+      ...hintRuleCatalogPairs(),
+      ...(custom as Array<{ category: string; type: string }>),
+      ...(mapped as Array<{ category: string; type: string }>),
+      ...(used as Array<{ category: string | null; type: string | null }>),
+    ]);
+    const existing: CatalogTypeRow[] = await prisma.catalogType.findMany({});
+    const seen = new Set(existing.map((r) => `${r.category}|${r.type.toLowerCase()}`));
+    const nextOrder = new Map<string, number>();
+    for (const r of existing) nextOrder.set(r.category, Math.max(nextOrder.get(r.category) ?? 0, r.sortOrder));
+    const toCreate: Array<{ category: string; type: string; sortOrder: number }> = [];
+    let alreadyThere = 0;
+    let skipped = 0;
+    for (const c of catalog) {
+      const category = normalizeShopCategory(c.category);
+      if (!category) { skipped += c.types.length; continue; }
+      for (const raw of c.types) {
+        const type = String(raw).replace(/\s+/g, ' ').trim();
+        if (!type || type.length > 60) { skipped += 1; continue; }
+        const key = `${category}|${type.toLowerCase()}`;
+        if (seen.has(key)) { alreadyThere += 1; continue; }
+        seen.add(key);
+        const sortOrder = (nextOrder.get(category) ?? 0) + 1;
+        nextOrder.set(category, sortOrder);
+        toCreate.push({ category, type, sortOrder });
+      }
+    }
+    if (toCreate.length) await prisma.catalogType.createMany({ data: toCreate, skipDuplicates: true });
+    res.json({ ok: true, created: toCreate.length, alreadyThere, skipped });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] POST /catalog-types/import упал');
+    res.status(500).json({ error: 'Не удалось импортировать типы', details: String(err?.message ?? err) });
+  }
+});
+
 shopAdminRouter.post('/catalog-types', async (req, res) => {
   const parsed = z.object({ category: z.string(), type: catalogTypeName, imageUrl: catalogImageUrl.nullish() }).safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Неверные данные', details: parsed.error.flatten() });

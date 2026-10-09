@@ -6933,6 +6933,23 @@ function catWireOnce() {
   if (catState.wired) return;
   catState.wired = true;
 
+  document.getElementById('catImportBtn').addEventListener('click', async () => {
+    if (catState.busy) return;
+    if (!confirm('Занести в справочник типы, которые система уже знает (картинки останутся пустыми)? Уже существующие типы не изменятся.')) return;
+    const btn = document.getElementById('catImportBtn');
+    btn.disabled = true;
+    let msg = '';
+    await catRun('Импортирую типы…', async () => {
+      const r = await api('/shop-admin/catalog-types/import', { method: 'POST', body: '{}' });
+      await loadMyMarketCatalog();
+      msg = r.created
+        ? `Импорт: добавлено типов — ${r.created}${r.alreadyThere ? `, уже было — ${r.alreadyThere}` : ''}. Картинки загрузите сами.`
+        : `Новых типов нет: всё уже в справочнике (${r.alreadyThere}).`;
+    });
+    if (msg) catSetStatus(msg);
+    btn.disabled = false;
+  });
+
   document.getElementById('catCategoryList').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-cat-pick]');
     if (!b) return;
