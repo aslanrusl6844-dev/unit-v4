@@ -321,6 +321,35 @@ shopRouter.get('/categories', async (_req, res) => {
   }
 });
 
+/**
+ * Справочник типов каталога (ведёт продавец в админке My Market → «Каталог»).
+ * Только active=true, сгруппировано по разделу, внутри — по sortOrder. Типы
+ * отдаются, даже если товаров с таким типом ещё нет; Product.category/type не
+ * трогаются. Разделы идут в порядке SHOP_CATEGORIES, пустые не выводятся.
+ */
+shopRouter.get('/catalog-types', async (_req, res) => {
+  try {
+    const rows: Array<{ category: string; type: string; imageUrl: string | null; sortOrder: number }> =
+      await prisma.catalogType.findMany({
+        where: { active: true },
+        orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+        select: { category: true, type: true, imageUrl: true, sortOrder: true },
+      });
+    const byCategory = new Map<string, Array<{ type: string; imageUrl: string | null; sortOrder: number }>>();
+    for (const r of rows) {
+      if (!byCategory.has(r.category)) byCategory.set(r.category, []);
+      byCategory.get(r.category)!.push({ type: r.type, imageUrl: r.imageUrl, sortOrder: r.sortOrder });
+    }
+    const result: Record<string, Array<{ type: string; imageUrl: string | null; sortOrder: number }>> = {};
+    for (const c of SHOP_CATEGORIES) if (byCategory.has(c)) result[c] = byCategory.get(c)!;
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(result);
+  } catch (err: any) {
+    logger.error({ err }, '[Shop] GET /catalog-types упал');
+    res.status(500).json({ error: 'Не удалось получить типы каталога', details: String(err?.message ?? err) });
+  }
+});
+
 shopRouter.get('/banners', async (_req, res) => {
   try {
     // Слайды карусели — отдельная сущность ShopBanner (не поле товара),

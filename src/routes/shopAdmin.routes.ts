@@ -9,7 +9,7 @@ import { getSearchAnalytics, getConversionAnalytics, getSeasonalityAnalytics } f
 import { generateWaybillPdf, WaybillOrderItem } from '../services/waybill.service';
 import { KZ_CITY_WHITELIST, normalizeKzCity } from '../services/shopAnalytics.service';
 import { maybeGenerateShopArticle } from '../services/shopArticle';
-import { isValidShopCategory } from '../config/shopCategories';
+import { isValidShopCategory, normalizeShopCategory, SHOP_CATEGORIES } from '../config/shopCategories';
 import { ozonTypeKey } from '../services/sync.service';
 import { hintCategoryByName, hintRuleCatalogPairs, starterCatalogPairs, buildCatalog } from '../services/categoryHints';
 import { editOrderNotify } from '../lib/telegram';
@@ -1525,5 +1525,107 @@ shopAdminRouter.post('/returns/:id/reject', async (req, res) => {
     if (err?.code === 'P2025') return res.status(404).json({ error: 'Заявка не найдена' });
     logger.error({ err }, '[Shop Admin] POST /returns/:id/reject упал');
     res.status(500).json({ error: 'Не удалось отклонить возврат', details: String(err?.message ?? err) });
+  }
+});
+
+// =====================================================================
+// Справочник типов каталога (CatalogType). Приложение читает активные типы
+// через GET /api/shop/catalog-types; здесь продавец ими управляет. С
+// Product.category / Product.type ничего не связано и не меняется.
+// =====================================================================
+
+type CatalogTypeRow = { id: string; category: string; type: string; imageUrl: string | null; sortOrder: number; active: boolean; createdAt: Date };
+
+const catalogTypeName = z.string().transform((v) => v.replace(/\s+/g, ' ').trim()).refine((v) => v.length > 0, 'Название типа не должно быть пустым').refine((v) => v.length <= 60, 'Тип слишком длинный (максимум 60 символов)');
+const catalogImageUrl = z.string().trim().max(2000).refine((v) => /^https?:\/\//i.test(v), 'Ссылка на картинку должна начинаться с http:// или https://');
+
+/** Все типы (в том числе скрытые) + 23 раздела — экран «Каталог» фильтрует по разделу сам. */
+shopAdminRouter.get('/catalog-types', async (_req, res) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store');
+    const items: CatalogTypeRow[] = await prisma.catalogType.findMany({ orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] });
+    res.json({ categories: SHOP_CATEGORIES, items });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] GET /catalog-types упал');
+    res.status(500).json({ error: 'Не удалось получить типы каталога', details: String(err?.message ?? err) });
+  }
+});
+
+shopAdminRouter.post('/catalog-types', async (req, res) => {
+  const parsed = z.object({ category: z.string(), type: catalogTypeName, imageUrl: catalogImageUrl.nullish() }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Неверные данные', details: parsed.error.flatten() });
+  const category = normalizeShopCategory(parsed.data.category);
+  if (!category) return res.status(400).json({ error: 'Такого раздела нет в списке' });
+  try {
+    const inCategory: CatalogTypeRow[] = await prisma.catalogType.findMany({ where: { category } });
+    if (inCategory.some((r) => r.type.toLowerCase() === parsed.data.type.toLowerCase())) {
+      return res.status(409).json({ error: `Тип «${parsed.data.type}» в разделе «${category}» уже есть` });
+    }
+    const sortOrder = inCategory.reduce((m, r) => Math.max(m, r.sortOrder), 0) + 1;
+    const row = await prisma.catalogType.create({ data: { category, type: parsed.data.type, imageUrl: parsed.data.imageUrl || null, sortOrder } });
+    res.status(201).json(row);
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] POST /catalog-types упал');
+    res.status(500).json({ error: 'Не удалось добавить тип', details: String(err?.message ?? err) });
+  }
+});
+
+/** Переименовать, заменить/убрать картинку, скрыть/показать. Раздел не меняется. */
+shopAdminRouter.patch('/catalog-types/:id', async (req, res) => {
+  const parsed = z.object({ type: catalogTypeName.optional(), imageUrl: catalogImageUrl.nullable().optional(), active: z.boolean().optional() }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Неверные данные', details: parsed.error.flatten() });
+  try {
+    const row: CatalogTypeRow | null = await prisma.catalogType.findUnique({ where: { id: req.params.id } });
+    if (!row) return res.status(404).json({ error: 'Тип не найден' });
+    const data: { type?: string; imageUrl?: string | null; active?: boolean } = {};
+    if (parsed.data.type !== undefined && parsed.data.type !== row.type) {
+      const siblings: CatalogTypeRow[] = await prisma.catalogType.findMany({ where: { category: row.category } });
+      if (siblings.some((r) => r.id !== row.id && r.type.toLowerCase() === parsed.data.type!.toLowerCase())) {
+        return res.status(409).json({ error: `Тип «${parsed.data.type}» в разделе «${row.category}» уже есть` });
+      }
+      data.type = parsed.data.type;
+    }
+    if (parsed.data.imageUrl !== undefined) data.imageUrl = parsed.data.imageUrl || null;
+    if (parsed.data.active !== undefined) data.active = parsed.data.active;
+    const updated = Object.keys(data).length ? await prisma.catalogType.update({ where: { id: row.id }, data }) : row;
+    res.json(updated);
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] PATCH /catalog-types/:id упал');
+    res.status(500).json({ error: 'Не удалось изменить тип', details: String(err?.message ?? err) });
+  }
+});
+
+/** Порядок: поменять местами с соседом внутри раздела. Номера сначала выравниваются в 1..n, чтобы одинаковые sortOrder не мешали. */
+shopAdminRouter.post('/catalog-types/:id/move', async (req, res) => {
+  const parsed = z.object({ direction: z.enum(['up', 'down']) }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'direction должен быть up или down' });
+  try {
+    const row: CatalogTypeRow | null = await prisma.catalogType.findUnique({ where: { id: req.params.id } });
+    if (!row) return res.status(404).json({ error: 'Тип не найден' });
+    const list: CatalogTypeRow[] = await prisma.catalogType.findMany({ where: { category: row.category }, orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] });
+    const i = list.findIndex((r) => r.id === row.id);
+    const j = parsed.data.direction === 'up' ? i - 1 : i + 1;
+    if (i >= 0 && j >= 0 && j < list.length) [list[i], list[j]] = [list[j], list[i]];
+    const ops = list
+      .map((r, idx) => ({ r, order: idx + 1 }))
+      .filter(({ r, order }) => r.sortOrder !== order)
+      .map(({ r, order }) => prisma.catalogType.update({ where: { id: r.id }, data: { sortOrder: order } }));
+    if (ops.length) await prisma.$transaction(ops);
+    res.json({ ok: true });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] POST /catalog-types/:id/move упал');
+    res.status(500).json({ error: 'Не удалось изменить порядок', details: String(err?.message ?? err) });
+  }
+});
+
+shopAdminRouter.delete('/catalog-types/:id', async (req, res) => {
+  try {
+    const row: CatalogTypeRow | null = await prisma.catalogType.findUnique({ where: { id: req.params.id } });
+    if (!row) return res.status(404).json({ error: 'Тип не найден' });
+    await prisma.catalogType.delete({ where: { id: row.id } });
+    res.json({ ok: true, id: row.id });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] DELETE /catalog-types/:id упал');
+    res.status(500).json({ error: 'Не удалось удалить тип', details: String(err?.message ?? err) });
   }
 });

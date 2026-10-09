@@ -184,52 +184,6 @@ wholesalersRouter.post('/move', async (req, res) => {
   }
 });
 
-const moveManySchema = z.object({
-  productIds: z.array(z.string().min(1)).min(1).max(500),
-  marketplace: marketplaceEnum,
-  wholesalerId: z.string().min(1).nullable(),
-});
-
-/** Пачка: те же правила, что у /move, одним запросом. Чужой товар пропускается. */
-wholesalersRouter.post('/move-many', async (req, res) => {
-  const parsed = moveManySchema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
-  try {
-    const { productIds, wholesalerId, marketplace } = parsed.data;
-    if (wholesalerId) {
-      const wholesaler: any = await prisma.wholesaler.findUnique({ where: { id: wholesalerId }, select: { id: true, marketplace: true } });
-      if (!wholesaler) return res.status(404).json({ error: 'Оптовик не найден' });
-      if (wholesaler.marketplace !== marketplace) return res.status(400).json({ error: 'Оптовик другой площадки' });
-    }
-    const products: any[] = await prisma.product.findMany({
-      where: { id: { in: productIds } },
-      select: { id: true, kaspiSku: true, ozonOfferId: true, wbArticle: true },
-    });
-    const byId = new Map(products.map((p) => [p.id, p]));
-    let moved = 0;
-    let skipped = 0;
-    for (const productId of productIds) {
-      const product = byId.get(productId);
-      const own = product && (marketplace === 'KASPI' ? product.kaspiSku : marketplace === 'OZON' ? product.ozonOfferId : product.wbArticle);
-      if (!own) { skipped++; continue; }
-      if (wholesalerId === null) {
-        await prisma.wholesalerProduct.deleteMany({ where: { productId, marketplace } });
-      } else {
-        await prisma.wholesalerProduct.upsert({
-          where: { productId_marketplace: { productId, marketplace } },
-          update: { wholesalerId, assignedAt: new Date() },
-          create: { productId, marketplace, wholesalerId },
-        });
-      }
-      moved++;
-    }
-    res.json({ moved, skipped, marketplace, wholesalerId });
-  } catch (err: any) {
-    logger.error({ err }, '[Wholesalers] POST /move-many упал');
-    res.status(500).json({ error: 'Не удалось переместить товары', details: String(err?.message ?? err) });
-  }
-});
-
 // ---------------------------------------------------------------------
 // Накладные: по одной PDF и пачкой ZIP
 // ---------------------------------------------------------------------

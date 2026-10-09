@@ -789,3 +789,22 @@ model WholesalerProduct {
   @@id([productId, marketplace])
   @@index([wholesalerId])
 }
+
+// Справочник типов каталога My Market: продавец сам ведёт типы и их картинки
+// в админке (My Market → «Каталог»), приложение берёт их из
+// GET /api/shop/catalog-types. Отдельная таблица: с Product.category и
+// Product.type не связана и их не меняет — тип показывается в приложении, даже
+// если товаров с ним ещё нет.
+model CatalogType {
+  id        String   @id @default(cuid())
+  category  String   // один из 23 разделов (config/shopCategories.ts)
+  type      String   // «Юбки», «Утюг»
+  imageUrl  String?  // картинка типа (Vercel Blob или ссылка)
+  sortOrder Int      @default(0)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([category, type])
+  @@index([category, sortOrder])
+}
