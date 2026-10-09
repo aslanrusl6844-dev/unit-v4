@@ -482,6 +482,7 @@
         <div class="seg" id="mymarketTabs">
           <button class="is-active" data-tab="home">Главная</button>
           <button data-tab="products">Товары</button>
+          <button data-tab="catalog">Каталог</button>
           <button data-tab="prices">Цены и акции</button>
           <button data-tab="orders">Заказы</button>
           <button data-tab="returns">Возвраты</button>
@@ -666,6 +667,32 @@
         </div>
 
         <!-- ---- Цены и акции ---- -->
+        <!-- ---- Каталог: справочник типов и их картинок (GET /api/shop/catalog-types) ---- -->
+        <div id="mymarketCatalogTab" hidden>
+          <div class="panel">
+            <div class="panel__head"><h2>Типы каталога приложения</h2></div>
+            <p class="panel__hint">Типы и картинки, которые приложение My Market показывает в правой колонке каталога. Тип виден в приложении, даже если товаров с ним ещё нет. Товары и их категория/тип этим экраном не меняются.</p>
+            <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
+              <div id="catCategoryList" style="flex:0 0 250px;max-width:100%"></div>
+              <div style="flex:1 1 420px;min-width:0">
+                <h3 id="catTitle" style="margin:0 0 8px"></h3>
+                <p id="catStatus" class="panel__hint" style="margin:0 0 8px"></p>
+                <div id="catTypesList"></div>
+                <form id="catAddForm" style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">
+                  <div style="font-weight:600;margin-bottom:8px">Добавить тип</div>
+                  <div class="inline-form" style="flex-wrap:wrap;gap:8px;align-items:center">
+                    <input type="text" id="catAddName" placeholder="Тип, например «Юбки»" maxlength="60" style="max-width:240px" />
+                    <input type="file" id="catAddFile" accept="image/jpeg,image/png,image/webp" />
+                    <input type="text" id="catAddUrl" placeholder="или ссылка на картинку" style="max-width:240px" />
+                    <button type="submit" class="btn btn--accent" id="catAddSave">Добавить</button>
+                  </div>
+                  <p id="catAddStatus" class="panel__hint" style="margin:6px 0 0"></p>
+                </form>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div id="mymarketPricesTab" hidden>
           <div class="panel">
             <div class="panel__head"><h2>Баннеры главной приложения (4 слота)</h2></div>

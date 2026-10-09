@@ -2093,7 +2093,7 @@ let myMarketProductsCache = [];
 let myMarketChartInstance = null;
 let myMarketEditingProductId = null;
 
-const MY_MARKET_TABS = ['home', 'products', 'prices', 'orders', 'returns', 'analytics', 'couriers', 'finance', 'upload'];
+const MY_MARKET_TABS = ['home', 'products', 'catalog', 'prices', 'orders', 'returns', 'analytics', 'couriers', 'finance', 'upload'];
 
 function wireMyMarketTabsOnce() {
   if (myMarketTabWired) return;
@@ -2374,6 +2374,7 @@ function switchMyMarketTab(tab) {
     myMarketSelectedProductIds.clear();
     loadMyMarketProducts();
   }
+  if (tab === 'catalog') loadMyMarketCatalog();
   if (tab === 'prices') loadMyMarketPrices();
   if (tab === 'orders') loadMyMarketOrders();
   if (tab === 'returns') loadMyMarketReturns();
@@ -6174,8 +6175,6 @@ function renderYardArchive() {
 const wholesalersState = { loaded: false, error: null, wholesalers: [], assignments: {} };
 const wsOpenShelves = new Set();     // ключи раскрытых полок: 'none' или id оптовика
 const wsSelectedShelves = new Set(); // id оптовиков, отмеченных для ZIP накладных
-const wsSelectedProducts = new Set(); // id товаров, отмеченных для пачки
-let wsBulkTargetValue = '';
 const wsRowLimits = new Map();       // `${полка}|${площадка}` -> сколько строк показано
 const WS_ROWS_STEP = 100;
 let wsWired = false;
@@ -6298,43 +6297,39 @@ async function wsSaveEdit() {
   }
 }
 
-function wsMpOf(w) {
-  return w.marketplace || 'KASPI';
-}
-
-function wsProductMp(p) {
-  if (p.kaspiSku) return 'KASPI';
-  if (p.ozonOfferId) return 'OZON';
-  if (p.wbArticle) return 'WB';
-  return 'KASPI';
-}
-
 function wsGroups() {
-  const selected = state.marketplace || '';
-  const wholesalers = wholesalersState.wholesalers.filter((w) => !selected || wsMpOf(w) === selected);
+  const MPS = ['KASPI', 'OZON', 'WB'];
+  const wMp = (w) => (MPS.includes(w.marketplace) ? w.marketplace : 'KASPI');
+  const sel = state.marketplace;
+  const mps = sel ? [sel] : MPS;
   const groups = [];
-  if (selected) {
-    groups.push({ key: 'none', name: 'Без оптовика', wholesaler: null, products: [] });
-  } else {
-    for (const mp of ['KASPI', 'OZON', 'WB']) {
-      groups.push({ key: 'none:' + mp, name: 'Без оптовика · ' + mpLabel(mp), wholesaler: null, products: [] });
-    }
+  // «Без оптовика»: на одной площадке — одна полка 'none', на «Все вместе» — своя у каждой площадки.
+  const noneBy = new Map();
+  for (const mp of mps) {
+    const g = { key: sel ? 'none' : `none:${mp}`, name: 'Без оптовика', wholesaler: null, mp, products: [] };
+    groups.push(g);
+    noneBy.set(mp, g);
   }
   const byId = new Map();
-  for (const w of wholesalers) {
-    const suffix = selected ? '' : ' · ' + mpLabel(wsMpOf(w));
-    const g = { key: w.id, name: wsDisplayName(w) + suffix, wholesaler: w, products: [] };
+  for (const w of wholesalersState.wholesalers) {
+    if (sel && wMp(w) !== sel) continue; // оптовик другой площадки здесь не показывается
+    const g = { key: w.id, name: wsDisplayName(w), wholesaler: w, mp: wMp(w), products: [] };
     groups.push(g);
     byId.set(w.id, g);
   }
+  let unlinkedGroup = null;
   for (const p of wsVisibleProducts()) {
-    const mp = selected || wsProductMp(p);
-    const assigned = wholesalersState.assignments[p.id] || wholesalersState.assignments[mp + ':' + p.id];
-    const g = byId.get(assigned);
-    if (g) g.products.push(p);
-    else {
-      const none = selected ? groups[0] : (groups.find((x) => x.key === 'none:' + mp) || groups[0]);
-      none.products.push(p);
+    let placed = false;
+    for (const mp of mps) {
+      if (!isLinkedToMarketplace(p, mp)) continue; // товар чужой площадки на эту полку не кладём
+      placed = true;
+      const wid = wholesalersState.assignments[`${mp}:${p.id}`];
+      const wg = wid ? byId.get(wid) : null;
+      (wg && wg.mp === mp ? wg : noneBy.get(mp)).products.push(p);
+    }
+    if (!placed && !sel) {
+      if (!unlinkedGroup) { unlinkedGroup = { key: 'none:NONE', name: 'Без оптовика · без площадки', wholesaler: null, mp: null, products: [] }; groups.push(unlinkedGroup); }
+      unlinkedGroup.products.push(p);
     }
   }
   return groups;
@@ -6398,8 +6393,7 @@ function wsTableHtml(group, mp, products) {
   const head = `${mp ? `<span class="dot dot--${mp.toLowerCase()}"></span> ${mpLabel(mp)}` : 'Без площадки'} · ${products.length}`;
   const rows = shown.map((p) => `
     <tr data-ws-row="${wsEsc(p.id)}">
-      <td><input type="checkbox" data-ws-product="${wsEsc(p.id)}" title="Отметить товар" ${wsSelectedProducts.has(p.id) ? 'checked' : ''} /></td>
-      <td><button class="link-btn" data-ws-move="${wsEsc(p.id)}" data-ws-shelf="${wsEsc(group.key)}" data-ws-mp="${wsEsc(mp || '')}">Переместить</button></td>
+      <td>${mp ? `<button class="link-btn" data-ws-move="${wsEsc(p.id)}" data-ws-shelf="${wsEsc(group.key)}" data-ws-move-mp="${mp}">Переместить</button>` : ''}</td>
       <td>${wsPhotoHtml(p)}</td>
       <td class="name-cell">${wsEsc(p.name)}</td>
       <td class="name-cell">${wsEsc(p.sku)}</td>
@@ -6419,18 +6413,9 @@ function wsTableHtml(group, mp, products) {
     ${rest > 0 ? `<div style="margin-top:6px"><button class="btn btn--ghost" data-ws-more="${wsEsc(limitKey)}">Показать ещё (осталось ${rest})</button></div>` : ''}`;
 }
 
-/** Содержимое раскрытой полки. Одна площадка выбрана — одна таблица; «Всё вместе» — таблица на каждую площадку отдельно, не смешивая. */
+/** Содержимое раскрытой полки: у каждой полки своя площадка, одна таблица. */
 function wsShelfBody(group) {
-  if (state.marketplace) {
-    return wsTableHtml(group, state.marketplace, group.products);
-  }
-  const parts = ['KASPI', 'OZON', 'WB']
-    .map((mp) => ({ mp, items: group.products.filter((p) => isLinkedToMarketplace(p, mp)) }))
-    .filter((x) => x.items.length)
-    .map((x) => wsTableHtml(group, x.mp, x.items));
-  const unlinked = group.products.filter((p) => !isLinkedToMarketplace(p, 'KASPI') && !isLinkedToMarketplace(p, 'OZON') && !isLinkedToMarketplace(p, 'WB'));
-  if (unlinked.length) parts.push(wsTableHtml(group, null, unlinked));
-  return parts.join('');
+  return wsTableHtml(group, group.mp, group.products);
 }
 
 // ---- Продажи оптовика (маленький экран справа у открытой полки) ----
@@ -6440,6 +6425,18 @@ function wsShelfBody(group) {
 // (сопоставление по SKU), чужие продажи не входят.
 const wsStats = { key: null, rows: null, loading: false, error: null };
 
+/** Площадки, по которым грузим цифры: выбранная сверху или все три (по отдельности, чтобы ничего не посчитать дважды). */
+function wsMpList() {
+  return state.marketplace ? [state.marketplace] : ['KASPI', 'OZON', 'WB'];
+}
+
+/** rows приходят как { KASPI: [...], OZON: [...], WB: [...] }. */
+function wsFetchRowsByMp(from, to) {
+  const mps = wsMpList();
+  return Promise.all(mps.map((mp) => api(`/analytics/by-product?${qs({ from, to, marketplace: mp })}`)))
+    .then((all) => Object.fromEntries(mps.map((mp, i) => [mp, Array.isArray(all[i]) ? all[i] : []])));
+}
+
 function wsStatsKey() {
   return `${state.from || ''}|${state.to || ''}|${state.marketplace || ''}`;
 }
@@ -6448,15 +6445,16 @@ function wsEnsureStats() {
   const key = wsStatsKey();
   if (wsStats.key === key && (wsStats.loading || wsStats.rows || wsStats.error)) return;
   Object.assign(wsStats, { key, rows: null, loading: true, error: null });
-  api(`/analytics/by-product?${qs({ from: state.from, to: state.to, marketplace: state.marketplace })}`)
-    .then((rows) => { if (wsStats.key === key) { wsStats.rows = Array.isArray(rows) ? rows : []; wsStats.loading = false; } })
+  wsFetchRowsByMp(state.from, state.to)
+    .then((rows) => { if (wsStats.key === key) { wsStats.rows = rows; wsStats.loading = false; } })
     .catch((err) => { if (wsStats.key === key) { wsStats.error = err.message || String(err); wsStats.loading = false; } })
     .finally(() => { if (wsStats.key === key) renderWholesalerShelves(); });
 }
 
-/** Суммы по товарам одной полки. cogs = себестоимость проданного = сколько причитается оптовику. */
-function wsShelfTotals(group) {
-  const bySku = new Map((wsStats.rows || []).map((r) => [r.sku, r]));
+/** Суммы по товарам одной полки (строки её площадки). cogs = себестоимость проданного = сколько причитается оптовику. */
+function wsShelfTotals(group, rows) {
+  const list = ((rows || wsStats.rows || {})[group.mp]) || [];
+  const bySku = new Map(list.map((r) => [r.sku, r]));
   const t = { quantity: 0, revenue: 0, cogs: 0, profit: 0 };
   for (const p of group.products) {
     const r = bySku.get(p.sku);
@@ -6469,15 +6467,63 @@ function wsShelfTotals(group) {
   return t;
 }
 
-/**
- * Красное «+N» после имени на полке — то же «Продано, шт», что показывает экран
- * справа (за период и площадку сверху, только товары этой полки). Ноль не пишем;
- * пока продажи грузятся или не загрузились — ничего не показываем.
- */
+// ---- Красное «+N» у подписи полки: продано СЕГОДНЯ ----
+// Считается только за сегодняшний календарный день по Алматы (UTC+5) и от
+// периода сверху (7/30/90 дней) не зависит; площадка сверху действует. Это те же
+// готовые цифры /analytics/by-product, но с from = to = сегодня. В 00:00 по
+// Алматы день меняется — старое число пропадает, счёт идёт с нуля. Экран
+// «Продано, шт» справа остаётся за выбранный период (wsStats выше).
+const wsToday = { key: null, rows: null, error: null, loading: false };
+
+/** Сегодняшняя дата по Алматы, «ГГГГ-ММ-ДД». */
+function wsAlmatyToday() {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Almaty', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+}
+
+function wsTodayKey() {
+  return `${wsAlmatyToday()}|${state.marketplace || ''}`;
+}
+
+/** Загрузка за сегодня. Новый день или другая площадка — старое число сразу сбрасывается; обычный опрос меняет данные без мигания. */
+function wsEnsureToday(force) {
+  const key = wsTodayKey();
+  const changed = wsToday.key !== key;
+  if (!changed && !force && (wsToday.loading || wsToday.rows || wsToday.error)) return;
+  if (wsToday.loading && !changed) return;
+  if (changed) Object.assign(wsToday, { key, rows: null, error: null });
+  wsToday.loading = true;
+  const day = key.split('|')[0];
+  wsFetchRowsByMp(day, day)
+    .then((rows) => {
+      if (wsToday.key !== key) return;
+      wsToday.rows = rows;
+      wsToday.error = null;
+    })
+    .catch((err) => { if (wsToday.key === key && !wsToday.rows) wsToday.error = err.message || String(err); })
+    .finally(() => {
+      if (wsToday.key === key) wsToday.loading = false;
+      // Пока человек правит имя оптовика, перерисовку не делаем (не сбить ввод): цифры подтянутся при закрытии формы.
+      if (wsToday.key === key && !wsEditing) renderWholesalerShelves();
+    });
+}
+
+/** Раз в минуту: смена дня по Алматы (в 00:00 число пропадает) и подтягивание новых продаж. */
+function wsTodayTick() {
+  if (document.hidden) return;
+  const list = document.getElementById('wholesalerShelvesList');
+  const view = document.getElementById('productsShelvesView');
+  if (!list || !view || view.hidden || !wholesalersState.loaded) return;
+  if (wsToday.key !== wsTodayKey()) {
+    Object.assign(wsToday, { key: wsTodayKey(), rows: null, error: null, loading: false });
+    if (!wsEditing) renderWholesalerShelves(); // старое число пропало сразу
+  }
+  wsEnsureToday(true);
+}
+
 function wsSoldBadge(group) {
-  if (!wsStats.rows) return '';
-  const q = wsShelfTotals(group).quantity;
-  return q > 0 ? ` <span class="ws-sold" style="color:var(--loss);font-weight:600;margin-left:6px">+${fmt.format(q)}</span>` : '';
+  if (!wsToday.rows) return '';
+  const q = wsShelfTotals(group, wsToday.rows).quantity;
+  return q > 0 ? ` <span class="ws-sold" style="color:var(--loss);font-weight:600;margin-left:6px" title="Продано сегодня">+${fmt.format(q)}</span>` : '';
 }
 
 function wsStatsHtml(group) {
@@ -6513,11 +6559,12 @@ function renderWholesalerShelves() {
       return;
     }
     const groups = wsGroups();
-    wsEnsureStats(); // продажи нужны для красного «+N» у подписи каждой полки, не только у открытой
-    const known = new Set(wholesalersState.wholesalers.map((w) => w.id));
+    wsEnsureToday(); // красное «+N» у подписи каждой полки — продано сегодня
+    // В выделении остаются только видимые полки: скрытых оптовиков другой площадки «Удалить выбранных» не заденет.
+    const known = new Set(groups.filter((g) => g.wholesaler).map((g) => g.key));
     for (const id of [...wsSelectedShelves]) if (!known.has(id)) wsSelectedShelves.delete(id);
 
-    list.innerHTML = wsBulkBar() + groups.map((g) => {
+    list.innerHTML = groups.map((g) => {
       const n = g.products.length;
       const open = n > 0 && wsOpenShelves.has(g.key);
       return `
@@ -6527,7 +6574,7 @@ function renderWholesalerShelves() {
             <div style="flex:1;min-width:160px">
               ${wsEditing && wsEditing.key === g.key
                 ? wsEditFormHtml(g)
-                : `<div style="font-weight:600"><span class="ws-name">${wsEsc(g.name)}</span>${wsSoldBadge(g)}</div>`}
+                : `<div style="font-weight:600"><span class="ws-name">${wsEsc(g.name)}</span>${!state.marketplace && g.mp ? ` <small class="ws-mp" style="font-size:10.5px;font-weight:400;color:var(--text-faint);margin-left:6px">${mpLabel(g.mp)}</small>` : ''}${wsSoldBadge(g)}</div>`}
               <div style="font-size:11.5px;color:var(--text-faint);margin-top:2px">${n ? `${n} ${wsPlural(n, 'товар', 'товара', 'товаров')}` : 'Полка пуста'}</div>
             </div>
             ${g.wholesaler && !(wsEditing && wsEditing.key === g.key) ? `<button class="btn btn--ghost" data-ws-rename="${wsEsc(g.key)}">Переименовать</button>` : ''}
@@ -6623,13 +6670,12 @@ async function wsDownloadPdf(productId, mp, btn) {
 /** «Переместить»: вместо кнопки появляется выбор другого оптовика (или «Без оптовика»). */
 function wsOpenMove(btn) {
   const shelf = btn.dataset.wsShelf;
-  const mp = state.marketplace || btn.dataset.wsMp || '';
+  const mp = btn.dataset.wsMoveMp;
   const options = [];
-  if (shelf !== 'none' && !String(shelf).startsWith('none:')) options.push({ value: '__none__', label: 'Без оптовика' });
+  if (!shelf.startsWith('none')) options.push({ value: '__none__', label: 'Без оптовика' });
   for (const w of wholesalersState.wholesalers) {
-    if (w.id === shelf) continue;
-    if (mp && wsMpOf(w) !== mp) continue;
-    options.push({ value: w.id, label: wsDisplayName(w) });
+    if ((w.marketplace || 'KASPI') !== mp) continue; // только оптовики той же площадки
+    if (w.id !== shelf) options.push({ value: w.id, label: wsDisplayName(w) });
   }
   if (!options.length) {
     alert('Сначала добавьте оптовика (кнопка «Добавить оптовика» под полками).');
@@ -6637,22 +6683,17 @@ function wsOpenMove(btn) {
   }
   const select = document.createElement('select');
   select.dataset.wsMoveSelect = btn.dataset.wsMove;
+  select.dataset.wsMoveMp = mp;
   select.innerHTML = '<option value="" selected disabled>Куда?</option>' + options.map((o) => `<option value="${wsEsc(o.value)}">${wsEsc(o.label)}</option>`).join('');
   select.addEventListener('blur', () => { if (select.isConnected) renderWholesalerShelves(); });
   btn.replaceWith(select);
   select.focus();
 }
 
-async function wsMoveProduct(productId, value, marketplace) {
-  const mp = marketplace || state.marketplace;
-  if (!mp) {
-    wsSetStatus('Сначала выбери Kaspi, Ozon или WB', 'warn');
-    return;
-  }
+async function wsMoveProduct(productId, mp, value) {
   try {
     await api('/wholesalers/move', { method: 'POST', body: JSON.stringify({ productId, marketplace: mp, wholesalerId: value === '__none__' ? null : value }) });
-    wsSelectedProducts.delete(productId);
-    await loadWholesalers();
+    await loadWholesalers(); // перечитываем только привязки; товары и прогноз не трогаем — цифры не меняются
     wsSetStatus('Товар перемещён.');
   } catch (err) {
     wsSetStatus(`Перенос: ${err.message}`, 'error');
@@ -6661,56 +6702,10 @@ async function wsMoveProduct(productId, value, marketplace) {
   }
 }
 
-async function wsMoveMany(value) {
-  const mp = state.marketplace;
-  if (!mp) { wsSetStatus('Сначала выбери Kaspi, Ozon или WB', 'warn'); return; }
-  const ids = [...wsSelectedProducts];
-  if (!ids.length) { wsSetStatus('Отметь товары галочкой', 'warn'); return; }
-  const btn = document.getElementById('wsBulkMoveBtn');
-  if (btn) btn.disabled = true;
-  wsSetStatus('Переношу ' + ids.length + '…');
-  try {
-    const res = await api('/wholesalers/move-many', { method: 'POST', body: JSON.stringify({ productIds: ids, marketplace: mp, wholesalerId: value === '__none__' ? null : value }) });
-    wsSelectedProducts.clear();
-    if (value && value !== '__none__') wsOpenShelves.add(value);
-    await loadWholesalers();
-    wsSetStatus('Перенесено товаров: ' + (res.moved || 0) + (res.skipped ? '. Пропущено: ' + res.skipped : ''));
-  } catch (err) {
-    wsSetStatus('Перенос: ' + err.message, 'error');
-    alert('Не удалось переместить: ' + err.message);
-    if (btn) btn.disabled = false;
-  }
-}
-
-function wsShelfProductIds() {
-  const ids = [];
-  for (const g of wsGroups()) for (const p of g.products) if (p.id) ids.push(p.id);
-  return ids;
-}
-
-function wsBulkBar() {
-  if (!state.marketplace) return '';
-  const ids = wsShelfProductIds();
-  const allOn = ids.length > 0 && ids.every((id) => wsSelectedProducts.has(id));
-  const opts = wholesalersState.wholesalers
-    .filter((w) => wsMpOf(w) === state.marketplace)
-    .map((w) => `<option value="${wsEsc(w.id)}" ${w.id === wsBulkTargetValue ? 'selected' : ''}>${wsEsc(wsDisplayName(w))}</option>`)
-    .join('');
-  return `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 10px">
-    <label style="font-size:12.5px;display:flex;align-items:center;gap:6px"><input type="checkbox" data-ws-all="1" ${allOn ? 'checked' : ''} /> Все ${ids.length}</label>
-    <span id="wsBulkCount" style="font-size:12.5px;color:var(--text-muted)">Выбрано товаров: ${wsSelectedProducts.size}</span>
-    <select id="wsBulkTarget" data-ws-bulk-target="1">
-      <option value="" ${wsBulkTargetValue ? '' : 'selected'} disabled>Кому переместить</option>
-      <option value="__none__" ${wsBulkTargetValue === '__none__' ? 'selected' : ''}>Без оптовика</option>
-      ${opts}
-    </select>
-    <button class="btn" type="button" id="wsBulkMoveBtn" data-ws-bulk-move="1" ${wsSelectedProducts.size ? '' : 'disabled'}>Переместить выбранные</button>
-  </div>`;
-}
-
 function wireWholesalersOnce() {
   if (wsWired) return;
   wsWired = true;
+  setInterval(wsTodayTick, 60000);
 
   document.getElementById('productsViewTabs').addEventListener('click', (e) => {
     const btn = e.target.closest('button');
@@ -6723,11 +6718,9 @@ function wireWholesalersOnce() {
   });
 
   const form = document.getElementById('wholesalerAddForm');
+  const NEED_MP = 'Сначала выбери Kaspi, Ozon или WB';
   document.getElementById('wholesalerAddBtn').addEventListener('click', () => {
-    if (!state.marketplace) {
-      wsSetStatus('Сначала выбери Kaspi, Ozon или WB', 'warn');
-      return;
-    }
+    if (!state.marketplace) { wsSetStatus(NEED_MP, 'error'); return; }
     form.hidden = false;
     document.getElementById('wholesalerFirstName').focus();
   });
@@ -6739,6 +6732,11 @@ function wireWholesalersOnce() {
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const statusEl = document.getElementById('wholesalerAddStatus');
+    if (!state.marketplace) {
+      statusEl.style.color = 'var(--loss)';
+      statusEl.textContent = NEED_MP;
+      return;
+    }
     const firstName = document.getElementById('wholesalerFirstName').value.trim();
     const lastName = document.getElementById('wholesalerLastName').value.trim();
     const phone = document.getElementById('wholesalerPhone').value.trim();
@@ -6752,11 +6750,6 @@ function wireWholesalersOnce() {
     statusEl.style.color = '';
     statusEl.textContent = 'Сохраняю…';
     try {
-      if (!state.marketplace) {
-        statusEl.style.color = 'var(--loss)';
-        statusEl.textContent = 'Сначала выбери Kaspi, Ozon или WB';
-        return;
-      }
       await api('/wholesalers', { method: 'POST', body: JSON.stringify({ firstName, lastName, phone, marketplace: state.marketplace }) });
       form.reset();
       form.hidden = true;
@@ -6798,10 +6791,6 @@ function wireWholesalersOnce() {
     } else if (t.dataset.wsMore) {
       wsRowLimits.set(t.dataset.wsMore, (wsRowLimits.get(t.dataset.wsMore) || WS_ROWS_STEP) + WS_ROWS_STEP);
       renderWholesalerShelves();
-    } else if (t.dataset.wsBulkMove) {
-      const sel = document.getElementById('wsBulkTarget');
-      if (!sel || !sel.value) { wsSetStatus('Выбери, кому переместить', 'warn'); return; }
-      wsMoveMany(sel.value);
     } else if (t.dataset.wsMove) {
       wsOpenMove(t);
     } else if (t.dataset.wsZip) {
@@ -6825,26 +6814,228 @@ function wireWholesalersOnce() {
     if (el.dataset && el.dataset.wsSelect) {
       if (el.checked) wsSelectedShelves.add(el.dataset.wsSelect); else wsSelectedShelves.delete(el.dataset.wsSelect);
       wsUpdateToolbar();
-    } else if (el.dataset && el.dataset.wsAll) {
-      const ids = wsShelfProductIds();
-      if (el.checked) ids.forEach((id) => wsSelectedProducts.add(id));
-      else ids.forEach((id) => wsSelectedProducts.delete(id));
-      renderWholesalerShelves();
-    } else if (el.dataset && el.dataset.wsBulkTarget) {
-      wsBulkTargetValue = el.value;
-    } else if (el.dataset && el.dataset.wsProduct) {
-      if (el.checked) wsSelectedProducts.add(el.dataset.wsProduct); else wsSelectedProducts.delete(el.dataset.wsProduct);
-      const n = document.getElementById('wsBulkCount');
-      if (n) n.textContent = 'Выбрано товаров: ' + wsSelectedProducts.size;
-      const b = document.getElementById('wsBulkMoveBtn');
-      if (b) b.disabled = wsSelectedProducts.size === 0;
-      const all = document.querySelector('[data-ws-all]');
-      if (all) {
-        const ids = wsShelfProductIds();
-        all.checked = ids.length > 0 && ids.every((id) => wsSelectedProducts.has(id));
-      }
     } else if (el.dataset && el.dataset.wsMoveSelect && el.value) {
-      wsMoveProduct(el.dataset.wsMoveSelect, el.value, el.dataset.wsMp || state.marketplace);
+      wsMoveProduct(el.dataset.wsMoveSelect, el.dataset.wsMoveMp, el.value);
+    }
+  });
+}
+
+// ---------------------------------------------------------------------
+// «Каталог» (My Market): справочник типов и картинок для правой колонки
+// каталога в приложении. Данные — /shop-admin/catalog-types; приложение
+// читает активные через /shop/catalog-types. Картинки грузятся тем же
+// uploadMyMarketFile, что и фото товаров (Vercel Blob). Товары, их
+// category/type этим экраном не меняются.
+// ---------------------------------------------------------------------
+const catState = { categories: [], items: [], category: null, loaded: false, error: null, editing: null, busy: false, wired: false };
+const catEsc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const catErrText = (err) => (err && err.body && err.body.error) ? String(err.body.error) : String(err && err.message || err);
+
+function catSetStatus(text, kind) {
+  const el = document.getElementById('catStatus');
+  if (!el) return;
+  el.style.color = kind === 'error' ? 'var(--loss)' : 'var(--text-muted)';
+  el.textContent = text || '';
+}
+
+function catItemsOf(category) {
+  return catState.items
+    .filter((i) => i.category === category)
+    .sort((a, b) => (a.sortOrder - b.sortOrder) || String(a.createdAt).localeCompare(String(b.createdAt)));
+}
+
+async function loadMyMarketCatalog() {
+  catWireOnce();
+  try {
+    const data = await api('/shop-admin/catalog-types');
+    catState.categories = Array.isArray(data.categories) ? data.categories : [];
+    catState.items = Array.isArray(data.items) ? data.items : [];
+    catState.error = null;
+    catState.loaded = true;
+    if (!catState.category || !catState.categories.includes(catState.category)) catState.category = catState.categories[0] || null;
+  } catch (err) {
+    catState.error = catErrText(err);
+  }
+  renderMyMarketCatalog();
+}
+
+function catThumb(url) {
+  return url
+    ? `<img src="${catEsc(url)}" alt="" style="width:56px;height:56px;object-fit:cover;border-radius:8px;border:1px solid var(--border)" />`
+    : '<div style="width:56px;height:56px;border-radius:8px;border:1px dashed var(--border);display:flex;align-items:center;justify-content:center;color:var(--text-faint);font-size:10px;text-align:center">нет фото</div>';
+}
+
+function renderMyMarketCatalog() {
+  const catList = document.getElementById('catCategoryList');
+  const typesList = document.getElementById('catTypesList');
+  const title = document.getElementById('catTitle');
+  if (!catList || !typesList) return;
+  if (catState.error) {
+    catList.innerHTML = '';
+    title.textContent = '';
+    typesList.innerHTML = `<p style="color:var(--loss);margin:0">Не удалось загрузить типы: ${catEsc(catState.error)}
+      <button class="btn btn--ghost" id="catRetryBtn" style="margin-left:8px">Повторить</button></p>`;
+    document.getElementById('catRetryBtn').addEventListener('click', loadMyMarketCatalog);
+    document.getElementById('catAddForm').hidden = true;
+    return;
+  }
+  if (!catState.loaded) { typesList.innerHTML = '<p class="panel__hint">Загружаю…</p>'; return; }
+  document.getElementById('catAddForm').hidden = false;
+
+  catList.innerHTML = catState.categories.map((c) => {
+    const n = catState.items.filter((i) => i.category === c).length;
+    const on = c === catState.category;
+    return `<button type="button" class="btn ${on ? 'btn--accent' : 'btn--ghost'}" data-cat-pick="${catEsc(c)}" style="display:flex;justify-content:space-between;width:100%;margin-bottom:4px;text-align:left"><span>${catEsc(c)}</span><span style="opacity:.7">${n || ''}</span></button>`;
+  }).join('');
+
+  const items = catItemsOf(catState.category);
+  title.textContent = catState.category || '';
+  typesList.innerHTML = items.length ? items.map((it, idx) => {
+    const editing = catState.editing && catState.editing.id === it.id;
+    return `
+      <div class="cat-row" data-cat-row="${catEsc(it.id)}" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:6px;${it.active ? '' : 'opacity:.55'}">
+        ${catThumb(it.imageUrl)}
+        <div style="flex:1;min-width:150px">
+          ${editing
+            ? `<input type="text" data-cat-edit-input value="${catEsc(catState.editing.value)}" maxlength="60" style="max-width:220px" />
+               <button type="button" class="btn btn--accent" data-cat-rename-save="${catEsc(it.id)}">Сохранить</button>
+               <button type="button" class="btn btn--ghost" data-cat-rename-cancel="1">Отмена</button>`
+            : `<div class="cat-name" style="font-weight:600">${catEsc(it.type)}</div>`}
+          <div style="font-size:11.5px;color:var(--text-faint)">№ ${idx + 1}${it.active ? '' : ' · скрыт в приложении'}</div>
+        </div>
+        <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">
+          <button type="button" class="btn btn--ghost" data-cat-up="${catEsc(it.id)}" title="Выше" ${idx === 0 ? 'disabled' : ''}>↑</button>
+          <button type="button" class="btn btn--ghost" data-cat-down="${catEsc(it.id)}" title="Ниже" ${idx === items.length - 1 ? 'disabled' : ''}>↓</button>
+          <button type="button" class="btn btn--ghost" data-cat-rename="${catEsc(it.id)}">Переименовать</button>
+          <label class="btn btn--ghost" style="cursor:pointer">Заменить картинку<input type="file" accept="image/jpeg,image/png,image/webp" data-cat-replace="${catEsc(it.id)}" hidden /></label>
+          <button type="button" class="btn btn--ghost" data-cat-toggle="${catEsc(it.id)}">${it.active ? 'Скрыть' : 'Показать'}</button>
+          <button type="button" class="btn btn--ghost" data-cat-delete="${catEsc(it.id)}">Удалить</button>
+        </div>
+      </div>`;
+  }).join('') : '<p class="panel__hint" style="margin:0">В этом разделе типов пока нет. Добавьте первый ниже.</p>';
+}
+
+async function catRun(label, fn) {
+  if (catState.busy) return;
+  catState.busy = true;
+  catSetStatus(label);
+  try {
+    await fn();
+    catSetStatus('Готово.');
+  } catch (err) {
+    catSetStatus(catErrText(err), 'error');
+  } finally {
+    catState.busy = false;
+  }
+}
+
+function catWireOnce() {
+  if (catState.wired) return;
+  catState.wired = true;
+
+  document.getElementById('catCategoryList').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-cat-pick]');
+    if (!b) return;
+    catState.category = b.dataset.catPick;
+    catState.editing = null;
+    catSetStatus('');
+    document.getElementById('catAddStatus').textContent = '';
+    renderMyMarketCatalog();
+  });
+
+  const list = document.getElementById('catTypesList');
+  list.addEventListener('click', async (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    const d = b.dataset;
+    if (d.catUp || d.catDown) {
+      const id = d.catUp || d.catDown;
+      await catRun('Меняю порядок…', async () => {
+        await api(`/shop-admin/catalog-types/${encodeURIComponent(id)}/move`, { method: 'POST', body: JSON.stringify({ direction: d.catUp ? 'up' : 'down' }) });
+        await loadMyMarketCatalog();
+      });
+    } else if (d.catRename) {
+      const it = catState.items.find((x) => x.id === d.catRename);
+      if (it) { catState.editing = { id: it.id, value: it.type }; renderMyMarketCatalog(); const inp = list.querySelector('[data-cat-edit-input]'); if (inp) inp.focus(); }
+    } else if (d.catRenameCancel) {
+      catState.editing = null;
+      renderMyMarketCatalog();
+    } else if (d.catRenameSave) {
+      const inp = list.querySelector('[data-cat-edit-input]');
+      const value = inp ? inp.value.trim() : '';
+      if (!value) { catSetStatus('Название типа не должно быть пустым.', 'error'); return; }
+      await catRun('Сохраняю название…', async () => {
+        await api(`/shop-admin/catalog-types/${encodeURIComponent(d.catRenameSave)}`, { method: 'PATCH', body: JSON.stringify({ type: value }) });
+        catState.editing = null;
+        await loadMyMarketCatalog();
+      });
+    } else if (d.catToggle) {
+      const it = catState.items.find((x) => x.id === d.catToggle);
+      if (!it) return;
+      await catRun(it.active ? 'Скрываю…' : 'Показываю…', async () => {
+        await api(`/shop-admin/catalog-types/${encodeURIComponent(it.id)}`, { method: 'PATCH', body: JSON.stringify({ active: !it.active }) });
+        await loadMyMarketCatalog();
+      });
+    } else if (d.catDelete) {
+      const it = catState.items.find((x) => x.id === d.catDelete);
+      if (!it || !confirm(`Удалить тип «${it.type}»? Товары это не затронет.`)) return;
+      await catRun('Удаляю…', async () => {
+        await api(`/shop-admin/catalog-types/${encodeURIComponent(it.id)}`, { method: 'DELETE' });
+        await loadMyMarketCatalog();
+      });
+    }
+  });
+  list.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && e.target.matches('[data-cat-edit-input]')) {
+      e.preventDefault();
+      const save = list.querySelector('[data-cat-rename-save]');
+      if (save) save.click();
+    } else if (e.key === 'Escape' && catState.editing) {
+      catState.editing = null;
+      renderMyMarketCatalog();
+    }
+  });
+  list.addEventListener('change', async (e) => {
+    const inp = e.target;
+    if (!inp.dataset || !inp.dataset.catReplace || !inp.files || !inp.files[0]) return;
+    const id = inp.dataset.catReplace;
+    const file = inp.files[0];
+    await catRun('Загружаю картинку…', async () => {
+      const url = await uploadMyMarketFile(file); // то же место, что и фото товаров
+      await api(`/shop-admin/catalog-types/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ imageUrl: url }) });
+      await loadMyMarketCatalog();
+    });
+  });
+
+  document.getElementById('catAddForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const statusEl = document.getElementById('catAddStatus');
+    const nameEl = document.getElementById('catAddName');
+    const fileEl = document.getElementById('catAddFile');
+    const urlEl = document.getElementById('catAddUrl');
+    const type = nameEl.value.replace(/\s+/g, ' ').trim();
+    const setErr = (t) => { statusEl.style.color = 'var(--loss)'; statusEl.textContent = t; };
+    if (!catState.category) { setErr('Сначала выберите раздел слева.'); return; }
+    if (!type) { setErr('Впишите название типа.'); return; }
+    if (catState.busy) return;
+    catState.busy = true;
+    const btn = document.getElementById('catAddSave');
+    btn.disabled = true;
+    statusEl.style.color = '';
+    statusEl.textContent = 'Сохраняю…';
+    try {
+      let imageUrl = urlEl.value.trim() || null;
+      if (fileEl.files && fileEl.files[0]) imageUrl = await uploadMyMarketFile(fileEl.files[0]);
+      await api('/shop-admin/catalog-types', { method: 'POST', body: JSON.stringify({ category: catState.category, type, imageUrl }) });
+      nameEl.value = ''; fileEl.value = ''; urlEl.value = '';
+      statusEl.textContent = '';
+      catSetStatus(`Тип «${type}» добавлен.`);
+      await loadMyMarketCatalog();
+    } catch (err) {
+      setErr(catErrText(err));
+    } finally {
+      catState.busy = false;
+      btn.disabled = false;
     }
   });
 }
