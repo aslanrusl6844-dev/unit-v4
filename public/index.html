@@ -670,8 +670,18 @@
         <!-- ---- Каталог: справочник типов и их картинок (GET /api/shop/catalog-types) ---- -->
         <div id="mymarketCatalogTab" hidden>
           <div class="panel">
-            <div class="panel__head" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><h2>Типы каталога приложения</h2><button type="button" class="btn btn--ghost" id="catImportBtn" title="Занести типы, которые система уже знает; картинки пустые">Импорт из приложения</button></div>
+            <div class="panel__head" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><h2>Типы каталога приложения</h2><div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn btn--ghost" id="catImportBtn" title="Занести типы, которые система уже знает; картинки пустые">Импорт из приложения</button><button type="button" class="btn btn--ghost" id="catBulkBtn" title="Вставить текст: каждая строка «Категория | Тип»">Добавить типы списком</button><button type="button" class="btn btn--accent" id="catZipBtn" title="Папка = раздел, файл = тип (jpg, jpeg, png, webp)">Загрузить картинки типов (ZIP)</button><input type="file" id="catZipFile" accept=".zip,application/zip,application/x-zip-compressed" hidden /></div></div>
             <p class="panel__hint">Типы и картинки, которые приложение My Market показывает в правой колонке каталога. Тип виден в приложении, даже если товаров с ним ещё нет. Товары и их категория/тип этим экраном не меняются.</p>
+            <form id="catBulkForm" hidden style="margin-bottom:14px;border:1px solid var(--border);border-radius:8px;padding:10px 12px">
+              <div style="font-weight:600;margin-bottom:6px">Добавить типы списком</div>
+              <p class="panel__hint" style="margin:0 0 6px">Каждая строка — «Категория | Тип», например: <code>Женская одежда | Юбки</code>. Недостающие типы создадутся без картинки, существующие пропускаются.</p>
+              <textarea id="catBulkText" rows="7" style="width:100%;box-sizing:border-box" placeholder="Женская одежда | Юбки&#10;Обувь | Кроссовки"></textarea>
+              <div class="inline-form" style="gap:8px;margin-top:8px">
+                <button type="submit" class="btn btn--accent" id="catBulkSave">Добавить</button>
+                <button type="button" class="btn btn--ghost" id="catBulkCancel">Закрыть</button>
+              </div>
+            </form>
+            <div id="catResult" hidden style="margin-bottom:14px;border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:13px"></div>
             <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
               <div id="catCategoryList" style="flex:0 0 250px;max-width:100%"></div>
               <div style="flex:1 1 420px;min-width:0">
@@ -1421,6 +1431,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="/dashboard.js"></script>
 </body>
 </html>

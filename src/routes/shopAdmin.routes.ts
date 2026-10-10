@@ -1,4 +1,6 @@
-import { Router } from 'express';
+import express, { Router } from 'express';
+import { put } from '@vercel/blob';
+import { env } from '../config/env';
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import JSZip from 'jszip';
@@ -14,6 +16,7 @@ import { ozonTypeKey } from '../services/sync.service';
 import { hintCategoryByName, hintRuleCatalogPairs, starterCatalogPairs, buildCatalog } from '../services/categoryHints';
 import { editOrderNotify } from '../lib/telegram';
 import { sendSms } from '../services/sms.service';
+import { parseImageZip, parseBulkText, normalizeKey, cleanName, capitalizeFirst, ImportError } from '../services/catalogTypeImport';
 
 export const shopAdminRouter = Router();
 
@@ -1600,6 +1603,116 @@ shopAdminRouter.post('/catalog-types/import', async (_req, res) => {
   } catch (err: any) {
     logger.error({ err }, '[Shop Admin] POST /catalog-types/import упал');
     res.status(500).json({ error: 'Не удалось импортировать типы', details: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * Массовая загрузка картинок типов ZIP-архивом. Папка = раздел (без учёта
+ * регистра и лишних пробелов), имя файла без расширения = тип. Нет такого типа
+ * в разделе — создаётся; есть — картинка заменяется. Картинки уходят в Vercel
+ * Blob тем же способом, что и фото товаров (shop/image/...). Ошибки по файлам
+ * не роняют загрузку — возвращаются списком. Тело — сам ZIP (Content-Type
+ * application/zip), до ~4,4 МБ: выше предела Vercel на тело запроса (~4,5 МБ);
+ * экран админки сам режет большой архив на части.
+ */
+shopAdminRouter.post('/catalog-types/images-zip', express.raw({ type: () => true, limit: '4.4mb' }), async (req, res) => {
+  if (!env.blobToken) {
+    return res.status(501).json({ error: 'добавьте Blob', details: 'BLOB_READ_WRITE_TOKEN не задан в переменных окружения — картинки некуда сохранить.' });
+  }
+  const body = req.body as unknown;
+  if (!Buffer.isBuffer(body) || body.length === 0) return res.status(400).json({ error: 'Пустой запрос: ожидается ZIP-архив в теле запроса' });
+  try {
+    let parsed;
+    try {
+      parsed = await parseImageZip(body);
+    } catch (e: any) {
+      return res.status(400).json({ error: String(e?.message ?? e) });
+    }
+    const errors: ImportError[] = [...parsed.errors];
+    const rows: CatalogTypeRow[] = await prisma.catalogType.findMany({});
+    const index = new Map<string, CatalogTypeRow>(rows.map((r) => [`${r.category}|${normalizeKey(r.type)}`, r]));
+    const nextOrder = new Map<string, number>();
+    for (const r of rows) nextOrder.set(r.category, Math.max(nextOrder.get(r.category) ?? 0, r.sortOrder));
+
+    // 1) картинки в хранилище (по несколько штук параллельно, чтобы уложиться в лимит времени функции)
+    const uploaded: Array<{ item: (typeof parsed.items)[number]; url: string }> = [];
+    const queue = [...parsed.items];
+    const worker = async () => {
+      for (let item = queue.shift(); item; item = queue.shift()) {
+        try {
+          const rand = Math.random().toString(36).slice(2, 8);
+          const blob = await put(`shop/image/${Date.now()}-catalog-${rand}.${item.ext}`, item.buffer, { access: 'public', contentType: item.contentType, token: env.blobToken });
+          uploaded.push({ item, url: blob.url });
+        } catch (e: any) {
+          errors.push({ file: item.source, message: `Не удалось загрузить в хранилище: ${String(e?.message ?? e)}` });
+        }
+      }
+    };
+    await Promise.all([worker(), worker(), worker(), worker()]);
+    uploaded.sort((x, y) => x.item.source.localeCompare(y.item.source));
+
+    // 2) привязка к типам в справочнике
+    const results: Array<{ category: string; type: string; action: 'created' | 'replaced' | 'attached' }> = [];
+    for (const { item, url } of uploaded) {
+      try {
+        const key = `${item.category}|${normalizeKey(item.type)}`;
+        const existing = index.get(key);
+        if (existing) {
+          await prisma.catalogType.update({ where: { id: existing.id }, data: { imageUrl: url } });
+          results.push({ category: item.category, type: existing.type, action: existing.imageUrl ? 'replaced' : 'attached' });
+          existing.imageUrl = url;
+        } else {
+          const sortOrder = (nextOrder.get(item.category) ?? 0) + 1;
+          nextOrder.set(item.category, sortOrder);
+          const type = capitalizeFirst(item.type);
+          const row = await prisma.catalogType.create({ data: { category: item.category, type, imageUrl: url, sortOrder } });
+          index.set(key, row);
+          results.push({ category: item.category, type, action: 'created' });
+        }
+      } catch (e: any) {
+        errors.push({ file: item.source, message: `Не удалось сохранить тип: ${String(e?.message ?? e)}` });
+      }
+    }
+    res.json({
+      ok: true,
+      created: results.filter((r) => r.action === 'created').length,
+      replaced: results.filter((r) => r.action === 'replaced').length,
+      attached: results.filter((r) => r.action === 'attached').length,
+      skippedJunk: parsed.skippedJunk,
+      items: results,
+      errors,
+    });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] POST /catalog-types/images-zip упал');
+    res.status(500).json({ error: 'Не удалось обработать архив', details: String(err?.message ?? err) });
+  }
+});
+
+/** «Добавить типы списком»: строки «Категория | Тип». Недостающие создаются (без картинки), существующие пропускаются. */
+shopAdminRouter.post('/catalog-types/bulk', async (req, res) => {
+  const parsedBody = z.object({ text: z.string().max(200_000) }).safeParse(req.body);
+  if (!parsedBody.success) return res.status(400).json({ error: 'Нужен текст: по строке «Категория | Тип»' });
+  try {
+    const { pairs, errors } = parseBulkText(parsedBody.data.text);
+    const rows: CatalogTypeRow[] = await prisma.catalogType.findMany({});
+    const seen = new Set(rows.map((r) => `${r.category}|${normalizeKey(r.type)}`));
+    const nextOrder = new Map<string, number>();
+    for (const r of rows) nextOrder.set(r.category, Math.max(nextOrder.get(r.category) ?? 0, r.sortOrder));
+    const toCreate: Array<{ category: string; type: string; sortOrder: number }> = [];
+    let alreadyThere = 0;
+    for (const p of pairs) {
+      const key = `${p.category}|${normalizeKey(p.type)}`;
+      if (seen.has(key)) { alreadyThere += 1; continue; }
+      seen.add(key);
+      const sortOrder = (nextOrder.get(p.category) ?? 0) + 1;
+      nextOrder.set(p.category, sortOrder);
+      toCreate.push({ category: p.category, type: cleanName(p.type), sortOrder });
+    }
+    if (toCreate.length) await prisma.catalogType.createMany({ data: toCreate, skipDuplicates: true });
+    res.json({ ok: true, created: toCreate.length, alreadyThere, errors });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] POST /catalog-types/bulk упал');
+    res.status(500).json({ error: 'Не удалось добавить типы', details: String(err?.message ?? err) });
   }
 });
 

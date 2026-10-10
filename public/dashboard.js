@@ -6933,6 +6933,40 @@ function catWireOnce() {
   if (catState.wired) return;
   catState.wired = true;
 
+  document.getElementById('catZipBtn').addEventListener('click', () => {
+    if (!catState.busy) document.getElementById('catZipFile').click();
+  });
+  document.getElementById('catZipFile').addEventListener('change', async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    await catUploadZip(file);
+  });
+  document.getElementById('catBulkBtn').addEventListener('click', () => {
+    const f = document.getElementById('catBulkForm');
+    f.hidden = !f.hidden;
+    if (!f.hidden) document.getElementById('catBulkText').focus();
+  });
+  document.getElementById('catBulkCancel').addEventListener('click', () => { document.getElementById('catBulkForm').hidden = true; });
+  document.getElementById('catBulkForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (catState.busy) return;
+    const ta = document.getElementById('catBulkText');
+    if (!ta.value.trim()) { catSetStatus('Вставьте строки «Категория | Тип».', 'error'); return; }
+    const btn = document.getElementById('catBulkSave');
+    btn.disabled = true;
+    let r = null;
+    await catRun('Добавляю типы…', async () => {
+      r = await api('/shop-admin/catalog-types/bulk', { method: 'POST', body: JSON.stringify({ text: ta.value }) });
+      await loadMyMarketCatalog();
+    });
+    btn.disabled = false;
+    if (!r) return;
+    if (!r.errors.length) ta.value = '';
+    catShowResult(`Добавлено типов — ${r.created}${r.alreadyThere ? `, уже были — ${r.alreadyThere}` : ''}.`, r.errors);
+    catSetStatus(`Список обработан: добавлено ${r.created}.`);
+  });
+
   document.getElementById('catImportBtn').addEventListener('click', async () => {
     if (catState.busy) return;
     if (!confirm('Занести в справочник типы, которые система уже знает (картинки останутся пустыми)? Уже существующие типы не изменятся.')) return;
@@ -7055,4 +7089,97 @@ function catWireOnce() {
       btn.disabled = false;
     }
   });
+}
+
+/** Итог массовой операции: сводка и список ошибок под заголовком. */
+function catShowResult(summary, errors) {
+  const box = document.getElementById('catResult');
+  if (!box) return;
+  const list = (errors || []).map((er) => {
+    const where = er.file ? catEsc(er.file) : (er.line ? `строка ${er.line}${er.text ? `: ${catEsc(er.text)}` : ''}` : '');
+    return `<li>${where ? `<b>${where}</b> — ` : ''}${catEsc(er.message)}</li>`;
+  }).join('');
+  box.innerHTML = `<div style="font-weight:600">${catEsc(summary)}</div>${list ? `<div style="margin-top:6px;color:var(--loss)">Не обработано / замечания (${errors.length}):</div><ul style="margin:4px 0 0 18px;padding:0;color:var(--loss)">${list}</ul>` : ''}
+    <div style="margin-top:8px"><button type="button" class="btn btn--ghost" id="catResultClose">Скрыть</button></div>`;
+  box.hidden = false;
+  document.getElementById('catResultClose').addEventListener('click', () => { box.hidden = true; });
+}
+
+// Vercel режет тело запроса примерно на 4,5 МБ, поэтому большой ZIP экран сам
+// режет на части (до ~3 МБ каждая, папки и имена сохраняются), а сервер
+// разбирает каждую часть как обычный архив.
+const CAT_ZIP_CHUNK_BYTES = 3 * 1024 * 1024;
+const CAT_ZIP_SINGLE_MAX = 3.5 * 1024 * 1024;
+const CAT_ZIP_ENDPOINT = '/api/shop-admin/catalog-types/images-zip';
+
+async function catPostZipPart(blob) {
+  const res = await fetch(CAT_ZIP_ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'application/zip' }, body: blob });
+  let body = null;
+  try { body = await res.json(); } catch { /* не JSON */ }
+  if (!res.ok) {
+    const text = (body && body.error) ? body.error + (body.details ? ` — ${typeof body.details === 'string' ? body.details : JSON.stringify(body.details)}` : '') : `HTTP ${res.status}`;
+    throw new Error(text);
+  }
+  return body;
+}
+
+async function catSplitZip(file) {
+  const zip = await JSZip.loadAsync(file);
+  const entries = Object.values(zip.files).filter((f) => !f.dir && !/(^|\/)(__MACOSX|\.[^/]*|thumbs\.db|desktop\.ini)(\/|$)/i.test(f.name));
+  const parts = [];
+  const tooBig = [];
+  let cur = null;
+  for (const f of entries) {
+    const data = await f.async('uint8array');
+    if (data.length > 4 * 1024 * 1024) { tooBig.push({ file: f.name, message: `Файл слишком большой для загрузки: ${(data.length / 1024 / 1024).toFixed(1)} МБ` }); continue; }
+    if (!cur || cur.size + data.length > CAT_ZIP_CHUNK_BYTES) { cur = { zip: new JSZip(), size: 0 }; parts.push(cur); }
+    cur.zip.file(f.name, data, { binary: true });
+    cur.size += data.length;
+  }
+  const blobs = [];
+  for (const p of parts) blobs.push(await p.zip.generateAsync({ type: 'blob', compression: 'STORE' }));
+  return { blobs, tooBig };
+}
+
+async function catUploadZip(file) {
+  if (catState.busy) return;
+  catState.busy = true;
+  const btn = document.getElementById('catZipBtn');
+  btn.disabled = true;
+  const total = { created: 0, replaced: 0, attached: 0 };
+  const errors = [];
+  try {
+    let blobs;
+    if (file.size <= CAT_ZIP_SINGLE_MAX) {
+      blobs = [file];
+    } else if (typeof JSZip === 'undefined') {
+      throw new Error(`Архив ${(file.size / 1024 / 1024).toFixed(1)} МБ больше лимита одной загрузки (~3,5 МБ), а библиотека для автоматической нарезки не загрузилась. Разделите архив на несколько и загрузите по очереди.`);
+    } else {
+      catSetStatus('Разбираю большой архив на части…');
+      let split;
+      try { split = await catSplitZip(file); } catch { throw new Error('Не удалось прочитать архив: файл не похож на ZIP или повреждён.'); }
+      blobs = split.blobs;
+      errors.push(...split.tooBig);
+    }
+    for (let i = 0; i < blobs.length; i++) {
+      catSetStatus(blobs.length > 1 ? `Загружаю часть ${i + 1} из ${blobs.length}…` : 'Загружаю архив…');
+      try {
+        const r = await catPostZipPart(blobs[i]);
+        total.created += r.created; total.replaced += r.replaced; total.attached += r.attached;
+        errors.push(...(r.errors || []));
+      } catch (err) {
+        errors.push({ file: blobs.length > 1 ? `часть ${i + 1} из ${blobs.length}` : file.name, message: err.message || String(err) });
+      }
+    }
+    await loadMyMarketCatalog();
+    const done = total.created + total.replaced + total.attached;
+    catShowResult(`Архив «${file.name}»: картинок прикреплено — ${done} (новых типов — ${total.created}, заменено картинок — ${total.replaced}, добавлено к типам без картинки — ${total.attached}).`, errors);
+    catSetStatus(done ? `Картинки загружены: ${done}.` : 'Ни одна картинка не загружена — см. список ниже.', done ? '' : 'error');
+  } catch (err) {
+    catShowResult(`Архив «${file.name}» не загружен.`, [{ message: err.message || String(err) }]);
+    catSetStatus('Архив не загружен.', 'error');
+  } finally {
+    catState.busy = false;
+    btn.disabled = false;
+  }
 }
