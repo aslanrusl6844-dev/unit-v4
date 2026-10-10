@@ -244,7 +244,7 @@ async function getProductVariantsMap(
     where: { variantGroup: { in: groups }, shopActive: true, shopArchived: false, variantLabel: { not: null } },
   });
   const byGroup = new Map<string, typeof members>();
-  for (const m of members as Array<{ variantGroup: string | null; variantLabel: string | null }>) {
+  for (const m of members) {
     if (!m.variantGroup || !m.variantLabel) continue; // двойная страховка — не только в where
     if (!byGroup.has(m.variantGroup)) byGroup.set(m.variantGroup, []);
     byGroup.get(m.variantGroup)!.push(m);
