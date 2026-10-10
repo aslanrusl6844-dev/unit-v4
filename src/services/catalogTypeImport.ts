@@ -1,5 +1,10 @@
 import JSZip from 'jszip';
-import { normalizeShopCategory } from '../config/shopCategories';
+import { SHOP_CATEGORIES } from '../config/shopCategories';
+
+function canonicalCategory(raw: string): string | null {
+  const key = normalizeKey(raw);
+  return SHOP_CATEGORIES.find((category) => normalizeKey(category) === key) ?? null;
+}
 
 export interface ImportError {
   file: string;
@@ -39,13 +44,13 @@ export function normalizeKey(value: string): string {
   return String(value ?? '')
     .normalize('NFKC')
     .replace(/ё/gi, 'е')
-    .replace(/\\s+/g, ' ')
+    .replace(/\s+/g, ' ')
     .trim()
     .toLocaleLowerCase('ru-RU');
 }
 
 export function cleanName(value: string): string {
-  return String(value ?? '').normalize('NFKC').replace(/\\s+/g, ' ').trim();
+  return String(value ?? '').normalize('NFKC').replace(/\s+/g, ' ').trim();
 }
 
 export function capitalizeFirst(value: string): string {
@@ -100,7 +105,7 @@ export async function parseImageZip(input: Buffer): Promise<ParsedImageZip> {
     }
 
     const categoryRaw = cleanName(segments[0]);
-    const category = normalizeShopCategory(categoryRaw);
+    const category = canonicalCategory(categoryRaw);
     if (!category) {
       errors.push({ file: source, message: `Неизвестный раздел каталога: «${categoryRaw}».` });
       continue;
@@ -137,7 +142,7 @@ export function parseBulkText(text: string): { pairs: CatalogTypePair[]; errors:
   const errors: ImportError[] = [];
   const seen = new Set<string>();
 
-  for (const [index, rawLine] of String(text ?? '').split(/\\r?\\n/).entries()) {
+  for (const [index, rawLine] of String(text ?? '').split(/\r?\n/).entries()) {
     const line = rawLine.trim();
     if (!line || line.startsWith('#')) continue;
 
