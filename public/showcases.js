@@ -7,7 +7,7 @@
 // Использует глобальные api() и uploadMyMarketFile() из dashboard.js (вызываются
 // уже после загрузки обоих скриптов — при открытии вкладки).
 // ---------------------------------------------------------------------
-const scState = { list: [], q: '', current: null, editingNew: false, status: '', statusKind: '', wired: false, busy: false };
+const scState = { list: [], q: '', current: null, editingNew: false, status: '', statusKind: '', wired: false, busy: false, loading: false, loadError: null };
 const scEsc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const scErr = (err) => (err && err.body && err.body.error) ? String(err.body.error) : String((err && err.message) || err);
 const scTypeName = (t) => (t === 'shop' ? 'Магазин' : 'Бренд');
@@ -29,15 +29,24 @@ function scThumb(url) {
     : '<span style="display:inline-block;width:40px;height:40px;border-radius:8px;border:1px dashed var(--border)"></span>';
 }
 
+let scLoadSeq = 0;
 async function loadShowcases() {
   scWireOnce();
+  const seq = ++scLoadSeq; // быстрый ввод в поиске: устаревший ответ не затирает свежий
+  scState.loading = true;
+  scState.loadError = null;
+  scRender();
   try {
-    scState.list = await api(`/shop-admin/showcases${scState.q ? `?q=${encodeURIComponent(scState.q)}` : ''}`);
+    const list = await api(`/shop-admin/showcases${scState.q ? `?q=${encodeURIComponent(scState.q)}` : ''}`);
+    if (seq !== scLoadSeq) return;
+    scState.list = list;
     scSetStatus('', '');
   } catch (err) {
+    if (seq !== scLoadSeq) return;
     scState.list = [];
-    scSetStatus(`Не удалось загрузить витрины: ${scErr(err)}`, 'error');
+    scState.loadError = `Не удалось загрузить витрины: ${scErr(err)}`;
   }
+  scState.loading = false;
   scRender();
 }
 
@@ -77,7 +86,13 @@ function scListHtml() {
     </div>
     <p class="panel__hint">Иконки брендов и магазинов под главным баннером приложения. Порядок здесь = порядок в приложении. Удаление витрины не удаляет товары из каталога.</p>
     <p id="scStatus" class="panel__hint" style="color:${scState.statusKind === 'error' ? 'var(--loss)' : 'var(--text-muted)'}">${scEsc(scState.status)}</p>
-    ${scState.list.length ? `<table class="table"><tbody>${rows}</tbody></table>` : '<p class="panel__hint">Витрин пока нет.</p>'}`;
+    ${scState.loadError
+      ? `<p style="color:var(--loss)">${scEsc(scState.loadError)}</p><button type="button" class="btn btn--accent" data-sc="reload">Повторить</button>`
+      : scState.loading && !scState.list.length
+        ? '<p class="panel__hint">Загрузка…</p>'
+        : scState.list.length
+          ? `<table class="table"><tbody>${rows}</tbody></table>`
+          : `<p class="panel__hint">${scState.q ? 'Ничего не найдено.' : 'Витрин пока нет.'}</p>`}`;
 }
 
 // ----------------------------- редактор -----------------------------
@@ -190,6 +205,8 @@ async function scUploadInto(fileInputId, urlInputId) {
 async function scSave() {
   if (scState.busy) return;
   scState.busy = true;
+  const saveBtn = document.getElementById('scSave');
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = 'Сохраняю…'; }
   try {
     await scUploadInto('scLogoFile', 'scLogoUrl');
     await scUploadInto('scBannerFile', 'scBannerUrl');
@@ -205,6 +222,8 @@ async function scSave() {
     }
   } catch (err) {
     scSetStatus(`Не удалось сохранить: ${scErr(err)}`, 'error');
+    const b = document.getElementById('scSave');
+    if (b) { b.disabled = false; b.textContent = scState.current ? 'Сохранить' : 'Создать'; }
   } finally {
     scState.busy = false;
   }
@@ -258,6 +277,11 @@ async function scPSearch(box) {
 async function scHandleClick(e) {
   const btn = e.target.closest('[data-sc]');
   if (!btn || btn.disabled) return;
+  // Пока предыдущее действие не закончилось, повторные клики игнорируются
+  // (двойной клик не отправляет удаление/публикацию/добавление дважды).
+  if (scState.busy) return;
+  scState.busy = true;
+  scRoot().setAttribute('aria-busy', 'true');
   const act = btn.dataset.sc;
   const base = scState.current ? `/shop-admin/showcases/${encodeURIComponent(scState.current.id)}` : '';
   const row = btn.closest('tr');
@@ -267,6 +291,7 @@ async function scHandleClick(e) {
   const col = cid && scState.current && scState.current.collections.find((x) => x.id === cid);
   try {
     if (act === 'new') { scState.editingNew = true; scState.current = null; scSetStatus('', ''); scRender(); }
+    else if (act === 'reload') await loadShowcases();
     else if (act === 'back') { scState.current = null; scState.editingNew = false; await loadShowcases(); }
     else if (act === 'edit') await scOpen(row.dataset.id);
     else if (act === 'up' || act === 'down') {
@@ -326,6 +351,10 @@ async function scHandleClick(e) {
       return;
     }
     scSetStatus(scErr(err), 'error');
+  } finally {
+    scState.busy = false;
+    const r = scRoot();
+    if (r) r.removeAttribute('aria-busy');
   }
 }
 

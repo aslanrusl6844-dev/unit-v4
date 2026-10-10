@@ -876,3 +876,139 @@ describe('ошибки и валидация административного 
     assert.equal(tables.product.length, 1);
   });
 });
+
+// ---------------------------------------------------------------------------
+describe('контракт для Android и сквозной сценарий', () => {
+  const keys = (o: Row) => Object.keys(o).sort();
+
+  test('формат ответов совпадает с контрактом: поля списка, страницы витрины, подборки', async () => {
+    const p = seedProduct({ name: 'Т' });
+    const s = await newShowcase({ title: 'Nike', type: 'shop', description: 'D', logoUrl: 'https://b.example/l.png', bannerUrl: 'https://b.example/b.png', bannerTitle: 'BT', bannerText: 'BX', published: true });
+    await adm('POST', `/${s.id}/products`, { productId: p.id });
+    const col = (await adm('POST', `/${s.id}/collections`, { title: 'Новинки' })).json;
+    await adm('POST', `/${s.id}/collections/${col.id}/items`, { productId: p.id });
+
+    const list = (await pub('')).json;
+    assert.deepEqual(list, [{ id: s.id, type: 'shop', title: 'Nike', description: 'D', logoUrl: 'https://b.example/l.png', bannerUrl: 'https://b.example/b.png', bannerTitle: 'BT', bannerText: 'BX' }]);
+
+    const detail = (await pub(`/${s.id}`)).json;
+    assert.deepEqual(keys(detail), ['bannerText', 'bannerTitle', 'bannerUrl', 'collections', 'description', 'id', 'logoUrl', 'title', 'type']);
+    assert.deepEqual(keys(detail.collections[0]), ['id', 'products', 'title']);
+    assert.equal(detail.collections[0].id, col.id);
+    assert.equal(detail.collections[0].title, 'Новинки');
+  });
+
+  test('необязательные поля отдаются как null (а не пропадают и не "undefined")', async () => {
+    const s = await newShowcase({ title: 'Минимум', published: true });
+    const item = (await pub('')).json[0];
+    for (const k of ['description', 'logoUrl', 'bannerUrl', 'bannerTitle', 'bannerText']) assert.equal(item[k], null, k);
+    assert.equal(item.type, 'brand');
+    const text = (await call('GET', '/api/shop/showcases', KEY)).text;
+    assert.equal(text.includes('undefined'), false);
+    void s;
+  });
+
+  test('товар в витрине ИДЕНТИЧЕН товару из общего каталога /api/shop/products (все поля и значения)', async () => {
+    const p = seedProduct({ name: 'Общий', shopPrice: 2500, shopOldPrice: 3000, shopStock: 7, shopArticle: '7654321', description: 'Описание' });
+    const s = await newShowcase({ published: true });
+    await adm('POST', `/${s.id}/products`, { productId: p.id });
+    const col = (await adm('POST', `/${s.id}/collections`, { title: 'К' })).json;
+    await adm('POST', `/${s.id}/collections/${col.id}/items`, { productId: p.id });
+
+    const catalog = (await call('GET', '/api/shop/products', KEY)).json as Row[];
+    const fromCatalog = catalog.find((x) => x.sku === '7654321');
+    assert.ok(fromCatalog, 'товар есть в общем каталоге');
+    const fromShowcase = (await pub(`/${s.id}/products`)).json[0];
+    const fromCollection = (await pub(`/${s.id}`)).json.collections[0].products[0];
+    assert.deepEqual(fromShowcase, fromCatalog);
+    assert.deepEqual(fromCollection, fromCatalog);
+  });
+
+  test('сквозной сценарий: создание → товары и подборки → порядок → публикация → публичный API → скрытие → удаление', async () => {
+    const [a, b, c] = ['Кроссовки', 'Футболка', 'Шорты'].map((n) => seedProduct({ name: n }));
+    // 1. создание (скрыта) и наполнение
+    const s = await newShowcase({ title: 'Nike' });
+    for (const p of [a, b, c]) assert.equal((await adm('POST', `/${s.id}/products`, { productId: p.id })).status, 201);
+    const hits = (await adm('POST', `/${s.id}/collections`, { title: 'Хиты продаж' })).json;
+    const news = (await adm('POST', `/${s.id}/collections`, { title: 'Новинки' })).json;
+    await adm('POST', `/${s.id}/collections/${hits.id}/items`, { productId: a.id });
+    await adm('POST', `/${s.id}/collections/${news.id}/items`, { productId: c.id });
+    await adm('POST', `/${s.id}/collections/${news.id}/items`, { productId: b.id });
+    // 2. приложение пока ничего не видит
+    assert.deepEqual((await pub('')).json, []);
+    // 3. порядок: подборки «Новинки», «Хиты»; товары витрины c, a, b; в «Новинки» b, c
+    assert.equal((await adm('PUT', `/${s.id}/collections/order`, { ids: [news.id, hits.id] })).status, 200);
+    assert.equal((await adm('PUT', `/${s.id}/products/order`, { productIds: [c.id, a.id, b.id] })).status, 200);
+    assert.equal((await adm('PUT', `/${s.id}/collections/${news.id}/items/order`, { productIds: [b.id, c.id] })).status, 200);
+    // 4. публикация и публичная выдача
+    assert.equal((await adm('PATCH', `/${s.id}`, { published: true })).status, 200);
+    assert.equal((await pub('')).json.length, 1);
+    const page = (await pub(`/${s.id}`)).json;
+    assert.deepEqual(page.collections.map((x: Row) => x.title), ['Новинки', 'Хиты продаж']);
+    assert.deepEqual(page.collections[0].products.map((p: Row) => p.name), ['Футболка', 'Шорты']);
+    assert.deepEqual(names(await pub(`/${s.id}/products`)), ['Шорты', 'Кроссовки', 'Футболка']);
+    // 5. скрытие → исчезает; публикация снова → появляется с тем же содержимым
+    await adm('PATCH', `/${s.id}`, { published: false });
+    assert.equal((await pub(`/${s.id}`)).status, 404);
+    await adm('PATCH', `/${s.id}`, { published: true });
+    assert.deepEqual(names(await pub(`/${s.id}/products`)), ['Шорты', 'Кроссовки', 'Футболка']);
+    // 6. удаление: витрина исчезает, товары каталога целы
+    assert.equal((await adm('DELETE', `/${s.id}?confirm=1`)).status, 200);
+    assert.equal((await pub(`/${s.id}`)).status, 404);
+    assert.deepEqual((await pub('')).json, []);
+    assert.equal(tables.product.length, 3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('пустые данные и граничные случаи публичного API', () => {
+  test('опубликованная витрина без товаров и подборок: 200, пустые списки', async () => {
+    const s = await newShowcase({ published: true });
+    const page = await pub(`/${s.id}`);
+    assert.equal(page.status, 200);
+    assert.deepEqual(page.json.collections, []);
+    const prods = await pub(`/${s.id}/products`);
+    assert.equal(prods.status, 200);
+    assert.deepEqual(prods.json, []);
+  });
+
+  test('все товары витрины скрыты в каталоге: страница витрины открывается, подборки без видимых товаров не показываются', async () => {
+    const hidden = seedProduct({ name: 'Скрыт', shopActive: false });
+    const s = await newShowcase({ published: true });
+    await adm('POST', `/${s.id}/products`, { productId: hidden.id });
+    const col = (await adm('POST', `/${s.id}/collections`, { title: 'К' })).json;
+    await adm('POST', `/${s.id}/collections/${col.id}/items`, { productId: hidden.id });
+    assert.deepEqual((await pub(`/${s.id}`)).json.collections, []);
+    assert.deepEqual((await pub(`/${s.id}/products`)).json, []);
+  });
+
+  test('неизвестная и «странная» идентификация витрины → 404 JSON, не 500', async () => {
+    for (const id of ['ghost', '%00', 'x'.repeat(300), '%E0%A4%A']) {
+      for (const suffix of ['', '/products']) {
+        const r = await call('GET', `/api/shop/showcases/${id}${suffix}`, KEY);
+        assert.ok([400, 401, 404].includes(r.status), `${id}${suffix} → ${r.status}`);
+        assert.notEqual(r.status, 500, `${id}${suffix}`);
+      }
+    }
+  });
+
+  test('сортировка и поиск по пустой/неизвестной опции безопасны: неизвестный sort = порядок администратора', async () => {
+    const [a, b] = [seedProduct({ name: 'B', shopPrice: 1 }), seedProduct({ name: 'A', shopPrice: 2 })];
+    const s = await newShowcase({ published: true });
+    for (const p of [a, b]) await adm('POST', `/${s.id}/products`, { productId: p.id });
+    assert.deepEqual(names(await pub(`/${s.id}/products?sort=hack`)), ['B', 'A']);
+    assert.deepEqual(names(await pub(`/${s.id}/products?q=`)), ['B', 'A']);
+    assert.deepEqual(names(await pub(`/${s.id}/products?q=%25`)), []);
+    assert.deepEqual(names(await pub(`/${s.id}/products?sort=name`)), ['A', 'B']);
+  });
+
+  test('публикация подборки без публикации витрины ничего не раскрывает', async () => {
+    const p = seedProduct();
+    const s = await newShowcase();
+    const col = (await adm('POST', `/${s.id}/collections`, { title: 'К', published: true })).json;
+    await adm('POST', `/${s.id}/collections/${col.id}/items`, { productId: p.id });
+    assert.equal((await pub(`/${s.id}`)).status, 404);
+    assert.equal((await pub(`/${s.id}/products`)).status, 404);
+    assert.deepEqual((await pub('')).json, []);
+  });
+});
