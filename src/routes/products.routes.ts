@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import type { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from '../db/prisma';
 import { logger } from '../utils/logger';
@@ -87,7 +88,7 @@ productsRouter.post('/', async (req, res) => {
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.flatten() });
   }
-  const data: Record<string, any> = { ...parsed.data };
+  const data: Prisma.ProductUncheckedCreateInput = { ...parsed.data } as Prisma.ProductUncheckedCreateInput;
   // Та же защита, что и в PUT: нельзя СРАЗУ создать товар «В продаже» без
   // корректной category/цены — на практике карточка всегда создаёт новый
   // товар с shopActive=false, но проверяем и здесь, а не только в PUT.

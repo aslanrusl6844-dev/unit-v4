@@ -11,7 +11,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!checkCronSecret(req)) return res.status(401).json({ error: 'Unauthorized' });
   try {
     const result = await runWarmup();
-    res.status(200).json({ ok: true, ...result });
+    res.status(200).json({ ...result, ok: true });
   } catch (err: any) {
     res.status(500).json({ ok: false, error: String(err?.message ?? err) });
   }

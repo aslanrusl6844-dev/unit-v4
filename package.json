@@ -5,7 +5,7 @@
   "main": "dist/server.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "prisma generate && tsc -p tsconfig.json; mkdir -p dist/assets/fonts && cp src/assets/fonts/*.ttf dist/assets/fonts/",
+    "build": "prisma generate && tsc -p tsconfig.json && mkdir -p dist/assets/fonts && cp src/assets/fonts/*.ttf dist/assets/fonts/",
     "start": "node dist/server.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",

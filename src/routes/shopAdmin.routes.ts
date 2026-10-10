@@ -482,7 +482,7 @@ async function loadTodayPaidOrders() {
   const orders = await prisma.shopOrder.findMany({
     where: { status: 'paid', archived: false, createdAt: { gte: startOfToday() } },
   });
-  return orders.map((o: { items: string }) => {
+  return orders.map((o) => {
     let items: TodayOrderItem[] = [];
     try {
       items = JSON.parse(o.items);
@@ -507,7 +507,7 @@ shopAdminRouter.get('/orders/waybills-products-today', async (_req, res) => {
       string,
       { sku: string; name: string; todayQty: number; todayCities: Set<string>; cityStats: Map<string, { newQty: number; hasDownloadedBefore: boolean }> }
     >();
-    for (const o of orders as Array<{ city: string; waybillDownloaded: boolean; parsedItems: TodayOrderItem[] }>) {
+    for (const o of orders) {
       const canonicalCity = normalizeKzCity(o.city);
       for (const item of o.parsedItems) {
         if (!item.sku) continue;
@@ -584,7 +584,7 @@ shopAdminRouter.get('/orders/waybills-zip-by-product-city', async (req, res) => 
     const redownload = req.query.redownload === 'true';
 
     const orders = await loadTodayPaidOrders();
-    const matching = (orders as Array<{ id: string; number: string; city: string; waybillDownloaded: boolean; parsedItems: TodayOrderItem[]; customerName: string; phone: string; street: string; house: string; apartment: string | null; entrance: string | null; floor: string | null; intercom: string | null }>)
+    const matching = orders
       .filter((o) => o.waybillDownloaded === redownload && normalizeKzCity(o.city) === city && o.parsedItems.some((i) => i.sku === sku));
 
     if (!matching.length) {
