@@ -21,6 +21,7 @@ import { shopMediaRouter } from './routes/shopMedia.routes';
 import { yardRouter } from './routes/yard.routes';
 import { yardAdminRouter } from './routes/yardAdmin.routes';
 import { wholesalersRouter } from './routes/wholesalers.routes';
+import { adminAuthMiddleware } from './middleware/adminAuth';
 
 /**
  * Собранное Express-приложение без вызова .listen(). Используется двумя
@@ -35,6 +36,11 @@ import { wholesalersRouter } from './routes/wholesalers.routes';
 const app = express();
 
 app.use(cors());
+// Защита административных API (Basic, ADMIN_USER / ADMIN_PASSWORD). Стоит ДО
+// разбора тела запроса и ДО всех роутеров: закрыто всё под /api/, кроме явного
+// списка публичных путей (/api/health, API приложения /api/shop/* с его
+// x-app-key, фид Kaspi) — см. src/middleware/adminAuth.ts.
+app.use(adminAuthMiddleware());
 // ВАЖНО: лимит увеличен с дефолтного (~100кб) — иначе он падал раньше,
 // чем доходило до роута загрузки медиа (см. shopMedia.routes.ts), даже
 // раньше собственного лимита этого роута, потому что этот middleware

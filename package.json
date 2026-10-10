@@ -7,6 +7,7 @@
     "dev": "tsx watch src/server.ts",
     "build": "prisma generate && tsc -p tsconfig.json && mkdir -p dist/assets/fonts && cp src/assets/fonts/*.ttf dist/assets/fonts/",
     "start": "node dist/server.js",
+    "test": "node --import tsx --test tests/*.test.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
