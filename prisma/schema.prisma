@@ -808,3 +808,74 @@ model CatalogType {
   @@unique([category, type])
   @@index([category, sortOrder])
 }
+
+// =====================================================================
+// Подбаннерные витрины (бренды и магазины под главным баннером приложения).
+// Витрина — иконка на главной и своя страница: баннер, рекламные подборки и
+// каталог её товаров. Товары НЕ копируются: витрина хранит только ссылки на
+// существующие товары общего каталога (Product), связь явная — по productId.
+// Внешнего ключа на Product нет намеренно (как у WholesalerProduct): модель
+// Product не меняется, удаление витрины или привязки товар не затрагивает, а
+// удалённый из каталога товар просто перестаёт выдаваться.
+// =====================================================================
+model Showcase {
+  id          String   @id @default(cuid())
+  type        String   // "brand" | "shop"
+  title       String
+  description String?
+  logoUrl     String?  // иконка/логотип для ряда под баннером
+  bannerUrl   String?  // собственный рекламный баннер витрины
+  bannerTitle String?
+  bannerText  String?
+  published   Boolean  @default(false) // опубликована ли в приложении
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  collections ShowcaseCollection[]
+  products    ShowcaseProduct[]
+
+  @@index([published, sortOrder])
+}
+
+// Рекламная подборка внутри витрины («Новинки», «Хиты продаж»).
+model ShowcaseCollection {
+  id         String   @id @default(cuid())
+  showcaseId String
+  showcase   Showcase @relation(fields: [showcaseId], references: [id], onDelete: Cascade)
+  title      String
+  published  Boolean  @default(true)
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  items ShowcaseCollectionItem[]
+
+  @@index([showcaseId, sortOrder])
+}
+
+// Каталог витрины: товар привязан к витрине ровно один раз.
+model ShowcaseProduct {
+  id         String   @id @default(cuid())
+  showcaseId String
+  showcase   Showcase @relation(fields: [showcaseId], references: [id], onDelete: Cascade)
+  productId  String   // Product.id (без внешнего ключа)
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  @@unique([showcaseId, productId])
+  @@index([productId])
+}
+
+// Товар в подборке: ровно один раз на подборку.
+model ShowcaseCollectionItem {
+  id           String             @id @default(cuid())
+  collectionId String
+  collection   ShowcaseCollection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  productId    String             // Product.id (без внешнего ключа)
+  sortOrder    Int                @default(0)
+  createdAt    DateTime           @default(now())
+
+  @@unique([collectionId, productId])
+  @@index([productId])
+}

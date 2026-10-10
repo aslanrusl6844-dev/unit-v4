@@ -483,6 +483,7 @@
           <button class="is-active" data-tab="home">Главная</button>
           <button data-tab="products">Товары</button>
           <button data-tab="catalog">Каталог</button>
+          <button data-tab="showcases">Подбаннерные витрины</button>
           <button data-tab="prices">Цены и акции</button>
           <button data-tab="orders">Заказы</button>
           <button data-tab="returns">Возвраты</button>
@@ -665,6 +666,9 @@
             </form>
           </div>
         </div>
+
+        <!-- ---- Подбаннерные витрины брендов и магазинов (public/showcases.js) ---- -->
+        <div id="mymarketShowcasesTab" hidden><div class="panel" id="scRoot"></div></div>
 
         <!-- ---- Цены и акции ---- -->
         <!-- ---- Каталог: справочник типов и их картинок (GET /api/shop/catalog-types) ---- -->
@@ -1433,5 +1437,6 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="/dashboard.js"></script>
+<script src="/showcases.js"></script>
 </body>
 </html>

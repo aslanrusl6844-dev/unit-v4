@@ -18,6 +18,8 @@ import { nichesRouter } from './routes/niches.routes';
 import { shopRouter } from './routes/shop.routes';
 import { shopAdminRouter } from './routes/shopAdmin.routes';
 import { shopMediaRouter } from './routes/shopMedia.routes';
+import { showcasesRouter } from './routes/showcases.routes';
+import { showcasesAdminRouter } from './routes/showcasesAdmin.routes';
 import { yardRouter } from './routes/yard.routes';
 import { yardAdminRouter } from './routes/yardAdmin.routes';
 import { wholesalersRouter } from './routes/wholesalers.routes';
@@ -121,6 +123,11 @@ app.use('/api/niches', nichesRouter);
 // должен быть нужен. Порядок здесь определяет, какой роут Express отдаст
 // запрос первым, так что менять местами эти две строки нельзя.
 app.use('/api/shop/admin', shopMediaRouter);
+// Подбаннерные витрины: публичная часть (x-app-key, только чтение) и админская
+// (вход Basic через adminAuthMiddleware). Оба — до общих роутеров, чтобы их
+// пути не перехватывались чужими маршрутами с параметрами.
+app.use('/api/shop/showcases', showcasesRouter);
+app.use('/api/shop-admin/showcases', showcasesAdminRouter);
 app.use('/api/shop', shopRouter);
 app.use('/api/shop-admin', shopAdminRouter);
 // «Двор» — своя подсистема, свои таблицы, свои заказы, свои деньги. Не
