@@ -153,7 +153,7 @@ export function parseBulkText(text: string): { pairs: CatalogTypePair[]; errors:
     }
 
     const categoryRaw = cleanName(line.slice(0, separator));
-    const category = normalizeShopCategory(categoryRaw);
+    const category = canonicalCategory(categoryRaw);
     const type = cleanName(line.slice(separator + 1));
 
     if (!category) {
