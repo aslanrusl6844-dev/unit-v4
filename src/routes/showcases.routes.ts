@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { prisma } from '../db/prisma';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
+import { mapDbError } from './showcases.errors';
 import {
   SHOP_VISIBLE_WHERE,
   toShopProduct,
@@ -86,6 +87,8 @@ showcasesRouter.get('/', async (_req, res) => {
     res.json(rows.map(publicShowcase));
   } catch (err: any) {
     logger.error({ err }, '[Showcases API] GET / упал');
+    const mapped = mapDbError(err);
+    if (mapped) return res.status(mapped.status === 404 ? 500 : mapped.status).json(mapped.body);
     res.status(500).json({ error: 'Не удалось получить витрины' });
   }
 });
@@ -111,6 +114,8 @@ showcasesRouter.get('/:id', async (req, res) => {
     res.json({ ...publicShowcase(showcase), collections: outCollections });
   } catch (err: any) {
     logger.error({ err }, '[Showcases API] GET /:id упал');
+    const mapped = mapDbError(err);
+    if (mapped) return res.status(mapped.status === 404 ? 500 : mapped.status).json(mapped.body);
     res.status(500).json({ error: 'Не удалось получить витрину' });
   }
 });
@@ -140,6 +145,8 @@ showcasesRouter.get('/:id/products', async (req, res) => {
     res.json(products);
   } catch (err: any) {
     logger.error({ err }, '[Showcases API] GET /:id/products упал');
+    const mapped = mapDbError(err);
+    if (mapped) return res.status(mapped.status === 404 ? 500 : mapped.status).json(mapped.body);
     res.status(500).json({ error: 'Не удалось получить товары витрины' });
   }
 });

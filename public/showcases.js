@@ -60,8 +60,8 @@ function scListHtml() {
       <td><b>${scEsc(s.title)}</b><div class="panel__hint" style="margin:0">${scTypeName(s.type)} · товаров: ${s._count ? s._count.products : 0} · подборок: ${s._count ? s._count.collections : 0}</div></td>
       <td>${s.published ? '<span style="color:var(--profit)">Опубликована</span>' : '<span style="color:var(--text-muted)">Скрыта</span>'}</td>
       <td style="white-space:nowrap">
-        <button type="button" class="btn btn--ghost" data-sc="up" ${i === 0 ? 'disabled' : ''} title="Выше">↑</button>
-        <button type="button" class="btn btn--ghost" data-sc="down" ${i === scState.list.length - 1 ? 'disabled' : ''} title="Ниже">↓</button>
+        <button type="button" class="btn btn--ghost" data-sc="up" ${i === 0 || scState.q ? 'disabled' : ''} title="${scState.q ? 'Порядок меняется без поиска' : 'Выше'}">↑</button>
+        <button type="button" class="btn btn--ghost" data-sc="down" ${i === scState.list.length - 1 || scState.q ? 'disabled' : ''} title="${scState.q ? 'Порядок меняется без поиска' : 'Ниже'}">↓</button>
         <button type="button" class="btn btn--ghost" data-sc="toggle">${s.published ? 'Скрыть' : 'Опубликовать'}</button>
         <button type="button" class="btn btn--ghost" data-sc="edit">Открыть</button>
         <button type="button" class="btn btn--ghost" data-sc="delete">Удалить</button>
@@ -319,6 +319,12 @@ async function scHandleClick(e) {
       await scOpen(scState.current.id, 'Подборка удалена');
     }
   } catch (err) {
+    // Порядок устарел (список изменили в другой вкладке): перечитываем и сообщаем.
+    if (err && err.body && err.body.code === 'STALE_ORDER') {
+      if (scState.current) await scOpen(scState.current.id, 'Список изменился — данные обновлены, повторите действие');
+      else await loadShowcases();
+      return;
+    }
     scSetStatus(scErr(err), 'error');
   }
 }

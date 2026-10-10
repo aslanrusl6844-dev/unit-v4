@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { prisma } from '../db/prisma';
 import { logger } from '../utils/logger';
+import { mapDbError } from './showcases.errors';
 
 /**
  * Подбаннерные витрины — АДМИНИСТРАТИВНАЯ часть. Путь: /api/shop-admin/showcases/...
@@ -37,7 +38,32 @@ function blankToNull(v: string | null | undefined): string | null | undefined {
 
 function fail(res: Response, req: Request, err: any, what: string) {
   logger.error({ err }, `[Showcases Admin] ${req.method} ${req.path} упал`);
+  // Понятные ответы вместо общего 500: запись уже удалена (P2025), дубль (P2002), таблицы не созданы (P2021/P2022).
+  const mapped = mapDbError(err);
+  if (mapped) return res.status(mapped.status).json(mapped.body);
   res.status(500).json({ error: what, details: String(err?.message ?? err) });
+}
+
+/** Лимиты, чтобы страница витрины для приложения не раздувалась. */
+export const MAX_PRODUCTS_PER_LIST = 500;
+export const MAX_COLLECTIONS_PER_SHOWCASE = 30;
+
+/**
+ * Новый порядок должен быть ПОЛНЫМ списком текущих элементов: неизвестный id → 400,
+ * неполный список (кто-то успел добавить/удалить) → 409 STALE_ORDER — иначе порядок
+ * получился бы с повторяющимися номерами.
+ */
+function checkFullOrder(res: Response, current: string[], wanted: string[], unknownMsg: string): boolean {
+  const cur = new Set(current);
+  if (wanted.some((id) => !cur.has(id))) {
+    res.status(400).json({ error: unknownMsg });
+    return false;
+  }
+  if (wanted.length !== current.length) {
+    res.status(409).json({ error: 'Список изменился — обновите страницу и повторите', code: 'STALE_ORDER' });
+    return false;
+  }
+  return true;
 }
 
 function isUniqueViolation(err: any): boolean {
@@ -88,7 +114,7 @@ async function linkedProducts(links: Array<{ productId: string; sortOrder: numbe
 showcasesAdminRouter.get('/product-search', async (req, res) => {
   try {
     res.setHeader('Cache-Control', 'no-store');
-    const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 100) : '';
     if (q.length < 1) return res.json([]);
     const rows = await prisma.product.findMany({
       where: {
@@ -170,8 +196,8 @@ showcasesAdminRouter.put('/order', async (req, res) => {
   const ids = parsed.data.ids;
   if (new Set(ids).size !== ids.length) return res.status(400).json({ error: 'В списке есть повторы' });
   try {
-    const existing = await prisma.showcase.findMany({ where: { id: { in: ids } } });
-    if (existing.length !== ids.length) return res.status(400).json({ error: 'В списке есть неизвестная витрина' });
+    const all = await prisma.showcase.findMany({});
+    if (!checkFullOrder(res, all.map((r: any) => r.id), ids, 'В списке есть неизвестная витрина')) return;
     await prisma.$transaction(ids.map((id, i) => prisma.showcase.update({ where: { id }, data: { sortOrder: i + 1 } })));
     res.json({ ok: true });
   } catch (err: any) {
@@ -229,6 +255,7 @@ showcasesAdminRouter.patch('/:id', async (req, res) => {
     const existing = await prisma.showcase.findUnique({ where: { id: req.params.id } });
     if (!existing) return res.status(404).json({ error: 'Витрина не найдена' });
     const d = parsed.data;
+    if (Object.values(d).every((v) => v === undefined)) return res.status(400).json({ error: 'Нет полей для изменения' });
     const data: any = {};
     if (d.type !== undefined) data.type = d.type;
     if (d.title !== undefined) data.title = d.title;
@@ -274,6 +301,9 @@ showcasesAdminRouter.post('/:id/products', async (req, res) => {
     if (!showcase) return res.status(404).json({ error: 'Витрина не найдена' });
     const product = await prisma.product.findUnique({ where: { id: parsed.data.productId } });
     if (!product) return res.status(404).json({ error: 'Товар не найден в каталоге' });
+    if ((await prisma.showcaseProduct.count({ where: { showcaseId: showcase.id } })) >= MAX_PRODUCTS_PER_LIST) {
+      return res.status(400).json({ error: `В витрине не может быть больше ${MAX_PRODUCTS_PER_LIST} товаров`, code: 'LIMIT_REACHED' });
+    }
     const dup = await prisma.showcaseProduct.findFirst({ where: { showcaseId: showcase.id, productId: product.id } });
     if (dup) return res.status(409).json({ error: 'Этот товар уже есть в витрине', code: 'DUPLICATE' });
     const last = await prisma.showcaseProduct.findFirst({ where: { showcaseId: showcase.id }, orderBy: { sortOrder: 'desc' } });
@@ -298,8 +328,10 @@ showcasesAdminRouter.put('/:id/products/order', async (req, res) => {
   const ids = parsed.data.productIds;
   if (new Set(ids).size !== ids.length) return res.status(400).json({ error: 'В списке есть повторы' });
   try {
-    const links = await prisma.showcaseProduct.findMany({ where: { showcaseId: req.params.id, productId: { in: ids } } });
-    if (links.length !== ids.length) return res.status(400).json({ error: 'В списке есть товар, которого нет в этой витрине' });
+    const showcase = await prisma.showcase.findUnique({ where: { id: req.params.id } });
+    if (!showcase) return res.status(404).json({ error: 'Витрина не найдена' });
+    const links = await prisma.showcaseProduct.findMany({ where: { showcaseId: showcase.id } });
+    if (!checkFullOrder(res, links.map((l: any) => l.productId), ids, 'В списке есть товар, которого нет в этой витрине')) return;
     await prisma.$transaction(
       links.map((l: any) => prisma.showcaseProduct.update({ where: { id: l.id }, data: { sortOrder: ids.indexOf(l.productId) + 1 } })),
     );
@@ -332,6 +364,9 @@ showcasesAdminRouter.post('/:id/collections', async (req, res) => {
   try {
     const showcase = await prisma.showcase.findUnique({ where: { id: req.params.id } });
     if (!showcase) return res.status(404).json({ error: 'Витрина не найдена' });
+    if ((await prisma.showcaseCollection.count({ where: { showcaseId: showcase.id } })) >= MAX_COLLECTIONS_PER_SHOWCASE) {
+      return res.status(400).json({ error: `В витрине не может быть больше ${MAX_COLLECTIONS_PER_SHOWCASE} подборок`, code: 'LIMIT_REACHED' });
+    }
     const last = await prisma.showcaseCollection.findFirst({ where: { showcaseId: showcase.id }, orderBy: { sortOrder: 'desc' } });
     const row = await prisma.showcaseCollection.create({
       data: {
@@ -353,8 +388,10 @@ showcasesAdminRouter.put('/:id/collections/order', async (req, res) => {
   const ids = parsed.data.ids;
   if (new Set(ids).size !== ids.length) return res.status(400).json({ error: 'В списке есть повторы' });
   try {
-    const rows = await prisma.showcaseCollection.findMany({ where: { showcaseId: req.params.id, id: { in: ids } } });
-    if (rows.length !== ids.length) return res.status(400).json({ error: 'В списке есть неизвестная подборка' });
+    const showcase = await prisma.showcase.findUnique({ where: { id: req.params.id } });
+    if (!showcase) return res.status(404).json({ error: 'Витрина не найдена' });
+    const rows = await prisma.showcaseCollection.findMany({ where: { showcaseId: showcase.id } });
+    if (!checkFullOrder(res, rows.map((r: any) => r.id), ids, 'В списке есть неизвестная подборка')) return;
     await prisma.$transaction(ids.map((id, i) => prisma.showcaseCollection.update({ where: { id }, data: { sortOrder: i + 1 } })));
     res.json({ ok: true });
   } catch (err: any) {
@@ -371,6 +408,7 @@ showcasesAdminRouter.patch('/:id/collections/:cid', async (req, res) => {
     const data: any = {};
     if (parsed.data.title !== undefined) data.title = parsed.data.title;
     if (parsed.data.published !== undefined) data.published = parsed.data.published;
+    if (Object.keys(data).length === 0) return res.status(400).json({ error: 'Нет полей для изменения' });
     res.json(await prisma.showcaseCollection.update({ where: { id: existing.id }, data }));
   } catch (err: any) {
     fail(res, req, err, 'Не удалось сохранить подборку');
@@ -397,6 +435,9 @@ showcasesAdminRouter.post('/:id/collections/:cid/items', async (req, res) => {
     if (!collection) return res.status(404).json({ error: 'Подборка не найдена' });
     const product = await prisma.product.findUnique({ where: { id: parsed.data.productId } });
     if (!product) return res.status(404).json({ error: 'Товар не найден в каталоге' });
+    if ((await prisma.showcaseCollectionItem.count({ where: { collectionId: collection.id } })) >= MAX_PRODUCTS_PER_LIST) {
+      return res.status(400).json({ error: `В подборке не может быть больше ${MAX_PRODUCTS_PER_LIST} товаров`, code: 'LIMIT_REACHED' });
+    }
     const dup = await prisma.showcaseCollectionItem.findFirst({ where: { collectionId: collection.id, productId: product.id } });
     if (dup) return res.status(409).json({ error: 'Этот товар уже есть в подборке', code: 'DUPLICATE' });
     const last = await prisma.showcaseCollectionItem.findFirst({ where: { collectionId: collection.id }, orderBy: { sortOrder: 'desc' } });
@@ -422,8 +463,8 @@ showcasesAdminRouter.put('/:id/collections/:cid/items/order', async (req, res) =
   try {
     const collection = await prisma.showcaseCollection.findFirst({ where: { id: req.params.cid, showcaseId: req.params.id } });
     if (!collection) return res.status(404).json({ error: 'Подборка не найдена' });
-    const items = await prisma.showcaseCollectionItem.findMany({ where: { collectionId: collection.id, productId: { in: ids } } });
-    if (items.length !== ids.length) return res.status(400).json({ error: 'В списке есть товар, которого нет в этой подборке' });
+    const items = await prisma.showcaseCollectionItem.findMany({ where: { collectionId: collection.id } });
+    if (!checkFullOrder(res, items.map((it: any) => it.productId), ids, 'В списке есть товар, которого нет в этой подборке')) return;
     await prisma.$transaction(
       items.map((it: any) => prisma.showcaseCollectionItem.update({ where: { id: it.id }, data: { sortOrder: ids.indexOf(it.productId) + 1 } })),
     );

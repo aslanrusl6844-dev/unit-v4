@@ -288,13 +288,15 @@ describe('изображение и порядок', () => {
     assert.deepEqual((await adm('GET', '')).json.map((s: Row) => s.title), ['C', 'A', 'B']);
   });
 
-  test('порядок: повторы и неизвестные id отклоняются без изменений', async () => {
+  test('порядок: повторы и неизвестные id отклоняются (400), неполный список — 409, порядок не меняется', async () => {
     const a = await newShowcase({ title: 'A' });
     const b = await newShowcase({ title: 'B' });
     assert.equal((await adm('PUT', '/order', { ids: [a.id, a.id] })).status, 400);
     assert.equal((await adm('PUT', '/order', { ids: [a.id, 'nope'] })).status, 400);
+    const stale = await adm('PUT', '/order', { ids: [b.id] });
+    assert.equal(stale.status, 409);
+    assert.equal(stale.json.code, 'STALE_ORDER');
     assert.deepEqual((await adm('GET', '')).json.map((s: Row) => s.title), ['A', 'B']);
-    void b;
   });
 });
 
@@ -653,5 +655,224 @@ describe('доступ и публичный API', () => {
     assert.deepEqual(Object.keys(list).sort(), ['bannerText', 'bannerTitle', 'bannerUrl', 'description', 'id', 'logoUrl', 'title', 'type']);
     assert.equal(list.title, 'Nike');
     assert.equal(JSON.stringify(detail).includes(p.id), false, 'внутренний id товара не публикуется');
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('ошибки и валидация административного API', () => {
+  test('устаревший (неполный) порядок товаров, подборок и товаров подборки → 409 без изменений', async () => {
+    const [a, b] = [seedProduct({ name: 'A' }), seedProduct({ name: 'B' })];
+    const s = await newShowcase();
+    const c1 = (await adm('POST', `/${s.id}/collections`, { title: 'К1' })).json;
+    const c2 = (await adm('POST', `/${s.id}/collections`, { title: 'К2' })).json;
+    for (const p of [a, b]) {
+      await adm('POST', `/${s.id}/products`, { productId: p.id });
+      await adm('POST', `/${s.id}/collections/${c1.id}/items`, { productId: p.id });
+    }
+    const before = JSON.stringify(tables);
+    for (const [path, body] of [
+      [`/${s.id}/products/order`, { productIds: [a.id] }],
+      [`/${s.id}/collections/order`, { ids: [c1.id] }],
+      [`/${s.id}/collections/${c1.id}/items/order`, { productIds: [b.id] }],
+    ] as const) {
+      const r = await adm('PUT', path, body);
+      assert.equal(r.status, 409, path);
+      assert.equal(r.json.code, 'STALE_ORDER', path);
+    }
+    assert.equal(JSON.stringify(tables), before, 'порядок и данные не изменились');
+    void c2;
+  });
+
+  test('порядок для несуществующей витрины / подборки → 404', async () => {
+    const s = await newShowcase();
+    assert.equal((await adm('PUT', '/ghost/products/order', { productIds: [] })).status, 404);
+    assert.equal((await adm('PUT', '/ghost/collections/order', { ids: [] })).status, 404);
+    assert.equal((await adm('PUT', `/${s.id}/collections/ghost/items/order`, { productIds: [] })).status, 404);
+  });
+
+  test('пустое изменение (PATCH без полей) → 400, данные не меняются', async () => {
+    const s = await newShowcase();
+    const col = (await adm('POST', `/${s.id}/collections`, { title: 'К' })).json;
+    assert.equal((await adm('PATCH', `/${s.id}`, {})).status, 400);
+    assert.equal((await adm('PATCH', `/${s.id}/collections/${col.id}`, {})).status, 400);
+  });
+
+  test('валидация: слишком длинные поля, неверные типы, тело не объект → 400', async () => {
+    const bad: unknown[] = [
+      { type: 'brand', title: 'x'.repeat(121) },
+      { type: 'brand', title: 'X', description: 'x'.repeat(501) },
+      { type: 'brand', title: 'X', bannerText: 'x'.repeat(1001) },
+      { type: 'brand', title: 'X', bannerTitle: 'x'.repeat(121) },
+      { type: 'brand', title: 123 },
+      { type: 'brand', title: 'X', published: 'yes' },
+      { type: 'brand', title: 'X', logoUrl: 'ftp://x/y.png' },
+      { type: 'brand', title: 'X', logoUrl: 'https://' + 'a'.repeat(2000) + '.png' },
+      [],
+      'строка',
+      null,
+    ];
+    for (const body of bad) assert.equal((await adm('POST', '', body)).status, 400, JSON.stringify(body)?.slice(0, 60));
+    assert.equal(tables.showcase.length, 0);
+    const s = await newShowcase();
+    assert.equal((await adm('PATCH', `/${s.id}`, { sortOrder: -1 })).status, 400);
+    assert.equal((await adm('PATCH', `/${s.id}`, { sortOrder: 1.5 })).status, 400);
+    assert.equal((await adm('POST', `/${s.id}/collections`, { title: '  ' })).status, 400);
+    assert.equal((await adm('POST', `/${s.id}/products`, {})).status, 400);
+    assert.equal((await adm('POST', `/${s.id}/products`, { productId: 5 })).status, 400);
+  });
+
+  test('битый JSON в теле → 400 BAD_JSON без деталей парсера и без изменения данных', async () => {
+    const raw = (path: string, body: string) =>
+      new Promise<Res>((resolve, reject) => {
+        const r = http.request({ host: '127.0.0.1', port, method: 'POST', path, headers: { ...AUTH, 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(body)) } }, (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (c) => chunks.push(c));
+          res.on('end', () => { const text = Buffer.concat(chunks).toString('utf8'); let json: any = null; try { json = JSON.parse(text); } catch { /* */ } resolve({ status: res.statusCode ?? 0, json, text }); });
+        });
+        r.on('error', reject);
+        r.end(body);
+      });
+    for (const body of ['{"title": ', 'not json', '{"a":1,}']) {
+      const r = await raw('/api/shop-admin/showcases', body);
+      assert.equal(r.status, 400, body);
+      assert.equal(r.json.code, 'BAD_JSON');
+      assert.equal(r.text.includes('Unexpected'), false, 'детали парсера наружу не уходят');
+    }
+    assert.equal(tables.showcase.length, 0);
+  });
+
+  test('значения очищаются и обрезаются: пробелы в названии, пустая ссылка вместо картинки', async () => {
+    const s = await newShowcase({ title: '  Nike  ', logoUrl: '', description: '   ' });
+    assert.equal(s.title, 'Nike');
+    assert.equal(s.logoUrl, null);
+    assert.equal(s.description, null);
+  });
+
+  test('лимиты: не больше 500 товаров в витрине и подборке, не больше 30 подборок', async () => {
+    const p = seedProduct();
+    const s = await newShowcase();
+    for (let i = 0; i < 500; i++) tables.showcaseProduct.push({ id: `l${i}`, showcaseId: s.id, productId: `x${i}`, sortOrder: i, createdAt: new Date(i) });
+    const r = await adm('POST', `/${s.id}/products`, { productId: p.id });
+    assert.equal(r.status, 400);
+    assert.equal(r.json.code, 'LIMIT_REACHED');
+
+    const col = (await adm('POST', `/${s.id}/collections`, { title: 'К' })).json;
+    for (let i = 0; i < 500; i++) tables.showcaseCollectionItem.push({ id: `i${i}`, collectionId: col.id, productId: `y${i}`, sortOrder: i, createdAt: new Date(i) });
+    assert.equal((await adm('POST', `/${s.id}/collections/${col.id}/items`, { productId: p.id })).json.code, 'LIMIT_REACHED');
+
+    for (let i = 0; i < 29; i++) tables.showcaseCollection.push({ id: `c${i}`, showcaseId: s.id, title: `К${i}`, published: true, sortOrder: i, createdAt: new Date(i) });
+    assert.equal((await adm('POST', `/${s.id}/collections`, { title: 'лишняя' })).json.code, 'LIMIT_REACHED');
+  });
+
+  test('несуществующие витрина / подборка / привязка → 404 (а не 500)', async () => {
+    const s = await newShowcase();
+    const col = (await adm('POST', `/${s.id}/collections`, { title: 'К' })).json;
+    for (const [m, path, body] of [
+      ['GET', '/ghost'],
+      ['PATCH', '/ghost', { title: 'x' }],
+      ['DELETE', '/ghost?confirm=1'],
+      ['POST', '/ghost/collections', { title: 'x' }],
+      ['DELETE', `/${s.id}/products/ghost`],
+      ['POST', `/${s.id}/collections/ghost/items`, { productId: 'p' }],
+      ['DELETE', `/${s.id}/collections/${col.id}/items/ghost`],
+      ['DELETE', `/${s.id}/collections/ghost`],
+    ] as Array<[string, string, unknown?]>) {
+      assert.equal((await adm(m, path, body)).status, 404, `${m} ${path}`);
+    }
+  });
+
+  test('запись удалили между проверкой и действием (P2025) → 404; уникальность (P2002) → 409', async () => {
+    const s = await newShowcase();
+    const orig = stub.showcase.delete;
+    stub.showcase.delete = async () => { throw Object.assign(new Error('gone'), { code: 'P2025' }); };
+    try {
+      const r = await adm('DELETE', `/${s.id}?confirm=1`);
+      assert.equal(r.status, 404);
+      assert.equal(r.json.code, 'NOT_FOUND');
+    } finally {
+      stub.showcase.delete = orig;
+    }
+    const origUpdate = stub.showcase.update;
+    stub.showcase.update = async () => { throw Object.assign(new Error('dup'), { code: 'P2002' }); };
+    try {
+      assert.equal((await adm('PATCH', `/${s.id}`, { title: 'Y' })).status, 409);
+    } finally {
+      stub.showcase.update = origUpdate;
+    }
+  });
+
+  test('миграция витрин не применена (P2021): админка и приложение получают 503 с понятным кодом, без падения', async () => {
+    const orig = stub.showcase.findMany;
+    stub.showcase.findMany = async () => { throw Object.assign(new Error('The table `public.Showcase` does not exist'), { code: 'P2021' }); };
+    try {
+      const a = await adm('GET', '');
+      assert.equal(a.status, 503);
+      assert.equal(a.json.code, 'SHOWCASES_NOT_MIGRATED');
+      const p = await pub('');
+      assert.equal(p.status, 503);
+      assert.equal(p.json.code, 'SHOWCASES_NOT_MIGRATED');
+    } finally {
+      stub.showcase.findMany = orig;
+    }
+    assert.equal((await pub('')).status, 200, 'после восстановления всё работает');
+  });
+
+  test('неожиданная ошибка БД → 500 с сообщением, не 200 и не зависание', async () => {
+    const orig = stub.showcase.findMany;
+    stub.showcase.findMany = async () => { throw new Error('connection lost'); };
+    try {
+      const r = await adm('GET', '');
+      assert.equal(r.status, 500);
+      assert.match(r.json.error, /Не удалось/);
+      assert.equal((await pub('')).status, 500);
+    } finally {
+      stub.showcase.findMany = orig;
+    }
+  });
+
+  test('поиск товаров: пустой запрос → [], очень длинный запрос не ломает сервер, товары без совпадений → []', async () => {
+    seedProduct({ name: 'Кроссовки' });
+    assert.deepEqual((await adm('GET', '/product-search?q=')).json, []);
+    assert.deepEqual((await adm('GET', '/product-search')).json, []);
+    assert.equal((await adm('GET', `/product-search?q=${'я'.repeat(5000).replace(/я/g, 'a')}`)).status, 200);
+    assert.deepEqual((await adm('GET', '/product-search?q=zzzz')).json, []);
+  });
+
+  test('товар удалили из каталога: админка показывает пометку, приложение его пропускает, привязку можно убрать', async () => {
+    const keep = seedProduct({ name: 'Остался' });
+    const gone = seedProduct({ name: 'Удалённый' });
+    const s = await newShowcase({ published: true });
+    for (const p of [keep, gone]) await adm('POST', `/${s.id}/products`, { productId: p.id });
+    tables.product.splice(tables.product.findIndex((p) => p.id === gone.id), 1);
+    const admin = (await adm('GET', `/${s.id}`)).json;
+    assert.equal(admin.products.find((p: Row) => p.id === gone.id).missing, true);
+    assert.deepEqual(names(await pub(`/${s.id}/products`)), ['Остался']);
+    assert.equal((await adm('DELETE', `/${s.id}/products/${gone.id}`)).status, 200);
+  });
+
+  test('список в админке: счётчики товаров и подборок, скрытые витрины тоже видны администратору', async () => {
+    const p = seedProduct();
+    const s = await newShowcase({ title: 'Скрытая' });
+    await adm('POST', `/${s.id}/products`, { productId: p.id });
+    await adm('POST', `/${s.id}/collections`, { title: 'К' });
+    const list = (await adm('GET', '')).json;
+    assert.equal(list.length, 1);
+    assert.deepEqual(list[0]._count, { products: 1, collections: 1 });
+    assert.equal(list[0].published, false);
+    assert.deepEqual((await pub('')).json, [], 'а приложению скрытая витрина не видна');
+  });
+
+  test('удаление подборки не трогает привязки товаров к витрине, удаление привязки из витрины не трогает подборки', async () => {
+    const p = seedProduct();
+    const s = await newShowcase();
+    const col = (await adm('POST', `/${s.id}/collections`, { title: 'К' })).json;
+    await adm('POST', `/${s.id}/products`, { productId: p.id });
+    await adm('POST', `/${s.id}/collections/${col.id}/items`, { productId: p.id });
+    await adm('DELETE', `/${s.id}/products/${p.id}`);
+    assert.equal(tables.showcaseCollectionItem.length, 1, 'товар в подборке остался');
+    await adm('POST', `/${s.id}/products`, { productId: p.id });
+    await adm('DELETE', `/${s.id}/collections/${col.id}`);
+    assert.equal(tables.showcaseProduct.length, 1, 'товар в витрине остался');
+    assert.equal(tables.product.length, 1);
   });
 });

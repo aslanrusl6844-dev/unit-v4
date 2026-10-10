@@ -51,6 +51,14 @@ app.use(adminAuthMiddleware());
 // нужен, чтобы НАША ошибка (понятная, в JSON) сработала раньше, чем
 // голый обрыв от инфраструктуры Vercel.
 app.use(express.json({ limit: '4mb' }));
+// Некорректный JSON в запросах к витринам — 400 с понятным текстом (общий обработчик
+// ниже отвечает на такое 500; его поведение для остальных маршрутов не меняется).
+app.use(['/api/shop-admin/showcases', '/api/shop/showcases'], (err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (err?.type === 'entity.parse.failed') {
+    return res.status(400).json({ error: 'Тело запроса не является корректным JSON', code: 'BAD_JSON' });
+  }
+  next(err);
+});
 
 app.use((req, _res, next) => {
   logger.debug(`${req.method} ${req.url}`);
