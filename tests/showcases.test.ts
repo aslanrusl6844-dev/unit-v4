@@ -490,6 +490,27 @@ describe('рекламные подборки', () => {
     assert.equal(tables.showcaseCollectionItem.filter((i) => i.collectionId === col1.id).length, 0);
   });
 
+  test('страница витрины грузит товары одним запросом, сколько бы ни было подборок; один товар в двух подборках', async () => {
+    const [a, b, c] = ['A', 'B', 'C'].map((n) => seedProduct({ name: n }));
+    const s = await newShowcase({ published: true });
+    const cols: Row[] = [];
+    for (const title of ['К1', 'К2', 'К3']) cols.push((await adm('POST', `/${s.id}/collections`, { title })).json);
+    await adm('POST', `/${s.id}/collections/${cols[0].id}/items`, { productId: a.id });
+    await adm('POST', `/${s.id}/collections/${cols[0].id}/items`, { productId: b.id });
+    await adm('POST', `/${s.id}/collections/${cols[1].id}/items`, { productId: b.id });
+    await adm('POST', `/${s.id}/collections/${cols[2].id}/items`, { productId: c.id });
+    const orig = stub.product.findMany;
+    let productQueries = 0;
+    stub.product.findMany = async (...args: any[]) => { productQueries++; return orig(...args); };
+    try {
+      const page = (await pub(`/${s.id}`)).json;
+      assert.deepEqual(page.collections.map((x: Row) => x.products.map((p: Row) => p.name)), [['A', 'B'], ['B'], ['C']]);
+      assert.equal(productQueries, 1, 'запросов к товарам: ' + productQueries);
+    } finally {
+      stub.product.findMany = orig;
+    }
+  });
+
   test('подборку нельзя тронуть через чужую витрину', async () => {
     const s1 = await newShowcase({ title: 'S1' });
     const s2 = await newShowcase({ title: 'S2' });

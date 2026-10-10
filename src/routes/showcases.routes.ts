@@ -49,22 +49,26 @@ function publicShowcase(s: any) {
 }
 
 /**
- * Загружает видимые товары по списку id СТРОГО в порядке списка. Невидимые
- * (нет в каталоге / не в продаже / архив) просто пропускаются.
+ * Загружает видимые товары ОДНИМ набором запросов и отдаёт карту id → товар в
+ * формате каталога. Невидимые (нет в каталоге / не в продаже / архив / без цены)
+ * в карту не попадают. Порядок задаёт вызывающий код.
  */
-async function loadVisibleProductsInOrder(productIds: string[]) {
-  if (productIds.length === 0) return [];
-  const rows: any[] = await prisma.product.findMany({ where: { AND: [SHOP_VISIBLE_WHERE, { id: { in: productIds } }] } });
+async function loadVisibleProductMap(productIds: string[]): Promise<Map<string, any>> {
+  const out = new Map<string, any>();
+  const ids = Array.from(new Set(productIds));
+  if (ids.length === 0) return out;
+  const rows: any[] = await prisma.product.findMany({ where: { AND: [SHOP_VISIBLE_WHERE, { id: { in: ids } }] } });
   const withArticles: any[] = await Promise.all(rows.map((r) => ensureShopArticle(r)));
   const statsMap = await getReviewStatsMap(withArticles);
   const variantsMap = await getProductVariantsMap(withArticles);
-  const byId = new Map<string, any>(withArticles.map((p: any): [string, any] => [p.id, p]));
-  const out: any[] = [];
-  for (const id of productIds) {
-    const p = byId.get(id);
-    if (p) out.push({ ...toShopProduct(p), ...statsMap.get(p.id), variants: variantsMap.get(p.id) });
-  }
+  for (const p of withArticles) out.set(p.id, { ...toShopProduct(p), ...statsMap.get(p.id), variants: variantsMap.get(p.id) });
   return out;
+}
+
+/** Видимые товары СТРОГО в порядке списка id; невидимые пропускаются. */
+async function loadVisibleProductsInOrder(productIds: string[]) {
+  const map = await loadVisibleProductMap(productIds);
+  return productIds.filter((id) => map.has(id)).map((id) => map.get(id));
 }
 
 /** Опубликованная витрина по id или null (скрытая для приложения не существует). */
@@ -96,9 +100,11 @@ showcasesRouter.get('/:id', async (req, res) => {
       orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
       include: { items: { orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] } },
     });
+    // Один набор запросов на всю страницу, а не по запросу на каждую подборку.
+    const map = await loadVisibleProductMap(collections.flatMap((c: any) => c.items.map((i: any) => i.productId)));
     const outCollections: any[] = [];
     for (const c of collections) {
-      const products = await loadVisibleProductsInOrder(c.items.map((i: any) => i.productId));
+      const products = c.items.map((i: any) => map.get(i.productId)).filter((x: any) => x !== undefined);
       // Пустая подборка (все товары скрыты) покупателю не нужна.
       if (products.length > 0) outCollections.push({ id: c.id, title: c.title, products });
     }
