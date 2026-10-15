@@ -10,6 +10,7 @@ import app from '../dist/expressApp';
 import { getKaspiStore, saveKaspiStore } from '../dist/handlers/kaspiStore';
 import { getOzonStore, saveOzonStore } from '../dist/handlers/ozonStore';
 import { getWbStore, saveWbStore } from '../dist/handlers/wbStore';
+import { guardNodeRequest } from '../dist/middleware/adminAuth';
 
 /**
  * ГЛАВНАЯ serverless-функция для всех запросов на /api/*, КРОМЕ тех, что
@@ -28,6 +29,11 @@ import { getWbStore, saveWbStore } from '../dist/handlers/wbStore';
  */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
+    // Защита админки ДО всего остального: блоки /api/settings/* ниже
+    // обрабатываются в обход Express, и его middleware их не видит. Публичные
+    // пути (health, /api/shop/*, фид Kaspi) эта проверка пропускает.
+    if (!guardNodeRequest(req, res)) return;
+
     const url = req.url || '';
 
     // /api/settings/kaspi-store продублирован и здесь на случай, если

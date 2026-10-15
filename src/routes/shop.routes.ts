@@ -47,11 +47,11 @@ const SHOP_VISIBLE_BASE = {
 } as const;
 // type в фильтре — только если он обязателен для продажи (config/shopRules.ts).
 // Иначе товар без типа виден в общей ленте категории, но в плитки типа не попадает.
-const SHOP_VISIBLE_WHERE = SHOP_TYPE_REQUIRED_FOR_SALE
+export const SHOP_VISIBLE_WHERE = SHOP_TYPE_REQUIRED_FOR_SALE
   ? ({ ...SHOP_VISIBLE_BASE, type: { not: null } } as const)
   : SHOP_VISIBLE_BASE;
 
-function toShopProduct(p: any) {
+export function toShopProduct(p: any) {
   let images: string[] = [];
   try {
     images = p.images ? JSON.parse(p.images) : [];
@@ -133,7 +133,7 @@ async function findVisibleProductBySkuOrArticle(param: string) {
  * Без этого приложению просто нечего было бы подставить в sku/article
  * кроме внутреннего ozon-.../wb-.../kaspi-... — собственно тот самый баг.
  */
-async function ensureShopArticle<T extends { id: string; shopArticle: string | null; shopPrice: number | null; shopActive: boolean }>(
+export async function ensureShopArticle<T extends { id: string; shopArticle: string | null; shopPrice: number | null; shopActive: boolean }>(
   product: T,
 ): Promise<T> {
   if (product.shopArticle) return product;
@@ -155,7 +155,7 @@ async function ensureShopArticle<T extends { id: string; shopArticle: string | n
  * rating — среднее, округлённое до 1 знака, нет отзывов → null.
  * reviewCount — число отзывов, нет → 0.
  */
-async function getReviewStatsMap(
+export async function getReviewStatsMap(
   products: Array<{ id: string; sku: string; shopArticle: string | null }>,
 ): Promise<Map<string, { rating: number | null; reviewCount: number }>> {
   const result = new Map<string, { rating: number | null; reviewCount: number }>();
@@ -228,7 +228,7 @@ function variantToDto(m: { sku: string; shopArticle: string | null; name: string
   };
 }
 
-async function getProductVariantsMap(
+export async function getProductVariantsMap(
   products: Array<{ id: string; variantGroup: string | null }>,
 ): Promise<Map<string, ReturnType<typeof variantToDto>[]>> {
   const result = new Map<string, ReturnType<typeof variantToDto>[]>();

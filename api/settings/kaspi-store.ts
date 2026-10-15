@@ -1,5 +1,6 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getKaspiStore, saveKaspiStore, deleteKaspiStore } from '../../dist/handlers/kaspiStore';
+import { guardNodeRequest } from '../../dist/middleware/adminAuth';
 
 /**
  * Отдельный файл = гарантированный маршрут /api/settings/kaspi-store у
@@ -12,6 +13,10 @@ import { getKaspiStore, saveKaspiStore, deleteKaspiStore } from '../../dist/hand
  */
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
+    // Отдельная функция Vercel — middleware Express сюда не доходит, поэтому
+    // вход администратора проверяется здесь (тот же модуль, что и в Express).
+    if (!guardNodeRequest(req, res)) return;
+
     if (req.method === 'GET') {
       return res.status(200).json(await getKaspiStore());
     }

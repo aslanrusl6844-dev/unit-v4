@@ -2093,7 +2093,7 @@ let myMarketProductsCache = [];
 let myMarketChartInstance = null;
 let myMarketEditingProductId = null;
 
-const MY_MARKET_TABS = ['home', 'products', 'catalog', 'prices', 'orders', 'returns', 'analytics', 'couriers', 'finance', 'upload'];
+const MY_MARKET_TABS = ['home', 'products', 'catalog', 'showcases', 'prices', 'orders', 'returns', 'analytics', 'couriers', 'finance', 'upload'];
 
 function wireMyMarketTabsOnce() {
   if (myMarketTabWired) return;
@@ -2375,6 +2375,7 @@ function switchMyMarketTab(tab) {
     loadMyMarketProducts();
   }
   if (tab === 'catalog') loadMyMarketCatalog();
+  if (tab === 'showcases') loadShowcases();
   if (tab === 'prices') loadMyMarketPrices();
   if (tab === 'orders') loadMyMarketOrders();
   if (tab === 'returns') loadMyMarketReturns();
