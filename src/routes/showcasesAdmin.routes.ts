@@ -24,6 +24,19 @@ const imageUrl = z
   .trim()
   .max(2000)
   .refine((v) => /^https?:\/\//i.test(v), 'Ссылка на картинку должна начинаться с http:// или https://');
+const MAX_BANNERS = 10;
+const bannersSchema = z.array(imageUrl).max(MAX_BANNERS, `Не больше ${MAX_BANNERS} баннеров`);
+const videoUrlSchema = z
+  .string()
+  .trim()
+  .max(2000)
+  .refine((v) => v === '' || /^https?:\/\//i.test(v), 'Ссылка на видео должна начинаться с http:// или https://')
+  .nullable()
+  .optional();
+/** Без повторов, порядок сохраняется. */
+function uniqueUrls(list: string[]): string[] {
+  return Array.from(new Set(list));
+}
 const optText = (max: number) => z.string().trim().max(max).nullable().optional();
 const title = z.string().trim().min(1, 'Название обязательно').max(120);
 const productIdSchema = z.string().trim().min(1).max(100);
@@ -160,6 +173,8 @@ const createShowcase = z.object({
   bannerUrl: imageUrl.nullable().optional().or(z.literal('')),
   bannerTitle: optText(120),
   bannerText: optText(1000),
+  banners: bannersSchema.optional(),
+  videoUrl: videoUrlSchema,
   published: z.boolean().optional(),
 });
 
@@ -178,6 +193,8 @@ showcasesAdminRouter.post('/', async (req, res) => {
         bannerUrl: blankToNull(d.bannerUrl) ?? null,
         bannerTitle: blankToNull(d.bannerTitle) ?? null,
         bannerText: blankToNull(d.bannerText) ?? null,
+        banners: uniqueUrls(d.banners ?? []),
+        videoUrl: blankToNull(d.videoUrl) ?? null,
         // Новая витрина по умолчанию скрыта: наполняем, потом публикуем.
         published: d.published ?? false,
         sortOrder: (last?.sortOrder ?? 0) + 1,
@@ -244,6 +261,8 @@ const patchShowcase = z.object({
   bannerUrl: imageUrl.nullable().optional().or(z.literal('')),
   bannerTitle: optText(120),
   bannerText: optText(1000),
+  banners: bannersSchema.optional(),
+  videoUrl: videoUrlSchema,
   published: z.boolean().optional(),
   sortOrder: z.number().int().min(0).max(1_000_000).optional(),
 });
@@ -261,9 +280,10 @@ showcasesAdminRouter.patch('/:id', async (req, res) => {
     if (d.title !== undefined) data.title = d.title;
     if (d.published !== undefined) data.published = d.published;
     if (d.sortOrder !== undefined) data.sortOrder = d.sortOrder;
-    for (const k of ['description', 'logoUrl', 'bannerUrl', 'bannerTitle', 'bannerText'] as const) {
+    for (const k of ['description', 'logoUrl', 'bannerUrl', 'bannerTitle', 'bannerText', 'videoUrl'] as const) {
       if (d[k] !== undefined) data[k] = blankToNull(d[k]);
     }
+    if (d.banners !== undefined) data.banners = uniqueUrls(d.banners);
     const row = await prisma.showcase.update({ where: { id: existing.id }, data });
     res.json(row);
   } catch (err: any) {

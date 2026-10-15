@@ -111,7 +111,13 @@ showcasesRouter.get('/:id', async (req, res) => {
       // Пустая подборка (все товары скрыты) покупателю не нужна.
       if (products.length > 0) outCollections.push({ id: c.id, title: c.title, products });
     }
-    res.json({ ...publicShowcase(showcase), collections: outCollections });
+    // banners / videoUrl — только на странице витрины; список (иконки) не меняется.
+    res.json({
+      ...publicShowcase(showcase),
+      banners: Array.isArray(showcase.banners) ? showcase.banners : [],
+      videoUrl: showcase.videoUrl ?? null,
+      collections: outCollections,
+    });
   } catch (err: any) {
     logger.error({ err }, '[Showcases API] GET /:id упал');
     const mapped = mapDbError(err);

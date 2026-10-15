@@ -827,6 +827,8 @@ model Showcase {
   bannerUrl   String?  // собственный рекламный баннер витрины
   bannerTitle String?
   bannerText  String?
+  banners     String[] @default([]) // несколько баннеров витрины (URL картинок, порядок важен)
+  videoUrl    String?  // ссылка на видео витрины
   published   Boolean  @default(false) // опубликована ли в приложении
   sortOrder   Int      @default(0)
   createdAt   DateTime @default(now())

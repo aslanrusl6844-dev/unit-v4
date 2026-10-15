@@ -96,6 +96,28 @@ function scListHtml() {
 }
 
 // ----------------------------- редактор -----------------------------
+const SC_MAX_BANNERS = 10;
+
+function scBannersHtml() {
+  const list = scState.banners || [];
+  if (!list.length) return '<p class="panel__hint" style="margin:4px 0">Баннеров пока нет.</p>';
+  return `<table class="table"><tbody>${list.map((u, i) => `
+    <tr data-bi="${i}">
+      <td>${scThumb(u)}</td>
+      <td style="word-break:break-all">${scEsc(u)}</td>
+      <td style="white-space:nowrap">
+        <button type="button" class="btn btn--ghost" data-sc="b-up" ${i === 0 ? 'disabled' : ''}>↑</button>
+        <button type="button" class="btn btn--ghost" data-sc="b-down" ${i === list.length - 1 ? 'disabled' : ''}>↓</button>
+        <button type="button" class="btn btn--ghost" data-sc="b-remove">Убрать</button>
+      </td>
+    </tr>`).join('')}</tbody></table>`;
+}
+
+function scBannersRefresh() {
+  const el = document.getElementById('scBanners');
+  if (el) el.innerHTML = scBannersHtml();
+}
+
 function scEditorHtml() {
   const c = scState.current || { type: 'brand', title: '', description: '', logoUrl: '', bannerUrl: '', bannerTitle: '', bannerText: '', published: false, products: [], collections: [] };
   const isNew = !scState.current;
@@ -117,6 +139,14 @@ function scEditorHtml() {
       <div>Рекламный баннер<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">${scThumb(c.bannerUrl)}
         <input type="file" id="scBannerFile" accept="image/jpeg,image/png,image/webp" />
         <input type="text" id="scBannerUrl" placeholder="или ссылка на картинку" value="${scEsc(c.bannerUrl)}" style="max-width:260px" /></div></div>
+      <div>Несколько баннеров (карусель на странице витрины)
+        <div id="scBanners">${scBannersHtml()}</div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">
+          <input type="file" id="scBannerAddFile" accept="image/jpeg,image/png,image/webp" />
+          <input type="text" id="scBannerAddUrl" placeholder="или ссылка на картинку (https://…)" style="max-width:260px" />
+          <button type="button" class="btn btn--ghost" data-sc="b-add">Добавить баннер</button></div>
+        <p class="panel__hint" style="margin:4px 0 0">Порядок задают стрелки. Изменения сохраняются кнопкой «${isNew ? 'Создать' : 'Сохранить'}».</p></div>
+      <label>Ссылка на видео <input type="text" id="scVideoUrl" maxlength="2000" placeholder="https://…" value="${scEsc(c.videoUrl)}" /></label>
       <label>Заголовок баннера <input type="text" id="scBannerTitle" maxlength="120" value="${scEsc(c.bannerTitle)}" /></label>
       <label>Рекламный текст <textarea id="scBannerText" rows="3" maxlength="1000">${scEsc(c.bannerText)}</textarea></label>
       <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="scPublished" ${c.published ? 'checked' : ''} /> Опубликована (видна в приложении)</label>
@@ -190,6 +220,8 @@ function scFormData() {
     bannerUrl: v('scBannerUrl').trim() || null,
     bannerTitle: v('scBannerTitle').trim() || null,
     bannerText: v('scBannerText').trim() || null,
+    banners: (scState.banners || []).slice(),
+    videoUrl: v('scVideoUrl').trim() || null,
     published: document.getElementById('scPublished').checked,
   };
 }
@@ -232,6 +264,7 @@ async function scSave() {
 async function scOpen(id, okText) {
   try {
     scState.current = await api(`/shop-admin/showcases/${encodeURIComponent(id)}`);
+    scState.banners = Array.isArray(scState.current.banners) ? scState.current.banners.slice() : [];
     scState.status = okText || '';
     scState.statusKind = '';
   } catch (err) {
@@ -290,8 +323,37 @@ async function scHandleClick(e) {
   const cid = colEl && colEl.dataset.cid;
   const col = cid && scState.current && scState.current.collections.find((x) => x.id === cid);
   try {
-    if (act === 'new') { scState.editingNew = true; scState.current = null; scSetStatus('', ''); scRender(); }
+    if (act === 'new') { scState.editingNew = true; scState.current = null; scState.banners = []; scSetStatus('', ''); scRender(); }
     else if (act === 'reload') await loadShowcases();
+    else if (act === 'b-add') {
+      const fileEl = document.getElementById('scBannerAddFile');
+      const urlEl = document.getElementById('scBannerAddUrl');
+      const list = scState.banners || (scState.banners = []);
+      if (list.length >= SC_MAX_BANNERS) { scSetStatus(`Не больше ${SC_MAX_BANNERS} баннеров`, 'error'); return; }
+      let url = urlEl.value.trim();
+      if (fileEl.files[0]) {
+        scSetStatus('Загружаю картинку…', '');
+        url = await uploadMyMarketFile(fileEl.files[0]);
+      }
+      if (!url) { scSetStatus('Выберите файл или вставьте ссылку на картинку', 'error'); return; }
+      if (!/^https?:\/\//i.test(url)) { scSetStatus('Ссылка должна начинаться с http:// или https://', 'error'); return; }
+      if (list.includes(url)) { scSetStatus('Такой баннер уже добавлен', 'error'); return; }
+      list.push(url);
+      fileEl.value = ''; urlEl.value = '';
+      scBannersRefresh();
+      scSetStatus('Баннер добавлен — нажмите «Сохранить», чтобы применить', '');
+    } else if (act === 'b-up' || act === 'b-down' || act === 'b-remove') {
+      const i = Number(btn.closest('[data-bi]').dataset.bi);
+      const list = scState.banners || [];
+      if (act === 'b-remove') list.splice(i, 1);
+      else {
+        const j = i + (act === 'b-up' ? -1 : 1);
+        if (j < 0 || j >= list.length) return;
+        [list[i], list[j]] = [list[j], list[i]];
+      }
+      scBannersRefresh();
+      scSetStatus('Порядок изменён — нажмите «Сохранить», чтобы применить', '');
+    }
     else if (act === 'back') { scState.current = null; scState.editingNew = false; await loadShowcases(); }
     else if (act === 'edit') await scOpen(row.dataset.id);
     else if (act === 'up' || act === 'down') {

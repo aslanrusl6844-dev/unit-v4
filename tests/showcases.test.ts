@@ -892,7 +892,7 @@ describe('контракт для Android и сквозной сценарий',
     assert.deepEqual(list, [{ id: s.id, type: 'shop', title: 'Nike', description: 'D', logoUrl: 'https://b.example/l.png', bannerUrl: 'https://b.example/b.png', bannerTitle: 'BT', bannerText: 'BX' }]);
 
     const detail = (await pub(`/${s.id}`)).json;
-    assert.deepEqual(keys(detail), ['bannerText', 'bannerTitle', 'bannerUrl', 'collections', 'description', 'id', 'logoUrl', 'title', 'type']);
+    assert.deepEqual(keys(detail), ['bannerText', 'bannerTitle', 'bannerUrl', 'banners', 'collections', 'description', 'id', 'logoUrl', 'title', 'type', 'videoUrl']);
     assert.deepEqual(keys(detail.collections[0]), ['id', 'products', 'title']);
     assert.equal(detail.collections[0].id, col.id);
     assert.equal(detail.collections[0].title, 'Новинки');
@@ -1010,5 +1010,94 @@ describe('пустые данные и граничные случаи публ�
     assert.equal((await pub(`/${s.id}`)).status, 404);
     assert.equal((await pub(`/${s.id}/products`)).status, 404);
     assert.deepEqual((await pub('')).json, []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('несколько баннеров и видео витрины', () => {
+  const B1 = 'https://cdn.example/b1.png';
+  const B2 = 'https://cdn.example/b2.png';
+  const B3 = 'https://cdn.example/b3.png';
+  const VIDEO = 'https://video.example/watch?v=1';
+
+  test('создание и чтение: баннеры (с порядком) и видео сохраняются и отдаются в GET /showcases/:id', async () => {
+    const s = await newShowcase({ title: 'Nike', published: true, banners: [B2, B1, B3], videoUrl: VIDEO });
+    assert.deepEqual(s.banners, [B2, B1, B3]);
+    assert.equal(s.videoUrl, VIDEO);
+    const page = (await pub(`/${s.id}`)).json;
+    assert.deepEqual(page.banners, [B2, B1, B3]);
+    assert.equal(page.videoUrl, VIDEO);
+    // админка читает то же самое
+    const adminRow = (await adm('GET', `/${s.id}`)).json;
+    assert.deepEqual(adminRow.banners, [B2, B1, B3]);
+    assert.equal(adminRow.videoUrl, VIDEO);
+  });
+
+  test('старая витрина без новых полей: banners = [], videoUrl = null (поле не пропадает)', async () => {
+    const s = await newShowcase({ published: true });
+    const page = (await pub(`/${s.id}`)).json;
+    assert.deepEqual(page.banners, []);
+    assert.equal(page.videoUrl, null);
+    // даже если в строке из базы значений нет вовсе
+    const row = tables.showcase.find((r: Row) => r.id === s.id)!;
+    delete row.banners; delete row.videoUrl;
+    const again = (await pub(`/${s.id}`)).json;
+    assert.deepEqual(again.banners, []);
+    assert.equal(again.videoUrl, null);
+  });
+
+  test('список витрин (иконки) формат не меняет: banners и videoUrl там не отдаются', async () => {
+    await newShowcase({ published: true, banners: [B1], videoUrl: VIDEO });
+    const item = (await pub('')).json[0];
+    assert.equal('banners' in item, false);
+    assert.equal('videoUrl' in item, false);
+  });
+
+  test('редактирование: порядок баннеров меняется, повторы убираются, [] очищает, видео очищается пустой строкой', async () => {
+    const s = await newShowcase({ banners: [B1, B2], videoUrl: VIDEO });
+    let r = await adm('PATCH', `/${s.id}`, { banners: [B3, B1, B3, B2] });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.json.banners, [B3, B1, B2]);
+    // PATCH других полей баннеры не трогает
+    r = await adm('PATCH', `/${s.id}`, { title: 'Новое имя' });
+    assert.deepEqual(r.json.banners, [B3, B1, B2]);
+    assert.equal(r.json.videoUrl, VIDEO);
+    r = await adm('PATCH', `/${s.id}`, { videoUrl: '' });
+    assert.equal(r.json.videoUrl, null);
+    r = await adm('PATCH', `/${s.id}`, { banners: [] });
+    assert.deepEqual(r.json.banners, []);
+  });
+
+  test('проверка данных: не-http ссылки, пустой элемент, больше 10 баннеров, слишком длинное — 400, база не меняется', async () => {
+    const s = await newShowcase({ banners: [B1] });
+    const bad = [
+      { banners: ['javascript:alert(1)'] },
+      { banners: ['ftp://x/y.png'] },
+      { banners: [''] },
+      { banners: 'https://cdn.example/b1.png' },
+      { banners: Array.from({ length: 11 }, (_, i) => `https://cdn.example/${i}.png`) },
+      { banners: ['https://x/' + 'a'.repeat(2100)] },
+      { videoUrl: 'javascript:alert(1)' },
+      { videoUrl: 'не ссылка' },
+      { videoUrl: 'https://v/' + 'a'.repeat(2100) },
+    ];
+    for (const body of bad) {
+      const r = await adm('PATCH', `/${s.id}`, body);
+      assert.equal(r.status, 400, JSON.stringify(body).slice(0, 80));
+    }
+    const create = await adm('POST', '', { type: 'brand', title: 'X', banners: ['bad'] });
+    assert.equal(create.status, 400);
+    const row = tables.showcase.find((r: Row) => r.id === s.id)!;
+    assert.deepEqual(row.banners, [B1]);
+    // ровно 10 — допустимо
+    const ok = await adm('PATCH', `/${s.id}`, { banners: Array.from({ length: 10 }, (_, i) => `https://cdn.example/${i}.png`) });
+    assert.equal(ok.status, 200);
+  });
+
+  test('новые поля доступны только администратору: без входа 401 и ничего не меняется', async () => {
+    const s = await newShowcase({ banners: [B1] });
+    const r = await call('PATCH', `/api/shop-admin/showcases/${s.id}`, {}, { banners: [B2], videoUrl: VIDEO });
+    assert.equal(r.status, 401);
+    assert.deepEqual(tables.showcase.find((x: Row) => x.id === s.id)!.banners, [B1]);
   });
 });
