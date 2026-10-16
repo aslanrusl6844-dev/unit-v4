@@ -5500,12 +5500,51 @@ function wireYardTabsOnce() {
     document.getElementById('yardArchiveTab').hidden = btn.dataset.yardtab !== 'archive';
   });
   document.getElementById('yardInviteSendBtn').addEventListener('click', runYardSendInvite);
+  document.getElementById('yardInstructionSaveBtn').addEventListener('click', runYardSaveInstruction);
   wireYardToolbars();
 }
 
 async function loadYardPage() {
   wireYardTabsOnce();
-  await Promise.all([loadYardApplications(), loadYardShops(), loadYardItems(), loadYardOrders(), loadYardTurnover()]);
+  await Promise.all([loadYardApplications(), loadYardShops(), loadYardItems(), loadYardOrders(), loadYardTurnover(), loadYardInstruction()]);
+}
+
+// ---- Видео-инструкция для покупателей (GET/POST /yard-admin/instruction) ----
+async function loadYardInstruction() {
+  const statusEl = document.getElementById('yardInstructionStatus');
+  try {
+    const r = await api('/yard-admin/instruction');
+    document.getElementById('yardInstructionUrl').value = r.videoUrl || '';
+    statusEl.textContent = '';
+  } catch (err) {
+    statusEl.style.color = 'var(--loss)';
+    statusEl.textContent = 'Не удалось загрузить: ' + err.message;
+  }
+}
+
+async function runYardSaveInstruction() {
+  const btn = document.getElementById('yardInstructionSaveBtn');
+  const statusEl = document.getElementById('yardInstructionStatus');
+  if (btn.disabled) return; // защита от двойной отправки
+  const videoUrl = document.getElementById('yardInstructionUrl').value.trim();
+  if (videoUrl && !/^https?:\/\//i.test(videoUrl)) {
+    statusEl.style.color = 'var(--loss)';
+    statusEl.textContent = 'Ссылка должна начинаться с http:// или https://';
+    return;
+  }
+  btn.disabled = true;
+  statusEl.style.color = '';
+  statusEl.textContent = 'Сохраняю…';
+  try {
+    const r = await api('/yard-admin/instruction', { method: 'POST', body: JSON.stringify({ videoUrl: videoUrl || null }) });
+    document.getElementById('yardInstructionUrl').value = r.videoUrl || '';
+    statusEl.textContent = r.videoUrl ? 'Сохранено.' : 'Ссылка очищена — блок у покупателей скрыт.';
+  } catch (err) {
+    statusEl.style.color = 'var(--loss)';
+    statusEl.textContent = 'Ошибка: ' + err.message;
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 // ---- Вакансия ----

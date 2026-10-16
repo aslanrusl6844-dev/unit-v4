@@ -1,7 +1,32 @@
 import { prisma } from '../db/prisma';
 
-/** Радиус полки. Считает сервер, не приложение. */
+/**
+ * Устарело: прежний общий радиус. Теперь радиус у каждого магазина
+ * (YardShop.radiusMeters), у покупателя — параметр radius. Константа оставлена
+ * только для совместимости импортов.
+ */
 export const YARD_RADIUS_METERS = 400;
+
+/** Радиусы, из которых магазин выбирает свой (метры). Считает сервер, не приложение. */
+export const YARD_RADIUS_OPTIONS = [200, 300, 500, 1000] as const;
+export const YARD_DEFAULT_RADIUS = 500;
+
+/** Радиус магазина; у строки без значения (или с неверным) — 500. */
+export function yardShopRadius(shop: { radiusMeters?: number | null }): number {
+  const r = shop.radiusMeters;
+  return typeof r === 'number' && Number.isFinite(r) && r > 0 ? r : YARD_DEFAULT_RADIUS;
+}
+
+/**
+ * Радиус покупателя из query: нет параметра → 500; число > 0 → оно; иначе null
+ * (неверное значение — ошибка запроса, а не молчаливая подмена).
+ */
+export function yardParseBuyerRadius(raw: unknown): number | null {
+  if (raw === undefined || raw === '') return YARD_DEFAULT_RADIUS;
+  if (typeof raw !== 'string') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 && n <= 100000 ? n : null;
+}
 
 /** Номер магазина и покупателя виден только после «Принял». */
 export const YARD_PHONE_VISIBLE_STATUSES = ['accepted', 'at_door', 'done', 'not_picked', 'out_of_stock'];
