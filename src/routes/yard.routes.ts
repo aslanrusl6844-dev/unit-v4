@@ -5,7 +5,9 @@ import { env } from '../config/env';
 import { logger } from '../utils/logger';
 import { normalizePhone } from './shop.routes';
 import {
-  YARD_RADIUS_METERS,
+  YARD_RADIUS_OPTIONS,
+  yardShopRadius,
+  yardParseBuyerRadius,
   YARD_PHONE_VISIBLE_STATUSES,
   yardDistanceMeters,
   yardShopIsLive,
@@ -147,19 +149,24 @@ async function previewItems(shopId: string) {
 }
 
 /**
- * Магазины в радиусе 500 м — имя, метры, 3 товара. БЕЗ телефона.
+ * Магазины рядом — имя, метры, 3 товара. БЕЗ телефона.
+ * Параметр radius — радиус покупателя в метрах (по умолчанию 500). В ответ
+ * попадает магазин, только если расстояние ≤ radius покупателя И ≤ radiusMeters
+ * самого магазина: дальше радиуса магазина его не видно, даже при большом radius.
  * Подписка просрочена/магазин выключен — в список не попадает.
  */
 yardRouter.get('/yard/nearby', async (req, res) => {
   const point = parseLatLng(req.query.lat, req.query.lng);
   if (!point) return res.status(400).json({ error: 'Некорректные координаты' });
+  const buyerRadius = yardParseBuyerRadius(req.query.radius);
+  if (buyerRadius === null) return res.status(400).json({ error: 'Некорректный radius (метры, число больше 0)' });
 
   try {
     const shops = await prisma.yardShop.findMany({});
-    const nearby = (shops as Array<{ id: string; name: string; photo: string | null; lat: number; lng: number; active: boolean; paidUntil: Date | null }>)
+    const nearby = (shops as Array<{ id: string; name: string; photo: string | null; lat: number; lng: number; active: boolean; paidUntil: Date | null; radiusMeters?: number | null }>)
       .filter((s) => yardShopIsLive(s))
       .map((s) => ({ ...s, meters: yardDistanceMeters(point.lat, point.lng, s.lat, s.lng) }))
-      .filter((s) => s.meters <= YARD_RADIUS_METERS)
+      .filter((s) => s.meters <= buyerRadius && s.meters <= yardShopRadius(s))
       .sort((a, b) => a.meters - b.meters);
 
     const result = await Promise.all(
@@ -178,7 +185,7 @@ yardRouter.get('/yard/nearby', async (req, res) => {
   }
 });
 
-/** Полка одного магазина — только если точка клиента реально в радиусе. */
+/** Полка одного магазина — только если точка клиента в радиусе этого магазина (radiusMeters). */
 yardRouter.get('/yard/shop/:id', async (req, res) => {
   const point = parseLatLng(req.query.lat, req.query.lng);
   if (!point) return res.status(400).json({ error: 'Некорректные координаты' });
@@ -187,14 +194,18 @@ yardRouter.get('/yard/shop/:id', async (req, res) => {
     const shop = await prisma.yardShop.findUnique({ where: { id: req.params.id } });
     if (!shop || !yardShopIsLive(shop)) return res.status(404).json({ error: 'Двор не найден' });
     const distance = yardDistanceMeters(point.lat, point.lng, shop.lat, shop.lng);
-    if (distance > YARD_RADIUS_METERS) {
-      return res.status(403).json({ error: 'Вы вне радиуса 500 м от этого двора' });
+    const shopRadius = yardShopRadius(shop);
+    if (distance > shopRadius) {
+      return res.status(403).json({ error: `Вы вне радиуса ${shopRadius} м от этого двора` });
     }
     const items = await prisma.yardItem.findMany({ where: { shopId: shop.id, active: true, archived: false }, orderBy: { id: 'asc' } });
     res.json({
       id: shop.id,
       name: shop.name,
       photo: shop.photo,
+      bannerUrl: shop.bannerUrl ?? null,
+      videoUrl: shop.videoUrl ?? null,
+      tickerText: shop.tickerText ?? null,
       items: items.map((i: { id: string; name: string; price: number; stock: number; photo: string | null; category: string | null }) => ({
         id: i.id,
         name: i.name,
@@ -236,7 +247,8 @@ yardRouter.post('/yard/orders', async (req, res) => {
     const shop = await prisma.yardShop.findUnique({ where: { id: parsed.data.shopId } });
     if (!shop || !yardShopIsLive(shop)) return res.status(404).json({ error: 'Двор не найден' });
     const distance = yardDistanceMeters(parsed.data.lat, parsed.data.lng, shop.lat, shop.lng);
-    if (distance > YARD_RADIUS_METERS) return res.status(403).json({ error: 'Вы вне радиуса 500 м от этого двора' });
+    const shopRadius = yardShopRadius(shop);
+    if (distance > shopRadius) return res.status(403).json({ error: `Вы вне радиуса ${shopRadius} м от этого двора` });
 
     const itemIds = parsed.data.items.map((i) => i.itemId);
     const shelfItems = await prisma.yardItem.findMany({ where: { id: { in: itemIds }, shopId: shop.id, active: true, archived: false } });
@@ -512,6 +524,60 @@ yardRouter.get('/yard/mine', async (req, res) => {
   } catch (err: any) {
     logger.error({ err }, '[Yard] GET /yard/mine упал');
     res.status(500).json({ error: 'Не удалось получить кабинет', details: String(err?.message ?? err) });
+  }
+});
+
+const httpUrl = z
+  .string()
+  .trim()
+  .max(2000)
+  .refine((v) => v === '' || /^https?:\/\//i.test(v), 'Ссылка должна начинаться с http:// или https://')
+  .nullable()
+  .optional();
+
+const mineSettingsSchema = z.object({
+  phone: z.string().min(1),
+  radiusMeters: z.number().refine((v) => (YARD_RADIUS_OPTIONS as readonly number[]).includes(v), `Радиус: ${YARD_RADIUS_OPTIONS.join(', ')} м`).optional(),
+  bannerUrl: httpUrl,
+  videoUrl: httpUrl,
+  tickerText: z.string().trim().max(300).nullable().optional(),
+});
+
+/**
+ * Настройки магазина в кабинете: радиус (200 / 300 / 500 / 1000 м), баннер,
+ * видео и бегущая строка. Только владелец (по телефону) и только после
+ * одобрения. Меняется лишь то, что прислали; '' или null очищают баннер/видео/
+ * строку (радиус очистить нельзя — он всегда один из четырёх).
+ */
+yardRouter.post('/yard/mine/settings', async (req, res) => {
+  const parsed = mineSettingsSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+  const normalizedPhone = normalizePhone(parsed.data.phone);
+  if (!normalizedPhone) return res.status(400).json({ error: 'Некорректный номер телефона' });
+  const { phone: _phone, ...fields } = parsed.data;
+  if (Object.values(fields).every((v) => v === undefined)) return res.status(400).json({ error: 'Нет полей для изменения' });
+
+  try {
+    const shop = await prisma.yardShop.findUnique({ where: { phone: normalizedPhone } });
+    if (!shop) return res.status(404).json({ error: 'Заявка ещё не одобрена — настройки недоступны' });
+    const blank = (v: string | null | undefined) => (v === undefined ? undefined : v === null || v.trim() === '' ? null : v.trim());
+    const data: Record<string, unknown> = {};
+    if (fields.radiusMeters !== undefined) data.radiusMeters = fields.radiusMeters;
+    for (const k of ['bannerUrl', 'videoUrl', 'tickerText'] as const) {
+      const v = blank(fields[k]);
+      if (v !== undefined) data[k] = v;
+    }
+    const updated = await prisma.yardShop.update({ where: { id: shop.id }, data });
+    res.json({
+      id: updated.id,
+      radiusMeters: yardShopRadius(updated),
+      bannerUrl: updated.bannerUrl ?? null,
+      videoUrl: updated.videoUrl ?? null,
+      tickerText: updated.tickerText ?? null,
+    });
+  } catch (err: any) {
+    logger.error({ err }, '[Yard] POST /yard/mine/settings упал');
+    res.status(500).json({ error: 'Не удалось сохранить настройки', details: String(err?.message ?? err) });
   }
 });
 
