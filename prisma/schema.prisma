@@ -648,6 +648,14 @@ model YardApplication {
   reviewedAt DateTime?
 }
 
+// Общие настройки «Двора» — ОДНА строка (id = "main") на весь сервер.
+// Сейчас: видео-инструкция для покупателей на экране карты (не видео магазина).
+model YardSettings {
+  id             String   @id @default("main")
+  instructionUrl String?
+  updatedAt      DateTime @updatedAt
+}
+
 model YardShop {
   id        String      @id @default(cuid())
   phone     String      @unique // один телефон — одна полка

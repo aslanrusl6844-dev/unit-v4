@@ -401,3 +401,46 @@ yardAdminRouter.post('/orders/:id/close', async (req, res) => {
     res.status(500).json({ error: 'Не удалось закрыть заказ', details: String(err?.message ?? err) });
   }
 });
+
+// =====================================================================
+// Видео-инструкция для покупателей (одна на весь сервер, YardSettings "main").
+// Читает приложение через GET /api/shop/yard/instruction.
+// =====================================================================
+const instructionSchema = z.object({
+  videoUrl: z
+    .string()
+    .trim()
+    .max(2000)
+    .refine((v) => v === '' || /^https?:\/\//i.test(v), 'Ссылка должна начинаться с http:// или https://')
+    .nullable(),
+});
+
+/** Текущее значение — чтобы админка показала сохранённую ссылку. */
+yardAdminRouter.get('/instruction', async (_req, res) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store');
+    const row = await prisma.yardSettings.findUnique({ where: { id: 'main' } });
+    res.json({ videoUrl: row?.instructionUrl ?? null });
+  } catch (err: any) {
+    logger.error({ err }, '[Yard Admin] GET /instruction упал');
+    res.status(500).json({ error: 'Не удалось получить видео-инструкцию', details: String(err?.message ?? err) });
+  }
+});
+
+/** Тело { videoUrl: string | null }; пустая строка или null очищают. */
+yardAdminRouter.post('/instruction', async (req, res) => {
+  const parsed = instructionSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+  const value = parsed.data.videoUrl === null || parsed.data.videoUrl === '' ? null : parsed.data.videoUrl;
+  try {
+    const row = await prisma.yardSettings.upsert({
+      where: { id: 'main' },
+      update: { instructionUrl: value },
+      create: { id: 'main', instructionUrl: value },
+    });
+    res.json({ videoUrl: row.instructionUrl ?? null });
+  } catch (err: any) {
+    logger.error({ err }, '[Yard Admin] POST /instruction упал');
+    res.status(500).json({ error: 'Не удалось сохранить видео-инструкцию', details: String(err?.message ?? err) });
+  }
+});

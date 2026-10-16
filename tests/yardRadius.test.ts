@@ -5,6 +5,7 @@
  * (проверка расстояния по радиусу магазина) и POST /yard/mine/settings.
  *
  * База данных НЕ используется: @prisma/client подменяется заглушкой в памяти.
+ * Видео-инструкция для покупателей: GET /yard/instruction и /yard-admin/instruction.
  * Оплата, чат, «Принял», подписка и номер внутри заказа здесь не проверяются и
  * кода этих частей изменения не касаются.
  */
@@ -22,7 +23,7 @@ process.env.ADMIN_PASSWORD = randomBytes(12).toString('hex');
 type Row = Record<string, any>;
 let seq = 0;
 const newId = () => `y${++seq}`;
-const tables: { shop: Row[]; item: Row[]; order: Row[] } = { shop: [], item: [], order: [] };
+const tables: { shop: Row[]; item: Row[]; order: Row[]; settings: Row[] } = { shop: [], item: [], order: [], settings: [] };
 
 function match(row: Row, where: Row = {}): boolean {
   return Object.entries(where).every(([k, v]) => {
@@ -50,6 +51,19 @@ const stub: Row = {
       let rows = tables.item.filter((r) => match(r, a.where));
       if (a.take) rows = rows.slice(0, a.take);
       return rows.map((r) => ({ ...r }));
+    },
+  },
+  yardSettings: {
+    findUnique: async (a: Row) => {
+      const r = tables.settings.find((x) => x.id === a.where.id);
+      return r ? { ...r } : null;
+    },
+    upsert: async (a: Row) => {
+      const r = tables.settings.find((x) => x.id === a.where.id);
+      if (r) { Object.assign(r, a.update); return { ...r }; }
+      const row = { ...a.create };
+      tables.settings.push(row);
+      return { ...row };
     },
   },
   yardOrder: {
@@ -139,7 +153,7 @@ before(async () => {
   port = (server.address() as any).port;
 });
 after(() => new Promise<void>((r) => server.close(() => r())));
-beforeEach(() => { tables.shop = []; tables.item = []; tables.order = []; });
+beforeEach(() => { tables.shop = []; tables.item = []; tables.order = []; tables.settings = []; });
 
 describe('GET /yard/nearby — radius покупателя и радиус магазина', () => {
   test('без radius действует 500 м; магазин с радиусом 500 виден на 400 м и не виден на 600 м', async () => {
@@ -337,5 +351,68 @@ describe('POST /yard/mine/settings — кабинет магазина', () => {
     assert.equal(r.json.shop.radiusMeters, 300);
     assert.equal(r.json.shop.bannerUrl, 'https://b/x.png');
     assert.equal(r.json.shop.videoUrl, null);
+  });
+});
+
+describe('видео-инструкция для покупателей (одна на сервер)', () => {
+  const AUTH = { authorization: 'Basic ' + Buffer.from(`admin-test:${process.env.ADMIN_PASSWORD}`).toString('base64') };
+  const VIDEO = 'https://cdn.example/how-to.mp4';
+  const adminSave = (body: unknown) => call('POST', '/api/yard-admin/instruction', body, AUTH);
+  const buyerGet = () => call('GET', '/api/shop/yard/instruction');
+
+  test('пока ссылки нет — { videoUrl: null }', async () => {
+    const r = await buyerGet();
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.json, { videoUrl: null });
+  });
+
+  test('админ сохраняет ссылку → покупатель получает её; одна строка на весь сервер', async () => {
+    const r = await adminSave({ videoUrl: `  ${VIDEO}  ` });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.json, { videoUrl: VIDEO });
+    assert.deepEqual((await buyerGet()).json, { videoUrl: VIDEO });
+    await adminSave({ videoUrl: 'https://cdn.example/second.mp4' });
+    assert.equal(tables.settings.length, 1);
+    assert.deepEqual((await buyerGet()).json, { videoUrl: 'https://cdn.example/second.mp4' });
+    assert.deepEqual((await call('GET', '/api/yard-admin/instruction', undefined, AUTH)).json, { videoUrl: 'https://cdn.example/second.mp4' });
+  });
+
+  test('пустая строка и null очищают → снова null', async () => {
+    await adminSave({ videoUrl: VIDEO });
+    assert.deepEqual((await adminSave({ videoUrl: '' })).json, { videoUrl: null });
+    assert.deepEqual((await buyerGet()).json, { videoUrl: null });
+    await adminSave({ videoUrl: VIDEO });
+    assert.deepEqual((await adminSave({ videoUrl: null })).json, { videoUrl: null });
+    assert.deepEqual((await adminSave({ videoUrl: '   ' })).json, { videoUrl: null });
+  });
+
+  test('проверка ссылки: не http(s), не строка, нет поля, слишком длинная → 400 и значение не меняется', async () => {
+    await adminSave({ videoUrl: VIDEO });
+    for (const body of [{ videoUrl: 'javascript:alert(1)' }, { videoUrl: 'ftp://x/y.mp4' }, { videoUrl: 'не ссылка' },
+      { videoUrl: 5 }, {}, { videoUrl: 'https://x/' + 'a'.repeat(2100) }]) {
+      assert.equal((await adminSave(body)).status, 400, JSON.stringify(body).slice(0, 60));
+    }
+    assert.deepEqual((await buyerGet()).json, { videoUrl: VIDEO });
+  });
+
+  test('запись — только для админа: без входа 401, x-app-key вместо входа не годится, ничего не меняется', async () => {
+    assert.equal((await call('POST', '/api/yard-admin/instruction', { videoUrl: VIDEO }, {})).status, 401);
+    assert.equal((await call('POST', '/api/yard-admin/instruction', { videoUrl: VIDEO }, { 'x-app-key': APP_KEY })).status, 401);
+    assert.equal((await call('GET', '/api/yard-admin/instruction', undefined, {})).status, 401);
+    assert.equal(tables.settings.length, 0);
+  });
+
+  test('чтение покупателем требует x-app-key; телефон не нужен', async () => {
+    assert.equal((await call('GET', '/api/shop/yard/instruction', undefined, {})).status, 401);
+    assert.equal((await buyerGet()).status, 200);
+  });
+
+  test('настройки магазинов и радиус инструкция не затрагивает', async () => {
+    const s = seedShop({ radiusMeters: 300, videoUrl: 'https://v/shop.mp4' });
+    await adminSave({ videoUrl: VIDEO });
+    assert.equal(tables.shop[0].videoUrl, 'https://v/shop.mp4');
+    assert.equal(tables.shop[0].radiusMeters, 300);
+    const page = (await call('GET', `/api/shop/yard/shop/${s.id}?${q(100)}`)).json;
+    assert.equal(page.videoUrl, 'https://v/shop.mp4');
   });
 });

@@ -1283,6 +1283,17 @@
       <section class="page" id="page-yard" hidden>
         <div class="page__head"><h1>Магазин или Двор</h1><p>Полка у двери: хозяюшка, овощная, пекарня, магазин у дома. Оплата напрямую продавцу, без эквайринга.</p></div>
 
+        <div class="panel" id="yardInstructionPanel" style="margin-bottom:12px">
+          <label style="display:block">Видео-инструкция для покупателей
+            <span class="panel__hint" style="display:block;margin:2px 0 6px">Одна ссылка (mp4) на весь сервер: показывается сверху карты «Магазин» всем покупателям. Пусто — блока нет.</span>
+            <span style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+              <input type="text" id="yardInstructionUrl" placeholder="https://…/instruction.mp4" maxlength="2000" style="flex:1;min-width:240px;max-width:520px" />
+              <button class="btn" id="yardInstructionSaveBtn" type="button">Сохранить</button>
+              <span id="yardInstructionStatus" class="panel__hint"></span>
+            </span>
+          </label>
+        </div>
+
         <div class="seg" id="yardTabs">
           <button class="is-active" data-yardtab="invite">Вакансия</button>
           <button data-yardtab="applications">Заявки</button>

@@ -58,6 +58,22 @@ yardRouter.get('/yard/invite', async (req, res) => {
   }
 });
 
+/**
+ * Общее видео-инструкция «Как пользоваться» для покупателей — одна ссылка на весь
+ * сервер (YardSettings, строка "main"). Без телефона, тот же x-app-key. Нет
+ * ссылки — { videoUrl: null }, приложение блок не рисует.
+ */
+yardRouter.get('/yard/instruction', async (_req, res) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store');
+    const row = await prisma.yardSettings.findUnique({ where: { id: 'main' } });
+    res.json({ videoUrl: row?.instructionUrl ?? null });
+  } catch (err: any) {
+    logger.error({ err }, '[Yard] GET /yard/instruction упал');
+    res.status(500).json({ error: 'Не удалось получить видео-инструкцию', details: String(err?.message ?? err) });
+  }
+});
+
 const applySchema = z.object({
   phone: z.string().min(1),
   shopName: z.string().min(1),
