@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../db/prisma';
+import { sendPush } from '../services/push.service';
 import { logger } from '../utils/logger';
 import { normalizePhone } from './shop.routes';
 import { yardApplyPayment, yardApplyAccept, yardApplyClose, YardTransitionError } from '../services/yard.service';
@@ -442,5 +443,23 @@ yardAdminRouter.post('/instruction', async (req, res) => {
   } catch (err: any) {
     logger.error({ err }, '[Yard Admin] POST /instruction упал');
     res.status(500).json({ error: 'Не удалось сохранить видео-инструкцию', details: String(err?.message ?? err) });
+  }
+});
+
+
+// Рассылка push всем.
+yardAdminRouter.post('/push/broadcast', async (req, res) => {
+  const { title, body } = req.body ?? {};
+  if (!title || !body) return res.status(400).json({ error: 'Нужны title и body' });
+  try {
+    const tokens = await prisma.pushToken.findMany({ distinct: ['phone'] });
+    let sent = 0;
+    for (const t of tokens) {
+      await sendPush(t.phone, { title, body, data: { type: 'promo' } });
+      sent++;
+    }
+    res.json({ sent });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Не удалось отправить', details: String(err?.message ?? err) });
   }
 });
