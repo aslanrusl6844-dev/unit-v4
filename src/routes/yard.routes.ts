@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { put } from '@vercel/blob';
 import { prisma } from '../db/prisma';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
@@ -126,6 +127,35 @@ yardRouter.post('/yard/apply', async (req, res) => {
   } catch (err: any) {
     logger.error({ err }, '[Yard] POST /yard/apply упал');
     res.status(500).json({ error: 'Не удалось отправить заявку', details: String(err?.message ?? err) });
+  }
+});
+
+// Загрузка фото товара двора — x-app-key, не админ. JSON base64.
+const yardUploadSchema = z.object({
+  kind: z.literal('image'),
+  filename: z.string().min(1),
+  contentType: z.string().min(1),
+  dataBase64: z.string().min(1),
+});
+
+yardRouter.post('/yard/upload-photo', async (req, res) => {
+  const parsed = yardUploadSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+  if (!env.blobToken) return res.status(501).json({ error: 'Blob не настроен' });
+  const { filename, contentType, dataBase64 } = parsed.data;
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(contentType)) {
+    return res.status(400).json({ error: `Формат не поддерживается: ${contentType}` });
+  }
+  try {
+    const buffer = Buffer.from(dataBase64, 'base64');
+    if (buffer.length > 3 * 1024 * 1024) return res.status(413).json({ error: 'Файл слишком большой' });
+    const random = Math.random().toString(36).slice(2, 10);
+    const pathname = `yard/items/${random}-${filename.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+    const blob = await put(pathname, buffer, { access: 'public', contentType, token: env.blobToken });
+    res.json({ url: blob.url });
+  } catch (err: any) {
+    logger.error({ err }, '[Yard] Ошибка загрузки фото');
+    res.status(500).json({ error: 'Не удалось загрузить фото', details: String(err?.message ?? err) });
   }
 });
 
