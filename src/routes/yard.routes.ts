@@ -481,10 +481,6 @@ yardRouter.post('/yard/shops/:id/messages', async (req, res) => {
     let from: 'buyer' | 'shop';
     if (senderPhone === shop.phone) {
       if (buyerPhone === shop.phone) return res.status(400).json({ error: 'Укажите номер клиента, которому отвечаете' });
-      const buyerWroteFirst = await prisma.yardShopMessage.findFirst({
-        where: { shopId: shop.id, buyerPhone, from: 'buyer' },
-      });
-      if (!buyerWroteFirst) return res.status(403).json({ error: 'Этот клиент вам не писал' });
       from = 'shop';
     } else if (senderPhone === buyerPhone) {
       if (!yardShopIsLive(shop)) return res.status(404).json({ error: 'Двор не найден' });
