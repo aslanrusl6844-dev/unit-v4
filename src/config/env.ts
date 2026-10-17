@@ -125,6 +125,7 @@ if (!databaseUrl) {
 const safeData: Partial<z.infer<typeof envSchema>> = parsed.success ? parsed.data : envSchema.partial().parse({});
 
 export const env = {
+  firebaseKey: process.env.FIREBASE_KEY ?? '',
   port: Number(safeData.PORT ?? '3000'),
   nodeEnv: safeData.NODE_ENV ?? 'development',
   databaseUrl,
