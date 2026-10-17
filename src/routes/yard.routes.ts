@@ -532,7 +532,7 @@ yardRouter.get('/yard/shops/:id/messages', async (req, res) => {
     const where = isSeller
       ? { shopId: shop.id, ...(buyerQuery ? { buyerPhone: buyerQuery } : {}) }
       : { shopId: shop.id, buyerPhone: reader };
-    const latest = await prisma.yardShopMessage.findMany({ where, orderBy: { createdAt: 'desc' }, take: 200 });
+    const latest = await prisma.yardShopMessage.findMany({ where, orderBy: { createdAt: 'desc' }, take: 50 });
     const messages = [...latest].reverse();
 
     res.json(
