@@ -5,6 +5,7 @@ import { prisma } from '../db/prisma';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
 import { normalizePhone } from './shop.routes';
+import { sendPush } from '../services/push.service';
 import {
   YARD_RADIUS_OPTIONS,
   yardShopRadius,
@@ -495,6 +496,10 @@ yardRouter.post('/yard/shops/:id/messages', async (req, res) => {
     const message = await prisma.yardShopMessage.create({
       data: { shopId: shop.id, buyerPhone, from, text, imageUrl },
     });
+    // Push только получателю.
+    const recipient = from === 'buyer' ? shop.phone : buyerPhone;
+    const senderName = from === 'buyer' ? 'Покупатель' : shop.name;
+    sendPush(recipient, { title: senderName, body: text.slice(0, 100), data: { shopId: shop.id } }).catch(() => {});
     res.status(201).json({ id: message.id, from: message.from, text: message.text, imageUrl: message.imageUrl, createdAt: message.createdAt });
   } catch (err: any) {
     logger.error({ err }, '[Yard] POST /yard/shops/:id/messages упал');
