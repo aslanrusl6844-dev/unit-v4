@@ -5522,6 +5522,24 @@ async function loadYardInstruction() {
   }
 }
 
+document.getElementById('pushSendBtn')?.addEventListener('click', async () => {
+  const title = document.getElementById('pushTitle').value.trim();
+  const body = document.getElementById('pushBody').value.trim();
+  const status = document.getElementById('pushStatus');
+  if (!title || !body) { status.textContent = 'Заполните поля'; status.style.color = 'var(--loss)'; return; }
+  status.textContent = 'Отправляю…';
+  status.style.color = '';
+  try {
+    const r = await api('/yard-admin/push/broadcast', { method: 'POST', body: JSON.stringify({ title, body }) });
+    status.textContent = 'Отправлено: ' + r.sent;
+    document.getElementById('pushTitle').value = '';
+    document.getElementById('pushBody').value = '';
+  } catch (err) {
+    status.textContent = 'Ошибка: ' + err.message;
+    status.style.color = 'var(--loss)';
+  }
+});
+
 async function runYardSaveInstruction() {
   const btn = document.getElementById('yardInstructionSaveBtn');
   const statusEl = document.getElementById('yardInstructionStatus');
