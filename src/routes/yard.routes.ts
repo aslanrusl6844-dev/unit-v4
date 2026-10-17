@@ -159,6 +159,24 @@ yardRouter.post('/yard/upload-photo', async (req, res) => {
   }
 });
 
+// Регистрация push-токена.
+yardRouter.post('/yard/push-token', async (req, res) => {
+  const { phone, token } = req.body ?? {};
+  if (!phone || !token) return res.status(400).json({ error: 'Нужны phone и token' });
+  const normalized = normalizePhone(phone);
+  if (!normalized) return res.status(400).json({ error: 'Некорректный телефон' });
+  try {
+    await prisma.pushToken.upsert({
+      where: { token },
+      update: { phone: normalized },
+      create: { phone: normalized, token },
+    });
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Не удалось сохранить токен' });
+  }
+});
+
 /** Статус заявки по телефону — "none", если заявки нет вовсе. Только по этому номеру, ничего о чужих. */
 yardRouter.get('/yard/me', async (req, res) => {
   const normalizedPhone = normalizePhone(String(req.query.phone ?? ''));
