@@ -239,11 +239,7 @@ yardRouter.get('/yard/shop/:id', async (req, res) => {
   try {
     const shop = await prisma.yardShop.findUnique({ where: { id: req.params.id } });
     if (!shop || !yardShopIsLive(shop)) return res.status(404).json({ error: 'Двор не найден' });
-    const distance = yardDistanceMeters(point.lat, point.lng, shop.lat, shop.lng);
-    const shopRadius = yardShopRadius(shop);
-    if (distance > shopRadius) {
-      return res.status(403).json({ error: `Вы вне радиуса ${shopRadius} м от этого двора` });
-    }
+    // Радиус проверяется в списке nearby. Здесь открываем полку.
     const items = await prisma.yardItem.findMany({ where: { shopId: shop.id, active: true, archived: false }, orderBy: { id: 'asc' } });
     res.json({
       id: shop.id,
