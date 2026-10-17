@@ -1294,6 +1294,15 @@
           </label>
         </div>
 
+        <div class="panel" id="yardPushPanel" style="margin-bottom:12px">
+          <h3>Push-рассылка</h3>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end">
+            <label>Заголовок<input type="text" id="pushTitle" placeholder="Акция!" maxlength="50" style="width:200px" /></label>
+            <label>Текст<input type="text" id="pushBody" placeholder="Скидки 20% сегодня" maxlength="150" style="width:300px" /></label>
+            <button class="btn" id="pushSendBtn" type="button">Отправить всем</button>
+            <span id="pushStatus" class="panel__hint"></span>
+          </div>
+        </div>
         <div class="seg" id="yardTabs">
           <button class="is-active" data-yardtab="invite">Вакансия</button>
           <button data-yardtab="applications">Заявки</button>
