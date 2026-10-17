@@ -2358,6 +2358,7 @@ function wireMyMarketTabsOnce() {
     renderMyMarketVideoPreview();
     input.value = '';
   });
+  initMyMarketQtyDetails();
 }
 
 function switchMyMarketTab(tab) {
@@ -2736,6 +2737,121 @@ let myMarketCardImages = [];
 let myMarketCardVideo = null;
 let myMarketDragFromIndex = null;
 
+// ---------------------------------------------------------------------
+// «Количество» (варианты 1/2/3/4 шт или кг с ценой) и «Детали» (фото,
+// сертификаты, видео). В товар уходят массивами quantityVariants / details.
+// ---------------------------------------------------------------------
+let myMarketCardQty = [];
+let myMarketCardDetails = [];
+const MM_DETAIL_LABELS = { photo: 'Фото', certificate: 'Сертификат', video: 'Видео' };
+
+function mmxEsc(v) {
+  return String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function mmxParse(raw) {
+  try { const a = raw ? JSON.parse(raw) : []; return Array.isArray(a) ? a : []; } catch { return []; }
+}
+
+function renderMyMarketQtyList() {
+  const el = document.getElementById('mmQtyList');
+  if (!el) return;
+  el.innerHTML = myMarketCardQty.length
+    ? myMarketCardQty.map((v, i) => `<div class="mm-qty-row" data-i="${i}" style="display:flex;gap:8px;align-items:center;margin:4px 0"><b>${mmxEsc(v.quantity)} ${mmxEsc(v.unit)}</b><span>— ${mmxEsc(v.price)} ₸</span><button type="button" class="btn btn--ghost" data-qty-remove="${i}" style="font-size:12px">Убрать</button></div>`).join('')
+    : '<div class="panel__hint">Вариантов нет</div>';
+  el.querySelectorAll('[data-qty-remove]').forEach((b) => b.addEventListener('click', () => {
+    myMarketCardQty.splice(Number(b.dataset.qtyRemove), 1);
+    renderMyMarketQtyList();
+  }));
+}
+
+function addMyMarketQtyVariant() {
+  const status = document.getElementById('mmQtyStatus');
+  const quantity = Number(document.getElementById('mmQtyAddQuantity').value);
+  const unit = document.getElementById('mmQtyAddUnit').value === 'кг' ? 'кг' : 'шт';
+  const priceRaw = document.getElementById('mmQtyAddPrice').value;
+  const price = Number(priceRaw);
+  status.textContent = '';
+  if (!(quantity > 0)) { status.textContent = 'Укажи количество больше 0.'; return; }
+  if (priceRaw === '' || !(price >= 0)) { status.textContent = 'Укажи цену.'; return; }
+  if (myMarketCardQty.some((v) => v.quantity === quantity && v.unit === unit)) { status.textContent = `Вариант ${quantity} ${unit} уже есть.`; return; }
+  if (myMarketCardQty.length >= 20) { status.textContent = 'Можно не больше 20 вариантов.'; return; }
+  myMarketCardQty.push({ quantity, unit, price });
+  myMarketCardQty.sort((a, b) => (a.unit === b.unit ? a.quantity - b.quantity : a.unit < b.unit ? -1 : 1));
+  document.getElementById('mmQtyAddQuantity').value = '';
+  document.getElementById('mmQtyAddPrice').value = '';
+  renderMyMarketQtyList();
+}
+
+function renderMyMarketDetailsList() {
+  const el = document.getElementById('mmDetailsList');
+  if (!el) return;
+  el.innerHTML = myMarketCardDetails.length
+    ? myMarketCardDetails.map((d, i) => `<div class="mm-detail-row" data-i="${i}" style="display:flex;gap:8px;align-items:center;margin:4px 0">
+        ${d.type === 'video' ? '<span>🎬</span>' : `<img src="${mmxEsc(d.url)}" alt="" style="width:44px;height:44px;object-fit:cover;border-radius:6px" />`}
+        <b>${mmxEsc(MM_DETAIL_LABELS[d.type] || d.type)}</b>
+        <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px">${mmxEsc(d.url)}</span>
+        <button type="button" class="btn btn--ghost" data-det-up="${i}" style="font-size:12px"${i === 0 ? ' disabled' : ''}>↑</button>
+        <button type="button" class="btn btn--ghost" data-det-down="${i}" style="font-size:12px"${i === myMarketCardDetails.length - 1 ? ' disabled' : ''}>↓</button>
+        <button type="button" class="btn btn--ghost" data-det-remove="${i}" style="font-size:12px">Удалить</button>
+      </div>`).join('')
+    : '<div class="panel__hint">Пока пусто</div>';
+  const move = (i, to) => {
+    if (to < 0 || to >= myMarketCardDetails.length) return;
+    const [m] = myMarketCardDetails.splice(i, 1);
+    myMarketCardDetails.splice(to, 0, m);
+    renderMyMarketDetailsList();
+  };
+  el.querySelectorAll('[data-det-up]').forEach((b) => b.addEventListener('click', () => move(Number(b.dataset.detUp), Number(b.dataset.detUp) - 1)));
+  el.querySelectorAll('[data-det-down]').forEach((b) => b.addEventListener('click', () => move(Number(b.dataset.detDown), Number(b.dataset.detDown) + 1)));
+  el.querySelectorAll('[data-det-remove]').forEach((b) => b.addEventListener('click', () => {
+    myMarketCardDetails.splice(Number(b.dataset.detRemove), 1);
+    renderMyMarketDetailsList();
+  }));
+}
+
+function addMyMarketDetail(type, url) {
+  const status = document.getElementById('mmDetailsStatus');
+  if (!/^https?:\/\/\S+$/i.test(url)) { status.textContent = 'Ссылка должна начинаться с http:// или https://'; status.style.color = 'var(--loss)'; return false; }
+  if (myMarketCardDetails.length >= 100) { status.textContent = 'Можно не больше 100 файлов.'; status.style.color = 'var(--loss)'; return false; }
+  myMarketCardDetails.push({ type, url });
+  status.textContent = '';
+  renderMyMarketDetailsList();
+  return true;
+}
+
+async function handleMyMarketDetailFiles(files) {
+  const status = document.getElementById('mmDetailsStatus');
+  const type = document.getElementById('mmDetailsAddType').value;
+  if (type === 'video') { status.textContent = 'Видео — только ссылкой: вставь URL.'; status.style.color = 'var(--loss)'; return; }
+  for (const file of Array.from(files)) {
+    status.textContent = `Загружаю ${file.name}…`;
+    status.style.color = 'var(--text-faint)';
+    try {
+      const url = await uploadMyMarketFile(file);
+      addMyMarketDetail(type, url);
+      status.textContent = '';
+    } catch (err) {
+      status.textContent = err.message;
+      status.style.color = 'var(--loss)';
+    }
+  }
+}
+
+function initMyMarketQtyDetails() {
+  document.getElementById('mmQtyAddBtn').addEventListener('click', addMyMarketQtyVariant);
+  document.getElementById('mmDetailsChooseBtn').addEventListener('click', () => document.getElementById('mmDetailsFileInput').click());
+  document.getElementById('mmDetailsFileInput').addEventListener('change', (e) => {
+    if (e.target.files.length) handleMyMarketDetailFiles(e.target.files);
+    e.target.value = '';
+  });
+  document.getElementById('mmDetailsAddUrlBtn').addEventListener('click', () => {
+    const input = document.getElementById('mmDetailsAddUrl');
+    const url = input.value.trim();
+    if (!url) return;
+    if (addMyMarketDetail(document.getElementById('mmDetailsAddType').value, url)) input.value = '';
+  });
+}
+
 function switchMyMarketCardTab(tab) {
   document.querySelectorAll('#mymarketCardTabs button').forEach((b) => b.classList.toggle('is-active', b.dataset.cardtab === tab));
   document.querySelectorAll('.mm-cardtab').forEach((el) => { el.hidden = el.dataset.cardtabPanel !== tab; });
@@ -3102,6 +3218,10 @@ function openMyMarketProductCard(id) {
     } catch { myMarketCardImages = []; }
   }
   myMarketCardVideo = p.shopVideo ?? null;
+  myMarketCardQty = mmxParse(p.quantityVariants);
+  myMarketCardDetails = mmxParse(p.details);
+  renderMyMarketQtyList();
+  renderMyMarketDetailsList();
   renderMyMarketMediaGrid();
   renderMyMarketVideoPreview();
   form.elements.shopActive.checked = !!p.shopActive;
@@ -3117,6 +3237,8 @@ function closeMyMarketProductCard() {
   myMarketEditingProductId = null;
   myMarketCardImages = [];
   myMarketCardVideo = null;
+  myMarketCardQty = [];
+  myMarketCardDetails = [];
 }
 
 // ---------------------------------------------------------------------
@@ -3305,6 +3427,8 @@ async function saveMyMarketProductCard(e) {
     images: myMarketCardImages.length ? JSON.stringify(myMarketCardImages) : null,
     shopVideo: myMarketCardVideo || null,
     videoUrl: form.elements.videoUrl.value.trim() || null,
+    quantityVariants: myMarketCardQty,
+    details: myMarketCardDetails,
     shopActive,
     // Пользователь сам выбирал категорию/тип (или кликнул вариант) — это уже его
     // выбор: пометка «с названия» снимается, синк Ozon это больше не перезаписывает.

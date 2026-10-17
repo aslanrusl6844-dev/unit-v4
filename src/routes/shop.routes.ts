@@ -3,6 +3,7 @@ import { z } from 'zod';
 import multer from 'multer';
 import { put } from '@vercel/blob';
 import { prisma } from '../db/prisma';
+import { parseQuantityVariants, parseDetails } from '../services/productExtras';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
 import { generateWaybillPdf, WaybillAddressError, WaybillOrderItem } from '../services/waybill.service';
@@ -104,6 +105,10 @@ export function toShopProduct(p: any) {
     banner: p.banner,
     bannerTitle: p.bannerTitle,
     bannerSubtitle: p.bannerSubtitle,
+    // Варианты количества [{quantity, unit, price}] и «Детали» [{type, url}]. Пусто — [].
+    // Отдельные ключи: существующий `variants` (цвет/размер) не трогаем.
+    quantityVariants: parseQuantityVariants(p.quantityVariants),
+    details: parseDetails(p.details),
   };
 }
 

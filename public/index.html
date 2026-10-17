@@ -568,6 +568,8 @@
               <button class="is-active" data-cardtab="info">Информация</button>
               <button data-cardtab="attrs">Характеристики</button>
               <button data-cardtab="variants">Варианты</button>
+              <button data-cardtab="qty">Количество</button>
+              <button data-cardtab="details">Детали</button>
               <button data-cardtab="media">Медиа</button>
               <button data-cardtab="preview">Превью</button>
             </div>
@@ -621,6 +623,35 @@
                   <span id="mmVariantSaveStatus" class="panel__hint" style="margin:0"></span>
                 </div>
               </div>
+              <!-- ---- Количество: варианты 1/2/3/4 шт или кг, у каждого своя цена ---- -->
+              <div class="mm-cardtab" data-cardtab-panel="qty" hidden>
+                <div class="panel__head" style="margin-top:0"><h2 style="font-size:14px">Варианты количества</h2></div>
+                <p class="panel__hint" style="margin-top:0">Например: 1 шт — 500 ₸, 2 шт — 900 ₸. Если вариантов нет, приложение показывает обычную цену товара.</p>
+                <div id="mmQtyList"></div>
+                <div style="display:flex;gap:6px;margin-top:8px;align-items:center;flex-wrap:wrap">
+                  <input type="number" id="mmQtyAddQuantity" min="0" step="any" placeholder="Количество" style="max-width:120px" />
+                  <select id="mmQtyAddUnit"><option value="шт">шт</option><option value="кг">кг</option></select>
+                  <input type="number" id="mmQtyAddPrice" min="0" step="any" placeholder="Цена" style="max-width:120px" />
+                  <button type="button" class="btn btn--ghost" id="mmQtyAddBtn">Добавить вариант</button>
+                </div>
+                <div id="mmQtyStatus" class="panel__hint" style="color:var(--loss)"></div>
+              </div>
+
+              <!-- ---- Детали: фото, сертификаты, короткие видео ---- -->
+              <div class="mm-cardtab" data-cardtab-panel="details" hidden>
+                <div class="panel__head" style="margin-top:0"><h2 style="font-size:14px">Детали</h2></div>
+                <p class="panel__hint" style="margin-top:0">Фото и сертификаты — загрузка файла (JPEG/PNG/WEBP до 2.5 МБ) или ссылка. Видео — только ссылка. Порядок — как в списке, количество любое.</p>
+                <div id="mmDetailsList"></div>
+                <div style="display:flex;gap:6px;margin-top:8px;align-items:center;flex-wrap:wrap">
+                  <select id="mmDetailsAddType"><option value="photo">Фото</option><option value="certificate">Сертификат</option><option value="video">Видео</option></select>
+                  <button type="button" class="btn btn--ghost" id="mmDetailsChooseBtn">Загрузить файл</button>
+                  <input type="file" id="mmDetailsFileInput" accept="image/jpeg,image/png,image/webp" multiple hidden />
+                  <input type="text" id="mmDetailsAddUrl" placeholder="или ссылка https://…" style="max-width:260px" />
+                  <button type="button" class="btn btn--ghost" id="mmDetailsAddUrlBtn">Добавить</button>
+                </div>
+                <div id="mmDetailsStatus" class="panel__hint"></div>
+              </div>
+
               <div class="mm-cardtab" data-cardtab-panel="media" hidden>
                 <p class="panel__hint" style="margin-top:0">Первое фото — главное, показывается на главной приложения. JPEG/PNG/WEBP, до 2.5 МБ (ограничение Vercel на размер запроса), до 10 фото. Перетащи миниатюру, чтобы изменить порядок.</p>
                 <div id="mmMediaGrid" class="mm-media-grid"></div>
