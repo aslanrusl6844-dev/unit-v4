@@ -895,3 +895,13 @@ model ShowcaseCollectionItem {
   @@unique([collectionId, productId])
   @@index([productId])
 }
+
+// Токены для push-уведомлений.
+model PushToken {
+  id        String   @id @default(cuid())
+  phone     String
+  token     String   @unique
+  createdAt DateTime @default(now())
+
+  @@index([phone])
+}
