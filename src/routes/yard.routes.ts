@@ -167,9 +167,9 @@ yardRouter.post('/yard/push-token', async (req, res) => {
   const normalized = normalizePhone(phone);
   if (!normalized) return res.status(400).json({ error: 'Некорректный телефон' });
   try {
-    await prisma.pushToken.upsert({
-      where: { token },
-      update: { phone: normalized },
+    await prisma.shopCustomerPushToken.upsert({
+      where: { phone: normalized },
+      update: { token },
       create: { phone: normalized, token },
     });
     res.json({ ok: true });
