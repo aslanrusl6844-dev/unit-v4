@@ -571,7 +571,7 @@ yardRouter.post('/yard/shops/:id/messages', async (req, res) => {
     const senderName = from === 'buyer' ? 'Покупатель' : shop.name;
     logger.info({ from, rawRecipient, recipient }, '[Yard] Отправляю пуш');
     sendPush(recipient, { title: senderName, body: (text ?? '').slice(0, 100), data: { shopId: shop.id } }).catch(() => {});
-    res.status(201).json({ id: message.id, from: message.from, text: message.text, imageUrl: message.imageUrl, createdAt: message.createdAt });
+    res.status(201).json({ id: message.id, from: message.from, text: message.text, imageUrl: message.imageUrl, createdAt: message.createdAt, debug: { recipient, rawRecipient } });
   } catch (err: any) {
     logger.error({ err }, '[Yard] POST /yard/shops/:id/messages упал');
     res.status(500).json({ error: 'Не удалось отправить сообщение', details: String(err?.message ?? err) });
