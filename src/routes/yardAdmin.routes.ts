@@ -455,7 +455,7 @@ yardAdminRouter.post('/push/broadcast', async (req, res) => {
     const tokens = await prisma.shopCustomerPushToken.findMany({ distinct: ['phone'] });
     let sent = 0;
     for (const t of tokens) {
-      await sendPush(t.phone, { title, body });
+      await sendPush(t.phone, { title, body }, true);
       sent++;
     }
     res.json({ sent });
