@@ -174,7 +174,8 @@ yardRouter.post('/yard/push-token', async (req, res) => {
     });
     res.json({ ok: true });
   } catch (err: any) {
-    res.status(500).json({ error: 'Не удалось сохранить токен' });
+    logger.error({ err }, '[Yard] POST /yard/push-token упал');
+    res.status(500).json({ error: 'Не удалось сохранить токен', details: String(err?.message ?? err) });
   }
 });
 
