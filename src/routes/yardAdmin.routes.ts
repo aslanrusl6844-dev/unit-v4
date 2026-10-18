@@ -452,9 +452,12 @@ yardAdminRouter.post('/push/broadcast', async (req, res) => {
   const { title, body } = req.body ?? {};
   if (!title || !body) return res.status(400).json({ error: 'Нужны title и body' });
   try {
-    const tokens = await prisma.shopCustomerPushToken.findMany({ distinct: ['phone'] });
+    const all = await prisma.shopCustomerPushToken.findMany();
+    const seen = new Set<string>();
     let sent = 0;
-    for (const t of tokens) {
+    for (const t of all) {
+      if (seen.has(t.token)) continue;
+      seen.add(t.token);
       await sendPush(t.phone, { title, body }, true);
       sent++;
     }
