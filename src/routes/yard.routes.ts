@@ -194,10 +194,45 @@ yardRouter.get('/yard/push-tokens', async (req, res) => {
 yardRouter.get('/yard/push-test', async (req, res) => {
   const phone = req.query.phone as string;
   if (!phone) return res.status(400).json({ error: 'phone required' });
+  const normalized = normalizePhone(phone) || phone;
   try {
-    const devices = await prisma.shopCustomerPushToken.findMany({ where: { phone } });
-    await sendPush(phone, { title: 'Тест', body: 'Проверка пуша' });
-    res.json({ ok: true, devices: devices.length });
+    const devices = await prisma.shopCustomerPushToken.findMany({ where: { phone: normalized } });
+    const results: any[] = [];
+    const token = await (async () => {
+      const keyJson = env.firebaseKey;
+      if (!keyJson) return null;
+      const key = JSON.parse(keyJson);
+      const now = Math.floor(Date.now() / 1000);
+      const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');
+      const payload = Buffer.from(JSON.stringify({
+        iss: key.client_email, sub: key.client_email,
+        aud: 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600,
+        scope: 'https://www.googleapis.com/auth/firebase.messaging',
+      })).toString('base64url');
+      const crypto = await import('crypto');
+      const sign = crypto.createSign('RSA-SHA256');
+      sign.update(header + '.' + payload);
+      const signature = sign.sign(key.private_key, 'base64url');
+      const jwt = header + '.' + payload + '.' + signature;
+      const r = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=' + jwt,
+      });
+      const d = await r.json() as any;
+      return d.access_token ?? null;
+    })();
+    if (!token) return res.json({ ok: false, error: 'no access token' });
+    for (const device of devices) {
+      const r = await fetch('https://fcm.googleapis.com/v1/projects/my-market-3e032/messages:send', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: { token: device.token, notification: { title: 'Тест', body: 'Проверка пуша' } } }),
+      });
+      const body = await r.text();
+      results.push({ status: r.status, body: body.slice(0, 300) });
+    }
+    res.json({ ok: true, devices: devices.length, results });
   } catch (err: any) {
     res.status(500).json({ error: String(err?.message ?? err) });
   }
