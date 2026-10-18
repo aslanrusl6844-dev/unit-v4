@@ -179,6 +179,20 @@ yardRouter.post('/yard/push-token', async (req, res) => {
   }
 });
 
+// Debug: проверить, что FIREBASE_KEY загружен и токен получается.
+yardRouter.get('/yard/push-debug', async (req, res) => {
+  const keyJson = env.firebaseKey;
+  if (!keyJson) return res.json({ ok: false, error: 'FIREBASE_KEY не задан' });
+  try {
+    const key = JSON.parse(keyJson);
+    const hasEmail = !!key.client_email;
+    const hasKey = !!key.private_key;
+    res.json({ ok: true, hasEmail, hasKey, email: key.client_email?.slice(0, 30) });
+  } catch (err: any) {
+    res.json({ ok: false, error: 'JSON не парсится', details: String(err?.message ?? err) });
+  }
+});
+
 /** Статус заявки по телефону — "none", если заявки нет вовсе. Только по этому номеру, ничего о чужих. */
 yardRouter.get('/yard/me', async (req, res) => {
   const normalizedPhone = normalizePhone(String(req.query.phone ?? ''));
