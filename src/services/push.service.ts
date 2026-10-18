@@ -41,7 +41,7 @@ async function getAccessToken(): Promise<string | null> {
   }
 }
 
-export async function sendPush(phone: string, payload: PushPayload): Promise<void> {
+export async function sendPush(phone: string, payload: PushPayload, onlyNotification = false): Promise<void> {
   const token = await getAccessToken();
   if (!token) {
     logger.error('[Push] Нет access token — FIREBASE_KEY не настроен или неверный');
@@ -59,7 +59,7 @@ export async function sendPush(phone: string, payload: PushPayload): Promise<voi
           message: {
             token: device.token,
             notification: { title: payload.title, body: payload.body },
-            data: payload.data,
+            ...(onlyNotification ? {} : { data: payload.data }),
           },
         }),
       });
