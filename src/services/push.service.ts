@@ -43,12 +43,16 @@ async function getAccessToken(): Promise<string | null> {
 
 export async function sendPush(phone: string, payload: PushPayload): Promise<void> {
   const token = await getAccessToken();
-  if (!token) return;
+  if (!token) {
+    logger.error('[Push] Нет access token — FIREBASE_KEY не настроен или неверный');
+    return;
+  }
   const projectId = 'my-market-3e032';
   const devices = await prisma.shopCustomerPushToken.findMany({ where: { phone } });
+  logger.info({ phone, count: devices.length }, '[Push] Устройств для отправки');
   for (const device of devices) {
     try {
-      await fetch(`https://fcm.googleapis.com/v1/projects/${projectId}/messages:send`, {
+      const res = await fetch(`https://fcm.googleapis.com/v1/projects/${projectId}/messages:send`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -59,6 +63,8 @@ export async function sendPush(phone: string, payload: PushPayload): Promise<voi
           },
         }),
       });
+      const body = await res.text();
+      logger.info({ status: res.status, body: body.slice(0, 200) }, '[Push] Ответ FCM');
     } catch (err) {
       logger.error({ err }, '[Push] Ошибка отправки');
     }
