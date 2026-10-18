@@ -565,9 +565,11 @@ yardRouter.post('/yard/shops/:id/messages', async (req, res) => {
     const message = await prisma.yardShopMessage.create({
       data: { shopId: shop.id, buyerPhone, from, text, imageUrl },
     });
-    // Push только получателю.
-    const recipient = from === 'buyer' ? shop.phone : buyerPhone;
+    // Push только получателю. Нормализуем телефон.
+    const rawRecipient = from === 'buyer' ? shop.phone : buyerPhone;
+    const recipient = normalizePhone(rawRecipient) || rawRecipient;
     const senderName = from === 'buyer' ? 'Покупатель' : shop.name;
+    logger.info({ from, rawRecipient, recipient }, '[Yard] Отправляю пуш');
     sendPush(recipient, { title: senderName, body: (text ?? '').slice(0, 100), data: { shopId: shop.id } }).catch(() => {});
     res.status(201).json({ id: message.id, from: message.from, text: message.text, imageUrl: message.imageUrl, createdAt: message.createdAt });
   } catch (err: any) {
