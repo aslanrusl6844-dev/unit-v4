@@ -68,10 +68,10 @@ yardAdminRouter.post('/applications/:id/approve', async (req, res) => {
     const [updatedApplication] = await prisma.$transaction([
       prisma.yardApplication.update({ where: { id: req.params.id }, data: { status: 'approved', reviewedAt: new Date() } }),
       prisma.yardShop.upsert({
-        where: { phone: application.phone },
+        where: { phone: normalizePhone(application.phone) || application.phone },
         update: { name: application.shopName, photo: application.shopPhoto, lat: application.lat, lng: application.lng },
         create: {
-          phone: application.phone,
+          phone: normalizePhone(application.phone) || application.phone,
           name: application.shopName,
           photo: application.shopPhoto,
           lat: application.lat,
