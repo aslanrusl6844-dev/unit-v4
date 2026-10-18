@@ -565,13 +565,16 @@ yardRouter.post('/yard/shops/:id/messages', async (req, res) => {
     const message = await prisma.yardShopMessage.create({
       data: { shopId: shop.id, buyerPhone, from, text, imageUrl },
     });
-    // Push только получателю. Нормализуем телефон.
-    const rawRecipient = from === 'buyer' ? shop.phone : buyerPhone;
-    const recipient = normalizePhone(rawRecipient) || rawRecipient;
-    const senderName = from === 'buyer' ? 'Покупатель' : shop.name;
-    logger.info({ from, rawRecipient, recipient }, '[Yard] Отправляю пуш');
-    sendPush(recipient, { title: senderName, body: (text ?? '').slice(0, 100), data: { shopId: shop.id } }).catch(() => {});
-    res.status(201).json({ id: message.id, from: message.from, text: message.text, imageUrl: message.imageUrl, createdAt: message.createdAt, debug: { recipient, rawRecipient } });
+    // Push только получателю. Нормализуем оба телефона.
+    const shopPhoneNorm = normalizePhone(shop.phone) || shop.phone;
+    const buyerPhoneNorm = normalizePhone(buyerPhone) || buyerPhone;
+    const recipient = from === 'buyer' ? shopPhoneNorm : buyerPhoneNorm;
+    const senderName = from === 'buyer' ? 'Покупатель' : (shop.name || 'Магазин');
+    logger.info({ from, recipient, shopPhone: shop.phone, buyerPhone }, '[Yard] Пуш: отправляю');
+    sendPush(recipient, { title: senderName, body: (text ?? '').slice(0, 100), data: { shopId: shop.id, type: 'chat' } })
+      .then(() => logger.info({ recipient }, '[Yard] Пуш отправлен'))
+      .catch((err) => logger.error({ err, recipient }, '[Yard] Пуш не ушёл'));
+    res.status(201).json({ id: message.id, from: message.from, text: message.text, imageUrl: message.imageUrl, createdAt: message.createdAt });
   } catch (err: any) {
     logger.error({ err }, '[Yard] POST /yard/shops/:id/messages упал');
     res.status(500).json({ error: 'Не удалось отправить сообщение', details: String(err?.message ?? err) });
