@@ -45,7 +45,7 @@ export async function sendPush(phone: string, payload: PushPayload): Promise<voi
   const token = await getAccessToken();
   if (!token) return;
   const projectId = 'my-market-3e032';
-  const devices = await prisma.pushToken.findMany({ where: { phone } });
+  const devices = await prisma.shopCustomerPushToken.findMany({ where: { phone } });
   for (const device of devices) {
     try {
       await fetch(`https://fcm.googleapis.com/v1/projects/${projectId}/messages:send`, {
