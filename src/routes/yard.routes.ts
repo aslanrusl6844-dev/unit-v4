@@ -180,6 +180,18 @@ yardRouter.post('/yard/push-token', async (req, res) => {
 });
 
 // Debug: проверить, что FIREBASE_KEY загружен и токен получается.
+yardRouter.get('/yard/push-test', async (req, res) => {
+  const phone = req.query.phone as string;
+  if (!phone) return res.status(400).json({ error: 'phone required' });
+  try {
+    const devices = await prisma.shopCustomerPushToken.findMany({ where: { phone } });
+    await sendPush(phone, { title: 'Тест', body: 'Проверка пуша' });
+    res.json({ ok: true, devices: devices.length });
+  } catch (err: any) {
+    res.status(500).json({ error: String(err?.message ?? err) });
+  }
+});
+
 yardRouter.get('/yard/push-debug', async (req, res) => {
   const keyJson = env.firebaseKey;
   if (!keyJson) return res.json({ ok: false, error: 'FIREBASE_KEY не задан' });
