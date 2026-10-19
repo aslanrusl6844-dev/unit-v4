@@ -21,6 +21,7 @@ import { shopMediaRouter } from './routes/shopMedia.routes';
 import { showcasesRouter } from './routes/showcases.routes';
 import { showcasesAdminRouter } from './routes/showcasesAdmin.routes';
 import { yardRouter } from './routes/yard.routes';
+import { categoriesRouter } from './routes/categories.routes';
 import { yardAdminRouter } from './routes/yardAdmin.routes';
 import { wholesalersRouter } from './routes/wholesalers.routes';
 import { adminAuthMiddleware } from './middleware/adminAuth';
@@ -143,6 +144,7 @@ app.use('/api/shop-admin', shopAdminRouter);
 // проверка внутри yardRouter, API-пути /api/shop/yard/..., админский
 // раздел полностью отдельный от shopAdminRouter/shopRouter выше.
 app.use('/api/shop', yardRouter);
+app.use('/api/shop', categoriesRouter);
 app.use('/api/yard-admin', yardAdminRouter);
 // Оптовики раздела «Товары» — полки по оптовикам, перенос товара, накладные (PDF/ZIP).
 app.use('/api/wholesalers', wholesalersRouter);
