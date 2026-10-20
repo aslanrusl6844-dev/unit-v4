@@ -38,6 +38,7 @@
 
       <div class="nav-group-label">Система</div>
       <button class="nav-item" data-page="notifications"><i class="ni">🔔</i>Уведомления</button>
+      <button class="nav-item" data-page="broadcast"><i class="ni">📣</i>Рассылка</button>
       <button class="nav-item" data-page="settings"><i class="ni">⚙</i>Настройки</button>
       <button class="nav-item" data-page="yard" style="background:#DC2626;color:#fff">Магазин или Двор</button>
     </nav>
@@ -568,6 +569,8 @@
               <button class="is-active" data-cardtab="info">Информация</button>
               <button data-cardtab="attrs">Характеристики</button>
               <button data-cardtab="variants">Варианты</button>
+              <button data-cardtab="qty">Количество</button>
+              <button data-cardtab="details">Детали</button>
               <button data-cardtab="media">Медиа</button>
               <button data-cardtab="preview">Превью</button>
             </div>
@@ -621,6 +624,34 @@
                   <span id="mmVariantSaveStatus" class="panel__hint" style="margin:0"></span>
                 </div>
               </div>
+              <!-- ---- Количество: варианты 1/2/3/4 шт или кг, у каждого своя цена ---- -->
+              <div class="mm-cardtab" data-cardtab-panel="qty" hidden>
+                <div class="panel__head" style="margin-top:0"><h2 style="font-size:14px">Варианты количества</h2></div>
+                <p class="panel__hint" style="margin-top:0">Например: 1 шт — 500 ₸, 2 шт — 900 ₸. Если вариантов нет, приложение показывает обычную цену товара.</p>
+                <div id="mmQtyList"></div>
+                <div style="display:flex;gap:6px;margin-top:8px;align-items:center;flex-wrap:wrap">
+                  <input type="number" id="mmQtyAddQuantity" min="0" step="any" placeholder="Количество" style="max-width:120px" />
+                  <select id="mmQtyAddUnit"><option value="шт">шт</option><option value="кг">кг</option></select>
+                  <input type="number" id="mmQtyAddPrice" min="0" step="any" placeholder="Цена" style="max-width:120px" />
+                  <button type="button" class="btn btn--ghost" id="mmQtyAddBtn">Добавить вариант</button>
+                </div>
+                <div id="mmQtyStatus" class="panel__hint" style="color:var(--loss)"></div>
+              </div>
+
+              <!-- ---- Детали: фото и видео для полноэкранного экрана «Детали» в приложении ---- -->
+              <div class="mm-cardtab" data-cardtab-panel="details" hidden>
+                <div class="panel__head" style="margin-top:0"><h2 style="font-size:14px">Детали</h2></div>
+                <p class="panel__hint" style="margin-top:0">Только это приложение показывает на экране «Детали» (другие фото товара туда не попадают). До 10 файлов. Фото — загрузка файла (JPEG/PNG/WEBP до 2.5 МБ) или ссылка; видео — только ссылка (.mp4/.webm/.mov). Порядок — как в списке.</p>
+                <div id="mmDetailsList"></div>
+                <div style="display:flex;gap:6px;margin-top:8px;align-items:center;flex-wrap:wrap">
+                  <button type="button" class="btn btn--ghost" id="mmDetailsChooseBtn">Загрузить фото</button>
+                  <input type="file" id="mmDetailsFileInput" accept="image/jpeg,image/png,image/webp" multiple hidden />
+                  <input type="text" id="mmDetailsAddUrl" placeholder="или ссылка на фото/видео https://…" style="max-width:300px" />
+                  <button type="button" class="btn btn--ghost" id="mmDetailsAddUrlBtn">Добавить</button>
+                </div>
+                <div id="mmDetailsStatus" class="panel__hint"></div>
+              </div>
+
               <div class="mm-cardtab" data-cardtab-panel="media" hidden>
                 <p class="panel__hint" style="margin-top:0">Первое фото — главное, показывается на главной приложения. JPEG/PNG/WEBP, до 2.5 МБ (ограничение Vercel на размер запроса), до 10 фото. Перетащи миниатюру, чтобы изменить порядок.</p>
                 <div id="mmMediaGrid" class="mm-media-grid"></div>
@@ -1160,6 +1191,35 @@
       </section>
 
       <!-- ============ УВЕДОМЛЕНИЯ ============ -->
+      <section class="page" id="page-broadcast" hidden>
+        <div class="page__head"><h1>Рассылка</h1><p>Пуш-уведомление покупателям приложения: заголовок, текст и (необязательно) картинка — акция, баннер.</p></div>
+        <div class="panel">
+          <form id="broadcastForm" style="display:flex;flex-direction:column;gap:10px;max-width:560px">
+            <label>Заголовок *<input type="text" id="bcTitle" maxlength="100" placeholder="Например: Скидки до 30%" /></label>
+            <label>Текст *<textarea id="bcBody" rows="3" maxlength="500" placeholder="Текст уведомления"></textarea></label>
+            <div>
+              <div style="font-size:13px;margin-bottom:4px">Картинка (необязательно)</div>
+              <div id="bcImagePreview"></div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px">
+                <button type="button" class="btn btn--ghost" id="bcChooseImageBtn">Загрузить фото</button>
+                <input type="file" id="bcImageFile" accept="image/jpeg,image/png,image/webp" hidden />
+                <input type="text" id="bcImageUrl" placeholder="или ссылка https://…" style="max-width:260px" />
+                <button type="button" class="btn btn--ghost" id="bcImageUrlBtn">Добавить</button>
+              </div>
+              <div id="bcImageStatus" class="panel__hint"></div>
+              <p class="panel__hint" style="margin:2px 0 0">JPEG/PNG/WEBP до 2.5 МБ. Без картинки пуш уйдёт как обычный.</p>
+            </div>
+            <label>Тестовый номер (отправка только ему)<input type="text" id="bcTestPhone" placeholder="+7 700 000 00 00" autocomplete="off" /></label>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button type="button" class="btn btn--ghost" id="bcSendTestBtn">Отправить тест на номер</button>
+              <button type="button" class="btn btn--accent" id="bcSendAllBtn">Отправить всем</button>
+            </div>
+            <div id="bcAudience" class="panel__hint"></div>
+            <div id="bcResult" style="font-size:13px"></div>
+          </form>
+        </div>
+      </section>
+
       <section class="page" id="page-notifications" hidden>
         <div class="page__head"><h1>Уведомления</h1><p>Журнал фоновых задач: синхронизация с площадками и автобот цены.</p></div>
 

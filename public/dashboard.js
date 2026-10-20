@@ -103,6 +103,7 @@ const PAGE_LOADERS = {
   niches: loadNichesPage,
   demping: loadDempingPage,
   notifications: loadNotificationsPage,
+  broadcast: loadBroadcastPage,
   settings: loadSettingsPage,
   yard: loadYardPage,
 };
@@ -2358,6 +2359,7 @@ function wireMyMarketTabsOnce() {
     renderMyMarketVideoPreview();
     input.value = '';
   });
+  initMyMarketQtyDetails();
 }
 
 function switchMyMarketTab(tab) {
@@ -2736,6 +2738,128 @@ let myMarketCardImages = [];
 let myMarketCardVideo = null;
 let myMarketDragFromIndex = null;
 
+// ---------------------------------------------------------------------
+// «Количество» (варианты 1/2/3/4 шт или кг с ценой) и «Детали» (фото,
+// сертификаты, видео). В товар уходят массивами quantityVariants / details.
+// ---------------------------------------------------------------------
+let myMarketCardQty = [];
+let myMarketCardDetails = [];
+
+function mmxEsc(v) {
+  return String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function mmxParse(raw) {
+  try { const a = raw ? JSON.parse(raw) : []; return Array.isArray(a) ? a : []; } catch { return []; }
+}
+
+function renderMyMarketQtyList() {
+  const el = document.getElementById('mmQtyList');
+  if (!el) return;
+  el.innerHTML = myMarketCardQty.length
+    ? myMarketCardQty.map((v, i) => `<div class="mm-qty-row" data-i="${i}" style="display:flex;gap:8px;align-items:center;margin:4px 0"><b>${mmxEsc(v.quantity)} ${mmxEsc(v.unit)}</b><span>— ${mmxEsc(v.price)} ₸</span><button type="button" class="btn btn--ghost" data-qty-remove="${i}" style="font-size:12px">Убрать</button></div>`).join('')
+    : '<div class="panel__hint">Вариантов нет</div>';
+  el.querySelectorAll('[data-qty-remove]').forEach((b) => b.addEventListener('click', () => {
+    myMarketCardQty.splice(Number(b.dataset.qtyRemove), 1);
+    renderMyMarketQtyList();
+  }));
+}
+
+function addMyMarketQtyVariant() {
+  const status = document.getElementById('mmQtyStatus');
+  const quantity = Number(document.getElementById('mmQtyAddQuantity').value);
+  const unit = document.getElementById('mmQtyAddUnit').value === 'кг' ? 'кг' : 'шт';
+  const priceRaw = document.getElementById('mmQtyAddPrice').value;
+  const price = Number(priceRaw);
+  status.textContent = '';
+  if (!(quantity > 0)) { status.textContent = 'Укажи количество больше 0.'; return; }
+  if (priceRaw === '' || !(price >= 0)) { status.textContent = 'Укажи цену.'; return; }
+  if (myMarketCardQty.some((v) => v.quantity === quantity && v.unit === unit)) { status.textContent = `Вариант ${quantity} ${unit} уже есть.`; return; }
+  if (myMarketCardQty.length >= 20) { status.textContent = 'Можно не больше 20 вариантов.'; return; }
+  myMarketCardQty.push({ quantity, unit, price });
+  myMarketCardQty.sort((a, b) => (a.unit === b.unit ? a.quantity - b.quantity : a.unit < b.unit ? -1 : 1));
+  document.getElementById('mmQtyAddQuantity').value = '';
+  document.getElementById('mmQtyAddPrice').value = '';
+  renderMyMarketQtyList();
+}
+
+const MM_DETAILS_MAX = 10;
+function mmxIsVideo(url) { return /\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(String(url)); }
+
+function renderMyMarketDetailsList() {
+  const el = document.getElementById('mmDetailsList');
+  if (!el) return;
+  el.innerHTML = myMarketCardDetails.length
+    ? myMarketCardDetails.map((url, i) => `<div class="mm-detail-row" data-i="${i}" style="display:flex;gap:8px;align-items:center;margin:4px 0">
+        ${mmxIsVideo(url) ? '<span>🎬</span>' : `<img src="${mmxEsc(url)}" alt="" style="width:44px;height:44px;object-fit:cover;border-radius:6px" />`}
+        <b>${mmxIsVideo(url) ? 'Видео' : 'Фото'}</b>
+        <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px">${mmxEsc(url)}</span>
+        <button type="button" class="btn btn--ghost" data-det-up="${i}" style="font-size:12px"${i === 0 ? ' disabled' : ''}>↑</button>
+        <button type="button" class="btn btn--ghost" data-det-down="${i}" style="font-size:12px"${i === myMarketCardDetails.length - 1 ? ' disabled' : ''}>↓</button>
+        <button type="button" class="btn btn--ghost" data-det-remove="${i}" style="font-size:12px">Удалить</button>
+      </div>`).join('')
+    : '<div class="panel__hint">Пока пусто</div>';
+  const move = (i, to) => {
+    if (to < 0 || to >= myMarketCardDetails.length) return;
+    const [m] = myMarketCardDetails.splice(i, 1);
+    myMarketCardDetails.splice(to, 0, m);
+    renderMyMarketDetailsList();
+  };
+  el.querySelectorAll('[data-det-up]').forEach((b) => b.addEventListener('click', () => move(Number(b.dataset.detUp), Number(b.dataset.detUp) - 1)));
+  el.querySelectorAll('[data-det-down]').forEach((b) => b.addEventListener('click', () => move(Number(b.dataset.detDown), Number(b.dataset.detDown) + 1)));
+  el.querySelectorAll('[data-det-remove]').forEach((b) => b.addEventListener('click', () => {
+    myMarketCardDetails.splice(Number(b.dataset.detRemove), 1);
+    renderMyMarketDetailsList();
+  }));
+}
+
+function addMyMarketDetail(url) {
+  const status = document.getElementById('mmDetailsStatus');
+  const fail = (msg) => { status.textContent = msg; status.style.color = 'var(--loss)'; return false; };
+  if (!/^https?:\/\/\S+$/i.test(url)) return fail('Ссылка должна начинаться с http:// или https://');
+  if (myMarketCardDetails.includes(url)) return fail('Этот файл уже добавлен.');
+  if (myMarketCardDetails.length >= MM_DETAILS_MAX) return fail(`Можно не больше ${MM_DETAILS_MAX} файлов.`);
+  myMarketCardDetails.push(url);
+  status.textContent = '';
+  renderMyMarketDetailsList();
+  return true;
+}
+
+async function handleMyMarketDetailFiles(files) {
+  const status = document.getElementById('mmDetailsStatus');
+  const list = Array.from(files);
+  if (myMarketCardDetails.length + list.length > MM_DETAILS_MAX) {
+    status.textContent = `Можно не больше ${MM_DETAILS_MAX} файлов (сейчас ${myMarketCardDetails.length}, добавляешь ещё ${list.length}).`;
+    status.style.color = 'var(--loss)';
+    return;
+  }
+  for (const file of list) {
+    status.textContent = `Загружаю ${file.name}…`;
+    status.style.color = 'var(--text-faint)';
+    try {
+      const url = await uploadMyMarketFile(file);
+      if (addMyMarketDetail(url)) status.textContent = '';
+    } catch (err) {
+      status.textContent = err.message;
+      status.style.color = 'var(--loss)';
+    }
+  }
+}
+
+function initMyMarketQtyDetails() {
+  document.getElementById('mmQtyAddBtn').addEventListener('click', addMyMarketQtyVariant);
+  document.getElementById('mmDetailsChooseBtn').addEventListener('click', () => document.getElementById('mmDetailsFileInput').click());
+  document.getElementById('mmDetailsFileInput').addEventListener('change', (e) => {
+    if (e.target.files.length) handleMyMarketDetailFiles(e.target.files);
+    e.target.value = '';
+  });
+  document.getElementById('mmDetailsAddUrlBtn').addEventListener('click', () => {
+    const input = document.getElementById('mmDetailsAddUrl');
+    const url = input.value.trim();
+    if (!url) return;
+    if (addMyMarketDetail(url)) input.value = '';
+  });
+}
+
 function switchMyMarketCardTab(tab) {
   document.querySelectorAll('#mymarketCardTabs button').forEach((b) => b.classList.toggle('is-active', b.dataset.cardtab === tab));
   document.querySelectorAll('.mm-cardtab').forEach((el) => { el.hidden = el.dataset.cardtabPanel !== tab; });
@@ -3102,6 +3226,10 @@ function openMyMarketProductCard(id) {
     } catch { myMarketCardImages = []; }
   }
   myMarketCardVideo = p.shopVideo ?? null;
+  myMarketCardQty = mmxParse(p.quantityVariants);
+  myMarketCardDetails = (Array.isArray(p.details) ? p.details : mmxParse(p.details)).filter((u) => typeof u === 'string');
+  renderMyMarketQtyList();
+  renderMyMarketDetailsList();
   renderMyMarketMediaGrid();
   renderMyMarketVideoPreview();
   form.elements.shopActive.checked = !!p.shopActive;
@@ -3117,6 +3245,8 @@ function closeMyMarketProductCard() {
   myMarketEditingProductId = null;
   myMarketCardImages = [];
   myMarketCardVideo = null;
+  myMarketCardQty = [];
+  myMarketCardDetails = [];
 }
 
 // ---------------------------------------------------------------------
@@ -3305,6 +3435,8 @@ async function saveMyMarketProductCard(e) {
     images: myMarketCardImages.length ? JSON.stringify(myMarketCardImages) : null,
     shopVideo: myMarketCardVideo || null,
     videoUrl: form.elements.videoUrl.value.trim() || null,
+    quantityVariants: myMarketCardQty,
+    details: myMarketCardDetails,
     shopActive,
     // Пользователь сам выбирал категорию/тип (или кликнул вариант) — это уже его
     // выбор: пометка «с названия» снимается, синк Ozon это больше не перезаписывает.
@@ -5041,6 +5173,92 @@ async function loadDempingPage() {
 // =====================================================================
 // УВЕДОМЛЕНИЯ (журнал синхронизаций как замена нотификациям)
 // =====================================================================
+
+// ---------------------------------------------------------------------
+// Рассылка пушей: заголовок, текст, картинка (Blob, как фото товаров).
+// ---------------------------------------------------------------------
+let broadcastWired = false;
+let broadcastImage = null;
+let broadcastBusy = false;
+
+function renderBroadcastImage() {
+  const el = document.getElementById('bcImagePreview');
+  el.innerHTML = broadcastImage
+    ? `<img src="${mmxEsc(broadcastImage)}" alt="" style="max-width:220px;max-height:160px;border-radius:8px;display:block" /><button type="button" class="btn btn--ghost" id="bcRemoveImageBtn" style="font-size:12px;margin-top:4px">Убрать картинку</button>`
+    : '<div class="panel__hint">Картинки нет — пуш уйдёт без неё.</div>';
+  const rm = document.getElementById('bcRemoveImageBtn');
+  if (rm) rm.addEventListener('click', () => { broadcastImage = null; renderBroadcastImage(); });
+}
+
+async function broadcastSend(audience) {
+  if (broadcastBusy) return;
+  const status = document.getElementById('bcResult');
+  const title = document.getElementById('bcTitle').value.trim();
+  const body = document.getElementById('bcBody').value.trim();
+  const testPhone = document.getElementById('bcTestPhone').value.trim();
+  const fail = (m) => { status.textContent = m; status.style.color = 'var(--loss)'; };
+  if (!title) return fail('Укажи заголовок.');
+  if (!body) return fail('Укажи текст.');
+  if (audience === 'test' && !testPhone) return fail('Укажи тестовый номер.');
+  if (audience === 'all' && !confirm('Отправить пуш ВСЕМ покупателям с токеном? Отменить отправку нельзя.')) return;
+  broadcastBusy = true;
+  const btns = [document.getElementById('bcSendTestBtn'), document.getElementById('bcSendAllBtn')];
+  btns.forEach((b) => { b.disabled = true; });
+  status.style.color = 'var(--text-faint)';
+  status.textContent = 'Отправляю…';
+  try {
+    const r = await api('/push-admin/send', {
+      method: 'POST',
+      body: JSON.stringify({ title, body, imageUrl: broadcastImage || null, audience, testPhone: audience === 'test' ? testPhone : null }),
+    });
+    status.style.color = r.failed ? 'var(--warn)' : 'var(--profit, inherit)';
+    status.textContent = `Принято: ${r.sent}, ошибок: ${r.failed}` + (r.notRegistered ? ` (устройство не зарегистрировано: ${r.notRegistered})` : '')
+      + ` · Firebase: ${r.fcmTokens}, Expo: ${r.expoTokens}` + (r.withImage ? ' · с картинкой' : ' · без картинки')
+      + (r.fcmError ? ` · Firebase: ${r.fcmError}` : '');
+    if (r.fcmError) status.style.color = 'var(--loss)';
+  } catch (err) {
+    fail('Не удалось отправить: ' + err.message);
+  } finally {
+    broadcastBusy = false;
+    btns.forEach((b) => { b.disabled = false; });
+  }
+}
+
+async function loadBroadcastPage() {
+  if (!broadcastWired) {
+    broadcastWired = true;
+    document.getElementById('bcChooseImageBtn').addEventListener('click', () => document.getElementById('bcImageFile').click());
+    document.getElementById('bcImageFile').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      e.target.value = '';
+      if (!file) return;
+      const st = document.getElementById('bcImageStatus');
+      st.style.color = 'var(--text-faint)';
+      st.textContent = `Загружаю ${file.name}…`;
+      try { broadcastImage = await uploadMyMarketFile(file); st.textContent = ''; renderBroadcastImage(); }
+      catch (err) { st.style.color = 'var(--loss)'; st.textContent = err.message; }
+    });
+    document.getElementById('bcImageUrlBtn').addEventListener('click', () => {
+      const input = document.getElementById('bcImageUrl');
+      const st = document.getElementById('bcImageStatus');
+      const url = input.value.trim();
+      if (!url) return;
+      if (!/^https:\/\/\S+$/i.test(url)) { st.style.color = 'var(--loss)'; st.textContent = 'Ссылка должна начинаться с https://'; return; }
+      broadcastImage = url; input.value = ''; st.textContent = ''; renderBroadcastImage();
+    });
+    document.getElementById('bcSendTestBtn').addEventListener('click', () => broadcastSend('test'));
+    document.getElementById('bcSendAllBtn').addEventListener('click', () => broadcastSend('all'));
+    renderBroadcastImage();
+  }
+  const aud = document.getElementById('bcAudience');
+  try {
+    const a = await api('/push-admin/audience');
+    aud.textContent = `Получателей «всем»: ${a.total} (Firebase: ${a.fcm ?? 0}, Expo: ${a.expo})` + (a.fcm && !a.firebaseConfigured ? ' · FIREBASE_KEY не задан — Firebase-токены не получат пуш.' : '');
+  } catch (err) {
+    aud.textContent = 'Не удалось получить число получателей: ' + err.message;
+  }
+}
+
 let notificationsBtnWired = false;
 
 async function loadNotificationsPage() {

@@ -7,6 +7,7 @@ import { getAllKaspiCategoriesWithRates } from '../integrations/kaspi.categories
 import { SHOP_TYPE_REQUIRED_FOR_SALE } from '../config/shopRules';
 import { maybeGenerateShopArticle } from '../services/shopArticle';
 import { isValidShopCategory } from '../config/shopCategories';
+import { quantityVariantsSchema, detailsSchema, serializeJsonArray } from '../services/productExtras';
 
 export const productsRouter = Router();
 
@@ -77,6 +78,9 @@ const productSchema = z.object({
   shopDelivery: z.string().optional().nullable(),
   shopVideo: z.string().optional().nullable(),
   videoUrl: z.string().optional().nullable(),
+  // Массивы от админки; в БД уходят JSON-строкой (см. services/productExtras.ts).
+  quantityVariants: quantityVariantsSchema.optional().nullable(),
+  details: detailsSchema.optional().nullable(),
   shopCost: z.number().nonnegative().optional().nullable(),
   banner: z.boolean().optional(),
   bannerTitle: z.string().optional().nullable(),
@@ -89,6 +93,8 @@ productsRouter.post('/', async (req, res) => {
     return res.status(400).json({ error: parsed.error.flatten() });
   }
   const data: Prisma.ProductUncheckedCreateInput = { ...parsed.data } as Prisma.ProductUncheckedCreateInput;
+  if (parsed.data.quantityVariants !== undefined) (data as any).quantityVariants = serializeJsonArray(parsed.data.quantityVariants);
+  if (parsed.data.details !== undefined) (data as any).details = parsed.data.details ?? [];
   // Та же защита, что и в PUT: нельзя СРАЗУ создать товар «В продаже» без
   // корректной category/цены — на практике карточка всегда создаёт новый
   // товар с shopActive=false, но проверяем и здесь, а не только в PUT.
@@ -331,6 +337,8 @@ productsRouter.put('/:id', async (req, res) => {
   // чтобы синхронизация заказов её не перезаписала более старой датой, но
   // реальная новая продажа всё равно сможет обновить эту цену дальше.
   const data: Record<string, any> = { ...parsed.data };
+  if (parsed.data.quantityVariants !== undefined) data.quantityVariants = serializeJsonArray(parsed.data.quantityVariants);
+  if (parsed.data.details !== undefined) data.details = parsed.data.details ?? [];
   if (data.kaspiReferencePrice != null) data.kaspiReferencePriceUpdatedAt = new Date();
   if (data.ozonReferencePrice != null) data.ozonReferencePriceUpdatedAt = new Date();
   if (data.wbReferencePrice != null) data.wbReferencePriceUpdatedAt = new Date();
