@@ -1,6 +1,6 @@
 /**
  * Варианты количества (Product.quantityVariants) и рич-контент «Детали»
- * (Product.details): админский PUT/POST /api/products и публичные
+ * (Product.details — массив URL фото/видео, Json): админский PUT/POST /api/products и публичные
  * GET /api/shop/products[/:sku]. БД — заглушка в памяти.
  * Существующий ключ `variants` (цвет/размер) этим кодом не меняется.
  */
@@ -116,14 +116,24 @@ describe('публичный ответ товара', () => {
     assert.deepEqual(one.json.details, []);
   });
 
+  test('details не содержит обычные фото товара; карточка находится и по id', async () => {
+    const p = seed({ images: JSON.stringify(['https://a/main.jpg']), details: ['https://a/d1.jpg'] });
+    const r = await call('GET', `/api/shop/products/${p.id}`);
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.json.details, ['https://a/d1.jpg']);
+    assert.deepEqual(r.json.images, ['https://a/main.jpg']);
+    const q = seed({ images: JSON.stringify(['https://a/other.jpg']) });
+    assert.deepEqual((await call('GET', `/api/shop/products/${q.shopArticle}`)).json.details, []);
+  });
+
   test('отдаёт варианты {quantity, unit, price} и детали {type, url} в сохранённом порядке', async () => {
     const p = seed({
       quantityVariants: JSON.stringify([{ quantity: 1, unit: 'шт', price: 500 }, { quantity: 2, unit: 'шт', price: 900 }]),
-      details: JSON.stringify([{ type: 'video', url: 'https://x.kz/a.mp4' }, { type: 'photo', url: 'https://x.kz/1.jpg' }, { type: 'certificate', url: 'https://x.kz/c.png' }]),
+      details: ['https://x.kz/a.mp4', 'https://x.kz/1.jpg', 'https://x.kz/c.png'],
     });
     const r = await call('GET', `/api/shop/products/${p.shopArticle}`);
     assert.deepEqual(r.json.quantityVariants, [{ quantity: 1, unit: 'шт', price: 500 }, { quantity: 2, unit: 'шт', price: 900 }]);
-    assert.deepEqual(r.json.details.map((d: Row) => d.type), ['video', 'photo', 'certificate']);
+    assert.deepEqual(r.json.details, ['https://x.kz/a.mp4', 'https://x.kz/1.jpg', 'https://x.kz/c.png']);
     assert.equal(r.json.price, 500, 'обычная цена не меняется');
   });
 
@@ -136,13 +146,13 @@ describe('публичный ответ товара', () => {
 
   test('битый JSON и мусорные элементы → [] / отбрасываются, без 500', async () => {
     seed({ quantityVariants: '{oops', details: 'not json' });
-    seed({ quantityVariants: JSON.stringify([{ quantity: -1, price: 5 }, { quantity: 3, unit: 'шт', price: 10 }]), details: JSON.stringify([{ type: 'gif', url: 'https://a' }, { type: 'photo', url: 'javascript:1' }, { type: 'photo', url: 'https://ok/1.jpg' }]) });
+    seed({ quantityVariants: JSON.stringify([{ quantity: -1, price: 5 }, { quantity: 3, unit: 'шт', price: 10 }]), details: [5, null, 'javascript:1', 'https://ok/1.jpg'] });
     const r = await call('GET', '/api/shop/products');
     assert.equal(r.status, 200);
     assert.deepEqual(r.json[0].quantityVariants, []);
     assert.deepEqual(r.json[0].details, []);
     assert.deepEqual(r.json[1].quantityVariants, [{ quantity: 3, unit: 'шт', price: 10 }]);
-    assert.deepEqual(r.json[1].details, [{ type: 'photo', url: 'https://ok/1.jpg' }]);
+    assert.deepEqual(r.json[1].details, ['https://ok/1.jpg']);
   });
 
   test('без x-app-key публичный ответ по-прежнему закрыт', async () => {
@@ -157,7 +167,7 @@ describe('админка: сохранение массивов', () => {
     const p = seed();
     const body = {
       quantityVariants: [{ quantity: 1, unit: 'шт', price: 500 }, { quantity: 2, price: 900 }],
-      details: [{ type: 'photo', url: 'https://x.kz/1.jpg' }, { type: 'video', url: 'https://x.kz/v.mp4' }],
+      details: ['https://x.kz/1.jpg', 'https://x.kz/v.mp4'],
     };
     const put = await admin('PUT', `/api/products/${p.id}`, body);
     assert.equal(put.status, 200, JSON.stringify(put.json));
@@ -168,11 +178,11 @@ describe('админка: сохранение массивов', () => {
   });
 
   test('убрать всё: пустые массивы → null в БД → [] в ответе', async () => {
-    const p = seed({ quantityVariants: JSON.stringify([{ quantity: 1, unit: 'шт', price: 1 }]), details: JSON.stringify([{ type: 'photo', url: 'https://a/1.jpg' }]) });
+    const p = seed({ quantityVariants: JSON.stringify([{ quantity: 1, unit: 'шт', price: 1 }]), details: ['https://a/1.jpg'] });
     const put = await admin('PUT', `/api/products/${p.id}`, { quantityVariants: [], details: [] });
     assert.equal(put.status, 200);
     assert.equal(products[0].quantityVariants, null);
-    assert.equal(products[0].details, null);
+    assert.deepEqual(products[0].details, []);
     const pub = await call('GET', `/api/shop/products/${p.shopArticle}`);
     assert.deepEqual(pub.json.quantityVariants, []);
     assert.deepEqual(pub.json.details, []);
@@ -180,7 +190,7 @@ describe('админка: сохранение массивов', () => {
 
   test('порядок деталей сохраняется как прислан', async () => {
     const p = seed();
-    const details = [{ type: 'certificate', url: 'https://a/c.png' }, { type: 'photo', url: 'https://a/p.jpg' }, { type: 'video', url: 'https://a/v.mp4' }];
+    const details = ['https://a/c.png', 'https://a/p.jpg', 'https://a/v.mp4'];
     await admin('PUT', `/api/products/${p.id}`, { details });
     assert.deepEqual(parseDetails(products[0].details), details);
   });
@@ -207,9 +217,11 @@ describe('админка: сохранение массивов', () => {
       { quantityVariants: [{ quantity: 1, unit: 'шт', price: -5 }] },
       { quantityVariants: [{ quantity: 1, unit: 'шт', price: 1 }, { quantity: 1, unit: 'шт', price: 2 }] },
       { quantityVariants: Array.from({ length: 21 }, (_, i) => ({ quantity: i + 1, unit: 'шт', price: 1 })) },
-      { details: [{ type: 'gif', url: 'https://a/1' }] },
-      { details: [{ type: 'photo', url: 'javascript:alert(1)' }] },
-      { details: [{ type: 'photo', url: '' }] },
+      { details: ['javascript:alert(1)'] },
+      { details: [''] },
+      { details: [{ type: 'photo', url: 'https://a/1.jpg' }] },
+      { details: ['https://a/1.jpg', 'https://a/1.jpg'] },
+      { details: Array.from({ length: 11 }, (_, i) => `https://a/${i}.jpg`) },
       { details: 'строка' },
     ];
     for (const b of bad) {
@@ -226,11 +238,11 @@ describe('админка: сохранение массивов', () => {
     assert.equal(r.status, 401);
   });
 
-  test('«любое количество» деталей: 60 файлов проходят', async () => {
+  test('ровно 10 деталей проходят (максимум)', async () => {
     const p = seed();
-    const details = Array.from({ length: 60 }, (_, i) => ({ type: 'photo', url: `https://a/${i}.jpg` }));
+    const details = Array.from({ length: 10 }, (_, i) => `https://a/${i}.jpg`);
     const r = await admin('PUT', `/api/products/${p.id}`, { details });
     assert.equal(r.status, 200);
-    assert.equal(parseDetails(products[0].details).length, 60);
+    assert.equal(parseDetails(products[0].details).length, 10);
   });
 });

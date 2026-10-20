@@ -185,7 +185,7 @@ model Product {
   shopVideo       String?   // URL видео товара (Vercel Blob или внешняя ссылка)
   videoUrl        String?   // Отдельное поле "Видео URL" — только внешняя ссылка, ничего не загружается на Vercel
   quantityVariants String?  // JSON-массив [{quantity, unit, price}] — варианты количества (1/2/3/4 шт или кг)
-  details         String?   // JSON-массив [{type: photo|certificate|video, url}] — рич-контент «Детали», порядок = порядок массива
+  details         Json?     // массив URL фото/видео «Детали» товара (порядок = порядок массива)
   // Себестоимость именно для витрины My Market — отдельно от общей
   // costPrice (которая используется Kaspi/Ozon/WB), т.к. закупочная цена
   // товара для этого канала может отличаться. Пока пусто — прибыль этого

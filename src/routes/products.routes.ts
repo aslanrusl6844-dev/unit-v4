@@ -94,7 +94,7 @@ productsRouter.post('/', async (req, res) => {
   }
   const data: Prisma.ProductUncheckedCreateInput = { ...parsed.data } as Prisma.ProductUncheckedCreateInput;
   if (parsed.data.quantityVariants !== undefined) (data as any).quantityVariants = serializeJsonArray(parsed.data.quantityVariants);
-  if (parsed.data.details !== undefined) (data as any).details = serializeJsonArray(parsed.data.details);
+  if (parsed.data.details !== undefined) (data as any).details = parsed.data.details ?? [];
   // Та же защита, что и в PUT: нельзя СРАЗУ создать товар «В продаже» без
   // корректной category/цены — на практике карточка всегда создаёт новый
   // товар с shopActive=false, но проверяем и здесь, а не только в PUT.
@@ -338,7 +338,7 @@ productsRouter.put('/:id', async (req, res) => {
   // реальная новая продажа всё равно сможет обновить эту цену дальше.
   const data: Record<string, any> = { ...parsed.data };
   if (parsed.data.quantityVariants !== undefined) data.quantityVariants = serializeJsonArray(parsed.data.quantityVariants);
-  if (parsed.data.details !== undefined) data.details = serializeJsonArray(parsed.data.details);
+  if (parsed.data.details !== undefined) data.details = parsed.data.details ?? [];
   if (data.kaspiReferencePrice != null) data.kaspiReferencePriceUpdatedAt = new Date();
   if (data.ozonReferencePrice != null) data.ozonReferencePriceUpdatedAt = new Date();
   if (data.wbReferencePrice != null) data.wbReferencePriceUpdatedAt = new Date();

@@ -637,16 +637,15 @@
                 <div id="mmQtyStatus" class="panel__hint" style="color:var(--loss)"></div>
               </div>
 
-              <!-- ---- Детали: фото, сертификаты, короткие видео ---- -->
+              <!-- ---- Детали: фото и видео для полноэкранного экрана «Детали» в приложении ---- -->
               <div class="mm-cardtab" data-cardtab-panel="details" hidden>
                 <div class="panel__head" style="margin-top:0"><h2 style="font-size:14px">Детали</h2></div>
-                <p class="panel__hint" style="margin-top:0">Фото и сертификаты — загрузка файла (JPEG/PNG/WEBP до 2.5 МБ) или ссылка. Видео — только ссылка. Порядок — как в списке, количество любое.</p>
+                <p class="panel__hint" style="margin-top:0">Только это приложение показывает на экране «Детали» (другие фото товара туда не попадают). До 10 файлов. Фото — загрузка файла (JPEG/PNG/WEBP до 2.5 МБ) или ссылка; видео — только ссылка (.mp4/.webm/.mov). Порядок — как в списке.</p>
                 <div id="mmDetailsList"></div>
                 <div style="display:flex;gap:6px;margin-top:8px;align-items:center;flex-wrap:wrap">
-                  <select id="mmDetailsAddType"><option value="photo">Фото</option><option value="certificate">Сертификат</option><option value="video">Видео</option></select>
-                  <button type="button" class="btn btn--ghost" id="mmDetailsChooseBtn">Загрузить файл</button>
+                  <button type="button" class="btn btn--ghost" id="mmDetailsChooseBtn">Загрузить фото</button>
                   <input type="file" id="mmDetailsFileInput" accept="image/jpeg,image/png,image/webp" multiple hidden />
-                  <input type="text" id="mmDetailsAddUrl" placeholder="или ссылка https://…" style="max-width:260px" />
+                  <input type="text" id="mmDetailsAddUrl" placeholder="или ссылка на фото/видео https://…" style="max-width:300px" />
                   <button type="button" class="btn btn--ghost" id="mmDetailsAddUrlBtn">Добавить</button>
                 </div>
                 <div id="mmDetailsStatus" class="panel__hint"></div>

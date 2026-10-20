@@ -1,17 +1,14 @@
 import { z } from 'zod';
 
 /**
- * Варианты количества (1/2/3/4 шт или кг, у каждого своя цена) и рич-контент
- * «Детали» (фото, сертификаты, видео). Хранятся JSON-строкой в колонках
- * Product.quantityVariants / Product.details (как Product.images).
+ * Варианты количества (1/2/3/4 шт или кг, у каждого своя цена): JSON-строка в
+ * Product.quantityVariants. «Детали» (фото/видео): массив URL в Product.details (Json).
  */
 export const MAX_QUANTITY_VARIANTS = 20;
-export const MAX_DETAILS = 100;
+export const MAX_DETAILS = 10;
 export const QUANTITY_UNITS = ['шт', 'кг'] as const;
-export const DETAIL_TYPES = ['photo', 'certificate', 'video'] as const;
 
 export type QuantityVariant = { quantity: number; unit: (typeof QUANTITY_UNITS)[number]; price: number };
-export type ProductDetail = { type: (typeof DETAIL_TYPES)[number]; url: string };
 
 const httpUrl = z
   .string()
@@ -37,8 +34,12 @@ export const quantityVariantsSchema = z
     });
   });
 
-export const detailSchema = z.object({ type: z.enum(DETAIL_TYPES), url: httpUrl });
-export const detailsSchema = z.array(detailSchema).max(MAX_DETAILS);
+export const detailsSchema = z
+  .array(httpUrl)
+  .max(MAX_DETAILS)
+  .superRefine((arr, ctx) => {
+    if (new Set(arr).size !== arr.length) ctx.addIssue({ code: 'custom', message: 'Один и тот же файл добавлен дважды' });
+  });
 
 /** Для записи в БД: пустой массив → null. */
 export function serializeJsonArray(arr: unknown[] | null | undefined): string | null {
@@ -62,18 +63,12 @@ export function parseQuantityVariants(raw: unknown): QuantityVariant[] {
   }
 }
 
-export function parseDetails(raw: unknown): ProductDetail[] {
-  if (typeof raw !== 'string' || !raw) return [];
-  try {
-    const arr = JSON.parse(raw);
-    if (!Array.isArray(arr)) return [];
-    const out: ProductDetail[] = [];
-    for (const it of arr) {
-      const r = detailSchema.safeParse(it);
-      if (r.success) out.push(r.data);
-    }
-    return out;
-  } catch {
-    return [];
+/** Details из БД (Json) → массив URL. Битое/не массив → []; нестроки и не-http отбрасываются. */
+export function parseDetails(raw: unknown): string[] {
+  let v: unknown = raw;
+  if (typeof v === 'string') {
+    try { v = JSON.parse(v); } catch { return []; }
   }
+  if (!Array.isArray(v)) return [];
+  return v.filter((u): u is string => typeof u === 'string' && /^https?:\/\/\S+$/i.test(u));
 }

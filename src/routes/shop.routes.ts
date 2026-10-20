@@ -122,7 +122,7 @@ async function findVisibleProductBySkuOrArticle(param: string) {
   const trimmed = String(param ?? '').trim();
   if (!trimmed) return null;
   const product = await prisma.product.findFirst({
-    where: { OR: [{ sku: trimmed }, { shopArticle: trimmed }], ...SHOP_VISIBLE_WHERE },
+    where: { OR: [{ sku: trimmed }, { shopArticle: trimmed }, { id: trimmed }], ...SHOP_VISIBLE_WHERE },
   });
   return product ? ensureShopArticle(product) : null;
 }

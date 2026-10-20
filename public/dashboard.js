@@ -2743,7 +2743,6 @@ let myMarketDragFromIndex = null;
 // ---------------------------------------------------------------------
 let myMarketCardQty = [];
 let myMarketCardDetails = [];
-const MM_DETAIL_LABELS = { photo: 'Фото', certificate: 'Сертификат', video: 'Видео' };
 
 function mmxEsc(v) {
   return String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -2782,14 +2781,17 @@ function addMyMarketQtyVariant() {
   renderMyMarketQtyList();
 }
 
+const MM_DETAILS_MAX = 10;
+function mmxIsVideo(url) { return /\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(String(url)); }
+
 function renderMyMarketDetailsList() {
   const el = document.getElementById('mmDetailsList');
   if (!el) return;
   el.innerHTML = myMarketCardDetails.length
-    ? myMarketCardDetails.map((d, i) => `<div class="mm-detail-row" data-i="${i}" style="display:flex;gap:8px;align-items:center;margin:4px 0">
-        ${d.type === 'video' ? '<span>🎬</span>' : `<img src="${mmxEsc(d.url)}" alt="" style="width:44px;height:44px;object-fit:cover;border-radius:6px" />`}
-        <b>${mmxEsc(MM_DETAIL_LABELS[d.type] || d.type)}</b>
-        <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px">${mmxEsc(d.url)}</span>
+    ? myMarketCardDetails.map((url, i) => `<div class="mm-detail-row" data-i="${i}" style="display:flex;gap:8px;align-items:center;margin:4px 0">
+        ${mmxIsVideo(url) ? '<span>🎬</span>' : `<img src="${mmxEsc(url)}" alt="" style="width:44px;height:44px;object-fit:cover;border-radius:6px" />`}
+        <b>${mmxIsVideo(url) ? 'Видео' : 'Фото'}</b>
+        <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px">${mmxEsc(url)}</span>
         <button type="button" class="btn btn--ghost" data-det-up="${i}" style="font-size:12px"${i === 0 ? ' disabled' : ''}>↑</button>
         <button type="button" class="btn btn--ghost" data-det-down="${i}" style="font-size:12px"${i === myMarketCardDetails.length - 1 ? ' disabled' : ''}>↓</button>
         <button type="button" class="btn btn--ghost" data-det-remove="${i}" style="font-size:12px">Удалить</button>
@@ -2809,11 +2811,13 @@ function renderMyMarketDetailsList() {
   }));
 }
 
-function addMyMarketDetail(type, url) {
+function addMyMarketDetail(url) {
   const status = document.getElementById('mmDetailsStatus');
-  if (!/^https?:\/\/\S+$/i.test(url)) { status.textContent = 'Ссылка должна начинаться с http:// или https://'; status.style.color = 'var(--loss)'; return false; }
-  if (myMarketCardDetails.length >= 100) { status.textContent = 'Можно не больше 100 файлов.'; status.style.color = 'var(--loss)'; return false; }
-  myMarketCardDetails.push({ type, url });
+  const fail = (msg) => { status.textContent = msg; status.style.color = 'var(--loss)'; return false; };
+  if (!/^https?:\/\/\S+$/i.test(url)) return fail('Ссылка должна начинаться с http:// или https://');
+  if (myMarketCardDetails.includes(url)) return fail('Этот файл уже добавлен.');
+  if (myMarketCardDetails.length >= MM_DETAILS_MAX) return fail(`Можно не больше ${MM_DETAILS_MAX} файлов.`);
+  myMarketCardDetails.push(url);
   status.textContent = '';
   renderMyMarketDetailsList();
   return true;
@@ -2821,15 +2825,18 @@ function addMyMarketDetail(type, url) {
 
 async function handleMyMarketDetailFiles(files) {
   const status = document.getElementById('mmDetailsStatus');
-  const type = document.getElementById('mmDetailsAddType').value;
-  if (type === 'video') { status.textContent = 'Видео — только ссылкой: вставь URL.'; status.style.color = 'var(--loss)'; return; }
-  for (const file of Array.from(files)) {
+  const list = Array.from(files);
+  if (myMarketCardDetails.length + list.length > MM_DETAILS_MAX) {
+    status.textContent = `Можно не больше ${MM_DETAILS_MAX} файлов (сейчас ${myMarketCardDetails.length}, добавляешь ещё ${list.length}).`;
+    status.style.color = 'var(--loss)';
+    return;
+  }
+  for (const file of list) {
     status.textContent = `Загружаю ${file.name}…`;
     status.style.color = 'var(--text-faint)';
     try {
       const url = await uploadMyMarketFile(file);
-      addMyMarketDetail(type, url);
-      status.textContent = '';
+      if (addMyMarketDetail(url)) status.textContent = '';
     } catch (err) {
       status.textContent = err.message;
       status.style.color = 'var(--loss)';
@@ -2848,7 +2855,7 @@ function initMyMarketQtyDetails() {
     const input = document.getElementById('mmDetailsAddUrl');
     const url = input.value.trim();
     if (!url) return;
-    if (addMyMarketDetail(document.getElementById('mmDetailsAddType').value, url)) input.value = '';
+    if (addMyMarketDetail(url)) input.value = '';
   });
 }
 
@@ -3219,7 +3226,7 @@ function openMyMarketProductCard(id) {
   }
   myMarketCardVideo = p.shopVideo ?? null;
   myMarketCardQty = mmxParse(p.quantityVariants);
-  myMarketCardDetails = mmxParse(p.details);
+  myMarketCardDetails = (Array.isArray(p.details) ? p.details : mmxParse(p.details)).filter((u) => typeof u === 'string');
   renderMyMarketQtyList();
   renderMyMarketDetailsList();
   renderMyMarketMediaGrid();
