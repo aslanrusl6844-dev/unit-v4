@@ -27,7 +27,8 @@ const sendSchema = z.object({
 pushAdminRouter.get('/audience', async (_req, res) => {
   try {
     const rows = await prisma.shopCustomerPushToken.findMany({ select: { token: true } });
-    res.json({ total: rows.length, expo: rows.filter((r: { token: string }) => isExpoToken(r.token)).length });
+    const expo = rows.filter((r: { token: string }) => isExpoToken(r.token)).length;
+    res.json({ total: rows.length, expo, fcm: rows.length - expo, firebaseConfigured: !!(process.env.FIREBASE_KEY ?? '').trim() });
   } catch (err: any) {
     logger.error({ err }, '[PushAdmin] GET /audience упал');
     res.status(500).json({ error: 'Не удалось получить аудиторию', details: String(err?.message ?? err) });

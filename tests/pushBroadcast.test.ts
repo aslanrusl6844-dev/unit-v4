@@ -5,7 +5,7 @@
 import { test, describe, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, generateKeyPairSync, createVerify } from 'node:crypto';
 
 process.env.DATABASE_URL = 'postgresql://stub:stub@127.0.0.1:1/none';
 process.env.SHOP_APP_KEY = randomBytes(8).toString('hex');
@@ -42,6 +42,9 @@ const app = require('../src/expressApp').default;
 
 // --- заглушка Expo: подменяем fetch только для адреса exp.host ---
 let expoCalls: Row[][] = [];
+let oauthCalls: string[] = [];
+let oauthMode: 'ok' | 'bad' = 'ok';
+let fcmCalls: Row[] = [];
 let expoMode: 'ok' | 'error' | 'notRegistered' | 'http500' = 'ok';
 const realFetch = globalThis.fetch;
 globalThis.fetch = (async (url: any, init?: any) => {
@@ -54,6 +57,19 @@ globalThis.fetch = (async (url: any, init?: any) => {
         : expoMode === 'notRegistered' ? { status: 'error', message: 'gone', details: { error: 'DeviceNotRegistered' } }
           : { status: 'error', message: 'bad' });
     return new Response(JSON.stringify({ data }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  if (String(url) === 'https://oauth2.googleapis.com/token') {
+    oauthCalls.push(String(init.body));
+    if (oauthMode === 'bad') return new Response(JSON.stringify({ error: 'invalid_grant' }), { status: 400 });
+    return new Response(JSON.stringify({ access_token: 'at-123', expires_in: 3600 }), { status: 200 });
+  }
+  if (String(url).startsWith('https://fcm.googleapis.com/v1/projects/')) {
+    const call = { url: String(url), auth: init.headers.Authorization, message: JSON.parse(init.body).message };
+    fcmCalls.push(call);
+    const t = call.message.token;
+    if (t.includes('gone')) return new Response(JSON.stringify({ error: { status: 'NOT_FOUND', details: [{ errorCode: 'UNREGISTERED' }] } }), { status: 404 });
+    if (t.includes('bad')) return new Response(JSON.stringify({ error: { status: 'INVALID_ARGUMENT' } }), { status: 400 });
+    return new Response(JSON.stringify({ name: 'projects/p/messages/1' }), { status: 200 });
   }
   return realFetch(url, init);
 }) as typeof fetch;
@@ -87,7 +103,11 @@ before(async () => {
   port = (server.address() as any).port;
 });
 after(() => { globalThis.fetch = realFetch; return new Promise<void>((r) => server.close(() => r())); });
-beforeEach(() => { tokens = []; expoCalls = []; expoMode = 'ok'; });
+const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+const SA = { project_id: 'my-proj', client_email: 'svc@my-proj.iam.gserviceaccount.com', private_key: privateKey.export({ type: 'pkcs8', format: 'pem' }).toString() };
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const fcmSvc = require('../src/services/fcm.service');
+beforeEach(() => { tokens = []; expoCalls = []; expoMode = 'ok'; oauthCalls = []; oauthMode = 'ok'; fcmCalls = []; fcmSvc._resetFcmCache(); process.env.FIREBASE_KEY = JSON.stringify(SA); });
 
 describe('POST /api/push-admin/send', () => {
   test('с картинкой: в сообщении Expo есть richContent.image и data.image, заголовок и текст на месте', async () => {
@@ -118,13 +138,15 @@ describe('POST /api/push-admin/send', () => {
     }
   });
 
-  test('«всем»: 250 токенов → 3 запроса к Expo (по ≤100), не-Expo токены пропущены, дубли убраны', async () => {
+  test('«всем»: 250 Expo-токенов → 3 запроса к Expo (по ≤100), дубли убраны', async () => {
     tokens = Array.from({ length: 250 }, (_, i) => ({ phone: `7700${i}`, token: tok(i) }));
-    tokens.push({ phone: 'x1', token: 'fcm-native-token' }, { phone: 'x2', token: tok(0) });
+    tokens.push({ phone: 'x2', token: tok(0) });
     const r = await call('POST', '/api/push-admin/send', { title: 'T', body: 'B', imageUrl: 'https://b/x.png', audience: 'all' });
     assert.equal(r.status, 200);
     assert.equal(r.json.sent, 250);
-    assert.equal(r.json.skippedNotExpo, 1);
+    assert.equal(r.json.expoTokens, 250);
+    assert.equal(r.json.fcmTokens, 0);
+    assert.equal(fcmCalls.length, 0, 'Expo-токены в Firebase не уходят');
     assert.deepEqual(expoCalls.map((c) => c.length).sort((a, b) => b - a), [100, 100, 50]);
     assert.ok(expoCalls.flat().every((m) => m.richContent.image === 'https://b/x.png'));
   });
@@ -176,6 +198,107 @@ describe('GET /api/push-admin/audience', () => {
   test('считает все токены и только Expo-токены', async () => {
     tokens = [{ phone: '1', token: tok(1) }, { phone: '2', token: 'fcm' }];
     const r = await call('GET', '/api/push-admin/audience');
-    assert.deepEqual(r.json, { total: 2, expo: 1 });
+    assert.deepEqual(r.json, { total: 2, expo: 1, fcm: 1, firebaseConfigured: true });
+  });
+});
+
+describe('Firebase (FCM HTTP v1) напрямую для FCM-токенов', () => {
+  const fcmTok = (n: string) => `fcm-device-token-${n}`;
+
+  test('FCM-токен: Firebase получает сообщение с заголовком, текстом и картинкой; Expo не вызывается', async () => {
+    tokens = [{ phone: '1', token: fcmTok('a') }];
+    const r = await call('POST', '/api/push-admin/send', { title: 'Акция', body: 'Скидки', imageUrl: 'https://blob.example/a.jpg', audience: 'all' });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.deepEqual([r.json.sent, r.json.failed, r.json.fcmTokens, r.json.expoTokens], [1, 0, 1, 0]);
+    assert.equal(expoCalls.length, 0);
+    const c = fcmCalls[0];
+    assert.equal(c.url, 'https://fcm.googleapis.com/v1/projects/my-proj/messages:send');
+    assert.equal(c.auth, 'Bearer at-123');
+    assert.equal(c.message.token, fcmTok('a'));
+    assert.deepEqual(c.message.notification, { title: 'Акция', body: 'Скидки', image: 'https://blob.example/a.jpg' });
+    assert.equal(c.message.android.notification.image, 'https://blob.example/a.jpg');
+    assert.equal(c.message.apns.fcm_options.image, 'https://blob.example/a.jpg');
+    assert.equal(c.message.data.image, 'https://blob.example/a.jpg');
+  });
+
+  test('без картинки: в сообщении Firebase нет image ни в одном месте', async () => {
+    tokens = [{ phone: '1', token: fcmTok('a') }];
+    await call('POST', '/api/push-admin/send', { title: 'T', body: 'B', audience: 'all' });
+    const m = fcmCalls[0].message;
+    assert.deepEqual(m.notification, { title: 'T', body: 'B' });
+    assert.ok(!('image' in m.data) && !('android' in m) && !('apns' in m));
+  });
+
+  test('JWT для Google подписан ключом сервисного аккаунта (RS256), scope firebase.messaging', async () => {
+    tokens = [{ phone: '1', token: fcmTok('a') }];
+    await call('POST', '/api/push-admin/send', { title: 'T', body: 'B', audience: 'all' });
+    const form = new URLSearchParams(oauthCalls[0]);
+    assert.equal(form.get('grant_type'), 'urn:ietf:params:oauth:grant-type:jwt-bearer');
+    const [h, c, sig] = form.get('assertion')!.split('.');
+    const claim = JSON.parse(Buffer.from(c, 'base64url').toString());
+    assert.equal(claim.iss, SA.client_email);
+    assert.equal(claim.scope, 'https://www.googleapis.com/auth/firebase.messaging');
+    assert.equal(claim.aud, 'https://oauth2.googleapis.com/token');
+    const v = createVerify('RSA-SHA256').update(`${h}.${c}`);
+    assert.ok(v.verify(publicKey, Buffer.from(sig, 'base64url')), 'подпись должна проверяться публичным ключом');
+  });
+
+  test('токен доступа кэшируется между рассылками', async () => {
+    tokens = [{ phone: '1', token: fcmTok('a') }];
+    await call('POST', '/api/push-admin/send', { title: 'T', body: 'B', audience: 'all' });
+    await call('POST', '/api/push-admin/send', { title: 'T', body: 'B', audience: 'all' });
+    assert.equal(oauthCalls.length, 1);
+    assert.equal(fcmCalls.length, 2);
+  });
+
+  test('смесь Expo и FCM токенов: каждый уходит своим каналом, итоги суммируются', async () => {
+    tokens = [{ phone: '1', token: tok(1) }, { phone: '2', token: fcmTok('a') }, { phone: '3', token: fcmTok('b') }];
+    const r = await call('POST', '/api/push-admin/send', { title: 'T', body: 'B', audience: 'all' });
+    assert.deepEqual([r.json.sent, r.json.expoTokens, r.json.fcmTokens], [3, 1, 2]);
+    assert.equal(expoCalls.flat().length, 1);
+    assert.equal(fcmCalls.length, 2);
+  });
+
+  test('ошибки Firebase по токенам: UNREGISTERED и прочие считаются отдельно', async () => {
+    tokens = [{ phone: '1', token: fcmTok('ok') }, { phone: '2', token: fcmTok('gone') }, { phone: '3', token: fcmTok('bad') }];
+    const r = await call('POST', '/api/push-admin/send', { title: 'T', body: 'B', audience: 'all' });
+    assert.deepEqual([r.json.sent, r.json.failed, r.json.notRegistered], [1, 2, 1]);
+  });
+
+  test('FIREBASE_KEY не задан / не JSON / старый server key → понятная ошибка, ничего не отправлено, значение ключа в ответе не светится', async () => {
+    tokens = [{ phone: '1', token: fcmTok('a') }];
+    for (const bad of ['', 'AAAAold-legacy-server-key:APA91bSECRET', '{"client_email":"x"}']) {
+      process.env.FIREBASE_KEY = bad;
+      fcmSvc._resetFcmCache();
+      const r = await call('POST', '/api/push-admin/send', { title: 'T', body: 'B', audience: 'all' });
+      assert.equal(r.status, 200);
+      assert.equal(r.json.sent, 0);
+      assert.equal(r.json.failed, 1);
+      assert.ok(r.json.fcmError, 'есть причина');
+      assert.ok(!JSON.stringify(r.json).includes('SECRET'));
+    }
+    assert.equal(fcmCalls.length, 0);
+  });
+
+  test('Google отклонил ключ (invalid_grant) → fcmError, токены не отправлены', async () => {
+    tokens = [{ phone: '1', token: fcmTok('a') }];
+    oauthMode = 'bad';
+    const r = await call('POST', '/api/push-admin/send', { title: 'T', body: 'B', audience: 'all' });
+    assert.equal(r.json.sent, 0);
+    assert.match(r.json.fcmError, /токен доступа/);
+    assert.equal(fcmCalls.length, 0);
+  });
+
+  test('ключ можно передать в base64 от JSON', async () => {
+    process.env.FIREBASE_KEY = Buffer.from(JSON.stringify(SA)).toString('base64');
+    tokens = [{ phone: '1', token: fcmTok('a') }];
+    const r = await call('POST', '/api/push-admin/send', { title: 'T', body: 'B', audience: 'all' });
+    assert.equal(r.json.sent, 1);
+  });
+
+  test('audience: показывает число FCM и признак настроенного ключа', async () => {
+    tokens = [{ phone: '1', token: fcmTok('a') }];
+    process.env.FIREBASE_KEY = '';
+    assert.deepEqual((await call('GET', '/api/push-admin/audience')).json, { total: 1, expo: 0, fcm: 1, firebaseConfigured: false });
   });
 });

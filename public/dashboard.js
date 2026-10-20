@@ -5212,8 +5212,10 @@ async function broadcastSend(audience) {
       body: JSON.stringify({ title, body, imageUrl: broadcastImage || null, audience, testPhone: audience === 'test' ? testPhone : null }),
     });
     status.style.color = r.failed ? 'var(--warn)' : 'var(--profit, inherit)';
-    status.textContent = `Принято Expo: ${r.sent}, ошибок: ${r.failed}` + (r.notRegistered ? ` (устройство не зарегистрировано: ${r.notRegistered})` : '')
-      + (r.skippedNotExpo ? `, пропущено токенов не Expo: ${r.skippedNotExpo}` : '') + (r.withImage ? ' · с картинкой' : ' · без картинки');
+    status.textContent = `Принято: ${r.sent}, ошибок: ${r.failed}` + (r.notRegistered ? ` (устройство не зарегистрировано: ${r.notRegistered})` : '')
+      + ` · Firebase: ${r.fcmTokens}, Expo: ${r.expoTokens}` + (r.withImage ? ' · с картинкой' : ' · без картинки')
+      + (r.fcmError ? ` · Firebase: ${r.fcmError}` : '');
+    if (r.fcmError) status.style.color = 'var(--loss)';
   } catch (err) {
     fail('Не удалось отправить: ' + err.message);
   } finally {
@@ -5251,7 +5253,7 @@ async function loadBroadcastPage() {
   const aud = document.getElementById('bcAudience');
   try {
     const a = await api('/push-admin/audience');
-    aud.textContent = `Получателей «всем»: ${a.expo} (токенов в базе: ${a.total}).`;
+    aud.textContent = `Получателей «всем»: ${a.total} (Firebase: ${a.fcm ?? 0}, Expo: ${a.expo})` + (a.fcm && !a.firebaseConfigured ? ' · FIREBASE_KEY не задан — Firebase-токены не получат пуш.' : '');
   } catch (err) {
     aud.textContent = 'Не удалось получить число получателей: ' + err.message;
   }

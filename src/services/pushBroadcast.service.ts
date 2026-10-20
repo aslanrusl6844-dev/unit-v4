@@ -1,13 +1,12 @@
 import { logger } from '../utils/logger';
+import { sendFcmBroadcast } from './fcm.service';
 
 /**
- * Рассылка пушей через Expo Push API (так уже ходят пуши приложения —
- * см. lib/expoPush.ts). Картинка необязательна: без неё сообщение уходит
- * как обычное (заголовок + текст).
- *
- * Картинка кладётся:
- *  - в `richContent.image` — Expo показывает её в пуше на iOS;
- *  - в `data.image` — чтобы приложение могло нарисовать её само (Android).
+ * Рассылка пушей. Канал выбирается по формату токена:
+ *  - ExponentPushToken[...] → Expo Push API (картинка: richContent.image + data.image);
+ *  - любой другой (FCM-токен устройства) → Firebase Cloud Messaging напрямую
+ *    (fcm.service.ts, ключ FIREBASE_KEY; картинка: notification.image и т.д.).
+ * Картинка необязательна: без неё сообщение уходит как обычное.
  */
 const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
 const EXPO_CHUNK = 100; // лимит Expo на одну отправку
@@ -24,11 +23,13 @@ export interface BroadcastInput {
 }
 export interface BroadcastResult {
   total: number; // токенов получено
-  skippedNotExpo: number; // не Expo-формат (напрямую FCM здесь не поддерживается)
-  sent: number; // Expo принял
-  failed: number; // Expo вернул ошибку по токену или запрос не прошёл
+  expoTokens: number; // ушло через Expo
+  fcmTokens: number; // ушло через Firebase напрямую
+  sent: number; // принято (Expo + Firebase)
+  failed: number; // ошибка по токену или запрос не прошёл
   notRegistered: number; // из failed: устройство больше не зарегистрировано
   withImage: boolean;
+  fcmError?: string; // причина, если Firebase недоступен (ключ не задан/неверный/нет прав)
 }
 
 /** Одно сообщение Expo: без картинки поля richContent/image не добавляются вовсе. */
@@ -77,18 +78,24 @@ async function sendChunk(messages: Record<string, unknown>[]): Promise<{ sent: n
 }
 
 export async function sendBroadcast(input: BroadcastInput): Promise<BroadcastResult> {
-  const unique = Array.from(new Set(input.tokens));
-  const tokens = unique.filter(isExpoToken);
+  const unique = Array.from(new Set(input.tokens.filter((t) => typeof t === 'string' && t.trim())));
+  const expo = unique.filter(isExpoToken);
+  const fcm = unique.filter((t) => !isExpoToken(t));
   const result: BroadcastResult = {
-    total: unique.length, skippedNotExpo: unique.length - tokens.length, sent: 0, failed: 0, notRegistered: 0, withImage: !!input.imageUrl,
+    total: unique.length, expoTokens: expo.length, fcmTokens: fcm.length, sent: 0, failed: 0, notRegistered: 0, withImage: !!input.imageUrl,
   };
   const chunks: Record<string, unknown>[][] = [];
-  for (let i = 0; i < tokens.length; i += EXPO_CHUNK) {
-    chunks.push(tokens.slice(i, i + EXPO_CHUNK).map((t) => buildExpoMessage(t, input.title, input.body, input.imageUrl)));
+  for (let i = 0; i < expo.length; i += EXPO_CHUNK) {
+    chunks.push(expo.slice(i, i + EXPO_CHUNK).map((t) => buildExpoMessage(t, input.title, input.body, input.imageUrl)));
   }
   for (let i = 0; i < chunks.length; i += PARALLEL_CHUNKS) {
     const parts = await Promise.all(chunks.slice(i, i + PARALLEL_CHUNKS).map(sendChunk));
     for (const p of parts) { result.sent += p.sent; result.failed += p.failed; result.notRegistered += p.notRegistered; }
+  }
+  if (fcm.length) {
+    const f = await sendFcmBroadcast(fcm, input.title, input.body, input.imageUrl);
+    result.sent += f.sent; result.failed += f.failed; result.notRegistered += f.notRegistered;
+    if (f.error) result.fcmError = f.error;
   }
   return result;
 }
