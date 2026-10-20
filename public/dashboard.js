@@ -103,6 +103,7 @@ const PAGE_LOADERS = {
   niches: loadNichesPage,
   demping: loadDempingPage,
   notifications: loadNotificationsPage,
+  broadcast: loadBroadcastPage,
   settings: loadSettingsPage,
   yard: loadYardPage,
 };
@@ -5172,6 +5173,90 @@ async function loadDempingPage() {
 // =====================================================================
 // УВЕДОМЛЕНИЯ (журнал синхронизаций как замена нотификациям)
 // =====================================================================
+
+// ---------------------------------------------------------------------
+// Рассылка пушей: заголовок, текст, картинка (Blob, как фото товаров).
+// ---------------------------------------------------------------------
+let broadcastWired = false;
+let broadcastImage = null;
+let broadcastBusy = false;
+
+function renderBroadcastImage() {
+  const el = document.getElementById('bcImagePreview');
+  el.innerHTML = broadcastImage
+    ? `<img src="${mmxEsc(broadcastImage)}" alt="" style="max-width:220px;max-height:160px;border-radius:8px;display:block" /><button type="button" class="btn btn--ghost" id="bcRemoveImageBtn" style="font-size:12px;margin-top:4px">Убрать картинку</button>`
+    : '<div class="panel__hint">Картинки нет — пуш уйдёт без неё.</div>';
+  const rm = document.getElementById('bcRemoveImageBtn');
+  if (rm) rm.addEventListener('click', () => { broadcastImage = null; renderBroadcastImage(); });
+}
+
+async function broadcastSend(audience) {
+  if (broadcastBusy) return;
+  const status = document.getElementById('bcResult');
+  const title = document.getElementById('bcTitle').value.trim();
+  const body = document.getElementById('bcBody').value.trim();
+  const testPhone = document.getElementById('bcTestPhone').value.trim();
+  const fail = (m) => { status.textContent = m; status.style.color = 'var(--loss)'; };
+  if (!title) return fail('Укажи заголовок.');
+  if (!body) return fail('Укажи текст.');
+  if (audience === 'test' && !testPhone) return fail('Укажи тестовый номер.');
+  if (audience === 'all' && !confirm('Отправить пуш ВСЕМ покупателям с токеном? Отменить отправку нельзя.')) return;
+  broadcastBusy = true;
+  const btns = [document.getElementById('bcSendTestBtn'), document.getElementById('bcSendAllBtn')];
+  btns.forEach((b) => { b.disabled = true; });
+  status.style.color = 'var(--text-faint)';
+  status.textContent = 'Отправляю…';
+  try {
+    const r = await api('/push-admin/send', {
+      method: 'POST',
+      body: JSON.stringify({ title, body, imageUrl: broadcastImage || null, audience, testPhone: audience === 'test' ? testPhone : null }),
+    });
+    status.style.color = r.failed ? 'var(--warn)' : 'var(--profit, inherit)';
+    status.textContent = `Принято Expo: ${r.sent}, ошибок: ${r.failed}` + (r.notRegistered ? ` (устройство не зарегистрировано: ${r.notRegistered})` : '')
+      + (r.skippedNotExpo ? `, пропущено токенов не Expo: ${r.skippedNotExpo}` : '') + (r.withImage ? ' · с картинкой' : ' · без картинки');
+  } catch (err) {
+    fail('Не удалось отправить: ' + err.message);
+  } finally {
+    broadcastBusy = false;
+    btns.forEach((b) => { b.disabled = false; });
+  }
+}
+
+async function loadBroadcastPage() {
+  if (!broadcastWired) {
+    broadcastWired = true;
+    document.getElementById('bcChooseImageBtn').addEventListener('click', () => document.getElementById('bcImageFile').click());
+    document.getElementById('bcImageFile').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      e.target.value = '';
+      if (!file) return;
+      const st = document.getElementById('bcImageStatus');
+      st.style.color = 'var(--text-faint)';
+      st.textContent = `Загружаю ${file.name}…`;
+      try { broadcastImage = await uploadMyMarketFile(file); st.textContent = ''; renderBroadcastImage(); }
+      catch (err) { st.style.color = 'var(--loss)'; st.textContent = err.message; }
+    });
+    document.getElementById('bcImageUrlBtn').addEventListener('click', () => {
+      const input = document.getElementById('bcImageUrl');
+      const st = document.getElementById('bcImageStatus');
+      const url = input.value.trim();
+      if (!url) return;
+      if (!/^https:\/\/\S+$/i.test(url)) { st.style.color = 'var(--loss)'; st.textContent = 'Ссылка должна начинаться с https://'; return; }
+      broadcastImage = url; input.value = ''; st.textContent = ''; renderBroadcastImage();
+    });
+    document.getElementById('bcSendTestBtn').addEventListener('click', () => broadcastSend('test'));
+    document.getElementById('bcSendAllBtn').addEventListener('click', () => broadcastSend('all'));
+    renderBroadcastImage();
+  }
+  const aud = document.getElementById('bcAudience');
+  try {
+    const a = await api('/push-admin/audience');
+    aud.textContent = `Получателей «всем»: ${a.expo} (токенов в базе: ${a.total}).`;
+  } catch (err) {
+    aud.textContent = 'Не удалось получить число получателей: ' + err.message;
+  }
+}
+
 let notificationsBtnWired = false;
 
 async function loadNotificationsPage() {

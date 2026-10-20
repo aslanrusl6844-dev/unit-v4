@@ -38,6 +38,7 @@
 
       <div class="nav-group-label">Система</div>
       <button class="nav-item" data-page="notifications"><i class="ni">🔔</i>Уведомления</button>
+      <button class="nav-item" data-page="broadcast"><i class="ni">📣</i>Рассылка</button>
       <button class="nav-item" data-page="settings"><i class="ni">⚙</i>Настройки</button>
       <button class="nav-item" data-page="yard" style="background:#DC2626;color:#fff">Магазин или Двор</button>
     </nav>
@@ -1190,6 +1191,35 @@
       </section>
 
       <!-- ============ УВЕДОМЛЕНИЯ ============ -->
+      <section class="page" id="page-broadcast" hidden>
+        <div class="page__head"><h1>Рассылка</h1><p>Пуш-уведомление покупателям приложения: заголовок, текст и (необязательно) картинка — акция, баннер.</p></div>
+        <div class="panel">
+          <form id="broadcastForm" style="display:flex;flex-direction:column;gap:10px;max-width:560px">
+            <label>Заголовок *<input type="text" id="bcTitle" maxlength="100" placeholder="Например: Скидки до 30%" /></label>
+            <label>Текст *<textarea id="bcBody" rows="3" maxlength="500" placeholder="Текст уведомления"></textarea></label>
+            <div>
+              <div style="font-size:13px;margin-bottom:4px">Картинка (необязательно)</div>
+              <div id="bcImagePreview"></div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px">
+                <button type="button" class="btn btn--ghost" id="bcChooseImageBtn">Загрузить фото</button>
+                <input type="file" id="bcImageFile" accept="image/jpeg,image/png,image/webp" hidden />
+                <input type="text" id="bcImageUrl" placeholder="или ссылка https://…" style="max-width:260px" />
+                <button type="button" class="btn btn--ghost" id="bcImageUrlBtn">Добавить</button>
+              </div>
+              <div id="bcImageStatus" class="panel__hint"></div>
+              <p class="panel__hint" style="margin:2px 0 0">JPEG/PNG/WEBP до 2.5 МБ. Без картинки пуш уйдёт как обычный.</p>
+            </div>
+            <label>Тестовый номер (отправка только ему)<input type="text" id="bcTestPhone" placeholder="+7 700 000 00 00" autocomplete="off" /></label>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button type="button" class="btn btn--ghost" id="bcSendTestBtn">Отправить тест на номер</button>
+              <button type="button" class="btn btn--accent" id="bcSendAllBtn">Отправить всем</button>
+            </div>
+            <div id="bcAudience" class="panel__hint"></div>
+            <div id="bcResult" style="font-size:13px"></div>
+          </form>
+        </div>
+      </section>
+
       <section class="page" id="page-notifications" hidden>
         <div class="page__head"><h1>Уведомления</h1><p>Журнал фоновых задач: синхронизация с площадками и автобот цены.</p></div>
 
