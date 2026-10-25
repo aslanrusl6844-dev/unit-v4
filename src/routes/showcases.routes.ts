@@ -4,7 +4,7 @@ import { env } from '../config/env';
 import { logger } from '../utils/logger';
 import { mapDbError } from './showcases.errors';
 import {
-  SHOP_VISIBLE_WHERE,
+  SHOP_VISIBLE_IN_SHOWCASE_WHERE,
   toShopProduct,
   ensureShopArticle,
   getReviewStatsMap,
@@ -20,7 +20,7 @@ import {
  *
  * Товары витрины = ТОЛЬКО явные привязки (ShowcaseProduct / ShowcaseCollectionItem),
  * никакого подбора по названию. Видимость самого товара — общий фильтр каталога
- * SHOP_VISIBLE_WHERE: скрытый/архивный товар в витрине не показывается, но
+ * SHOP_VISIBLE_IN_SHOWCASE_WHERE (те же правила видимости, но товары «только для витрин» допускаются): скрытый/архивный товар в витрине не показывается, но
  * привязка при этом не теряется.
  */
 export const showcasesRouter = Router();
@@ -58,7 +58,7 @@ async function loadVisibleProductMap(productIds: string[]): Promise<Map<string, 
   const out = new Map<string, any>();
   const ids = Array.from(new Set(productIds));
   if (ids.length === 0) return out;
-  const rows: any[] = await prisma.product.findMany({ where: { AND: [SHOP_VISIBLE_WHERE, { id: { in: ids } }] } });
+  const rows: any[] = await prisma.product.findMany({ where: { AND: [SHOP_VISIBLE_IN_SHOWCASE_WHERE, { id: { in: ids } }] } });
   const withArticles: any[] = await Promise.all(rows.map((r) => ensureShopArticle(r)));
   const statsMap = await getReviewStatsMap(withArticles);
   const variantsMap = await getProductVariantsMap(withArticles);

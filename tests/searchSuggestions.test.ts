@@ -25,6 +25,7 @@ function visible(p: Row, w: Row): boolean {
   if (w.category?.not === null && p.category == null) return false;
   if (w.shopPrice?.not === null && p.shopPrice == null) return false;
   if (w.type?.not === null && p.type == null) return false;
+  if (w.showcaseOnly !== undefined && !!p.showcaseOnly !== w.showcaseOnly) return false;
   return true;
 }
 const stub: Row = {
@@ -91,7 +92,7 @@ function call(method: string, path: string, body?: unknown, headers: Record<stri
   });
 }
 const P = (name: string, category: string, type: string | null, over: Row = {}): Row =>
-  ({ name, category, type, shopActive: true, shopArchived: false, shopPrice: 100, ...over });
+  ({ name, category, type, shopActive: true, shopArchived: false, showcaseOnly: false, shopPrice: 100, ...over });
 const sugg = (q: string) => call('GET', `/api/shop/search/suggestions?q=${encodeURIComponent(q)}`);
 const texts = (r: { json: any }) => r.json.suggestions.map((s: Row) => s.text);
 
@@ -158,6 +159,11 @@ describe('GET /api/shop/search/suggestions', () => {
       P('Косметичка видимая', 'Красота', 'Т'),
     ];
     assert.deepEqual(texts(await sugg('косметичка')).filter((t: string) => t.startsWith('Косметичка')), ['Косметичка видимая']);
+  });
+
+  test('товары «только для витрины» в подсказки общего поиска не попадают', async () => {
+    products = [P('Косметичка витринная', 'Красота', 'Сумки', { showcaseOnly: true }), P('Косметичка обычная', 'Красота', 'Сумки')];
+    assert.deepEqual(texts(await sugg('косметичка')), ['Косметичка обычная']);
   });
 
   test('регистр не важен, пробелы схлопываются, дубли убираются, максимум 10', async () => {

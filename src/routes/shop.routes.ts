@@ -49,9 +49,16 @@ const SHOP_VISIBLE_BASE = {
 } as const;
 // type в фильтре — только если он обязателен для продажи (config/shopRules.ts).
 // Иначе товар без типа виден в общей ленте категории, но в плитки типа не попадает.
-export const SHOP_VISIBLE_WHERE = SHOP_TYPE_REQUIRED_FOR_SALE
+const SHOP_VISIBLE_ANYWHERE = SHOP_TYPE_REQUIRED_FOR_SALE
   ? ({ ...SHOP_VISIBLE_BASE, type: { not: null } } as const)
   : SHOP_VISIBLE_BASE;
+/** Видимость товара ВНУТРИ витрины: те же правила, но включая товары «только для витрин» (showcaseOnly). */
+export const SHOP_VISIBLE_IN_SHOWCASE_WHERE = SHOP_VISIBLE_ANYWHERE;
+/**
+ * Видимость в ОБЩЕМ каталоге My Market (список, категории, поиск, подсказки):
+ * товары, созданные внутри витрины (showcaseOnly), сюда не попадают.
+ */
+export const SHOP_VISIBLE_WHERE = { ...SHOP_VISIBLE_ANYWHERE, showcaseOnly: false } as const;
 
 export function toShopProduct(p: any) {
   let images: string[] = [];
@@ -122,10 +129,16 @@ export function toShopProduct(p: any) {
 async function findVisibleProductBySkuOrArticle(param: string) {
   const trimmed = String(param ?? '').trim();
   if (!trimmed) return null;
-  const product = await prisma.product.findFirst({
-    where: { OR: [{ sku: trimmed }, { shopArticle: trimmed }, { id: trimmed }], ...SHOP_VISIBLE_WHERE },
-  });
-  return product ? ensureShopArticle(product) : null;
+  const lookup = [{ sku: trimmed }, { shopArticle: trimmed }, { id: trimmed }];
+  const product = await prisma.product.findFirst({ where: { OR: lookup, ...SHOP_VISIBLE_WHERE } });
+  if (product) return ensureShopArticle(product);
+  // Товар «только для витрины» открывается карточкой, только если он привязан к опубликованной витрине.
+  const only = await prisma.product.findFirst({ where: { OR: lookup, ...SHOP_VISIBLE_IN_SHOWCASE_WHERE, showcaseOnly: true } });
+  if (!only) return null;
+  const links = await prisma.showcaseProduct.findMany({ where: { productId: only.id }, select: { showcaseId: true } });
+  if (!links.length) return null;
+  const published = await prisma.showcase.findFirst({ where: { id: { in: links.map((l: { showcaseId: string }) => l.showcaseId) }, published: true } });
+  return published ? ensureShopArticle(only) : null;
 }
 
 /**
@@ -247,7 +260,7 @@ export async function getProductVariantsMap(
     // Видимые (shopActive, не архив) И с заполненной подписью — без подписи
     // товар в ряд вариантов не попадает (так просили: «иначе под миниатюрой
     // будет непонятно что показывать» — именно это мы и не хотим показывать).
-    where: { variantGroup: { in: groups }, shopActive: true, shopArchived: false, variantLabel: { not: null } },
+    where: { variantGroup: { in: groups }, shopActive: true, shopArchived: false, showcaseOnly: false, variantLabel: { not: null } },
   });
   const byGroup = new Map<string, typeof members>();
   for (const m of members) {

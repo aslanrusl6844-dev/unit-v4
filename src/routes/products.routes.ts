@@ -79,6 +79,7 @@ const productSchema = z.object({
   shopVideo: z.string().optional().nullable(),
   videoUrl: z.string().optional().nullable(),
   // Массивы от админки; в БД уходят JSON-строкой (см. services/productExtras.ts).
+  showcaseOnly: z.boolean().optional(), // товар создан внутри витрины — в общий каталог My Market не попадает
   quantityVariants: quantityVariantsSchema.optional().nullable(),
   details: detailsSchema.optional().nullable(),
   shopCost: z.number().nonnegative().optional().nullable(),

@@ -197,7 +197,7 @@ function seedProduct(over: Row = {}): Row {
   const id = over.id ?? newId();
   const row: Row = {
     id, sku: `sku-${id}`, name: `Товар ${id}`, category: 'Обувь', subcategory: null, type: 'Кроссовки',
-    shopActive: true, shopArchived: false, shopPrice: 1000, shopOldPrice: null, shopStock: 5, shopArticle: `A${id}`,
+    shopActive: true, shopArchived: false, showcaseOnly: false, shopPrice: 1000, shopOldPrice: null, shopStock: 5, shopArticle: `A${id}`,
     images: JSON.stringify([`https://img.example/${id}.jpg`]), description: null, descriptionSource: null,
     composition: null, characteristics: null, ozonType: null, variantGroup: null, variantLabel: null,
     shopVideo: null, videoUrl: null, shopDelivery: null, banner: null, bannerTitle: null, bannerSubtitle: null,
@@ -1223,5 +1223,68 @@ describe('товары витрины: массовое добавление, pr
     assert.deepEqual(r.json.products.map((p: Row) => p.shopArticle), ['9000002']);
     // отдельный список /:id/products по-прежнему работает
     assert.deepEqual(names(await pub(`/${sc.id}/products`)), [vis.name]);
+  });
+});
+
+describe('товары «только для витрины» (showcaseOnly): изоляция от общего каталога', () => {
+  const catalog = () => call('GET', '/api/shop/products', KEY);
+  const createOnly = async (showcaseId: string, over: Row = {}) => {
+    const body = { sku: `MM-${++seq}`, name: 'Только витрина', costPrice: 0, shopPrice: 700, shopOldPrice: 900, category: 'Обувь', type: 'Кроссовки', shopActive: true, shopArchived: false, showcaseOnly: true, ...over };
+    const r = await call('POST', '/api/products', AUTH, body);
+    assert.equal(r.status, 201, r.text);
+    const link = await adm('POST', `/${showcaseId}/products`, { productId: r.json.id });
+    assert.equal(link.status, 201, link.text);
+    return r.json;
+  };
+
+  test('созданный из витрины товар виден в этой витрине и НЕ виден в общем каталоге', async () => {
+    const sc = await newShowcase({ published: true });
+    const regular = seedProduct({ name: 'Обычный' });
+    const only = await createOnly(sc.id);
+    assert.equal(only.showcaseOnly, true);
+    assert.deepEqual(names(await catalog()), [regular.name], 'общий каталог');
+    assert.ok((await pub(`/${sc.id}`)).json.products.some((p: Row) => p.name === 'Только витрина'), 'страница витрины');
+    assert.deepEqual(names(await pub(`/${sc.id}/products`)), ['Только витрина'], 'список товаров витрины');
+  });
+
+  test('не появляется в других витринах, пока его туда не добавят; после добавления видим в обеих', async () => {
+    const s1 = await newShowcase({ title: 'Первая', published: true });
+    const s2 = await newShowcase({ title: 'Вторая', published: true });
+    const only = await createOnly(s1.id);
+    assert.deepEqual(names(await pub(`/${s2.id}/products`)), []);
+    assert.equal((await adm('POST', `/${s2.id}/products`, { productId: only.id })).status, 201);
+    assert.deepEqual(names(await pub(`/${s2.id}/products`)), ['Только витрина']);
+    assert.deepEqual(names(await pub(`/${s1.id}/products`)), ['Только витрина']);
+    // и через массовое добавление по артикулу тоже можно привязать существующий
+    const s3 = await newShowcase({ title: 'Третья', published: true });
+    const r = await adm('POST', `/${s3.id}/products/bulk`, { codes: only.sku });
+    assert.equal(r.json.added.length, 1);
+  });
+
+  test('карточка /products/:sku открывается, только пока товар привязан к опубликованной витрине', async () => {
+    const sc = await newShowcase({ published: true });
+    const only = await createOnly(sc.id);
+    const card = () => call('GET', `/api/shop/products/${only.sku}`, KEY);
+    assert.equal((await card()).status, 200);
+    await adm('PATCH', `/${sc.id}`, { published: false });
+    assert.equal((await card()).status, 404, 'витрина скрыта');
+    await adm('PATCH', `/${sc.id}`, { published: true });
+    await adm('DELETE', `/${sc.id}/products/${only.id}`);
+    assert.equal((await card()).status, 404, 'привязки нет');
+    assert.ok(tables.product.some((x) => x.id === only.id), 'сам товар в базе остался');
+  });
+
+  test('скрытый (не в продаже) товар витрины покупателю не отдаётся и в витрине', async () => {
+    const sc = await newShowcase({ published: true });
+    await createOnly(sc.id, { shopActive: false });
+    assert.deepEqual((await pub(`/${sc.id}`)).json.products, []);
+  });
+
+  test('обычные товары по-прежнему в каталоге; по умолчанию showcaseOnly=false', async () => {
+    const r = await call('POST', '/api/products', AUTH, { sku: 'plain-1', name: 'Обычный', costPrice: 1 });
+    assert.equal(r.status, 201, r.text);
+    assert.ok(!r.json.showcaseOnly);
+    const regular = seedProduct({ name: 'Каталожный' });
+    assert.deepEqual(names(await catalog()), [regular.name]);
   });
 });
