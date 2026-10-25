@@ -164,6 +164,7 @@ function scProductRows(products, scope) {
       <td style="white-space:nowrap">
         <button type="button" class="btn btn--ghost" data-sc="${scope}-up" ${i === 0 ? 'disabled' : ''}>↑</button>
         <button type="button" class="btn btn--ghost" data-sc="${scope}-down" ${i === products.length - 1 ? 'disabled' : ''}>↓</button>
+        ${scope === 'p' && !p.missing ? '<button type="button" class="btn btn--ghost" data-sc="p-edit">Редактировать</button>' : ''}
         <button type="button" class="btn btn--ghost" data-sc="${scope}-remove">Убрать</button>
       </td>
     </tr>`).join('')}</tbody></table>`;
@@ -408,6 +409,13 @@ async function scHandleClick(e) {
       if (again) again.value = left.join('\n');
     } else if (act === 'p-up' || act === 'p-down') {
       await scMove(scState.current.products, pid, act === 'p-up' ? -1 : 1, `${base}/products/order`, 'productIds');
+    } else if (act === 'p-edit') {
+      const showcaseId = scState.current.id;
+      try {
+        await openMyMarketProductCardForShowcase(pid, (msg) => scOpen(showcaseId, msg));
+      } catch (err) {
+        scSetStatus(`Не удалось открыть товар: ${scErr(err)}`, 'error');
+      }
     } else if (act === 'p-remove') {
       await api(`${base}/products/${encodeURIComponent(pid)}`, { method: 'DELETE' });
       await scOpen(scState.current.id, 'Товар убран из витрины (в каталоге остался)');
