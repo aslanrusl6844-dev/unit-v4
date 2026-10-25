@@ -3187,8 +3187,21 @@ function openMyMarketNewProductCardForShowcase(showcaseId, onDone) {
   document.getElementById('mymarketProductCardForm').elements.shopActive.checked = true;
 }
 
+// Редактирование товара из блока «Товары витрины»: та же карточка, что в разделе «Товары».
+// После сохранения вызывается onDone(message) — витрина перечитывает список.
+let myMarketCardEditDone = null;
+
+async function openMyMarketProductCardForShowcase(productId, onDone) {
+  // Свежий список товаров (товара может не быть в кэше раздела «Товары»; и кэш мог устареть).
+  myMarketProductsCache = await api('/products');
+  if (!myMarketProductsCache.some((x) => x.id === productId)) throw new Error('Товар не найден в каталоге (возможно, удалён)');
+  openMyMarketProductCard(productId);
+  myMarketCardEditDone = onDone;
+}
+
 function openMyMarketNewProductCard() {
   myMarketCardShowcaseLink = null;
+  myMarketCardEditDone = null;
   myMarketEditingProductId = null;
   myMarketVariantState = null; // новый товар ещё не сохранён — вкладка «Варианты» покажет подсказку сохранить сначала
   const form = document.getElementById('mymarketProductCardForm');
@@ -3211,6 +3224,8 @@ function openMyMarketNewProductCard() {
 function openMyMarketProductCard(id) {
   const p = myMarketProductsCache.find((x) => x.id === id);
   if (!p) return;
+  myMarketCardEditDone = null; // обычное открытие; из витрины колбэк выставляется после вызова
+  myMarketCardShowcaseLink = null;
   myMarketEditingProductId = id;
   myMarketVariantState = null; // пересчитать с нуля под открываемый товар, не унаследовать от прошлой карточки
   const form = document.getElementById('mymarketProductCardForm');
@@ -3261,6 +3276,7 @@ function closeMyMarketProductCard() {
   myMarketCardQty = [];
   myMarketCardDetails = [];
   myMarketCardShowcaseLink = null;
+  myMarketCardEditDone = null;
 }
 
 // ---------------------------------------------------------------------
@@ -3478,9 +3494,16 @@ async function saveMyMarketProductCard(e) {
   if (myMarketCardSaving) return; // повторный клик «Сохранить» не создаёт второй товар
   myMarketCardSaving = true;
   const showcaseLink = id ? null : myMarketCardShowcaseLink;
+  const editDone = id ? myMarketCardEditDone : null;
   try {
     if (id) {
       await api(`/products/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+      if (editDone) {
+        closeMyMarketProductCard();
+        try { await loadMyMarketProducts(); } catch { /* список «Товары» обновится при открытии вкладки */ }
+        if (typeof editDone === 'function') await editDone('Изменения товара сохранены');
+        return;
+      }
     } else {
       // Новый товар витрины — явно НЕ подставляем kaspiSku/ozonOfferId/
       // wbArticle, это отдельный товар только для My Market.
