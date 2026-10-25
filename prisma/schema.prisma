@@ -506,6 +506,7 @@ model ShopEvent {
   city         String?
   resultsCount Int?
   amount       Int?
+  fromSuggestion Boolean? // search: запрос выбран из подсказки
 
   @@index([createdAt])
   @@index([type])
