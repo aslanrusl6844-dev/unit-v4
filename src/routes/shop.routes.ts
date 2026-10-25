@@ -4,6 +4,7 @@ import multer from 'multer';
 import { put } from '@vercel/blob';
 import { prisma } from '../db/prisma';
 import { parseQuantityVariants, parseDetails } from '../services/productExtras';
+import { getSearchSuggestions } from '../services/searchSuggestions.service';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
 import { generateWaybillPdf, WaybillAddressError, WaybillOrderItem } from '../services/waybill.service';
@@ -271,6 +272,21 @@ shopRouter.get('/products', async (_req, res) => {
   } catch (err: any) {
     logger.error({ err }, '[Shop API] GET /products упал');
     res.status(500).json({ error: 'Не удалось получить товары', details: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * Подсказки поиска: GET /api/shop/search/suggestions?q=косм → до 10 штук
+ * { text, type: category|type|popular|product }. Подсказки не критичны:
+ * при сбое БД отдаём пустой список, а не ошибку — поиск от этого не страдает.
+ */
+shopRouter.get('/search/suggestions', async (req, res) => {
+  try {
+    const suggestions = await getSearchSuggestions(req.query.q, SHOP_VISIBLE_WHERE as unknown as Record<string, unknown>);
+    res.json({ suggestions });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop API] GET /search/suggestions упал');
+    res.json({ suggestions: [] });
   }
 });
 
@@ -1790,13 +1806,15 @@ const shopEventSchema = z.object({
   city: z.string().optional().nullable(),
   resultsCount: z.number().int().optional().nullable(),
   amount: z.number().int().optional().nullable(),
+  // search: поиск запущен выбором подсказки (true) или вводом/кнопкой (false/не передано)
+  fromSuggestion: z.boolean().optional().nullable(),
 });
 
 shopRouter.post('/events', async (req, res) => {
   const parsed = shopEventSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Неверные данные события', details: parsed.error.flatten() });
 
-  const { type, sku, phone, resultsCount, amount } = parsed.data;
+  const { type, sku, phone, resultsCount, amount, fromSuggestion } = parsed.data;
   // city: trim, пустая строка -> null.
   const city = parsed.data.city?.trim() || null;
   const query = parsed.data.query?.trim() || null;
@@ -1819,6 +1837,8 @@ shopRouter.post('/events', async (req, res) => {
         city,
         resultsCount: resultsCount ?? null,
         amount: amount ?? null,
+        // undefined → колонка не попадает в INSERT (события без этого поля пишутся как раньше)
+        fromSuggestion: type === 'search' ? (fromSuggestion ?? undefined) : undefined,
       },
     });
     res.status(201).json({ ok: true });
