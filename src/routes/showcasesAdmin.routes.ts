@@ -104,6 +104,7 @@ function productBrief(p: any) {
     price: p.shopPrice ?? null,
     shopActive: !!p.shopActive,
     shopArchived: !!p.shopArchived,
+    showcaseOnly: !!p.showcaseOnly,
     category: p.category ?? null,
     image,
   };

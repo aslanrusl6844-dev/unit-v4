@@ -160,7 +160,7 @@ function scProductRows(products, scope) {
   return `<table class="table"><tbody>${products.map((p, i) => `
     <tr data-pid="${scEsc(p.id)}">
       <td>${scThumb(p.image)}</td>
-      <td>${scEsc(p.name)}<div class="panel__hint" style="margin:0">${scEsc(p.article || p.sku || p.id)}${p.price != null ? ` · ${scEsc(p.price)} ₸` : ''}${p.missing ? ' · нет в каталоге' : (!p.shopActive || p.shopArchived ? ' · не в продаже (покупателю не виден)' : '')}</div></td>
+      <td>${scEsc(p.name)}<div class="panel__hint" style="margin:0">${scEsc(p.article || p.sku || p.id)}${p.price != null ? ` · ${scEsc(p.price)} ₸` : ''}${p.missing ? ' · нет в каталоге' : (!p.shopActive || p.shopArchived ? ' · не в продаже (покупателю не виден)' : '')}${p.showcaseOnly ? ' · только в витринах' : ''}</div></td>
       <td style="white-space:nowrap">
         <button type="button" class="btn btn--ghost" data-sc="${scope}-up" ${i === 0 ? 'disabled' : ''}>↑</button>
         <button type="button" class="btn btn--ghost" data-sc="${scope}-down" ${i === products.length - 1 ? 'disabled' : ''}>↓</button>
@@ -178,7 +178,10 @@ function scSearchBox(scope, cid) {
 
 function scProductsHtml(c) {
   return `<div style="margin-top:22px;border-top:1px solid var(--border);padding-top:14px">
-    <h3 style="margin:0 0 6px">Товары витрины (${c.products.length})</h3>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+      <h3 style="margin:0 0 6px">Товары витрины (${c.products.length})</h3>
+      <button type="button" class="btn btn--accent" data-sc="pnew">+ Новый товар</button>
+    </div>
     <p class="panel__hint">Только товары, добавленные здесь. Один товар может быть в нескольких витринах; убрать товар из витрины не значит удалить его из каталога.</p>
     ${scSearchBox('products', '')}
     <div style="margin:8px 0">
@@ -384,6 +387,10 @@ async function scHandleClick(e) {
       const url = box.dataset.scope === 'items' ? `${base}/collections/${encodeURIComponent(box.dataset.cid)}/items` : `${base}/products`;
       await api(url, { method: 'POST', body: JSON.stringify({ productId }) });
       await scOpen(scState.current.id, 'Товар добавлен');
+    } else if (act === 'pnew') {
+      // Та же карточка товара, что в разделе «Товары»; после сохранения товар попадёт и в каталог, и в эту витрину.
+      const showcaseId = scState.current.id;
+      openMyMarketNewProductCardForShowcase(showcaseId, (msg) => scOpen(showcaseId, msg));
     } else if (act === 'pbulk') {
       const area = document.getElementById('scBulkCodes');
       const codes = area.value.trim();

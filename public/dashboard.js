@@ -2233,7 +2233,7 @@ function wireMyMarketTabsOnce() {
   document.getElementById('mymarketDownloadTemplateBtn').addEventListener('click', downloadMyMarketTemplate);
   document.getElementById('mymarketDownloadTemplateBtn2').addEventListener('click', downloadMyMarketTemplate);
   document.getElementById('mymarketGoUploadBtn').addEventListener('click', () => switchMyMarketTab('upload'));
-  document.getElementById('mymarketNewProductBtn').addEventListener('click', openMyMarketNewProductCard);
+  document.getElementById('mymarketNewProductBtn').addEventListener('click', () => { myMarketCardShowcaseLink = null; openMyMarketNewProductCard(); });
 
   // --- Загрузка Excel: выбор файла (кнопка / перетаскивание) ---
   document.getElementById('mmChooseUploadFileBtn').addEventListener('click', () => document.getElementById('mymarketUploadFile').click());
@@ -3175,7 +3175,20 @@ async function runMyMarketApplyNameCategories() {
   alert(`Проставлено по названию: ${total.applied}.\nОсталось в «Без категории»: ${left} — спорные: несколько вариантов ${total.multiple}, нет совпадений ${total.none}.${total.alreadyFilled ? `\nПропущено уже заполненных: ${total.alreadyFilled}.` : ''}\nПродажа ни у одного товара не включалась.`);
 }
 
+// Новая карточка, открытая из витрины («+ Новый товар»): после создания товар
+// сразу привязывается к этой витрине. null — обычное создание из раздела «Товары».
+let myMarketCardShowcaseLink = null; // { showcaseId, onDone(message) }
+let myMarketCardSaving = false;
+
+function openMyMarketNewProductCardForShowcase(showcaseId, onDone) {
+  openMyMarketNewProductCard();
+  myMarketCardShowcaseLink = { showcaseId, onDone };
+  document.getElementById('mymarketCardWarning').textContent = 'Товар будет виден только в этой витрине и не попадёт в общий каталог My Market. Чтобы он показывался в приложении, включите «В продаже» (нужны категория, тип и цена).';
+  document.getElementById('mymarketProductCardForm').elements.shopActive.checked = true;
+}
+
 function openMyMarketNewProductCard() {
+  myMarketCardShowcaseLink = null;
   myMarketEditingProductId = null;
   myMarketVariantState = null; // новый товар ещё не сохранён — вкладка «Варианты» покажет подсказку сохранить сначала
   const form = document.getElementById('mymarketProductCardForm');
@@ -3247,6 +3260,7 @@ function closeMyMarketProductCard() {
   myMarketCardVideo = null;
   myMarketCardQty = [];
   myMarketCardDetails = [];
+  myMarketCardShowcaseLink = null;
 }
 
 // ---------------------------------------------------------------------
@@ -3441,6 +3455,8 @@ async function saveMyMarketProductCard(e) {
     // Пользователь сам выбирал категорию/тип (или кликнул вариант) — это уже его
     // выбор: пометка «с названия» снимается, синк Ozon это больше не перезаписывает.
     ...(myMarketCardCategoryTouched ? { categorySource: null } : {}),
+    // Создан из витрины — только для витрин (в общий каталог не попадает).
+    ...(!id && myMarketCardShowcaseLink ? { showcaseOnly: true } : {}),
   };
 
   // Новый тип, вписанный руками, — сразу в справочник категории, чтобы в
@@ -3459,6 +3475,9 @@ async function saveMyMarketProductCard(e) {
     }
   }
 
+  if (myMarketCardSaving) return; // повторный клик «Сохранить» не создаёт второй товар
+  myMarketCardSaving = true;
+  const showcaseLink = id ? null : myMarketCardShowcaseLink;
   try {
     if (id) {
       await api(`/products/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
@@ -3466,12 +3485,29 @@ async function saveMyMarketProductCard(e) {
       // Новый товар витрины — явно НЕ подставляем kaspiSku/ozonOfferId/
       // wbArticle, это отдельный товар только для My Market.
       if (!sku) { document.getElementById('mymarketCardWarning').textContent = 'Не удалось сгенерировать SKU, попробуй ещё раз открыть карточку.'; return; }
-      await api('/products', { method: 'POST', body: JSON.stringify({ sku, costPrice: 0, ...payload }) });
+      const created = await api('/products', { method: 'POST', body: JSON.stringify({ sku, costPrice: 0, ...payload }) });
+      if (showcaseLink) {
+        // Товар уже создан в каталоге. Если привязка не удалась — не теряем его и не создаём заново:
+        // говорим об этом прямо, товар можно добавить в витрину поиском.
+        let msg;
+        try {
+          await api(`/shop-admin/showcases/${encodeURIComponent(showcaseLink.showcaseId)}/products`, { method: 'POST', body: JSON.stringify({ productId: created.id }) });
+          msg = 'Товар создан и добавлен в витрину (в общем каталоге его нет)';
+        } catch (err) {
+          msg = `Товар создан в каталоге, но в витрину не добавился (${err.message}). Найдите его поиском и добавьте.`;
+        }
+        closeMyMarketProductCard();
+        try { await loadMyMarketProducts(); } catch { /* список «Товары» обновится при открытии вкладки */ }
+        if (typeof showcaseLink.onDone === 'function') await showcaseLink.onDone(msg);
+        return;
+      }
     }
     closeMyMarketProductCard();
     await loadMyMarketProducts();
   } catch (err) {
     document.getElementById('mymarketCardWarning').textContent = 'Не удалось сохранить: ' + err.message;
+  } finally {
+    myMarketCardSaving = false;
   }
 }
 
