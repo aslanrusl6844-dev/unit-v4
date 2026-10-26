@@ -104,6 +104,7 @@ const PAGE_LOADERS = {
   demping: loadDempingPage,
   notifications: loadNotificationsPage,
   broadcast: loadBroadcastPage,
+  cityimages: loadCityImagesPage,
   settings: loadSettingsPage,
   yard: loadYardPage,
 };
@@ -5315,6 +5316,98 @@ async function loadBroadcastPage() {
     aud.textContent = `Получателей «всем»: ${a.total} (Firebase: ${a.fcm ?? 0}, Expo: ${a.expo})` + (a.fcm && !a.firebaseConfigured ? ' · FIREBASE_KEY не задан — Firebase-токены не получат пуш.' : '');
   } catch (err) {
     aud.textContent = 'Не удалось получить число получателей: ' + err.message;
+  }
+}
+
+
+// ---------------------------------------------------------------------
+// Картинки городов: файл → Blob (как фото товаров) → PUT /shop-admin/city-images/:city
+// ---------------------------------------------------------------------
+let cityImagesWired = false;
+let cityImagesBusy = false;
+let cityImagesRows = [];
+let cityImagesPickCity = null;
+
+function cityImagesSetStatus(text, isError) {
+  const el = document.getElementById('cityImagesStatus');
+  el.textContent = text || '';
+  el.style.color = isError ? 'var(--loss)' : 'var(--text-faint)';
+}
+
+function renderCityImages() {
+  const el = document.getElementById('cityImagesList');
+  el.innerHTML = `<table class="table"><tbody>${cityImagesRows.map((r) => `
+    <tr data-city="${mmxEsc(r.city)}">
+      <td style="width:72px">${r.imageUrl ? `<img src="${mmxEsc(r.imageUrl)}" alt="" style="width:64px;height:48px;object-fit:cover;border-radius:6px" />` : '<div style="width:64px;height:48px;border-radius:6px;background:var(--bg);display:flex;align-items:center;justify-content:center;color:var(--text-faint);font-size:11px">нет</div>'}</td>
+      <td><b>${mmxEsc(r.city)}</b><div class="panel__hint" style="margin:0">${r.imageUrl ? 'Картинка загружена' : 'Картинки нет'}</div></td>
+      <td style="white-space:nowrap">
+        <button type="button" class="btn btn--ghost" data-city-act="upload">${r.imageUrl ? 'Заменить' : 'Загрузить'}</button>
+        ${r.imageUrl ? '<button type="button" class="btn btn--ghost" data-city-act="delete">Удалить</button>' : ''}
+      </td>
+    </tr>`).join('')}</tbody></table>`;
+}
+
+async function loadCityImagesPage() {
+  if (!cityImagesWired) {
+    cityImagesWired = true;
+    document.getElementById('cityImagesReloadBtn').addEventListener('click', loadCityImagesPage);
+    document.getElementById('cityImagesList').addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-city-act]');
+      if (!btn || cityImagesBusy) return;
+      const city = btn.closest('tr').dataset.city;
+      if (btn.dataset.cityAct === 'upload') { cityImagesPickCity = city; document.getElementById('cityImagesFile').click(); }
+      else cityImagesDelete(city);
+    });
+    document.getElementById('cityImagesFile').addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      e.target.value = '';
+      if (file && cityImagesPickCity) cityImagesUpload(cityImagesPickCity, file);
+    });
+  }
+  cityImagesSetStatus('Загружаю список…', false);
+  try {
+    cityImagesRows = await api('/shop-admin/city-images');
+    cityImagesSetStatus('', false);
+    renderCityImages();
+  } catch (err) {
+    cityImagesSetStatus('Не удалось загрузить список: ' + err.message, true);
+  }
+}
+
+async function cityImagesUpload(city, file) {
+  if (cityImagesBusy) return;
+  cityImagesBusy = true;
+  document.getElementById('cityImagesList').setAttribute('aria-busy', 'true');
+  try {
+    cityImagesSetStatus(`Загружаю картинку для «${city}»…`, false);
+    const url = await uploadMyMarketFile(file);
+    const r = await api(`/shop-admin/city-images/${encodeURIComponent(city)}`, { method: 'PUT', body: JSON.stringify({ imageUrl: url }) });
+    const row = cityImagesRows.find((x) => x.city === city);
+    if (row) row.imageUrl = r.imageUrl;
+    renderCityImages();
+    cityImagesSetStatus(`Картинка для «${city}» сохранена`, false);
+  } catch (err) {
+    cityImagesSetStatus(`Не удалось сохранить картинку для «${city}»: ${err.message}`, true);
+  } finally {
+    cityImagesBusy = false;
+    document.getElementById('cityImagesList').removeAttribute('aria-busy');
+  }
+}
+
+async function cityImagesDelete(city) {
+  if (cityImagesBusy) return;
+  if (!confirm(`Удалить картинку города «${city}»?`)) return;
+  cityImagesBusy = true;
+  try {
+    await api(`/shop-admin/city-images/${encodeURIComponent(city)}`, { method: 'DELETE' });
+    const row = cityImagesRows.find((x) => x.city === city);
+    if (row) row.imageUrl = null;
+    renderCityImages();
+    cityImagesSetStatus(`Картинка города «${city}» удалена`, false);
+  } catch (err) {
+    cityImagesSetStatus(`Не удалось удалить: ${err.message}`, true);
+  } finally {
+    cityImagesBusy = false;
   }
 }
 

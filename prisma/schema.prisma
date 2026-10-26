@@ -654,6 +654,13 @@ model YardApplication {
 
 // Общие настройки «Двора» — ОДНА строка (id = "main") на весь сервер.
 // Сейчас: видео-инструкция для покупателей на экране карты (не видео магазина).
+// Картинка города для приложения (ключ — каноническое название из списка src/config/cities.ts).
+model CityImage {
+  city      String   @id
+  imageUrl  String
+  updatedAt DateTime @updatedAt
+}
+
 model YardSettings {
   id             String   @id @default("main")
   instructionUrl String?

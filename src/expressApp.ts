@@ -20,6 +20,7 @@ import { shopAdminRouter } from './routes/shopAdmin.routes';
 import { shopMediaRouter } from './routes/shopMedia.routes';
 import { showcasesRouter } from './routes/showcases.routes';
 import { showcasesAdminRouter } from './routes/showcasesAdmin.routes';
+import { cityImagesAdminRouter } from './routes/cityImages.routes';
 import { yardRouter } from './routes/yard.routes';
 import { categoriesRouter } from './routes/categories.routes';
 import { yardAdminRouter } from './routes/yardAdmin.routes';
@@ -138,6 +139,7 @@ app.use('/api/shop/admin', shopMediaRouter);
 // пути не перехватывались чужими маршрутами с параметрами.
 app.use('/api/shop/showcases', showcasesRouter);
 app.use('/api/shop-admin/showcases', showcasesAdminRouter);
+app.use('/api/shop-admin/city-images', cityImagesAdminRouter);
 app.use('/api/shop', shopRouter);
 app.use('/api/shop-admin', shopAdminRouter);
 // «Двор» — своя подсистема, свои таблицы, свои заказы, свои деньги. Не

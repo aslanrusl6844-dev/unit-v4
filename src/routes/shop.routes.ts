@@ -5,6 +5,7 @@ import { put } from '@vercel/blob';
 import { prisma } from '../db/prisma';
 import { parseQuantityVariants, parseDetails } from '../services/productExtras';
 import { getSearchSuggestions } from '../services/searchSuggestions.service';
+import { resolveCity } from '../config/cities';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
 import { generateWaybillPdf, WaybillAddressError, WaybillOrderItem } from '../services/waybill.service';
@@ -300,6 +301,24 @@ shopRouter.get('/search/suggestions', async (req, res) => {
   } catch (err: any) {
     logger.error({ err }, '[Shop API] GET /search/suggestions упал');
     res.json({ suggestions: [] });
+  }
+});
+
+/**
+ * Картинка города: GET /api/shop/city-image?city=Алматы → { imageUrl: "https://…" } или
+ * { imageUrl: null }, если у города нет картинки (или города нет в списке). Название
+ * без учёта регистра/ё/дефисов. Некритично: при сбое БД тоже { imageUrl: null }.
+ */
+shopRouter.get('/city-image', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    const city = resolveCity(req.query.city);
+    if (!city) return res.json({ imageUrl: null });
+    const row = await prisma.cityImage.findUnique({ where: { city } });
+    res.json({ imageUrl: row?.imageUrl ?? null });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop API] GET /city-image упал');
+    res.json({ imageUrl: null });
   }
 });
 

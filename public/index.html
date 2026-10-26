@@ -39,6 +39,7 @@
       <div class="nav-group-label">Система</div>
       <button class="nav-item" data-page="notifications"><i class="ni">🔔</i>Уведомления</button>
       <button class="nav-item" data-page="broadcast"><i class="ni">📣</i>Рассылка</button>
+      <button class="nav-item" data-page="cityimages"><i class="ni">🏙</i>Картинки городов</button>
       <button class="nav-item" data-page="settings"><i class="ni">⚙</i>Настройки</button>
       <button class="nav-item" data-page="yard" style="background:#DC2626;color:#fff">Магазин или Двор</button>
     </nav>
@@ -1191,6 +1192,16 @@
       </section>
 
       <!-- ============ УВЕДОМЛЕНИЯ ============ -->
+      <section class="page" id="page-cityimages" hidden>
+        <div class="page__head"><h1>Картинки городов</h1><p>Картинка для каждого города — приложение запрашивает её по названию города. JPEG/PNG/WEBP до 2.5 МБ.</p></div>
+        <div class="panel">
+          <div class="panel__head"><h2>Города</h2><button class="btn btn--ghost" id="cityImagesReloadBtn">↻ Обновить</button></div>
+          <div id="cityImagesStatus" class="panel__hint"></div>
+          <input type="file" id="cityImagesFile" accept="image/jpeg,image/png,image/webp" hidden />
+          <div id="cityImagesList"></div>
+        </div>
+      </section>
+
       <section class="page" id="page-broadcast" hidden>
         <div class="page__head"><h1>Рассылка</h1><p>Пуш-уведомление покупателям приложения: заголовок, текст и (необязательно) картинка — акция, баннер.</p></div>
         <div class="panel">
