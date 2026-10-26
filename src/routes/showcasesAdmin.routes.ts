@@ -104,6 +104,7 @@ function productBrief(p: any) {
     price: p.shopPrice ?? null,
     shopActive: !!p.shopActive,
     shopArchived: !!p.shopArchived,
+    showcaseOnly: !!p.showcaseOnly,
     category: p.category ?? null,
     image,
   };
@@ -136,6 +137,9 @@ showcasesAdminRouter.get('/product-search', async (req, res) => {
           { name: { contains: q, mode: 'insensitive' } },
           { sku: { contains: q, mode: 'insensitive' } },
           { shopArticle: { contains: q } },
+          { kaspiSku: { contains: q, mode: 'insensitive' } },
+          { ozonOfferId: { contains: q, mode: 'insensitive' } },
+          { wbArticle: { contains: q, mode: 'insensitive' } },
         ],
       },
       orderBy: { name: 'asc' },
@@ -339,6 +343,73 @@ showcasesAdminRouter.post('/:id/products', async (req, res) => {
     }
   } catch (err: any) {
     fail(res, req, err, 'Не удалось добавить товар в витрину');
+  }
+});
+
+/** Список кодов из текста/массива: разделители — перевод строки, запятая, точка с запятой; повторы убираются. */
+export function parseCodes(raw: string | string[]): string[] {
+  const parts = Array.isArray(raw) ? raw.flatMap((x) => x.split(/[\n\r,;]+/)) : raw.split(/[\n\r,;]+/);
+  return Array.from(new Set(parts.map((x) => x.trim()).filter(Boolean)));
+}
+const MAX_BULK_CODES = 500;
+
+/**
+ * Массовое добавление: список артикулов (sku, артикул витрины, id, а также
+ * артикулы площадок — только для поиска в админке) → привязка к витрине.
+ * Каждый код обрабатывается отдельно: ненайденные/неоднозначные/уже добавленные
+ * не мешают остальным. Порядок = порядок кодов в списке.
+ */
+showcasesAdminRouter.post('/:id/products/bulk', async (req, res) => {
+  const parsed = z.object({ codes: z.union([z.string().max(200_000), z.array(z.string().max(200)).max(5000)]) }).safeParse(req.body);
+  if (!parsed.success) return bad(res, parsed);
+  const codes = parseCodes(parsed.data.codes);
+  if (codes.length === 0) return res.status(400).json({ error: 'Список артикулов пуст' });
+  if (codes.length > MAX_BULK_CODES) return res.status(400).json({ error: `За один раз можно добавить не больше ${MAX_BULK_CODES} артикулов`, code: 'TOO_MANY' });
+  try {
+    const showcase = await prisma.showcase.findUnique({ where: { id: req.params.id } });
+    if (!showcase) return res.status(404).json({ error: 'Витрина не найдена' });
+
+    const rows: any[] = await prisma.product.findMany({
+      where: {
+        OR: [
+          { sku: { in: codes } }, { shopArticle: { in: codes } }, { id: { in: codes } },
+          { kaspiSku: { in: codes } }, { ozonOfferId: { in: codes } }, { wbArticle: { in: codes } },
+        ],
+      },
+    });
+    const byCode = new Map<string, Map<string, any>>();
+    for (const p of rows) {
+      for (const v of [p.sku, p.shopArticle, p.id, p.kaspiSku, p.ozonOfferId, p.wbArticle]) {
+        if (typeof v !== 'string' || !v) continue;
+        if (!byCode.has(v)) byCode.set(v, new Map());
+        byCode.get(v)!.set(p.id, p);
+      }
+    }
+
+    const existing: any[] = await prisma.showcaseProduct.findMany({ where: { showcaseId: showcase.id } });
+    const linked = new Set<string>(existing.map((l) => l.productId));
+    let lastOrder = existing.reduce((m, l) => Math.max(m, l.sortOrder ?? 0), 0);
+
+    const result = { added: [] as any[], alreadyIn: [] as string[], notFound: [] as string[], ambiguous: [] as string[], overLimit: [] as string[] };
+    for (const code of codes) {
+      const found = byCode.get(code);
+      if (!found || found.size === 0) { result.notFound.push(code); continue; }
+      if (found.size > 1) { result.ambiguous.push(code); continue; }
+      const product = [...found.values()][0];
+      if (linked.has(product.id)) { result.alreadyIn.push(code); continue; }
+      if (linked.size >= MAX_PRODUCTS_PER_LIST) { result.overLimit.push(code); continue; }
+      try {
+        await prisma.showcaseProduct.create({ data: { showcaseId: showcase.id, productId: product.id, sortOrder: ++lastOrder } });
+        linked.add(product.id);
+        result.added.push({ code, product: productBrief(product) });
+      } catch (err: any) {
+        if (isUniqueViolation(err)) { linked.add(product.id); result.alreadyIn.push(code); continue; }
+        throw err;
+      }
+    }
+    res.json(result);
+  } catch (err: any) {
+    fail(res, req, err, 'Не удалось добавить товары в витрину');
   }
 });
 

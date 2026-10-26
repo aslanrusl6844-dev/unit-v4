@@ -160,10 +160,11 @@ function scProductRows(products, scope) {
   return `<table class="table"><tbody>${products.map((p, i) => `
     <tr data-pid="${scEsc(p.id)}">
       <td>${scThumb(p.image)}</td>
-      <td>${scEsc(p.name)}<div class="panel__hint" style="margin:0">${scEsc(p.article || p.sku || p.id)}${p.price != null ? ` · ${scEsc(p.price)} ₸` : ''}${p.missing ? ' · нет в каталоге' : (!p.shopActive || p.shopArchived ? ' · не в продаже (покупателю не виден)' : '')}</div></td>
+      <td>${scEsc(p.name)}<div class="panel__hint" style="margin:0">${scEsc(p.article || p.sku || p.id)}${p.price != null ? ` · ${scEsc(p.price)} ₸` : ''}${p.missing ? ' · нет в каталоге' : (!p.shopActive || p.shopArchived ? ' · не в продаже (покупателю не виден)' : '')}${p.showcaseOnly ? ' · только в витринах' : ''}</div></td>
       <td style="white-space:nowrap">
         <button type="button" class="btn btn--ghost" data-sc="${scope}-up" ${i === 0 ? 'disabled' : ''}>↑</button>
         <button type="button" class="btn btn--ghost" data-sc="${scope}-down" ${i === products.length - 1 ? 'disabled' : ''}>↓</button>
+        ${scope === 'p' && !p.missing ? '<button type="button" class="btn btn--ghost" data-sc="p-edit">Редактировать</button>' : ''}
         <button type="button" class="btn btn--ghost" data-sc="${scope}-remove">Убрать</button>
       </td>
     </tr>`).join('')}</tbody></table>`;
@@ -178,9 +179,17 @@ function scSearchBox(scope, cid) {
 
 function scProductsHtml(c) {
   return `<div style="margin-top:22px;border-top:1px solid var(--border);padding-top:14px">
-    <h3 style="margin:0 0 6px">Товары витрины (${c.products.length})</h3>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+      <h3 style="margin:0 0 6px">Товары витрины (${c.products.length})</h3>
+      <button type="button" class="btn btn--accent" data-sc="pnew">+ Новый товар</button>
+    </div>
     <p class="panel__hint">Только товары, добавленные здесь. Один товар может быть в нескольких витринах; убрать товар из витрины не значит удалить его из каталога.</p>
     ${scSearchBox('products', '')}
+    <div style="margin:8px 0">
+      <label class="panel__hint" for="scBulkCodes" style="display:block;margin:0 0 4px">Массовая загрузка: артикулы (sku или артикул витрины) — по одному на строку или через запятую</label>
+      <textarea id="scBulkCodes" rows="4" style="width:100%;max-width:520px;box-sizing:border-box" placeholder="1000123&#10;1000124, 1000125"></textarea>
+      <div><button type="button" class="btn btn--accent" data-sc="pbulk">Добавить все</button></div>
+    </div>
     <div id="scProducts">${scProductRows(c.products, 'p')}</div></div>`;
 }
 
@@ -299,8 +308,13 @@ async function scPSearch(box) {
   if (!q) { out.innerHTML = ''; return; }
   try {
     const rows = await api(`/shop-admin/showcases/product-search?q=${encodeURIComponent(q)}`);
+    // Уже добавленные в этот список (витрину или подборку) помечаем и не даём добавить повторно.
+    const cur = scState.current;
+    const taken = new Set(((box.dataset.scope === 'items'
+      ? ((cur && cur.collections.find((c) => c.id === box.dataset.cid)) || {}).products
+      : cur && cur.products) || []).map((x) => x.id));
     out.innerHTML = rows.length
-      ? rows.map((p) => `<div data-pid="${scEsc(p.id)}" style="display:flex;gap:8px;align-items:center;margin:4px 0">${scThumb(p.image)}<span style="flex:1">${scEsc(p.name)} <span class="panel__hint" style="margin:0">${scEsc(p.article || p.sku)}</span></span><button type="button" class="btn btn--ghost" data-sc="padd">Добавить</button></div>`).join('')
+      ? rows.map((p) => `<div data-pid="${scEsc(p.id)}" style="display:flex;gap:8px;align-items:center;margin:4px 0">${scThumb(p.image)}<span style="flex:1">${scEsc(p.name)} <span class="panel__hint" style="margin:0">${scEsc(p.article || p.sku)}</span></span>${taken.has(p.id) ? '<span class="panel__hint" style="margin:0">уже добавлен</span>' : '<button type="button" class="btn btn--ghost" data-sc="padd">Добавить</button>'}</div>`).join('')
       : '<span class="panel__hint">Ничего не найдено</span>';
   } catch (err) {
     out.innerHTML = `<span style="color:var(--loss)">${scEsc(scErr(err))}</span>`;
@@ -374,8 +388,34 @@ async function scHandleClick(e) {
       const url = box.dataset.scope === 'items' ? `${base}/collections/${encodeURIComponent(box.dataset.cid)}/items` : `${base}/products`;
       await api(url, { method: 'POST', body: JSON.stringify({ productId }) });
       await scOpen(scState.current.id, 'Товар добавлен');
+    } else if (act === 'pnew') {
+      // Та же карточка товара, что в разделе «Товары»; после сохранения товар попадёт и в каталог, и в эту витрину.
+      const showcaseId = scState.current.id;
+      openMyMarketNewProductCardForShowcase(showcaseId, (msg) => scOpen(showcaseId, msg));
+    } else if (act === 'pbulk') {
+      const area = document.getElementById('scBulkCodes');
+      const codes = area.value.trim();
+      if (!codes) { scSetStatus('Вставьте список артикулов', 'error'); return; }
+      const r = await api(`${base}/products/bulk`, { method: 'POST', body: JSON.stringify({ codes }) });
+      const left = [...r.notFound, ...r.ambiguous, ...r.overLimit];
+      const parts = [`Добавлено: ${r.added.length}`];
+      if (r.alreadyIn.length) parts.push(`уже были: ${r.alreadyIn.length}`);
+      if (r.notFound.length) parts.push(`не найдено: ${r.notFound.join(', ')}`);
+      if (r.ambiguous.length) parts.push(`неоднозначно (совпало с несколькими товарами): ${r.ambiguous.join(', ')}`);
+      if (r.overLimit.length) parts.push(`не поместились в лимит: ${r.overLimit.join(', ')}`);
+      await scOpen(scState.current.id, parts.join(' · '));
+      // Невставшие артикулы остаются в поле — можно поправить и добавить ещё раз.
+      const again = document.getElementById('scBulkCodes');
+      if (again) again.value = left.join('\n');
     } else if (act === 'p-up' || act === 'p-down') {
       await scMove(scState.current.products, pid, act === 'p-up' ? -1 : 1, `${base}/products/order`, 'productIds');
+    } else if (act === 'p-edit') {
+      const showcaseId = scState.current.id;
+      try {
+        await openMyMarketProductCardForShowcase(pid, (msg) => scOpen(showcaseId, msg));
+      } catch (err) {
+        scSetStatus(`Не удалось открыть товар: ${scErr(err)}`, 'error');
+      }
     } else if (act === 'p-remove') {
       await api(`${base}/products/${encodeURIComponent(pid)}`, { method: 'DELETE' });
       await scOpen(scState.current.id, 'Товар убран из витрины (в каталоге остался)');

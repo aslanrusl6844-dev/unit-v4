@@ -104,6 +104,7 @@ const PAGE_LOADERS = {
   demping: loadDempingPage,
   notifications: loadNotificationsPage,
   broadcast: loadBroadcastPage,
+  cityimages: loadCityImagesPage,
   settings: loadSettingsPage,
   yard: loadYardPage,
 };
@@ -2233,7 +2234,7 @@ function wireMyMarketTabsOnce() {
   document.getElementById('mymarketDownloadTemplateBtn').addEventListener('click', downloadMyMarketTemplate);
   document.getElementById('mymarketDownloadTemplateBtn2').addEventListener('click', downloadMyMarketTemplate);
   document.getElementById('mymarketGoUploadBtn').addEventListener('click', () => switchMyMarketTab('upload'));
-  document.getElementById('mymarketNewProductBtn').addEventListener('click', openMyMarketNewProductCard);
+  document.getElementById('mymarketNewProductBtn').addEventListener('click', () => { myMarketCardShowcaseLink = null; openMyMarketNewProductCard(); });
 
   // --- Загрузка Excel: выбор файла (кнопка / перетаскивание) ---
   document.getElementById('mmChooseUploadFileBtn').addEventListener('click', () => document.getElementById('mymarketUploadFile').click());
@@ -3175,7 +3176,33 @@ async function runMyMarketApplyNameCategories() {
   alert(`Проставлено по названию: ${total.applied}.\nОсталось в «Без категории»: ${left} — спорные: несколько вариантов ${total.multiple}, нет совпадений ${total.none}.${total.alreadyFilled ? `\nПропущено уже заполненных: ${total.alreadyFilled}.` : ''}\nПродажа ни у одного товара не включалась.`);
 }
 
+// Новая карточка, открытая из витрины («+ Новый товар»): после создания товар
+// сразу привязывается к этой витрине. null — обычное создание из раздела «Товары».
+let myMarketCardShowcaseLink = null; // { showcaseId, onDone(message) }
+let myMarketCardSaving = false;
+
+function openMyMarketNewProductCardForShowcase(showcaseId, onDone) {
+  openMyMarketNewProductCard();
+  myMarketCardShowcaseLink = { showcaseId, onDone };
+  document.getElementById('mymarketCardWarning').textContent = 'Товар будет виден только в этой витрине и не попадёт в общий каталог My Market. Чтобы он показывался в приложении, включите «В продаже» (нужны категория, тип и цена).';
+  document.getElementById('mymarketProductCardForm').elements.shopActive.checked = true;
+}
+
+// Редактирование товара из блока «Товары витрины»: та же карточка, что в разделе «Товары».
+// После сохранения вызывается onDone(message) — витрина перечитывает список.
+let myMarketCardEditDone = null;
+
+async function openMyMarketProductCardForShowcase(productId, onDone) {
+  // Свежий список товаров (товара может не быть в кэше раздела «Товары»; и кэш мог устареть).
+  myMarketProductsCache = await api('/products');
+  if (!myMarketProductsCache.some((x) => x.id === productId)) throw new Error('Товар не найден в каталоге (возможно, удалён)');
+  openMyMarketProductCard(productId);
+  myMarketCardEditDone = onDone;
+}
+
 function openMyMarketNewProductCard() {
+  myMarketCardShowcaseLink = null;
+  myMarketCardEditDone = null;
   myMarketEditingProductId = null;
   myMarketVariantState = null; // новый товар ещё не сохранён — вкладка «Варианты» покажет подсказку сохранить сначала
   const form = document.getElementById('mymarketProductCardForm');
@@ -3198,6 +3225,8 @@ function openMyMarketNewProductCard() {
 function openMyMarketProductCard(id) {
   const p = myMarketProductsCache.find((x) => x.id === id);
   if (!p) return;
+  myMarketCardEditDone = null; // обычное открытие; из витрины колбэк выставляется после вызова
+  myMarketCardShowcaseLink = null;
   myMarketEditingProductId = id;
   myMarketVariantState = null; // пересчитать с нуля под открываемый товар, не унаследовать от прошлой карточки
   const form = document.getElementById('mymarketProductCardForm');
@@ -3247,6 +3276,8 @@ function closeMyMarketProductCard() {
   myMarketCardVideo = null;
   myMarketCardQty = [];
   myMarketCardDetails = [];
+  myMarketCardShowcaseLink = null;
+  myMarketCardEditDone = null;
 }
 
 // ---------------------------------------------------------------------
@@ -3441,6 +3472,8 @@ async function saveMyMarketProductCard(e) {
     // Пользователь сам выбирал категорию/тип (или кликнул вариант) — это уже его
     // выбор: пометка «с названия» снимается, синк Ozon это больше не перезаписывает.
     ...(myMarketCardCategoryTouched ? { categorySource: null } : {}),
+    // Создан из витрины — только для витрин (в общий каталог не попадает).
+    ...(!id && myMarketCardShowcaseLink ? { showcaseOnly: true } : {}),
   };
 
   // Новый тип, вписанный руками, — сразу в справочник категории, чтобы в
@@ -3459,19 +3492,46 @@ async function saveMyMarketProductCard(e) {
     }
   }
 
+  if (myMarketCardSaving) return; // повторный клик «Сохранить» не создаёт второй товар
+  myMarketCardSaving = true;
+  const showcaseLink = id ? null : myMarketCardShowcaseLink;
+  const editDone = id ? myMarketCardEditDone : null;
   try {
     if (id) {
       await api(`/products/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+      if (editDone) {
+        closeMyMarketProductCard();
+        try { await loadMyMarketProducts(); } catch { /* список «Товары» обновится при открытии вкладки */ }
+        if (typeof editDone === 'function') await editDone('Изменения товара сохранены');
+        return;
+      }
     } else {
       // Новый товар витрины — явно НЕ подставляем kaspiSku/ozonOfferId/
       // wbArticle, это отдельный товар только для My Market.
       if (!sku) { document.getElementById('mymarketCardWarning').textContent = 'Не удалось сгенерировать SKU, попробуй ещё раз открыть карточку.'; return; }
-      await api('/products', { method: 'POST', body: JSON.stringify({ sku, costPrice: 0, ...payload }) });
+      const created = await api('/products', { method: 'POST', body: JSON.stringify({ sku, costPrice: 0, ...payload }) });
+      if (showcaseLink) {
+        // Товар уже создан в каталоге. Если привязка не удалась — не теряем его и не создаём заново:
+        // говорим об этом прямо, товар можно добавить в витрину поиском.
+        let msg;
+        try {
+          await api(`/shop-admin/showcases/${encodeURIComponent(showcaseLink.showcaseId)}/products`, { method: 'POST', body: JSON.stringify({ productId: created.id }) });
+          msg = 'Товар создан и добавлен в витрину (в общем каталоге его нет)';
+        } catch (err) {
+          msg = `Товар создан в каталоге, но в витрину не добавился (${err.message}). Найдите его поиском и добавьте.`;
+        }
+        closeMyMarketProductCard();
+        try { await loadMyMarketProducts(); } catch { /* список «Товары» обновится при открытии вкладки */ }
+        if (typeof showcaseLink.onDone === 'function') await showcaseLink.onDone(msg);
+        return;
+      }
     }
     closeMyMarketProductCard();
     await loadMyMarketProducts();
   } catch (err) {
     document.getElementById('mymarketCardWarning').textContent = 'Не удалось сохранить: ' + err.message;
+  } finally {
+    myMarketCardSaving = false;
   }
 }
 
@@ -5256,6 +5316,98 @@ async function loadBroadcastPage() {
     aud.textContent = `Получателей «всем»: ${a.total} (Firebase: ${a.fcm ?? 0}, Expo: ${a.expo})` + (a.fcm && !a.firebaseConfigured ? ' · FIREBASE_KEY не задан — Firebase-токены не получат пуш.' : '');
   } catch (err) {
     aud.textContent = 'Не удалось получить число получателей: ' + err.message;
+  }
+}
+
+
+// ---------------------------------------------------------------------
+// Картинки городов: файл → Blob (как фото товаров) → PUT /shop-admin/city-images/:city
+// ---------------------------------------------------------------------
+let cityImagesWired = false;
+let cityImagesBusy = false;
+let cityImagesRows = [];
+let cityImagesPickCity = null;
+
+function cityImagesSetStatus(text, isError) {
+  const el = document.getElementById('cityImagesStatus');
+  el.textContent = text || '';
+  el.style.color = isError ? 'var(--loss)' : 'var(--text-faint)';
+}
+
+function renderCityImages() {
+  const el = document.getElementById('cityImagesList');
+  el.innerHTML = `<table class="table"><tbody>${cityImagesRows.map((r) => `
+    <tr data-city="${mmxEsc(r.city)}">
+      <td style="width:72px">${r.imageUrl ? `<img src="${mmxEsc(r.imageUrl)}" alt="" style="width:64px;height:48px;object-fit:cover;border-radius:6px" />` : '<div style="width:64px;height:48px;border-radius:6px;background:var(--bg);display:flex;align-items:center;justify-content:center;color:var(--text-faint);font-size:11px">нет</div>'}</td>
+      <td><b>${mmxEsc(r.city)}</b><div class="panel__hint" style="margin:0">${r.imageUrl ? 'Картинка загружена' : 'Картинки нет'}</div></td>
+      <td style="white-space:nowrap">
+        <button type="button" class="btn btn--ghost" data-city-act="upload">${r.imageUrl ? 'Заменить' : 'Загрузить'}</button>
+        ${r.imageUrl ? '<button type="button" class="btn btn--ghost" data-city-act="delete">Удалить</button>' : ''}
+      </td>
+    </tr>`).join('')}</tbody></table>`;
+}
+
+async function loadCityImagesPage() {
+  if (!cityImagesWired) {
+    cityImagesWired = true;
+    document.getElementById('cityImagesReloadBtn').addEventListener('click', loadCityImagesPage);
+    document.getElementById('cityImagesList').addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-city-act]');
+      if (!btn || cityImagesBusy) return;
+      const city = btn.closest('tr').dataset.city;
+      if (btn.dataset.cityAct === 'upload') { cityImagesPickCity = city; document.getElementById('cityImagesFile').click(); }
+      else cityImagesDelete(city);
+    });
+    document.getElementById('cityImagesFile').addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      e.target.value = '';
+      if (file && cityImagesPickCity) cityImagesUpload(cityImagesPickCity, file);
+    });
+  }
+  cityImagesSetStatus('Загружаю список…', false);
+  try {
+    cityImagesRows = await api('/shop-admin/city-images');
+    cityImagesSetStatus('', false);
+    renderCityImages();
+  } catch (err) {
+    cityImagesSetStatus('Не удалось загрузить список: ' + err.message, true);
+  }
+}
+
+async function cityImagesUpload(city, file) {
+  if (cityImagesBusy) return;
+  cityImagesBusy = true;
+  document.getElementById('cityImagesList').setAttribute('aria-busy', 'true');
+  try {
+    cityImagesSetStatus(`Загружаю картинку для «${city}»…`, false);
+    const url = await uploadMyMarketFile(file);
+    const r = await api(`/shop-admin/city-images/${encodeURIComponent(city)}`, { method: 'PUT', body: JSON.stringify({ imageUrl: url }) });
+    const row = cityImagesRows.find((x) => x.city === city);
+    if (row) row.imageUrl = r.imageUrl;
+    renderCityImages();
+    cityImagesSetStatus(`Картинка для «${city}» сохранена`, false);
+  } catch (err) {
+    cityImagesSetStatus(`Не удалось сохранить картинку для «${city}»: ${err.message}`, true);
+  } finally {
+    cityImagesBusy = false;
+    document.getElementById('cityImagesList').removeAttribute('aria-busy');
+  }
+}
+
+async function cityImagesDelete(city) {
+  if (cityImagesBusy) return;
+  if (!confirm(`Удалить картинку города «${city}»?`)) return;
+  cityImagesBusy = true;
+  try {
+    await api(`/shop-admin/city-images/${encodeURIComponent(city)}`, { method: 'DELETE' });
+    const row = cityImagesRows.find((x) => x.city === city);
+    if (row) row.imageUrl = null;
+    renderCityImages();
+    cityImagesSetStatus(`Картинка города «${city}» удалена`, false);
+  } catch (err) {
+    cityImagesSetStatus(`Не удалось удалить: ${err.message}`, true);
+  } finally {
+    cityImagesBusy = false;
   }
 }
 

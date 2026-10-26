@@ -4,6 +4,8 @@ import multer from 'multer';
 import { put } from '@vercel/blob';
 import { prisma } from '../db/prisma';
 import { parseQuantityVariants, parseDetails } from '../services/productExtras';
+import { getSearchSuggestions } from '../services/searchSuggestions.service';
+import { resolveCity } from '../config/cities';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
 import { generateWaybillPdf, WaybillAddressError, WaybillOrderItem } from '../services/waybill.service';
@@ -48,9 +50,16 @@ const SHOP_VISIBLE_BASE = {
 } as const;
 // type в фильтре — только если он обязателен для продажи (config/shopRules.ts).
 // Иначе товар без типа виден в общей ленте категории, но в плитки типа не попадает.
-export const SHOP_VISIBLE_WHERE = SHOP_TYPE_REQUIRED_FOR_SALE
+const SHOP_VISIBLE_ANYWHERE = SHOP_TYPE_REQUIRED_FOR_SALE
   ? ({ ...SHOP_VISIBLE_BASE, type: { not: null } } as const)
   : SHOP_VISIBLE_BASE;
+/** Видимость товара ВНУТРИ витрины: те же правила, но включая товары «только для витрин» (showcaseOnly). */
+export const SHOP_VISIBLE_IN_SHOWCASE_WHERE = SHOP_VISIBLE_ANYWHERE;
+/**
+ * Видимость в ОБЩЕМ каталоге My Market (список, категории, поиск, подсказки):
+ * товары, созданные внутри витрины (showcaseOnly), сюда не попадают.
+ */
+export const SHOP_VISIBLE_WHERE = { ...SHOP_VISIBLE_ANYWHERE, showcaseOnly: false } as const;
 
 export function toShopProduct(p: any) {
   let images: string[] = [];
@@ -121,10 +130,16 @@ export function toShopProduct(p: any) {
 async function findVisibleProductBySkuOrArticle(param: string) {
   const trimmed = String(param ?? '').trim();
   if (!trimmed) return null;
-  const product = await prisma.product.findFirst({
-    where: { OR: [{ sku: trimmed }, { shopArticle: trimmed }, { id: trimmed }], ...SHOP_VISIBLE_WHERE },
-  });
-  return product ? ensureShopArticle(product) : null;
+  const lookup = [{ sku: trimmed }, { shopArticle: trimmed }, { id: trimmed }];
+  const product = await prisma.product.findFirst({ where: { OR: lookup, ...SHOP_VISIBLE_WHERE } });
+  if (product) return ensureShopArticle(product);
+  // Товар «только для витрины» открывается карточкой, только если он привязан к опубликованной витрине.
+  const only = await prisma.product.findFirst({ where: { OR: lookup, ...SHOP_VISIBLE_IN_SHOWCASE_WHERE, showcaseOnly: true } });
+  if (!only) return null;
+  const links = await prisma.showcaseProduct.findMany({ where: { productId: only.id }, select: { showcaseId: true } });
+  if (!links.length) return null;
+  const published = await prisma.showcase.findFirst({ where: { id: { in: links.map((l: { showcaseId: string }) => l.showcaseId) }, published: true } });
+  return published ? ensureShopArticle(only) : null;
 }
 
 /**
@@ -246,7 +261,7 @@ export async function getProductVariantsMap(
     // Видимые (shopActive, не архив) И с заполненной подписью — без подписи
     // товар в ряд вариантов не попадает (так просили: «иначе под миниатюрой
     // будет непонятно что показывать» — именно это мы и не хотим показывать).
-    where: { variantGroup: { in: groups }, shopActive: true, shopArchived: false, variantLabel: { not: null } },
+    where: { variantGroup: { in: groups }, shopActive: true, shopArchived: false, showcaseOnly: false, variantLabel: { not: null } },
   });
   const byGroup = new Map<string, typeof members>();
   for (const m of members) {
@@ -271,6 +286,39 @@ shopRouter.get('/products', async (_req, res) => {
   } catch (err: any) {
     logger.error({ err }, '[Shop API] GET /products упал');
     res.status(500).json({ error: 'Не удалось получить товары', details: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * Подсказки поиска: GET /api/shop/search/suggestions?q=косм → до 10 штук
+ * { text, type: category|type|popular|product }. Подсказки не критичны:
+ * при сбое БД отдаём пустой список, а не ошибку — поиск от этого не страдает.
+ */
+shopRouter.get('/search/suggestions', async (req, res) => {
+  try {
+    const suggestions = await getSearchSuggestions(req.query.q, SHOP_VISIBLE_WHERE as unknown as Record<string, unknown>);
+    res.json({ suggestions });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop API] GET /search/suggestions упал');
+    res.json({ suggestions: [] });
+  }
+});
+
+/**
+ * Картинка города: GET /api/shop/city-image?city=Алматы → { imageUrl: "https://…" } или
+ * { imageUrl: null }, если у города нет картинки (или города нет в списке). Название
+ * без учёта регистра/ё/дефисов. Некритично: при сбое БД тоже { imageUrl: null }.
+ */
+shopRouter.get('/city-image', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    const city = resolveCity(req.query.city);
+    if (!city) return res.json({ imageUrl: null });
+    const row = await prisma.cityImage.findUnique({ where: { city } });
+    res.json({ imageUrl: row?.imageUrl ?? null });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop API] GET /city-image упал');
+    res.json({ imageUrl: null });
   }
 });
 
@@ -1790,13 +1838,15 @@ const shopEventSchema = z.object({
   city: z.string().optional().nullable(),
   resultsCount: z.number().int().optional().nullable(),
   amount: z.number().int().optional().nullable(),
+  // search: поиск запущен выбором подсказки (true) или вводом/кнопкой (false/не передано)
+  fromSuggestion: z.boolean().optional().nullable(),
 });
 
 shopRouter.post('/events', async (req, res) => {
   const parsed = shopEventSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Неверные данные события', details: parsed.error.flatten() });
 
-  const { type, sku, phone, resultsCount, amount } = parsed.data;
+  const { type, sku, phone, resultsCount, amount, fromSuggestion } = parsed.data;
   // city: trim, пустая строка -> null.
   const city = parsed.data.city?.trim() || null;
   const query = parsed.data.query?.trim() || null;
@@ -1819,6 +1869,8 @@ shopRouter.post('/events', async (req, res) => {
         city,
         resultsCount: resultsCount ?? null,
         amount: amount ?? null,
+        // undefined → колонка не попадает в INSERT (события без этого поля пишутся как раньше)
+        fromSuggestion: type === 'search' ? (fromSuggestion ?? undefined) : undefined,
       },
     });
     res.status(201).json({ ok: true });

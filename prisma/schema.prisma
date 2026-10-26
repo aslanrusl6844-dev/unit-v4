@@ -186,6 +186,7 @@ model Product {
   videoUrl        String?   // Отдельное поле "Видео URL" — только внешняя ссылка, ничего не загружается на Vercel
   quantityVariants String?  // JSON-массив [{quantity, unit, price}] — варианты количества (1/2/3/4 шт или кг)
   details         Json?     // массив URL фото/видео «Детали» товара (порядок = порядок массива)
+  showcaseOnly    Boolean   @default(false) // товар создан внутри витрины: в общий каталог My Market не попадает, виден только в витринах, куда привязан
   // Себестоимость именно для витрины My Market — отдельно от общей
   // costPrice (которая используется Kaspi/Ozon/WB), т.к. закупочная цена
   // товара для этого канала может отличаться. Пока пусто — прибыль этого
@@ -506,6 +507,7 @@ model ShopEvent {
   city         String?
   resultsCount Int?
   amount       Int?
+  fromSuggestion Boolean? // search: запрос выбран из подсказки
 
   @@index([createdAt])
   @@index([type])
@@ -652,6 +654,13 @@ model YardApplication {
 
 // Общие настройки «Двора» — ОДНА строка (id = "main") на весь сервер.
 // Сейчас: видео-инструкция для покупателей на экране карты (не видео магазина).
+// Картинка города для приложения (ключ — каноническое название из списка src/config/cities.ts).
+model CityImage {
+  city      String   @id
+  imageUrl  String
+  updatedAt DateTime @updatedAt
+}
+
 model YardSettings {
   id             String   @id @default("main")
   instructionUrl String?
