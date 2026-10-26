@@ -5,7 +5,7 @@ import { put } from '@vercel/blob';
 import { prisma } from '../db/prisma';
 import { parseQuantityVariants, parseDetails } from '../services/productExtras';
 import { getSearchSuggestions } from '../services/searchSuggestions.service';
-import { resolveCity } from '../config/cities';
+import { MAX_CITY_IMAGES, resolveCity } from '../config/cities';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
 import { generateWaybillPdf, WaybillAddressError, WaybillOrderItem } from '../services/waybill.service';
@@ -305,17 +305,34 @@ shopRouter.get('/search/suggestions', async (req, res) => {
 });
 
 /**
- * Картинка города: GET /api/shop/city-image?city=Алматы → { imageUrl: "https://…" } или
- * { imageUrl: null }, если у города нет картинки (или города нет в списке). Название
- * без учёта регистра/ё/дефисов. Некритично: при сбое БД тоже { imageUrl: null }.
+ * Картинки города (слайды): GET /api/shop/city-images?city=Алматы → ["https://…", …]
+ * в порядке показа (до 10), [] если картинок нет или города нет в списке.
+ * GET /api/shop/city-image — прежний ответ { imageUrl } с первой картинкой.
+ * Название города — без учёта регистра/ё/дефисов. Некритично: при сбое БД — пусто.
  */
+async function cityImageUrls(raw: unknown): Promise<string[]> {
+  const city = resolveCity(raw);
+  if (!city) return [];
+  const rows: Array<{ imageUrl: string }> = await prisma.cityImageSlide.findMany({
+    where: { city }, orderBy: [{ position: 'asc' }, { createdAt: 'asc' }], take: MAX_CITY_IMAGES,
+  });
+  return rows.map((r) => r.imageUrl);
+}
+
+shopRouter.get('/city-images', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    res.json(await cityImageUrls(req.query.city));
+  } catch (err: any) {
+    logger.error({ err }, '[Shop API] GET /city-images упал');
+    res.json([]);
+  }
+});
+
 shopRouter.get('/city-image', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   try {
-    const city = resolveCity(req.query.city);
-    if (!city) return res.json({ imageUrl: null });
-    const row = await prisma.cityImage.findUnique({ where: { city } });
-    res.json({ imageUrl: row?.imageUrl ?? null });
+    res.json({ imageUrl: (await cityImageUrls(req.query.city))[0] ?? null });
   } catch (err: any) {
     logger.error({ err }, '[Shop API] GET /city-image упал');
     res.json({ imageUrl: null });

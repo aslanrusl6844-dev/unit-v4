@@ -661,6 +661,16 @@ model CityImage {
   updatedAt DateTime @updatedAt
 }
 
+model CityImageSlide {
+  id        String   @id @default(cuid())
+  city      String
+  imageUrl  String
+  position  Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([city, position])
+}
+
 model YardSettings {
   id             String   @id @default("main")
   instructionUrl String?

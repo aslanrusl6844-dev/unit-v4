@@ -5336,15 +5336,20 @@ function cityImagesSetStatus(text, isError) {
 
 function renderCityImages() {
   const el = document.getElementById('cityImagesList');
-  el.innerHTML = `<table class="table"><tbody>${cityImagesRows.map((r) => `
+  el.innerHTML = `<table class="table"><tbody>${cityImagesRows.map((r) => {
+    const max = r.max || 10;
+    const thumbs = r.images.map((im) => `
+      <div class="city-thumb" data-img-id="${mmxEsc(im.id)}" style="position:relative;display:inline-block;margin:0 6px 6px 0">
+        <img src="${mmxEsc(im.url)}" alt="" style="width:64px;height:48px;object-fit:cover;border-radius:6px;display:block" />
+        <button type="button" data-city-act="delete" title="Удалить картинку" style="position:absolute;top:-6px;right:-6px;width:18px;height:18px;border-radius:50%;border:0;background:var(--loss);color:#fff;font-size:12px;line-height:18px;padding:0;cursor:pointer">×</button>
+      </div>`).join('');
+    return `
     <tr data-city="${mmxEsc(r.city)}">
-      <td style="width:72px">${r.imageUrl ? `<img src="${mmxEsc(r.imageUrl)}" alt="" style="width:64px;height:48px;object-fit:cover;border-radius:6px" />` : '<div style="width:64px;height:48px;border-radius:6px;background:var(--bg);display:flex;align-items:center;justify-content:center;color:var(--text-faint);font-size:11px">нет</div>'}</td>
-      <td><b>${mmxEsc(r.city)}</b><div class="panel__hint" style="margin:0">${r.imageUrl ? 'Картинка загружена' : 'Картинки нет'}</div></td>
-      <td style="white-space:nowrap">
-        <button type="button" class="btn btn--ghost" data-city-act="upload">${r.imageUrl ? 'Заменить' : 'Загрузить'}</button>
-        ${r.imageUrl ? '<button type="button" class="btn btn--ghost" data-city-act="delete">Удалить</button>' : ''}
-      </td>
-    </tr>`).join('')}</tbody></table>`;
+      <td style="width:130px"><b>${mmxEsc(r.city)}</b><div class="panel__hint" style="margin:0">${r.images.length} / ${max}</div></td>
+      <td>${thumbs || '<span class="panel__hint" style="margin:0">Картинок нет</span>'}</td>
+      <td style="white-space:nowrap"><button type="button" class="btn btn--ghost" data-city-act="add"${r.images.length >= max ? ' disabled title="Достигнут максимум"' : ''}>Добавить</button></td>
+    </tr>`;
+  }).join('')}</tbody></table>`;
 }
 
 async function loadCityImagesPage() {
@@ -5353,10 +5358,10 @@ async function loadCityImagesPage() {
     document.getElementById('cityImagesReloadBtn').addEventListener('click', loadCityImagesPage);
     document.getElementById('cityImagesList').addEventListener('click', (e) => {
       const btn = e.target.closest('[data-city-act]');
-      if (!btn || cityImagesBusy) return;
+      if (!btn || btn.disabled || cityImagesBusy) return;
       const city = btn.closest('tr').dataset.city;
-      if (btn.dataset.cityAct === 'upload') { cityImagesPickCity = city; document.getElementById('cityImagesFile').click(); }
-      else cityImagesDelete(city);
+      if (btn.dataset.cityAct === 'add') { cityImagesPickCity = city; document.getElementById('cityImagesFile').click(); }
+      else cityImagesDelete(city, btn.closest('.city-thumb').dataset.imgId);
     });
     document.getElementById('cityImagesFile').addEventListener('change', (e) => {
       const file = e.target.files[0];
@@ -5374,6 +5379,12 @@ async function loadCityImagesPage() {
   }
 }
 
+function cityImagesApply(city, images) {
+  const row = cityImagesRows.find((x) => x.city === city);
+  if (row) { row.images = images; row.imageUrl = images[0] ? images[0].url : null; }
+  renderCityImages();
+}
+
 async function cityImagesUpload(city, file) {
   if (cityImagesBusy) return;
   cityImagesBusy = true;
@@ -5381,28 +5392,24 @@ async function cityImagesUpload(city, file) {
   try {
     cityImagesSetStatus(`Загружаю картинку для «${city}»…`, false);
     const url = await uploadMyMarketFile(file);
-    const r = await api(`/shop-admin/city-images/${encodeURIComponent(city)}`, { method: 'PUT', body: JSON.stringify({ imageUrl: url }) });
-    const row = cityImagesRows.find((x) => x.city === city);
-    if (row) row.imageUrl = r.imageUrl;
-    renderCityImages();
-    cityImagesSetStatus(`Картинка для «${city}» сохранена`, false);
+    const r = await api(`/shop-admin/city-images/${encodeURIComponent(city)}`, { method: 'POST', body: JSON.stringify({ imageUrl: url }) });
+    cityImagesApply(city, r.images);
+    cityImagesSetStatus(`Картинка для «${city}» добавлена`, false);
   } catch (err) {
-    cityImagesSetStatus(`Не удалось сохранить картинку для «${city}»: ${err.message}`, true);
+    cityImagesSetStatus(`Не удалось добавить картинку для «${city}»: ${err.message}`, true);
   } finally {
     cityImagesBusy = false;
     document.getElementById('cityImagesList').removeAttribute('aria-busy');
   }
 }
 
-async function cityImagesDelete(city) {
+async function cityImagesDelete(city, id) {
   if (cityImagesBusy) return;
-  if (!confirm(`Удалить картинку города «${city}»?`)) return;
+  if (!confirm(`Удалить эту картинку города «${city}»?`)) return;
   cityImagesBusy = true;
   try {
-    await api(`/shop-admin/city-images/${encodeURIComponent(city)}`, { method: 'DELETE' });
-    const row = cityImagesRows.find((x) => x.city === city);
-    if (row) row.imageUrl = null;
-    renderCityImages();
+    const r = await api(`/shop-admin/city-images/${encodeURIComponent(city)}/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    cityImagesApply(city, r.images);
     cityImagesSetStatus(`Картинка города «${city}» удалена`, false);
   } catch (err) {
     cityImagesSetStatus(`Не удалось удалить: ${err.message}`, true);
