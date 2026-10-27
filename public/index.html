@@ -682,11 +682,13 @@
                 </div>
 
                 <div class="panel__head" style="margin-top:18px"><h2 style="font-size:14px">Видео (до 3)</h2></div>
-                <p class="panel__hint" style="margin:0 0 6px">Файлы MP4 или WEBM, до 3 МБ каждый (ограничение Vercel на размер запроса). Сохраняется кнопкой «Сохранить» внизу карточки.</p>
+                <p class="panel__hint" style="margin:0 0 6px">Файл MP4 или WEBM (до 3 МБ — ограничение Vercel на размер запроса) или ссылка; и то и другое добавляется в список, не заменяя прежние. Сохраняется кнопкой «Сохранить» внизу карточки.</p>
                 <div id="mmVideosList"></div>
                 <div style="display:flex;gap:6px;margin-top:6px;align-items:center;flex-wrap:wrap">
                   <button type="button" class="btn btn--ghost" id="mmVideosAddBtn">Добавить видео</button>
                   <input type="file" id="mmVideosFileInput" accept="video/mp4,video/webm" hidden />
+                  <input type="text" id="mmVideosUrl" placeholder="Ссылка на видео https://…" style="max-width:300px" />
+                  <button type="button" class="btn btn--ghost" id="mmVideosAddUrlBtn">Добавить по ссылке</button>
                 </div>
                 <div id="mmVideosStatus" class="panel__hint"></div>
 

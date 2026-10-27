@@ -155,8 +155,11 @@ function scVideosHtml() {
 function scVideosRefresh() {
   const el = document.getElementById('scVideos');
   if (el) el.innerHTML = scVideosHtml();
+  const full = (scState.videos || []).length >= SC_MAX_VIDEOS;
   const add = document.querySelector('[data-sc="v-add"]');
-  if (add) add.disabled = (scState.videos || []).length >= SC_MAX_VIDEOS;
+  if (add) add.disabled = full;
+  const addUrl = document.querySelector('[data-sc="v-add-url"]');
+  if (addUrl) addUrl.disabled = full;
 }
 
 function scEditorHtml() {
@@ -187,7 +190,10 @@ function scEditorHtml() {
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">
           <input type="file" id="scVideoAddFile" accept="video/mp4,video/webm" />
           <button type="button" class="btn btn--ghost" data-sc="v-add"${(scState.videos || []).length >= SC_MAX_VIDEOS ? ' disabled' : ''}>Добавить видео</button></div>
-        <p class="panel__hint" style="margin:4px 0 0">Файл до 3 МБ (ограничение Vercel на размер запроса). Изменения сохраняются кнопкой «${isNew ? 'Создать' : 'Сохранить'}».</p></div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">
+          <input type="text" id="scVideoAddUrl" placeholder="Ссылка на видео (https://…)" style="max-width:300px" />
+          <button type="button" class="btn btn--ghost" data-sc="v-add-url"${(scState.videos || []).length >= SC_MAX_VIDEOS ? ' disabled' : ''}>Добавить по ссылке</button></div>
+        <p class="panel__hint" style="margin:4px 0 0">Файл до 3 МБ (ограничение Vercel на размер запроса) или ссылка — оба варианта добавляются в список, не заменяя прежние. Изменения сохраняются кнопкой «${isNew ? 'Создать' : 'Сохранить'}».</p></div>
       <label>Ссылка на видео <input type="text" id="scVideoUrl" maxlength="2000" placeholder="https://…" value="${scEsc(c.videoUrl)}" /></label>
       <label>Заголовок баннера <input type="text" id="scBannerTitle" maxlength="120" value="${scEsc(c.bannerTitle)}" /></label>
       <label>Рекламный текст <textarea id="scBannerText" rows="3" maxlength="1000">${scEsc(c.bannerText)}</textarea></label>
@@ -395,6 +401,18 @@ async function scHandleClick(e) {
       if (list.includes(url)) { scSetStatus('Такое видео уже добавлено', 'error'); return; }
       list.push(url);
       fileEl.value = '';
+      scVideosRefresh();
+      scSetStatus('Видео добавлено — нажмите «Сохранить», чтобы применить', '');
+    } else if (act === 'v-add-url') {
+      const urlEl = document.getElementById('scVideoAddUrl');
+      const list = scState.videos || (scState.videos = []);
+      const url = urlEl.value.trim();
+      if (list.length >= SC_MAX_VIDEOS) { scSetStatus(`Не больше ${SC_MAX_VIDEOS} видео`, 'error'); return; }
+      if (!url) { scSetStatus('Вставьте ссылку на видео', 'error'); return; }
+      if (!/^https?:\/\/\S+$/i.test(url)) { scSetStatus('Ссылка должна начинаться с http:// или https://', 'error'); return; }
+      if (list.includes(url)) { scSetStatus('Такое видео уже добавлено', 'error'); return; }
+      list.push(url);
+      urlEl.value = '';
       scVideosRefresh();
       scSetStatus('Видео добавлено — нажмите «Сохранить», чтобы применить', '');
     } else if (act === 'v-remove') {

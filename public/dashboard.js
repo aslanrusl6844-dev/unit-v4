@@ -2766,8 +2766,28 @@ function renderMyMarketVideosList() {
     myMarketCardVideos.splice(Number(b.dataset.vidRemove), 1);
     renderMyMarketVideosList();
   }));
+  const full = myMarketCardVideos.length >= MM_VIDEOS_MAX;
   const add = document.getElementById('mmVideosAddBtn');
-  if (add) add.disabled = myMarketCardVideos.length >= MM_VIDEOS_MAX;
+  if (add) add.disabled = full;
+  const addUrl = document.getElementById('mmVideosAddUrlBtn');
+  if (addUrl) addUrl.disabled = full;
+}
+
+/** Добавить видео по ссылке — в конец списка, предыдущие не заменяются (как и загрузка файла). */
+function addMyMarketVideoUrl() {
+  const status = document.getElementById('mmVideosStatus');
+  const input = document.getElementById('mmVideosUrl');
+  const fail = (msg) => { status.textContent = msg; status.style.color = 'var(--loss)'; };
+  const url = input.value.trim();
+  if (!url) return fail('Вставьте ссылку на видео.');
+  if (!/^https?:\/\/\S+$/i.test(url)) return fail('Ссылка должна начинаться с http:// или https://');
+  if (myMarketCardVideos.length >= MM_VIDEOS_MAX) return fail(`Можно не больше ${MM_VIDEOS_MAX} видео.`);
+  if (myMarketCardVideos.includes(url)) return fail('Это видео уже добавлено.');
+  myMarketCardVideos.push(url);
+  input.value = '';
+  status.textContent = 'Видео добавлено — нажмите «Сохранить» в карточке';
+  status.style.color = 'var(--text-faint)';
+  renderMyMarketVideosList();
 }
 
 async function handleMyMarketVideoFile(file) {
@@ -2890,6 +2910,8 @@ async function handleMyMarketDetailFiles(files) {
 function initMyMarketQtyDetails() {
   document.getElementById('mmQtyAddBtn').addEventListener('click', addMyMarketQtyVariant);
   document.getElementById('mmVideosAddBtn').addEventListener('click', () => document.getElementById('mmVideosFileInput').click());
+  document.getElementById('mmVideosAddUrlBtn').addEventListener('click', addMyMarketVideoUrl);
+  document.getElementById('mmVideosUrl').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addMyMarketVideoUrl(); } });
   document.getElementById('mmVideosFileInput').addEventListener('change', (e) => {
     const f = e.target.files[0];
     e.target.value = '';
