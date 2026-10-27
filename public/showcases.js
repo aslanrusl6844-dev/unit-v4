@@ -108,17 +108,28 @@ function scList(kind) {
   return scState[f] || (scState[f] = []);
 }
 
-// Большая карусель: у каждого баннера есть текст (многострочный), цвет и шрифт (параллельные массивы, тот же порядок).
+// Большая карусель: у каждого баннера есть строки текста (у каждой свой размер, %) и цвет текста
+// (параллельные массивы, тот же порядок, что bigBanners).
+const SC_DEFAULT_SIZE = 20;
+const scClampSize = (v) => {
+  const n = Math.round(Number(v));
+  return Number.isFinite(n) && n >= 1 && n <= 100 ? n : SC_DEFAULT_SIZE;
+};
 function scBigExtras() {
   const n = scList('big').length;
-  const texts = scState.bigBannerTexts || (scState.bigBannerTexts = []);
+  const lines = scState.bigBannerLines || (scState.bigBannerLines = []);
   const colors = scState.bigBannerTextColors || (scState.bigBannerTextColors = []);
-  const fonts = scState.bigBannerFontStyles || (scState.bigBannerFontStyles = []);
-  while (texts.length < n) texts.push('');
+  while (lines.length < n) lines.push([{ t: '', s: SC_DEFAULT_SIZE }]);
   while (colors.length < n) colors.push('white');
-  while (fonts.length < n) fonts.push('normal');
-  texts.length = n; colors.length = n; fonts.length = n;
-  return [texts, colors, fonts];
+  lines.length = n; colors.length = n;
+  lines.forEach((l, i) => { if (!l.length) lines[i] = [{ t: '', s: SC_DEFAULT_SIZE }]; });
+  return [lines, colors];
+}
+// Текст с сервера ("A\nB") + размеры ("30,15") → строки редактора; нет размеров — по 20.
+function scLinesFrom(text, sizesCsv) {
+  const sizes = String(sizesCsv || '').split(',');
+  const parts = String(text || '').split('\n');
+  return parts.map((t, j) => ({ t, s: scClampSize(sizes[j] === undefined || sizes[j].trim() === '' ? NaN : sizes[j]) }));
 }
 
 function scBannersHtml(kind) {
@@ -129,18 +140,19 @@ function scBannersHtml(kind) {
     <tr data-bi="${i}">
       <td>${scThumb(u)}</td>
       <td style="word-break:break-all">${scEsc(u)}${extras ? `
-        <div style="display:flex;gap:6px;margin-top:4px;flex-wrap:wrap;align-items:flex-start">
-          <textarea class="sc-bb-text" rows="3" maxlength="300" placeholder="Текст на баннере (необязательно). Enter — новая строка" style="max-width:260px;width:100%">${scEsc(extras[0][i])}</textarea>
-          <div style="display:flex;flex-direction:column;gap:6px">
-          <select class="sc-bb-font" title="Шрифт">
-            <option value="normal"${extras[2][i] === 'normal' ? ' selected' : ''}>Обычный</option>
-            <option value="bold"${extras[2][i] === 'bold' ? ' selected' : ''}>Жирный</option>
-            <option value="large"${extras[2][i] === 'large' ? ' selected' : ''}>Крупный жирный</option>
-          </select>
-          <select class="sc-bb-color" title="Цвет текста">
-            <option value="white"${extras[1][i] === 'black' ? '' : ' selected'}>Белый текст</option>
-            <option value="black"${extras[1][i] === 'black' ? ' selected' : ''}>Чёрный текст</option>
-          </select></div></div>` : ''}</td>
+        <div style="margin-top:4px">
+          ${extras[0][i].map((ln, j) => `
+          <div class="sc-bb-lrow" data-li="${j}" style="display:flex;gap:6px;align-items:center;margin:3px 0">
+            <input type="text" class="sc-bb-line" maxlength="60" placeholder="Строка ${j + 1}" value="${scEsc(ln.t)}" style="flex:1;min-width:120px;max-width:260px" />
+            <label style="white-space:nowrap;font-size:12px">Размер <input type="number" class="sc-bb-size" min="1" max="100" step="1" value="${ln.s}" style="width:64px" /></label>
+            <button type="button" class="btn btn--ghost" data-sc="bl-remove" title="Убрать строку" ${extras[0][i].length === 1 ? 'disabled' : ''}>×</button>
+          </div>`).join('')}
+          <div style="display:flex;gap:6px;align-items:center;margin-top:4px;flex-wrap:wrap">
+            <button type="button" class="btn btn--ghost" data-sc="bl-add">＋ Строка</button>
+            <select class="sc-bb-color" title="Цвет текста">
+              <option value="white"${extras[1][i] === 'black' ? '' : ' selected'}>Белый текст</option>
+              <option value="black"${extras[1][i] === 'black' ? ' selected' : ''}>Чёрный текст</option>
+            </select></div></div>` : ''}</td>
       <td style="white-space:nowrap">
         <button type="button" class="btn btn--ghost" data-sc="b-up" ${i === 0 ? 'disabled' : ''}>↑</button>
         <button type="button" class="btn btn--ghost" data-sc="b-down" ${i === list.length - 1 ? 'disabled' : ''}>↓</button>
@@ -300,13 +312,18 @@ function scFormData() {
     banners: (scState.banners || []).slice(),
     bigBanners: (scState.bigBanners || []).slice(),
     bigBannerItems: (() => {
-      const [texts, colors, fonts] = scBigExtras();
-      return (scState.bigBanners || []).map((url, i) => ({
-        url,
-        text: (texts[i] || '').trim() || null,
-        textColor: colors[i] === 'black' ? 'black' : 'white',
-        fontStyle: fonts[i] === 'bold' || fonts[i] === 'large' ? fonts[i] : 'normal',
-      }));
+      const [lines, colors] = scBigExtras();
+      return (scState.bigBanners || []).map((url, i) => {
+        // пустые строки по краям сервер срежет вместе с их размерами; здесь шлём всё как есть
+        const ls = lines[i].map((l) => ({ t: String(l.t || '').trim(), s: scClampSize(l.s) }));
+        const filled = ls.some((l) => l.t);
+        return {
+          url,
+          text: filled ? ls.map((l) => l.t).join('\n') : null,
+          sizes: filled ? ls.map((l) => l.s) : [],
+          textColor: colors[i] === 'black' ? 'black' : 'white',
+        };
+      });
     })(),
     videos: (scState.videos || []).slice(),
     videoUrl: v('scVideoUrl').trim() || null,
@@ -354,9 +371,9 @@ async function scOpen(id, okText) {
     scState.current = await api(`/shop-admin/showcases/${encodeURIComponent(id)}`);
     scState.banners = Array.isArray(scState.current.banners) ? scState.current.banners.slice() : [];
     scState.bigBanners = Array.isArray(scState.current.bigBanners) ? scState.current.bigBanners.slice() : [];
-    scState.bigBannerTexts = Array.isArray(scState.current.bigBannerTexts) ? scState.current.bigBannerTexts.slice() : [];
+    scState.bigBannerLines = (Array.isArray(scState.current.bigBanners) ? scState.current.bigBanners : []).map((_, i) =>
+      scLinesFrom((scState.current.bigBannerTexts || [])[i], (scState.current.bigBannerSizes || [])[i]));
     scState.bigBannerTextColors = Array.isArray(scState.current.bigBannerTextColors) ? scState.current.bigBannerTextColors.slice() : [];
-    scState.bigBannerFontStyles = Array.isArray(scState.current.bigBannerFontStyles) ? scState.current.bigBannerFontStyles.slice() : [];
     scBigExtras(); // старые витрины без текстов: выравниваем по числу баннеров
     scState.videos = Array.isArray(scState.current.videos) ? scState.current.videos.slice() : [];
     scState.status = okText || '';
@@ -422,7 +439,7 @@ async function scHandleClick(e) {
   const cid = colEl && colEl.dataset.cid;
   const col = cid && scState.current && scState.current.collections.find((x) => x.id === cid);
   try {
-    if (act === 'new') { scState.editingNew = true; scState.current = null; scState.banners = []; scState.bigBanners = []; scState.bigBannerTexts = []; scState.bigBannerTextColors = []; scState.bigBannerFontStyles = []; scState.videos = []; scSetStatus('', ''); scRender(); }
+    if (act === 'new') { scState.editingNew = true; scState.current = null; scState.banners = []; scState.bigBanners = []; scState.bigBannerLines = []; scState.bigBannerTextColors = []; scState.videos = []; scSetStatus('', ''); scRender(); }
     else if (act === 'reload') await loadShowcases();
     else if (act === 'v-add') {
       const fileEl = document.getElementById('scVideoAddFile');
@@ -440,6 +457,15 @@ async function scHandleClick(e) {
       (scState.videos || []).splice(Number(btn.closest('[data-vi]').dataset.vi), 1);
       scVideosRefresh();
       scSetStatus('Видео убрано — нажмите «Сохранить», чтобы применить', '');
+    }
+    else if (act === 'bl-add' || act === 'bl-remove') {
+      const i = Number(btn.closest('[data-bi]').dataset.bi);
+      const [lines] = scBigExtras();
+      if (act === 'bl-add') {
+        if (lines[i].length >= 10) { scSetStatus('Не больше 10 строк на баннер', 'error'); return; }
+        lines[i].push({ t: '', s: lines[i][lines[i].length - 1].s });
+      } else if (lines[i].length > 1) lines[i].splice(Number(btn.closest('[data-li]').dataset.li), 1);
+      scBannersRefresh('big');
     }
     else if (act === 'b-add') {
       const kind = btn.closest('[data-blist]').dataset.blist;
@@ -579,12 +605,16 @@ function scWireOnce() {
   let timer = null;
   const bbEdit = (e) => {
     const t = e.target;
-    if (!t.classList || !(t.classList.contains('sc-bb-text') || t.classList.contains('sc-bb-color') || t.classList.contains('sc-bb-font'))) return false;
+    if (!t.classList || !(t.classList.contains('sc-bb-line') || t.classList.contains('sc-bb-size') || t.classList.contains('sc-bb-color'))) return false;
     const i = Number(t.closest('[data-bi]').dataset.bi);
-    const [texts, colors, fonts] = scBigExtras();
-    if (t.classList.contains('sc-bb-text')) texts[i] = t.value;
-    else if (t.classList.contains('sc-bb-font')) fonts[i] = ['bold', 'large'].includes(t.value) ? t.value : 'normal';
-    else colors[i] = t.value === 'black' ? 'black' : 'white';
+    const [lines, colors] = scBigExtras();
+    if (t.classList.contains('sc-bb-color')) { colors[i] = t.value === 'black' ? 'black' : 'white'; return true; }
+    const j = Number(t.closest('[data-li]').dataset.li);
+    if (t.classList.contains('sc-bb-line')) lines[i][j].t = t.value;
+    else {
+      lines[i][j].s = scClampSize(t.value);
+      if (e.type === 'change') t.value = lines[i][j].s; // вне 1–100 или пусто → возвращаем допустимое
+    }
     return true;
   };
   root.addEventListener('change', bbEdit);
@@ -596,6 +626,17 @@ function scWireOnce() {
     timer = setTimeout(loadShowcases, 300);
   });
   root.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && e.target.classList && e.target.classList.contains('sc-bb-line')) {
+      e.preventDefault(); // Enter = новая строка ниже, форму не отправляем
+      const i = Number(e.target.closest('[data-bi]').dataset.bi);
+      const j = Number(e.target.closest('[data-li]').dataset.li);
+      const [lines] = scBigExtras();
+      if (lines[i].length < 10) lines[i].splice(j + 1, 0, { t: '', s: lines[i][j].s });
+      scBannersRefresh('big');
+      const inp = document.querySelectorAll(`#scBigBanners [data-bi="${i}"] .sc-bb-line`)[Math.min(j + 1, lines[i].length - 1)];
+      if (inp && inp.focus) inp.focus();
+      return;
+    }
     if (e.key === 'Enter' && e.target.classList && e.target.classList.contains('sc-psearch')) {
       e.preventDefault();
       scPSearch(e.target.closest('[data-scope]'));
