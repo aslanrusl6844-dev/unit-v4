@@ -896,7 +896,7 @@ describe('контракт для Android и сквозной сценарий',
     assert.deepEqual(list, [{ id: s.id, type: 'shop', title: 'Nike', description: 'D', logoUrl: 'https://b.example/l.png', bannerUrl: 'https://b.example/b.png', bannerTitle: 'BT', bannerText: 'BX' }]);
 
     const detail = (await pub(`/${s.id}`)).json;
-    assert.deepEqual(keys(detail), ['bannerText', 'bannerTitle', 'bannerUrl', 'banners', 'bigBanners', 'collections', 'description', 'id', 'logoUrl', 'products', 'smallBanners', 'title', 'type', 'videoUrl']);
+    assert.deepEqual(keys(detail), ['bannerText', 'bannerTitle', 'bannerUrl', 'banners', 'bigBanners', 'collections', 'description', 'id', 'logoUrl', 'products', 'smallBanners', 'title', 'type', 'videoUrl', 'videos']);
     assert.deepEqual(keys(detail.collections[0]), ['id', 'products', 'title']);
     assert.equal(detail.collections[0].id, col.id);
     assert.equal(detail.collections[0].title, 'Новинки');
@@ -1349,5 +1349,51 @@ describe('большая карусель bigBanners и маленькая small
     const item = (await pub('')).json[0];
     assert.equal('bigBanners' in item, false);
     assert.equal('smallBanners' in item, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('videos витрины (до 3)', () => {
+  const V = (n: number) => `https://blob.example.com/shop/video/${n}.mp4`;
+
+  test('нет видео → videos: [] (в том числе у старой витрины без поля); список витрин формат не меняет', async () => {
+    const s = await newShowcase({ published: true });
+    assert.deepEqual((await pub(`/${s.id}`)).json.videos, []);
+    delete tables.showcase.find((r: Row) => r.id === s.id)!.videos;
+    assert.deepEqual((await pub(`/${s.id}`)).json.videos, []);
+    assert.equal('videos' in (await pub('')).json[0], false);
+  });
+
+  test('создание и PATCH: порядок сохраняется, API отдаёт videos, админка читает то же', async () => {
+    const s = await newShowcase({ published: true, videos: [V(2), V(1)] });
+    assert.deepEqual((await pub(`/${s.id}`)).json.videos, [V(2), V(1)]);
+    let r = await adm('PATCH', `/${s.id}`, { videos: [V(1), V(2), V(3)] });
+    assert.deepEqual(r.json.videos, [V(1), V(2), V(3)]);
+    assert.deepEqual((await adm('GET', `/${s.id}`)).json.videos, [V(1), V(2), V(3)]);
+    r = await adm('PATCH', `/${s.id}`, { title: 'Другое' });
+    assert.deepEqual(r.json.videos, [V(1), V(2), V(3)]); // без videos в запросе не стирается
+    r = await adm('PATCH', `/${s.id}`, { videos: [] });
+    assert.deepEqual(r.json.videos, []);
+    assert.deepEqual((await pub(`/${s.id}`)).json.videos, []);
+  });
+
+  test('валидация: больше 3, не http(s), повтор → 400', async () => {
+    const s = await newShowcase({ published: true, videos: [V(1)] });
+    for (const videos of [[V(1), V(2), V(3), V(4)], ['javascript:alert(1)'], [V(1), V(1)]]) {
+      assert.equal((await adm('PATCH', `/${s.id}`, { videos })).status, 400, JSON.stringify(videos));
+    }
+    assert.deepEqual((await adm('GET', `/${s.id}`)).json.videos, [V(1)]);
+  });
+
+  test('товары витрины тоже отдают videos', async () => {
+    const V1 = 'https://blob.example.com/shop/video/p1.mp4';
+    const withVideo = seedProduct({ name: 'С видео', videos: [V1] });
+    const without = seedProduct({ name: 'Без видео' });
+    const s = await newShowcase({ published: true });
+    await adm('POST', `/${s.id}/products`, { productId: withVideo.id });
+    await adm('POST', `/${s.id}/products`, { productId: without.id });
+    const page = (await pub(`/${s.id}`)).json;
+    assert.deepEqual(page.products.map((x: Row) => x.videos), [[V1], []]);
+    assert.deepEqual((await pub(`/${s.id}/products`)).json.map((x: Row) => x.videos), [[V1], []]);
   });
 });

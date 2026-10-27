@@ -88,10 +88,12 @@ const MAX_IMAGE_BYTES = 2.5 * 1024 * 1024;
  */
 export const BANNER_ALLOWED_TYPES = [...ALLOWED_IMAGE_TYPES, 'image/gif', 'video/mp4', 'video/webm'];
 export const MAX_BANNER_BYTES = 3_000_000;
+/** Видео товара и витрины (purpose='video'): только MP4/WEBM, предел как у баннеров. */
+export const VIDEO_ALLOWED_TYPES = ['video/mp4', 'video/webm'];
 
 const uploadSchema = z.object({
   kind: z.literal('image'),
-  purpose: z.literal('banner').optional(),
+  purpose: z.enum(['banner', 'video']).optional(),
   filename: z.string().min(1),
   contentType: z.string().min(1),
   dataBase64: z.string().min(1),
@@ -103,8 +105,9 @@ shopMediaRouter.post('/upload', async (req, res) => {
     return res.status(400).json({ error: 'Неверные данные загрузки', details: parsed.error.flatten() });
   }
   const { filename, contentType, dataBase64 } = parsed.data;
-  const isBanner = parsed.data.purpose === 'banner';
-  const allowedTypes = isBanner ? BANNER_ALLOWED_TYPES : ALLOWED_IMAGE_TYPES;
+  const isVideo = parsed.data.purpose === 'video';
+  const isBanner = parsed.data.purpose === 'banner' || isVideo; // видео товара/витрины: тот же предел, что у баннеров
+  const allowedTypes = isVideo ? VIDEO_ALLOWED_TYPES : isBanner ? BANNER_ALLOWED_TYPES : ALLOWED_IMAGE_TYPES;
   const maxBytes = isBanner ? MAX_BANNER_BYTES : MAX_IMAGE_BYTES;
 
   // Честно отказываем, если Blob не настроен — НЕ 500, конкретный текст,
@@ -116,7 +119,9 @@ shopMediaRouter.post('/upload', async (req, res) => {
 
   if (!allowedTypes.includes(contentType)) {
     return res.status(400).json({
-      error: isBanner
+      error: isVideo
+        ? 'Формат не поддерживается. Нужен MP4 или WEBM'
+        : isBanner
         ? 'Формат не поддерживается. Нужен JPEG, PNG, WEBP, GIF, MP4 или WEBM'
         : `Недопустимый формат файла: ${contentType}. Разрешено: ${ALLOWED_IMAGE_TYPES.join(', ')}`,
     });
@@ -139,7 +144,7 @@ shopMediaRouter.post('/upload', async (req, res) => {
   }
 
   try {
-    const pathname = `shop/${isBanner ? 'banner' : 'image'}/${Date.now()}-${filename.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+    const pathname = `shop/${isVideo ? 'video' : isBanner ? 'banner' : 'image'}/${Date.now()}-${filename.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
     const blob = await put(pathname, buffer, {
       access: 'public',
       contentType,

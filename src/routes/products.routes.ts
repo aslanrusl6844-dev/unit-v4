@@ -7,7 +7,7 @@ import { getAllKaspiCategoriesWithRates } from '../integrations/kaspi.categories
 import { SHOP_TYPE_REQUIRED_FOR_SALE } from '../config/shopRules';
 import { maybeGenerateShopArticle } from '../services/shopArticle';
 import { isValidShopCategory } from '../config/shopCategories';
-import { quantityVariantsSchema, detailsSchema, serializeJsonArray } from '../services/productExtras';
+import { quantityVariantsSchema, detailsSchema, videosSchema, serializeJsonArray } from '../services/productExtras';
 
 export const productsRouter = Router();
 
@@ -82,6 +82,7 @@ const productSchema = z.object({
   showcaseOnly: z.boolean().optional(), // товар создан внутри витрины — в общий каталог My Market не попадает
   quantityVariants: quantityVariantsSchema.optional().nullable(),
   details: detailsSchema.optional().nullable(),
+  videos: videosSchema.optional(), // до 3 видео товара (URL)
   shopCost: z.number().nonnegative().optional().nullable(),
   banner: z.boolean().optional(),
   bannerTitle: z.string().optional().nullable(),

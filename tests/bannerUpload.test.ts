@@ -121,3 +121,26 @@ describe('загрузка баннеров главной: GIF / MP4 / WEBM', (
     assert.equal(r.status, 500);
   });
 });
+
+describe('загрузка видео товара/витрины (purpose=video)', () => {
+  const vid = (bytes: number, type: string, name: string) => ({ ...file(bytes, type, name), purpose: 'video' });
+
+  test('MP4 и WEBM принимаются, ссылка на файл возвращается как есть (shop/video/)', async () => {
+    for (const [type, name] of [['video/mp4', 'a.mp4'], ['video/webm', 'a.webm']]) {
+      const r = await post(vid(1000, type, name));
+      assert.equal(r.status, 200, type);
+      assert.match(r.json.url, /^https:\/\/blob\.example\.com\/shop\/video\/\d+-a\.(mp4|webm)$/);
+    }
+    assert.ok(puts.every((p) => p.size === 1000));
+  });
+
+  test('картинки, GIF и прочее отклоняются точным текстом; сверх предела — 413', async () => {
+    for (const type of ['image/png', 'image/gif', 'video/quicktime', 'application/pdf']) {
+      const r = await post(vid(100, type, 'x.bin'));
+      assert.equal(r.status, 400, type);
+      assert.equal(r.json.error, 'Формат не поддерживается. Нужен MP4 или WEBM');
+    }
+    assert.equal((await post(vid(MAX_BANNER_BYTES + 1, 'video/mp4', 'big.mp4'))).status, 413);
+    assert.equal(puts.length, 0);
+  });
+});

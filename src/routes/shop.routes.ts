@@ -3,7 +3,7 @@ import { z } from 'zod';
 import multer from 'multer';
 import { put } from '@vercel/blob';
 import { prisma } from '../db/prisma';
-import { parseQuantityVariants, parseDetails } from '../services/productExtras';
+import { parseQuantityVariants, parseDetails, parseVideos } from '../services/productExtras';
 import { getSearchSuggestions } from '../services/searchSuggestions.service';
 import { MAX_CITY_IMAGES, resolveCity } from '../config/cities';
 import { env } from '../config/env';
@@ -118,6 +118,8 @@ export function toShopProduct(p: any) {
     // Отдельные ключи: существующий `variants` (цвет/размер) не трогаем.
     quantityVariants: parseQuantityVariants(p.quantityVariants),
     details: parseDetails(p.details),
+    // До 3 видео товара (URL); нет видео — [].
+    videos: parseVideos(p.videos),
   };
 }
 

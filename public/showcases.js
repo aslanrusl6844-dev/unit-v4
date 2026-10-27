@@ -139,6 +139,26 @@ function scBannersBlockHtml(kind, label, isNew) {
         <p class="panel__hint" style="margin:4px 0 0">До ${SC_MAX_BANNERS} баннеров, порядок задают стрелки. Изменения сохраняются кнопкой «${isNew ? 'Создать' : 'Сохранить'}».</p></div>`;
 }
 
+const SC_MAX_VIDEOS = 3;
+
+function scVideosHtml() {
+  const list = scState.videos || [];
+  if (!list.length) return '<p class="panel__hint" style="margin:4px 0">Видео нет.</p>';
+  return `<div id="scVideoRows">${list.map((u, i) => `
+    <div data-vi="${i}" style="display:flex;gap:8px;align-items:center;margin:4px 0">
+      <video src="${scEsc(u)}" muted loop playsinline preload="metadata" style="width:96px;height:64px;object-fit:cover;border-radius:6px;background:var(--bg)"></video>
+      <span style="flex:1;min-width:0;word-break:break-all;font-size:12px">${scEsc(u)}</span>
+      <button type="button" class="btn btn--ghost" data-sc="v-remove">Убрать</button>
+    </div>`).join('')}</div>`;
+}
+
+function scVideosRefresh() {
+  const el = document.getElementById('scVideos');
+  if (el) el.innerHTML = scVideosHtml();
+  const add = document.querySelector('[data-sc="v-add"]');
+  if (add) add.disabled = (scState.videos || []).length >= SC_MAX_VIDEOS;
+}
+
 function scEditorHtml() {
   const c = scState.current || { type: 'brand', title: '', description: '', logoUrl: '', bannerUrl: '', bannerTitle: '', bannerText: '', published: false, products: [], collections: [] };
   const isNew = !scState.current;
@@ -162,6 +182,12 @@ function scEditorHtml() {
         <input type="file" id="scBannerFile" accept="image/jpeg,image/png,image/webp" />
         <input type="text" id="scBannerUrl" placeholder="или ссылка на картинку" value="${scEsc(c.bannerUrl)}" style="max-width:260px" /></div></div>
       ${scBannersBlockHtml('small', 'Несколько баннеров (маленькая карусель ниже)', isNew)}
+      <div>Видео (до ${SC_MAX_VIDEOS}, MP4 или WEBM)
+        <div id="scVideos">${scVideosHtml()}</div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px">
+          <input type="file" id="scVideoAddFile" accept="video/mp4,video/webm" />
+          <button type="button" class="btn btn--ghost" data-sc="v-add"${(scState.videos || []).length >= SC_MAX_VIDEOS ? ' disabled' : ''}>Добавить видео</button></div>
+        <p class="panel__hint" style="margin:4px 0 0">Файл до 3 МБ (ограничение Vercel на размер запроса). Изменения сохраняются кнопкой «${isNew ? 'Создать' : 'Сохранить'}».</p></div>
       <label>Ссылка на видео <input type="text" id="scVideoUrl" maxlength="2000" placeholder="https://…" value="${scEsc(c.videoUrl)}" /></label>
       <label>Заголовок баннера <input type="text" id="scBannerTitle" maxlength="120" value="${scEsc(c.bannerTitle)}" /></label>
       <label>Рекламный текст <textarea id="scBannerText" rows="3" maxlength="1000">${scEsc(c.bannerText)}</textarea></label>
@@ -247,6 +273,7 @@ function scFormData() {
     bannerText: v('scBannerText').trim() || null,
     banners: (scState.banners || []).slice(),
     bigBanners: (scState.bigBanners || []).slice(),
+    videos: (scState.videos || []).slice(),
     videoUrl: v('scVideoUrl').trim() || null,
     published: document.getElementById('scPublished').checked,
   };
@@ -292,6 +319,7 @@ async function scOpen(id, okText) {
     scState.current = await api(`/shop-admin/showcases/${encodeURIComponent(id)}`);
     scState.banners = Array.isArray(scState.current.banners) ? scState.current.banners.slice() : [];
     scState.bigBanners = Array.isArray(scState.current.bigBanners) ? scState.current.bigBanners.slice() : [];
+    scState.videos = Array.isArray(scState.current.videos) ? scState.current.videos.slice() : [];
     scState.status = okText || '';
     scState.statusKind = '';
   } catch (err) {
@@ -355,8 +383,25 @@ async function scHandleClick(e) {
   const cid = colEl && colEl.dataset.cid;
   const col = cid && scState.current && scState.current.collections.find((x) => x.id === cid);
   try {
-    if (act === 'new') { scState.editingNew = true; scState.current = null; scState.banners = []; scState.bigBanners = []; scSetStatus('', ''); scRender(); }
+    if (act === 'new') { scState.editingNew = true; scState.current = null; scState.banners = []; scState.bigBanners = []; scState.videos = []; scSetStatus('', ''); scRender(); }
     else if (act === 'reload') await loadShowcases();
+    else if (act === 'v-add') {
+      const fileEl = document.getElementById('scVideoAddFile');
+      const list = scState.videos || (scState.videos = []);
+      if (list.length >= SC_MAX_VIDEOS) { scSetStatus(`Не больше ${SC_MAX_VIDEOS} видео`, 'error'); return; }
+      if (!fileEl.files[0]) { scSetStatus('Выберите файл MP4 или WEBM', 'error'); return; }
+      scSetStatus('Загружаю видео…', '');
+      const url = await uploadMyMarketFile(fileEl.files[0], { video: true });
+      if (list.includes(url)) { scSetStatus('Такое видео уже добавлено', 'error'); return; }
+      list.push(url);
+      fileEl.value = '';
+      scVideosRefresh();
+      scSetStatus('Видео добавлено — нажмите «Сохранить», чтобы применить', '');
+    } else if (act === 'v-remove') {
+      (scState.videos || []).splice(Number(btn.closest('[data-vi]').dataset.vi), 1);
+      scVideosRefresh();
+      scSetStatus('Видео убрано — нажмите «Сохранить», чтобы применить', '');
+    }
     else if (act === 'b-add') {
       const kind = btn.closest('[data-blist]').dataset.blist;
       const fileEl = document.getElementById(SC_LISTS[kind].file);

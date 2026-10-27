@@ -2745,6 +2745,47 @@ let myMarketDragFromIndex = null;
 // ---------------------------------------------------------------------
 let myMarketCardQty = [];
 let myMarketCardDetails = [];
+let myMarketCardVideos = []; // до 3 видео товара (URL mp4/webm)
+const MM_VIDEOS_MAX = 3;
+
+/** Список видео (товар и витрина): превью <video muted>, «Убрать». Кнопка действия — data-vid-remove. */
+function mmVideosListHtml(list) {
+  if (!list.length) return '<div class="panel__hint">Видео нет</div>';
+  return list.map((url, i) => `<div class="mm-video-row" data-i="${i}" style="display:flex;gap:8px;align-items:center;margin:4px 0">
+      <video src="${mmxEsc(url)}" muted loop playsinline preload="metadata" style="width:96px;height:64px;object-fit:cover;border-radius:6px;background:var(--bg)"></video>
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px">${mmxEsc(url)}</span>
+      <button type="button" class="btn btn--ghost" data-vid-remove="${i}" style="font-size:12px">Убрать</button>
+    </div>`).join('');
+}
+
+function renderMyMarketVideosList() {
+  const el = document.getElementById('mmVideosList');
+  if (!el) return;
+  el.innerHTML = mmVideosListHtml(myMarketCardVideos);
+  el.querySelectorAll('[data-vid-remove]').forEach((b) => b.addEventListener('click', () => {
+    myMarketCardVideos.splice(Number(b.dataset.vidRemove), 1);
+    renderMyMarketVideosList();
+  }));
+  const add = document.getElementById('mmVideosAddBtn');
+  if (add) add.disabled = myMarketCardVideos.length >= MM_VIDEOS_MAX;
+}
+
+async function handleMyMarketVideoFile(file) {
+  const status = document.getElementById('mmVideosStatus');
+  const fail = (msg) => { status.textContent = msg; status.style.color = 'var(--loss)'; };
+  if (myMarketCardVideos.length >= MM_VIDEOS_MAX) return fail(`Можно не больше ${MM_VIDEOS_MAX} видео.`);
+  status.textContent = `Загружаю ${file.name}…`;
+  status.style.color = 'var(--text-faint)';
+  try {
+    const url = await uploadMyMarketFile(file, { video: true });
+    if (myMarketCardVideos.includes(url)) return fail('Это видео уже добавлено.');
+    myMarketCardVideos.push(url);
+    status.textContent = 'Видео добавлено — нажмите «Сохранить» в карточке';
+    renderMyMarketVideosList();
+  } catch (err) {
+    fail(err.message);
+  }
+}
 
 function mmxEsc(v) {
   return String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -2848,6 +2889,12 @@ async function handleMyMarketDetailFiles(files) {
 
 function initMyMarketQtyDetails() {
   document.getElementById('mmQtyAddBtn').addEventListener('click', addMyMarketQtyVariant);
+  document.getElementById('mmVideosAddBtn').addEventListener('click', () => document.getElementById('mmVideosFileInput').click());
+  document.getElementById('mmVideosFileInput').addEventListener('change', (e) => {
+    const f = e.target.files[0];
+    e.target.value = '';
+    if (f) handleMyMarketVideoFile(f);
+  });
   document.getElementById('mmDetailsChooseBtn').addEventListener('click', () => document.getElementById('mmDetailsFileInput').click());
   document.getElementById('mmDetailsFileInput').addEventListener('change', (e) => {
     if (e.target.files.length) handleMyMarketDetailFiles(e.target.files);
@@ -3257,8 +3304,11 @@ function openMyMarketProductCard(id) {
   myMarketCardVideo = p.shopVideo ?? null;
   myMarketCardQty = mmxParse(p.quantityVariants);
   myMarketCardDetails = (Array.isArray(p.details) ? p.details : mmxParse(p.details)).filter((u) => typeof u === 'string');
+  myMarketCardVideos = Array.isArray(p.videos) ? p.videos.filter((u) => typeof u === 'string') : [];
+  document.getElementById('mmVideosStatus').textContent = '';
   renderMyMarketQtyList();
   renderMyMarketDetailsList();
+  renderMyMarketVideosList();
   renderMyMarketMediaGrid();
   renderMyMarketVideoPreview();
   form.elements.shopActive.checked = !!p.shopActive;
@@ -3276,6 +3326,7 @@ function closeMyMarketProductCard() {
   myMarketCardVideo = null;
   myMarketCardQty = [];
   myMarketCardDetails = [];
+  myMarketCardVideos = [];
   myMarketCardShowcaseLink = null;
   myMarketCardEditDone = null;
 }
@@ -3397,8 +3448,14 @@ function mmVideoDuration(file) {
 }
 
 async function uploadMyMarketFile(file, opts) {
+  const video = !!(opts && opts.video); // видео товара/витрины: только MP4/WEBM
   const banner = !!(opts && opts.banner);
-  if (banner) {
+  if (video) {
+    if (!['video/mp4', 'video/webm'].includes(file.type)) throw new Error('Формат не поддерживается. Нужен MP4 или WEBM');
+    if (file.size > MM_BANNER_MAX_BYTES) {
+      throw new Error(`Файл слишком большой: ${(file.size / 1e6).toFixed(1)} МБ, максимум ${MM_BANNER_MAX_BYTES / 1e6} МБ`);
+    }
+  } else if (banner) {
     if (!MM_BANNER_TYPES.includes(file.type)) throw new Error(MM_BANNER_FORMAT_ERROR);
     if (file.size > MM_BANNER_MAX_BYTES) {
       throw new Error(`Файл слишком большой: ${(file.size / 1e6).toFixed(1)} МБ, максимум ${MM_BANNER_MAX_BYTES / 1e6} МБ`);
@@ -3423,7 +3480,9 @@ async function uploadMyMarketFile(file, opts) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(banner
       ? { kind: 'image', purpose: 'banner', filename: file.name, contentType: file.type, dataBase64 }
-      : { kind: 'image', filename: file.name, contentType: file.type, dataBase64 }),
+      : video
+        ? { kind: 'image', purpose: 'video', filename: file.name, contentType: file.type, dataBase64 }
+        : { kind: 'image', filename: file.name, contentType: file.type, dataBase64 }),
   });
   let body = null;
   try { body = await res.json(); } catch { /* тело не JSON — обработаем ниже по res.ok/статусу */ }
@@ -3524,6 +3583,7 @@ async function saveMyMarketProductCard(e) {
     videoUrl: form.elements.videoUrl.value.trim() || null,
     quantityVariants: myMarketCardQty,
     details: myMarketCardDetails,
+    videos: myMarketCardVideos.slice(),
     shopActive,
     // Пользователь сам выбирал категорию/тип (или кликнул вариант) — это уже его
     // выбор: пометка «с названия» снимается, синк Ozon это больше не перезаписывает.

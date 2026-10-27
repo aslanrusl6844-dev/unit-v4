@@ -6,6 +6,7 @@ import { z } from 'zod';
  */
 export const MAX_QUANTITY_VARIANTS = 20;
 export const MAX_DETAILS = 10;
+export const MAX_VIDEOS = 3;
 export const QUANTITY_UNITS = ['шт', 'кг'] as const;
 
 export type QuantityVariant = { quantity: number; unit: (typeof QUANTITY_UNITS)[number]; price: number };
@@ -71,4 +72,18 @@ export function parseDetails(raw: unknown): string[] {
   }
   if (!Array.isArray(v)) return [];
   return v.filter((u): u is string => typeof u === 'string' && /^https?:\/\/\S+$/i.test(u));
+}
+
+/** Видео товара/витрины: до MAX_VIDEOS ссылок http(s), без повторов, порядок сохраняется. */
+export const videosSchema = z
+  .array(httpUrl)
+  .max(MAX_VIDEOS, `Не больше ${MAX_VIDEOS} видео`)
+  .superRefine((arr, ctx) => {
+    if (new Set(arr).size !== arr.length) ctx.addIssue({ code: 'custom', message: 'Одно и то же видео добавлено дважды' });
+  });
+
+/** videos из БД → массив URL. Нет поля/битые данные → []; не-http и нестроки отбрасываются. */
+export function parseVideos(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((u): u is string => typeof u === 'string' && /^https?:\/\/\S+$/i.test(u)).slice(0, MAX_VIDEOS);
 }

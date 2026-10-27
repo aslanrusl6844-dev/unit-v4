@@ -246,3 +246,54 @@ describe('админка: сохранение массивов', () => {
     assert.equal(parseDetails(products[0].details).length, 10);
   });
 });
+
+describe('videos товара (до 3)', () => {
+  const V = (n: number) => `https://blob.example.com/shop/video/${n}.mp4`;
+
+  test('нет видео → videos: [] (в списке и в карточке), в том числе у старых строк без поля', async () => {
+    const p = seed();
+    delete p.videos;
+    const list = await call('GET', '/api/shop/products');
+    assert.deepEqual(list.json[0].videos, []);
+    assert.deepEqual((await call('GET', `/api/shop/products/${p.shopArticle}`)).json.videos, []);
+  });
+
+  test('PUT сохраняет до 3 видео в порядке админки, публичный ответ их отдаёт', async () => {
+    const p = seed();
+    const put = await admin('PUT', `/api/products/${p.id}`, { videos: [V(2), V(1), V(3)] });
+    assert.equal(put.status, 200, JSON.stringify(put.json));
+    assert.deepEqual(products[0].videos, [V(2), V(1), V(3)]);
+    assert.deepEqual((await call('GET', `/api/shop/products/${p.shopArticle}`)).json.videos, [V(2), V(1), V(3)]);
+    assert.deepEqual((await call('GET', '/api/shop/products')).json[0].videos, [V(2), V(1), V(3)]);
+  });
+
+  test('убрать все → [], остальные поля товара не тронуты; PUT без videos видео не стирает', async () => {
+    const p = seed({ videos: [V(1)], details: ['https://a/1.jpg'] });
+    assert.equal((await admin('PUT', `/api/products/${p.id}`, { name: 'Другое имя' })).status, 200);
+    assert.deepEqual(products[0].videos, [V(1)]);
+    assert.equal((await admin('PUT', `/api/products/${p.id}`, { videos: [] })).status, 200);
+    assert.deepEqual(products[0].videos, []);
+    assert.deepEqual(products[0].details, ['https://a/1.jpg']);
+    assert.deepEqual((await call('GET', `/api/shop/products/${p.shopArticle}`)).json.videos, []);
+  });
+
+  test('валидация: больше 3, не http(s), повтор → 400, в БД не меняется', async () => {
+    const p = seed({ videos: [V(1)] });
+    for (const videos of [[V(1), V(2), V(3), V(4)], ['javascript:alert(1)'], [V(1), V(1)], 'x']) {
+      const r = await admin('PUT', `/api/products/${p.id}`, { videos });
+      assert.equal(r.status, 400, JSON.stringify(videos));
+    }
+    assert.deepEqual(products[0].videos, [V(1)]);
+  });
+
+  test('POST создаёт товар с видео', async () => {
+    const r = await admin('POST', '/api/products', { sku: 'vid-1', name: 'С видео', costPrice: 1, videos: [V(1), V(2)] });
+    assert.ok(r.status === 200 || r.status === 201, JSON.stringify(r.json));
+    assert.deepEqual(products[0].videos, [V(1), V(2)]);
+  });
+
+  test('мусор в БД не ломает ответ: нестроки и не-http отбрасываются, больше 3 обрезается', async () => {
+    const p = seed({ videos: [V(1), 5, 'ftp://x', V(2), V(3), V(4)] });
+    assert.deepEqual((await call('GET', `/api/shop/products/${p.shopArticle}`)).json.videos, [V(1), V(2), V(3)]);
+  });
+});
