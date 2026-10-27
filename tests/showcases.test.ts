@@ -896,7 +896,7 @@ describe('контракт для Android и сквозной сценарий',
     assert.deepEqual(list, [{ id: s.id, type: 'shop', title: 'Nike', description: 'D', logoUrl: 'https://b.example/l.png', bannerUrl: 'https://b.example/b.png', bannerTitle: 'BT', bannerText: 'BX' }]);
 
     const detail = (await pub(`/${s.id}`)).json;
-    assert.deepEqual(keys(detail), ['bannerText', 'bannerTitle', 'bannerUrl', 'banners', 'collections', 'description', 'id', 'logoUrl', 'products', 'title', 'type', 'videoUrl']);
+    assert.deepEqual(keys(detail), ['bannerText', 'bannerTitle', 'bannerUrl', 'banners', 'bigBanners', 'collections', 'description', 'id', 'logoUrl', 'products', 'smallBanners', 'title', 'type', 'videoUrl']);
     assert.deepEqual(keys(detail.collections[0]), ['id', 'products', 'title']);
     assert.equal(detail.collections[0].id, col.id);
     assert.equal(detail.collections[0].title, 'Новинки');
@@ -1286,5 +1286,68 @@ describe('товары «только для витрины» (showcaseOnly): и
     assert.ok(!r.json.showcaseOnly);
     const regular = seedProduct({ name: 'Каталожный' });
     assert.deepEqual(names(await catalog()), [regular.name]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('большая карусель bigBanners и маленькая smallBanners', () => {
+  const B = (n: number) => `https://cdn.example/big${n}.png`;
+  const OLD = 'https://cdn.example/old.png';
+
+  test('bigBanners сохраняются в порядке админки (без повторов) и отдаются приложению; smallBanners = banners', async () => {
+    const s = await newShowcase({ title: 'Nike', published: true, bigBanners: [B(2), B(1), B(2), B(3)], banners: [B(9)] });
+    const page = (await pub(`/${s.id}`)).json;
+    assert.deepEqual(page.bigBanners, [B(2), B(1), B(3)]);
+    assert.deepEqual(page.smallBanners, [B(9)]);
+    assert.deepEqual(page.banners, [B(9)]); // прежнее поле не пропало
+    assert.deepEqual((await adm('GET', `/${s.id}`)).json.bigBanners, [B(2), B(1), B(3)]);
+  });
+
+  test('витрина только с bannerUrl продолжает работать: bigBanners = [bannerUrl]', async () => {
+    const s = await newShowcase({ published: true, bannerUrl: OLD });
+    const page = (await pub(`/${s.id}`)).json;
+    assert.deepEqual(page.bigBanners, [OLD]);
+    assert.equal(page.bannerUrl, OLD);
+    assert.deepEqual(page.smallBanners, []);
+    // строка из базы вовсе без нового поля (до миграции у старых записей)
+    const row = tables.showcase.find((r: Row) => r.id === s.id)!;
+    delete row.bigBanners;
+    assert.deepEqual((await pub(`/${s.id}`)).json.bigBanners, [OLD]);
+  });
+
+  test('если bigBanners заполнен — bannerUrl не подмешивается; нет ни того ни другого — []', async () => {
+    const a = await newShowcase({ published: true, bannerUrl: OLD, bigBanners: [B(1)] });
+    assert.deepEqual((await pub(`/${a.id}`)).json.bigBanners, [B(1)]);
+    const b = await newShowcase({ published: true });
+    assert.deepEqual((await pub(`/${b.id}`)).json.bigBanners, []);
+  });
+
+  test('PATCH: заменить, переупорядочить, очистить; остальные поля не трогаются', async () => {
+    const s = await newShowcase({ published: true, bigBanners: [B(1), B(2)], banners: [B(9)], bannerUrl: OLD });
+    let r = await adm('PATCH', `/${s.id}`, { bigBanners: [B(2), B(1), B(3)] });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.json.bigBanners, [B(2), B(1), B(3)]);
+    assert.deepEqual(r.json.banners, [B(9)]);
+    assert.equal(r.json.bannerUrl, OLD);
+    r = await adm('PATCH', `/${s.id}`, { title: 'Новое имя' });
+    assert.deepEqual(r.json.bigBanners, [B(2), B(1), B(3)]);
+    r = await adm('PATCH', `/${s.id}`, { bigBanners: [] });
+    assert.deepEqual(r.json.bigBanners, []);
+    assert.deepEqual((await pub(`/${s.id}`)).json.bigBanners, [OLD]); // снова запасной bannerUrl
+  });
+
+  test('валидация: не больше 10 и только http(s)', async () => {
+    const s = await newShowcase({ published: true });
+    const eleven = Array.from({ length: 11 }, (_, i) => B(i));
+    assert.equal((await adm('PATCH', `/${s.id}`, { bigBanners: eleven })).status, 400);
+    assert.equal((await adm('PATCH', `/${s.id}`, { bigBanners: ['javascript:alert(1)'] })).status, 400);
+    assert.equal((await adm('PATCH', `/${s.id}`, { bigBanners: eleven.slice(0, 10) })).status, 200);
+  });
+
+  test('список витрин (иконки) формат не меняет', async () => {
+    await newShowcase({ published: true, bigBanners: [B(1)] });
+    const item = (await pub('')).json[0];
+    assert.equal('bigBanners' in item, false);
+    assert.equal('smallBanners' in item, false);
   });
 });

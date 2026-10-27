@@ -178,6 +178,7 @@ const createShowcase = z.object({
   bannerTitle: optText(120),
   bannerText: optText(1000),
   banners: bannersSchema.optional(),
+  bigBanners: bannersSchema.optional(),
   videoUrl: videoUrlSchema,
   published: z.boolean().optional(),
 });
@@ -198,6 +199,7 @@ showcasesAdminRouter.post('/', async (req, res) => {
         bannerTitle: blankToNull(d.bannerTitle) ?? null,
         bannerText: blankToNull(d.bannerText) ?? null,
         banners: uniqueUrls(d.banners ?? []),
+        bigBanners: uniqueUrls(d.bigBanners ?? []),
         videoUrl: blankToNull(d.videoUrl) ?? null,
         // Новая витрина по умолчанию скрыта: наполняем, потом публикуем.
         published: d.published ?? false,
@@ -266,6 +268,7 @@ const patchShowcase = z.object({
   bannerTitle: optText(120),
   bannerText: optText(1000),
   banners: bannersSchema.optional(),
+  bigBanners: bannersSchema.optional(),
   videoUrl: videoUrlSchema,
   published: z.boolean().optional(),
   sortOrder: z.number().int().min(0).max(1_000_000).optional(),
@@ -288,6 +291,7 @@ showcasesAdminRouter.patch('/:id', async (req, res) => {
       if (d[k] !== undefined) data[k] = blankToNull(d[k]);
     }
     if (d.banners !== undefined) data.banners = uniqueUrls(d.banners);
+    if (d.bigBanners !== undefined) data.bigBanners = uniqueUrls(d.bigBanners);
     const row = await prisma.showcase.update({ where: { id: existing.id }, data });
     res.json(row);
   } catch (err: any) {
