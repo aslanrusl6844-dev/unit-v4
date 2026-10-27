@@ -108,13 +108,31 @@ function scList(kind) {
   return scState[f] || (scState[f] = []);
 }
 
+// Большая карусель: у каждого баннера есть текст и цвет текста (параллельные массивы, тот же порядок).
+function scBigExtras() {
+  const n = scList('big').length;
+  const texts = scState.bigBannerTexts || (scState.bigBannerTexts = []);
+  const colors = scState.bigBannerTextColors || (scState.bigBannerTextColors = []);
+  while (texts.length < n) texts.push('');
+  while (colors.length < n) colors.push('white');
+  texts.length = n; colors.length = n;
+  return [texts, colors];
+}
+
 function scBannersHtml(kind) {
   const list = scList(kind || 'small');
+  const extras = (kind === 'big') ? scBigExtras() : null;
   if (!list.length) return '<p class="panel__hint" style="margin:4px 0">Баннеров пока нет.</p>';
   return `<table class="table"><tbody>${list.map((u, i) => `
     <tr data-bi="${i}">
       <td>${scThumb(u)}</td>
-      <td style="word-break:break-all">${scEsc(u)}</td>
+      <td style="word-break:break-all">${scEsc(u)}${extras ? `
+        <div style="display:flex;gap:6px;margin-top:4px;flex-wrap:wrap">
+          <input type="text" class="sc-bb-text" maxlength="120" placeholder="Текст на баннере (необязательно)" value="${scEsc(extras[0][i])}" style="max-width:260px" />
+          <select class="sc-bb-color" title="Цвет текста">
+            <option value="white"${extras[1][i] === 'black' ? '' : ' selected'}>Белый текст</option>
+            <option value="black"${extras[1][i] === 'black' ? ' selected' : ''}>Чёрный текст</option>
+          </select></div>` : ''}</td>
       <td style="white-space:nowrap">
         <button type="button" class="btn btn--ghost" data-sc="b-up" ${i === 0 ? 'disabled' : ''}>↑</button>
         <button type="button" class="btn btn--ghost" data-sc="b-down" ${i === list.length - 1 ? 'disabled' : ''}>↓</button>
@@ -273,6 +291,10 @@ function scFormData() {
     bannerText: v('scBannerText').trim() || null,
     banners: (scState.banners || []).slice(),
     bigBanners: (scState.bigBanners || []).slice(),
+    bigBannerItems: (() => {
+      const [texts, colors] = scBigExtras();
+      return (scState.bigBanners || []).map((url, i) => ({ url, text: (texts[i] || '').trim() || null, textColor: colors[i] === 'black' ? 'black' : 'white' }));
+    })(),
     videos: (scState.videos || []).slice(),
     videoUrl: v('scVideoUrl').trim() || null,
     published: document.getElementById('scPublished').checked,
@@ -319,6 +341,9 @@ async function scOpen(id, okText) {
     scState.current = await api(`/shop-admin/showcases/${encodeURIComponent(id)}`);
     scState.banners = Array.isArray(scState.current.banners) ? scState.current.banners.slice() : [];
     scState.bigBanners = Array.isArray(scState.current.bigBanners) ? scState.current.bigBanners.slice() : [];
+    scState.bigBannerTexts = Array.isArray(scState.current.bigBannerTexts) ? scState.current.bigBannerTexts.slice() : [];
+    scState.bigBannerTextColors = Array.isArray(scState.current.bigBannerTextColors) ? scState.current.bigBannerTextColors.slice() : [];
+    scBigExtras(); // старые витрины без текстов: выравниваем по числу баннеров
     scState.videos = Array.isArray(scState.current.videos) ? scState.current.videos.slice() : [];
     scState.status = okText || '';
     scState.statusKind = '';
@@ -383,7 +408,7 @@ async function scHandleClick(e) {
   const cid = colEl && colEl.dataset.cid;
   const col = cid && scState.current && scState.current.collections.find((x) => x.id === cid);
   try {
-    if (act === 'new') { scState.editingNew = true; scState.current = null; scState.banners = []; scState.bigBanners = []; scState.videos = []; scSetStatus('', ''); scRender(); }
+    if (act === 'new') { scState.editingNew = true; scState.current = null; scState.banners = []; scState.bigBanners = []; scState.bigBannerTexts = []; scState.bigBannerTextColors = []; scState.videos = []; scSetStatus('', ''); scRender(); }
     else if (act === 'reload') await loadShowcases();
     else if (act === 'v-add') {
       const fileEl = document.getElementById('scVideoAddFile');
@@ -417,6 +442,7 @@ async function scHandleClick(e) {
       if (!/^https?:\/\//i.test(url)) { scSetStatus('Ссылка должна начинаться с http:// или https://', 'error'); return; }
       if (list.includes(url)) { scSetStatus('Такой баннер уже добавлен', 'error'); return; }
       list.push(url);
+      if (kind === 'big') { scBigExtras(); } // дополняет текст '' и цвет white для нового баннера
       fileEl.value = ''; urlEl.value = '';
       scBannersRefresh(kind);
       scSetStatus('Баннер добавлен — нажмите «Сохранить», чтобы применить', '');
@@ -424,11 +450,13 @@ async function scHandleClick(e) {
       const i = Number(btn.closest('[data-bi]').dataset.bi);
       const kind = btn.closest('[data-blist]').dataset.blist;
       const list = scList(kind);
-      if (act === 'b-remove') list.splice(i, 1);
+      const parallel = kind === 'big' ? scBigExtras() : [];
+      if (act === 'b-remove') { list.splice(i, 1); parallel.forEach((a) => a.splice(i, 1)); }
       else {
         const j = i + (act === 'b-up' ? -1 : 1);
         if (j < 0 || j >= list.length) return;
         [list[i], list[j]] = [list[j], list[i]];
+        parallel.forEach((a) => { [a[i], a[j]] = [a[j], a[i]]; });
       }
       scBannersRefresh(kind);
       scSetStatus('Порядок изменён — нажмите «Сохранить», чтобы применить', '');
@@ -535,7 +563,18 @@ function scWireOnce() {
     if (e.target.id === 'scForm') { e.preventDefault(); scSave(); }
   });
   let timer = null;
+  const bbEdit = (e) => {
+    const t = e.target;
+    if (!t.classList || !(t.classList.contains('sc-bb-text') || t.classList.contains('sc-bb-color'))) return false;
+    const i = Number(t.closest('[data-bi]').dataset.bi);
+    const [texts, colors] = scBigExtras();
+    if (t.classList.contains('sc-bb-text')) texts[i] = t.value;
+    else colors[i] = t.value === 'black' ? 'black' : 'white';
+    return true;
+  };
+  root.addEventListener('change', bbEdit);
   root.addEventListener('input', (e) => {
+    if (bbEdit(e)) return;
     if (e.target.id !== 'scSearch') return;
     scState.q = e.target.value.trim();
     clearTimeout(timer);
