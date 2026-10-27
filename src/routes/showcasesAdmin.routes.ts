@@ -4,7 +4,7 @@ import { prisma } from '../db/prisma';
 import { logger } from '../utils/logger';
 import { mapDbError } from './showcases.errors';
 import { BANNER_TEXT_COLORS, MAX_LINE_SIZE, MIN_LINE_SIZE, resolveBigBannerWrite } from '../services/showcaseBanners';
-import { videosSchema } from '../services/productExtras';
+import { showcaseVideosSchema } from '../services/productExtras';
 
 /**
  * Подбаннерные витрины — АДМИНИСТРАТИВНАЯ часть. Путь: /api/shop-admin/showcases/...
@@ -190,7 +190,7 @@ const createShowcase = z.object({
   banners: bannersSchema.optional(),
   bigBanners: bannersSchema.optional(),
   bigBannerItems: bigBannerItemsSchema.optional(), // {url, text, sizes, textColor} — имеет приоритет над bigBanners
-  videos: videosSchema.optional(),
+  videos: showcaseVideosSchema.optional(), // до 20
   videoUrl: videoUrlSchema,
   published: z.boolean().optional(),
 });
@@ -283,7 +283,7 @@ const patchShowcase = z.object({
   banners: bannersSchema.optional(),
   bigBanners: bannersSchema.optional(),
   bigBannerItems: bigBannerItemsSchema.optional(), // {url, text, sizes, textColor} — имеет приоритет над bigBanners
-  videos: videosSchema.optional(),
+  videos: showcaseVideosSchema.optional(), // до 20
   videoUrl: videoUrlSchema,
   published: z.boolean().optional(),
   sortOrder: z.number().int().min(0).max(1_000_000).optional(),

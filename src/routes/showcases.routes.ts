@@ -3,7 +3,7 @@ import { prisma } from '../db/prisma';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
 import { mapDbError } from './showcases.errors';
-import { parseVideos } from '../services/productExtras';
+import { MAX_SHOWCASE_VIDEOS, parseVideos } from '../services/productExtras';
 import { bigBannerItemsOf } from '../services/showcaseBanners';
 import {
   SHOP_VISIBLE_IN_SHOWCASE_WHERE,
@@ -131,8 +131,8 @@ showcasesRouter.get('/:id', async (req, res) => {
       bigBanners: bigItems.map((b) => b.url),
       bigBannerItems: bigItems,
       smallBanners,
-      // До 3 видео витрины (URL); нет видео — [].
-      videos: parseVideos(showcase.videos),
+      // До 20 видео витрины (URL); нет видео — [].
+      videos: parseVideos(showcase.videos, MAX_SHOWCASE_VIDEOS),
       banners: smallBanners,
       videoUrl: showcase.videoUrl ?? null,
       // Товары именно этой витрины в порядке админки (видимые покупателю); нет товаров — [].

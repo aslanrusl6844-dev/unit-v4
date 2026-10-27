@@ -1353,7 +1353,7 @@ describe('большая карусель bigBanners и маленькая small
 });
 
 // ---------------------------------------------------------------------------
-describe('videos витрины (до 3)', () => {
+describe('videos витрины (до 20)', () => {
   const V = (n: number) => `https://blob.example.com/shop/video/${n}.mp4`;
 
   test('нет видео → videos: [] (в том числе у старой витрины без поля); список витрин формат не меняет', async () => {
@@ -1377,12 +1377,22 @@ describe('videos витрины (до 3)', () => {
     assert.deepEqual((await pub(`/${s.id}`)).json.videos, []);
   });
 
-  test('валидация: больше 3, не http(s), повтор → 400', async () => {
+  test('валидация: больше 20, не http(s), повтор → 400', async () => {
     const s = await newShowcase({ published: true, videos: [V(1)] });
-    for (const videos of [[V(1), V(2), V(3), V(4)], ['javascript:alert(1)'], [V(1), V(1)]]) {
+    for (const videos of [Array.from({ length: 21 }, (_, i) => V(i)), ['javascript:alert(1)'], [V(1), V(1)]]) {
       assert.equal((await adm('PATCH', `/${s.id}`, { videos })).status, 400, JSON.stringify(videos));
     }
     assert.deepEqual((await adm('GET', `/${s.id}`)).json.videos, [V(1)]);
+  });
+
+  test('ровно 20 видео сохраняются и отдаются в том же порядке; старые данные (1–3 видео) читаются как раньше', async () => {
+    const twenty = Array.from({ length: 20 }, (_, i) => V(i + 1));
+    const s = await newShowcase({ published: true, videos: twenty });
+    assert.deepEqual((await pub(`/${s.id}`)).json.videos, twenty);
+    assert.deepEqual((await adm('GET', `/${s.id}`)).json.videos, twenty);
+    const old = await newShowcase({ published: true });
+    tables.showcase.find((r: Row) => r.id === old.id)!.videos = [V(1), V(2), V(3)];
+    assert.deepEqual((await pub(`/${old.id}`)).json.videos, [V(1), V(2), V(3)]);
   });
 
   test('товары витрины тоже отдают videos', async () => {

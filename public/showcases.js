@@ -177,7 +177,7 @@ function scBannersBlockHtml(kind, label, isNew) {
         <p class="panel__hint" style="margin:4px 0 0">До ${SC_MAX_BANNERS} баннеров, порядок задают стрелки. Изменения сохраняются кнопкой «${isNew ? 'Создать' : 'Сохранить'}».</p></div>`;
 }
 
-const SC_MAX_VIDEOS = 3;
+const SC_MAX_VIDEOS = 20;
 
 function scVideosHtml() {
   const list = scState.videos || [];
