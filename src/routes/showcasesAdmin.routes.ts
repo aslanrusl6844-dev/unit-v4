@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../db/prisma';
 import { logger } from '../utils/logger';
 import { mapDbError } from './showcases.errors';
+import { BANNER_TEXT_COLORS, resolveBigBannerWrite } from '../services/showcaseBanners';
 import { videosSchema } from '../services/productExtras';
 
 /**
@@ -27,6 +28,13 @@ const imageUrl = z
   .refine((v) => /^https?:\/\//i.test(v), 'Ссылка на картинку должна начинаться с http:// или https://');
 const MAX_BANNERS = 10;
 const bannersSchema = z.array(imageUrl).max(MAX_BANNERS, `Не больше ${MAX_BANNERS} баннеров`);
+const bigBannerItemsSchema = z
+  .array(z.object({
+    url: imageUrl,
+    text: z.string().trim().max(120, 'Текст баннера — не длиннее 120 символов').nullable().optional(),
+    textColor: z.enum(BANNER_TEXT_COLORS).optional(),
+  }))
+  .max(MAX_BANNERS, `Не больше ${MAX_BANNERS} баннеров`);
 const videoUrlSchema = z
   .string()
   .trim()
@@ -180,6 +188,7 @@ const createShowcase = z.object({
   bannerText: optText(1000),
   banners: bannersSchema.optional(),
   bigBanners: bannersSchema.optional(),
+  bigBannerItems: bigBannerItemsSchema.optional(), // {url, text, textColor} — имеет приоритет над bigBanners
   videos: videosSchema.optional(),
   videoUrl: videoUrlSchema,
   published: z.boolean().optional(),
@@ -201,7 +210,7 @@ showcasesAdminRouter.post('/', async (req, res) => {
         bannerTitle: blankToNull(d.bannerTitle) ?? null,
         bannerText: blankToNull(d.bannerText) ?? null,
         banners: uniqueUrls(d.banners ?? []),
-        bigBanners: uniqueUrls(d.bigBanners ?? []),
+        ...(resolveBigBannerWrite({ items: d.bigBannerItems, urls: d.bigBanners ?? [] }) as object),
         videos: d.videos ?? [],
         videoUrl: blankToNull(d.videoUrl) ?? null,
         // Новая витрина по умолчанию скрыта: наполняем, потом публикуем.
@@ -272,6 +281,7 @@ const patchShowcase = z.object({
   bannerText: optText(1000),
   banners: bannersSchema.optional(),
   bigBanners: bannersSchema.optional(),
+  bigBannerItems: bigBannerItemsSchema.optional(), // {url, text, textColor} — имеет приоритет над bigBanners
   videos: videosSchema.optional(),
   videoUrl: videoUrlSchema,
   published: z.boolean().optional(),
@@ -295,7 +305,7 @@ showcasesAdminRouter.patch('/:id', async (req, res) => {
       if (d[k] !== undefined) data[k] = blankToNull(d[k]);
     }
     if (d.banners !== undefined) data.banners = uniqueUrls(d.banners);
-    if (d.bigBanners !== undefined) data.bigBanners = uniqueUrls(d.bigBanners);
+    Object.assign(data, resolveBigBannerWrite({ items: d.bigBannerItems, urls: d.bigBanners }, existing) ?? {});
     if (d.videos !== undefined) data.videos = d.videos;
     const row = await prisma.showcase.update({ where: { id: existing.id }, data });
     res.json(row);

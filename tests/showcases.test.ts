@@ -896,7 +896,7 @@ describe('контракт для Android и сквозной сценарий',
     assert.deepEqual(list, [{ id: s.id, type: 'shop', title: 'Nike', description: 'D', logoUrl: 'https://b.example/l.png', bannerUrl: 'https://b.example/b.png', bannerTitle: 'BT', bannerText: 'BX' }]);
 
     const detail = (await pub(`/${s.id}`)).json;
-    assert.deepEqual(keys(detail), ['bannerText', 'bannerTitle', 'bannerUrl', 'banners', 'bigBanners', 'collections', 'description', 'id', 'logoUrl', 'products', 'smallBanners', 'title', 'type', 'videoUrl', 'videos']);
+    assert.deepEqual(keys(detail), ['bannerText', 'bannerTitle', 'bannerUrl', 'banners', 'bigBannerItems', 'bigBanners', 'collections', 'description', 'id', 'logoUrl', 'products', 'smallBanners', 'title', 'type', 'videoUrl', 'videos']);
     assert.deepEqual(keys(detail.collections[0]), ['id', 'products', 'title']);
     assert.equal(detail.collections[0].id, col.id);
     assert.equal(detail.collections[0].title, 'Новинки');
@@ -1395,5 +1395,84 @@ describe('videos витрины (до 3)', () => {
     const page = (await pub(`/${s.id}`)).json;
     assert.deepEqual(page.products.map((x: Row) => x.videos), [[V1], []]);
     assert.deepEqual((await pub(`/${s.id}/products`)).json.map((x: Row) => x.videos), [[V1], []]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('текст и цвет баннеров большой карусели', () => {
+  const U = (n: number) => `https://cdn.example/big${n}.png`;
+  const OLD = 'https://cdn.example/old.png';
+
+  test('bigBannerItems сохраняются и отдаются приложению; bigBanners остаётся массивом URL', async () => {
+    const s = await newShowcase({
+      published: true,
+      bigBannerItems: [{ url: U(1), text: 'Скидка 40%', textColor: 'white' }, { url: U(2), text: 'Новинка', textColor: 'black' }, { url: U(3) }],
+    });
+    const page = (await pub(`/${s.id}`)).json;
+    assert.deepEqual(page.bigBanners, [U(1), U(2), U(3)]);
+    assert.deepEqual(page.bigBannerItems, [
+      { url: U(1), text: 'Скидка 40%', textColor: 'white' },
+      { url: U(2), text: 'Новинка', textColor: 'black' },
+      { url: U(3), text: null, textColor: 'white' },
+    ]);
+    const adminRow = (await adm('GET', `/${s.id}`)).json;
+    assert.deepEqual(adminRow.bigBannerTexts, ['Скидка 40%', 'Новинка', '']);
+    assert.deepEqual(adminRow.bigBannerTextColors, ['white', 'black', 'white']);
+  });
+
+  test('старые данные: только URL (без текстов в БД) → text null, цвет white; нет баннеров — запасной bannerUrl', async () => {
+    const s = await newShowcase({ published: true, bigBanners: [U(1), U(2)] });
+    const row = tables.showcase.find((r: Row) => r.id === s.id)!;
+    delete row.bigBannerTexts; delete row.bigBannerTextColors;
+    assert.deepEqual((await pub(`/${s.id}`)).json.bigBannerItems, [
+      { url: U(1), text: null, textColor: 'white' }, { url: U(2), text: null, textColor: 'white' },
+    ]);
+    const only = await newShowcase({ published: true, bannerUrl: OLD });
+    const p2 = (await pub(`/${only.id}`)).json;
+    assert.deepEqual(p2.bigBanners, [OLD]);
+    assert.deepEqual(p2.bigBannerItems, [{ url: OLD, text: null, textColor: 'white' }]);
+    const none = await newShowcase({ published: true });
+    assert.deepEqual((await pub(`/${none.id}`)).json.bigBannerItems, []);
+  });
+
+  test('PATCH только bigBanners (старый клиент): тексты и цвета сохраняются за своей ссылкой при перестановке', async () => {
+    const s = await newShowcase({ published: true, bigBannerItems: [{ url: U(1), text: 'Один', textColor: 'black' }, { url: U(2), text: 'Два', textColor: 'white' }] });
+    const r = await adm('PATCH', `/${s.id}`, { bigBanners: [U(2), U(3), U(1)] });
+    assert.equal(r.status, 200);
+    assert.deepEqual((await pub(`/${s.id}`)).json.bigBannerItems, [
+      { url: U(2), text: 'Два', textColor: 'white' },
+      { url: U(3), text: null, textColor: 'white' },
+      { url: U(1), text: 'Один', textColor: 'black' },
+    ]);
+  });
+
+  test('PATCH без баннеров не трогает тексты; bigBannerItems: [] очищает всё; повтор ссылки убирается', async () => {
+    const s = await newShowcase({ published: true, bigBannerItems: [{ url: U(1), text: 'Один', textColor: 'black' }] });
+    await adm('PATCH', `/${s.id}`, { title: 'Другое имя' });
+    assert.equal((await pub(`/${s.id}`)).json.bigBannerItems[0].text, 'Один');
+    const dup = await adm('PATCH', `/${s.id}`, { bigBannerItems: [{ url: U(1), text: 'A' }, { url: U(1), text: 'B' }, { url: U(2), text: 'C' }] });
+    assert.deepEqual(dup.json.bigBanners, [U(1), U(2)]);
+    assert.deepEqual(dup.json.bigBannerTexts, ['A', 'C']);
+    await adm('PATCH', `/${s.id}`, { bigBannerItems: [] });
+    const page = (await pub(`/${s.id}`)).json;
+    assert.deepEqual(page.bigBannerItems, []);
+    assert.deepEqual(tables.showcase.find((r: Row) => r.id === s.id)!.bigBannerTexts, []);
+  });
+
+  test('валидация: цвет только white/black, текст до 120 символов, максимум 10, ссылка http(s)', async () => {
+    const s = await newShowcase({ published: true });
+    const bad: unknown[] = [
+      [{ url: U(1), textColor: 'red' }],
+      [{ url: U(1), text: 'x'.repeat(121) }],
+      [{ url: 'javascript:alert(1)' }],
+      Array.from({ length: 11 }, (_, i) => ({ url: U(i) })),
+    ];
+    for (const bigBannerItems of bad) assert.equal((await adm('PATCH', `/${s.id}`, { bigBannerItems })).status, 400, JSON.stringify(bigBannerItems).slice(0, 60));
+    assert.equal((await adm('PATCH', `/${s.id}`, { bigBannerItems: [{ url: U(1), text: 'x'.repeat(120), textColor: 'black' }] })).status, 200);
+  });
+
+  test('список витрин (иконки) формат не меняет', async () => {
+    await newShowcase({ published: true, bigBannerItems: [{ url: U(1), text: 'T' }] });
+    assert.equal('bigBannerItems' in (await pub('')).json[0], false);
   });
 });
