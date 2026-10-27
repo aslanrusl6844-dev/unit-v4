@@ -681,6 +681,15 @@
                   <div id="mmVideoUploadStatus" class="panel__hint"></div>
                 </div>
 
+                <div class="panel__head" style="margin-top:18px"><h2 style="font-size:14px">Видео (до 3)</h2></div>
+                <p class="panel__hint" style="margin:0 0 6px">Файлы MP4 или WEBM, до 3 МБ каждый (ограничение Vercel на размер запроса). Сохраняется кнопкой «Сохранить» внизу карточки.</p>
+                <div id="mmVideosList"></div>
+                <div style="display:flex;gap:6px;margin-top:6px;align-items:center;flex-wrap:wrap">
+                  <button type="button" class="btn btn--ghost" id="mmVideosAddBtn">Добавить видео</button>
+                  <input type="file" id="mmVideosFileInput" accept="video/mp4,video/webm" hidden />
+                </div>
+                <div id="mmVideosStatus" class="panel__hint"></div>
+
                 <label>Видео URL (отдельное поле)<input type="text" name="videoUrl" placeholder="https://…mp4 или .webm — необязательно" /></label>
               </div>
 
@@ -1193,7 +1202,7 @@
 
       <!-- ============ УВЕДОМЛЕНИЯ ============ -->
       <section class="page" id="page-cityimages" hidden>
-        <div class="page__head"><h1>Картинки городов</h1><p>Картинка для каждого города — приложение запрашивает её по названию города. JPEG/PNG/WEBP до 2.5 МБ.</p></div>
+        <div class="page__head"><h1>Картинки городов</h1><p>До 10 картинок на город — приложение запрашивает их по названию города и листает. JPEG/PNG/WEBP до 2.5 МБ.</p></div>
         <div class="panel">
           <div class="panel__head"><h2>Города</h2><button class="btn btn--ghost" id="cityImagesReloadBtn">↻ Обновить</button></div>
           <div id="cityImagesStatus" class="panel__hint"></div>

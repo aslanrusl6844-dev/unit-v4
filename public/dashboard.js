@@ -2745,6 +2745,47 @@ let myMarketDragFromIndex = null;
 // ---------------------------------------------------------------------
 let myMarketCardQty = [];
 let myMarketCardDetails = [];
+let myMarketCardVideos = []; // до 3 видео товара (URL mp4/webm)
+const MM_VIDEOS_MAX = 3;
+
+/** Список видео (товар и витрина): превью <video muted>, «Убрать». Кнопка действия — data-vid-remove. */
+function mmVideosListHtml(list) {
+  if (!list.length) return '<div class="panel__hint">Видео нет</div>';
+  return list.map((url, i) => `<div class="mm-video-row" data-i="${i}" style="display:flex;gap:8px;align-items:center;margin:4px 0">
+      <video src="${mmxEsc(url)}" muted loop playsinline preload="metadata" style="width:96px;height:64px;object-fit:cover;border-radius:6px;background:var(--bg)"></video>
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px">${mmxEsc(url)}</span>
+      <button type="button" class="btn btn--ghost" data-vid-remove="${i}" style="font-size:12px">Убрать</button>
+    </div>`).join('');
+}
+
+function renderMyMarketVideosList() {
+  const el = document.getElementById('mmVideosList');
+  if (!el) return;
+  el.innerHTML = mmVideosListHtml(myMarketCardVideos);
+  el.querySelectorAll('[data-vid-remove]').forEach((b) => b.addEventListener('click', () => {
+    myMarketCardVideos.splice(Number(b.dataset.vidRemove), 1);
+    renderMyMarketVideosList();
+  }));
+  const add = document.getElementById('mmVideosAddBtn');
+  if (add) add.disabled = myMarketCardVideos.length >= MM_VIDEOS_MAX;
+}
+
+async function handleMyMarketVideoFile(file) {
+  const status = document.getElementById('mmVideosStatus');
+  const fail = (msg) => { status.textContent = msg; status.style.color = 'var(--loss)'; };
+  if (myMarketCardVideos.length >= MM_VIDEOS_MAX) return fail(`Можно не больше ${MM_VIDEOS_MAX} видео.`);
+  status.textContent = `Загружаю ${file.name}…`;
+  status.style.color = 'var(--text-faint)';
+  try {
+    const url = await uploadMyMarketFile(file, { video: true });
+    if (myMarketCardVideos.includes(url)) return fail('Это видео уже добавлено.');
+    myMarketCardVideos.push(url);
+    status.textContent = 'Видео добавлено — нажмите «Сохранить» в карточке';
+    renderMyMarketVideosList();
+  } catch (err) {
+    fail(err.message);
+  }
+}
 
 function mmxEsc(v) {
   return String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -2848,6 +2889,12 @@ async function handleMyMarketDetailFiles(files) {
 
 function initMyMarketQtyDetails() {
   document.getElementById('mmQtyAddBtn').addEventListener('click', addMyMarketQtyVariant);
+  document.getElementById('mmVideosAddBtn').addEventListener('click', () => document.getElementById('mmVideosFileInput').click());
+  document.getElementById('mmVideosFileInput').addEventListener('change', (e) => {
+    const f = e.target.files[0];
+    e.target.value = '';
+    if (f) handleMyMarketVideoFile(f);
+  });
   document.getElementById('mmDetailsChooseBtn').addEventListener('click', () => document.getElementById('mmDetailsFileInput').click());
   document.getElementById('mmDetailsFileInput').addEventListener('change', (e) => {
     if (e.target.files.length) handleMyMarketDetailFiles(e.target.files);
@@ -3257,8 +3304,11 @@ function openMyMarketProductCard(id) {
   myMarketCardVideo = p.shopVideo ?? null;
   myMarketCardQty = mmxParse(p.quantityVariants);
   myMarketCardDetails = (Array.isArray(p.details) ? p.details : mmxParse(p.details)).filter((u) => typeof u === 'string');
+  myMarketCardVideos = Array.isArray(p.videos) ? p.videos.filter((u) => typeof u === 'string') : [];
+  document.getElementById('mmVideosStatus').textContent = '';
   renderMyMarketQtyList();
   renderMyMarketDetailsList();
+  renderMyMarketVideosList();
   renderMyMarketMediaGrid();
   renderMyMarketVideoPreview();
   form.elements.shopActive.checked = !!p.shopActive;
@@ -3276,6 +3326,7 @@ function closeMyMarketProductCard() {
   myMarketCardVideo = null;
   myMarketCardQty = [];
   myMarketCardDetails = [];
+  myMarketCardVideos = [];
   myMarketCardShowcaseLink = null;
   myMarketCardEditDone = null;
 }
@@ -3356,18 +3407,82 @@ const MM_IMAGE_MAX_MB = 2.5;
  * а не общее "API error 500", которое раньше скрывало настоящую причину
  * (например, PayloadTooLargeError, замаскированный под "внутреннюю ошибку").
  */
-async function uploadMyMarketFile(file) {
-  if (!MM_IMAGE_TYPES.includes(file.type)) {
-    throw new Error(`Формат ${file.type || '(неизвестен)'} не поддерживается — нужен JPEG/PNG/WEBP`);
+// Баннеры главной: ещё GIF и короткие видео. Предел согласован с сервером (MAX_BANNER_BYTES) —
+// Vercel не пропускает тело запроса больше ~4.5 МБ, а в base64 файл вырастает на треть.
+const MM_BANNER_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'video/mp4', 'video/webm'];
+const MM_BANNER_MAX_BYTES = 3000000;
+const MM_BANNER_MAX_VIDEO_SEC = 10;
+const MM_BANNER_FORMAT_ERROR = 'Формат не поддерживается. Нужен JPEG, PNG, WEBP, GIF, MP4 или WEBM';
+
+function mmIsVideoUrl(url) {
+  return /\.(mp4|webm)(\?|#|$)/i.test(String(url || ''));
+}
+
+/** Превью баннера: видео → <video autoplay loop muted>, иначе <img>. */
+function mmBannerPreviewEl(url) {
+  if (mmIsVideoUrl(url)) {
+    const v = document.createElement('video');
+    v.src = url; v.autoplay = true; v.loop = true; v.muted = true; v.playsInline = true;
+    v.setAttribute('autoplay', ''); v.setAttribute('loop', ''); v.setAttribute('muted', ''); v.setAttribute('playsinline', '');
+    return v;
   }
-  if (file.size > MM_IMAGE_MAX_MB * 1024 * 1024) {
-    throw new Error(`Файл слишком большой: ${(file.size / 1024 / 1024).toFixed(1)} МБ, максимум ${MM_IMAGE_MAX_MB} МБ`);
+  const img = document.createElement('img');
+  img.alt = ''; img.src = url;
+  return img;
+}
+
+/** Длительность видео из метаданных; null — не удалось определить (тогда не блокируем). */
+function mmVideoDuration(file) {
+  return new Promise((resolve) => {
+    try {
+      const v = document.createElement('video');
+      const objUrl = URL.createObjectURL(file);
+      const done = (d) => { URL.revokeObjectURL(objUrl); resolve(d); };
+      v.preload = 'metadata';
+      v.onloadedmetadata = () => done(Number.isFinite(v.duration) ? v.duration : null);
+      v.onerror = () => done(null);
+      setTimeout(() => done(null), 4000);
+      v.src = objUrl;
+    } catch { resolve(null); }
+  });
+}
+
+async function uploadMyMarketFile(file, opts) {
+  const video = !!(opts && opts.video); // видео товара/витрины: только MP4/WEBM
+  const banner = !!(opts && opts.banner);
+  if (video) {
+    if (!['video/mp4', 'video/webm'].includes(file.type)) throw new Error('Формат не поддерживается. Нужен MP4 или WEBM');
+    if (file.size > MM_BANNER_MAX_BYTES) {
+      throw new Error(`Файл слишком большой: ${(file.size / 1e6).toFixed(1)} МБ, максимум ${MM_BANNER_MAX_BYTES / 1e6} МБ`);
+    }
+  } else if (banner) {
+    if (!MM_BANNER_TYPES.includes(file.type)) throw new Error(MM_BANNER_FORMAT_ERROR);
+    if (file.size > MM_BANNER_MAX_BYTES) {
+      throw new Error(`Файл слишком большой: ${(file.size / 1e6).toFixed(1)} МБ, максимум ${MM_BANNER_MAX_BYTES / 1e6} МБ`);
+    }
+    if (file.type.startsWith('video/')) {
+      const dur = await mmVideoDuration(file);
+      if (dur !== null && dur > MM_BANNER_MAX_VIDEO_SEC + 0.5) {
+        throw new Error(`Видео слишком длинное: ${dur.toFixed(1)} с, максимум ${MM_BANNER_MAX_VIDEO_SEC} с`);
+      }
+    }
+  } else {
+    if (!MM_IMAGE_TYPES.includes(file.type)) {
+      throw new Error(`Формат ${file.type || '(неизвестен)'} не поддерживается — нужен JPEG/PNG/WEBP`);
+    }
+    if (file.size > MM_IMAGE_MAX_MB * 1024 * 1024) {
+      throw new Error(`Файл слишком большой: ${(file.size / 1024 / 1024).toFixed(1)} МБ, максимум ${MM_IMAGE_MAX_MB} МБ`);
+    }
   }
   const dataBase64 = await readFileAsBase64(file);
   const res = await fetch('/api/shop/admin/upload', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ kind: 'image', filename: file.name, contentType: file.type, dataBase64 }),
+    body: JSON.stringify(banner
+      ? { kind: 'image', purpose: 'banner', filename: file.name, contentType: file.type, dataBase64 }
+      : video
+        ? { kind: 'image', purpose: 'video', filename: file.name, contentType: file.type, dataBase64 }
+        : { kind: 'image', filename: file.name, contentType: file.type, dataBase64 }),
   });
   let body = null;
   try { body = await res.json(); } catch { /* тело не JSON — обработаем ниже по res.ok/статусу */ }
@@ -3468,6 +3583,7 @@ async function saveMyMarketProductCard(e) {
     videoUrl: form.elements.videoUrl.value.trim() || null,
     quantityVariants: myMarketCardQty,
     details: myMarketCardDetails,
+    videos: myMarketCardVideos.slice(),
     shopActive,
     // Пользователь сам выбирал категорию/тип (или кликнул вариант) — это уже его
     // выбор: пометка «с названия» снимается, синк Ozon это больше не перезаписывает.
@@ -3657,8 +3773,13 @@ async function renderMyMarketBannerSlots() {
 
   container.innerHTML = banners.map((b) => `
     <div class="banner-slot" data-slot="${b.slot}">
-      ${b.imageUrl ? `<img src="${b.imageUrl}" alt="" onerror="this.style.display='none'" />` : `<div style="width:100%;height:90px;background:var(--bg);border-radius:6px;display:flex;align-items:center;justify-content:center;color:var(--text-faint);font-size:11px">нет фото</div>`}
+      ${b.imageUrl && mmIsVideoUrl(b.imageUrl) ? `<video src="${b.imageUrl}" autoplay loop muted playsinline></video>` : b.imageUrl ? `<img src="${b.imageUrl}" alt="" onerror="this.style.display='none'" />` : `<div style="width:100%;height:90px;background:var(--bg);border-radius:6px;display:flex;align-items:center;justify-content:center;color:var(--text-faint);font-size:11px">нет фото</div>`}
       <input type="text" placeholder="URL фото баннера" class="cost-input mm-banner-image" value="${b.imageUrl ?? ''}" />
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+        <button type="button" class="btn btn--ghost mm-banner-upload-btn" style="font-size:12px">Загрузить с компьютера</button>
+        <input type="file" class="mm-banner-file" accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm" hidden />
+        <span class="mm-banner-upload-status" style="font-size:11px;color:var(--text-faint)"></span>
+      </div>
       <input type="text" placeholder="Заголовок" class="cost-input mm-banner-title" value="${b.title ?? ''}" />
       <input type="text" placeholder="Подзаголовок" class="cost-input mm-banner-subtitle" value="${b.subtitle ?? ''}" />
       <div style="display:flex;gap:6px">
@@ -3676,6 +3797,32 @@ async function renderMyMarketBannerSlots() {
   `).join('');
 
   container.querySelectorAll('.banner-slot').forEach((slotEl) => {
+    // Загрузка фото с компьютера: файл → Blob (uploadMyMarketFile) → ссылка в поле «URL фото баннера» + превью.
+    // Сохраняется, как и раньше, только по кнопке «Сохранить слот».
+    const fileInput = slotEl.querySelector('.mm-banner-file');
+    const uploadBtn = slotEl.querySelector('.mm-banner-upload-btn');
+    const uploadStatus = slotEl.querySelector('.mm-banner-upload-status');
+    uploadBtn.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', async () => {
+      const file = fileInput.files[0];
+      fileInput.value = '';
+      if (!file) return;
+      uploadBtn.disabled = true;
+      uploadStatus.style.color = 'var(--text-faint)';
+      uploadStatus.textContent = 'Загружаю…';
+      try {
+        const url = await uploadMyMarketFile(file, { banner: true });
+        slotEl.querySelector('.mm-banner-image').value = url;
+        slotEl.firstElementChild.replaceWith(mmBannerPreviewEl(url));
+        uploadStatus.textContent = 'Загружено — нажмите «Сохранить слот»';
+      } catch (err) {
+        uploadStatus.style.color = 'var(--loss)';
+        uploadStatus.textContent = 'Не удалось загрузить: ' + err.message;
+      } finally {
+        uploadBtn.disabled = false;
+      }
+    });
+
     slotEl.querySelector('.mm-banner-save').addEventListener('click', async () => {
       const slot = slotEl.dataset.slot;
       const payload = {
@@ -5336,15 +5483,20 @@ function cityImagesSetStatus(text, isError) {
 
 function renderCityImages() {
   const el = document.getElementById('cityImagesList');
-  el.innerHTML = `<table class="table"><tbody>${cityImagesRows.map((r) => `
+  el.innerHTML = `<table class="table"><tbody>${cityImagesRows.map((r) => {
+    const max = r.max || 10;
+    const thumbs = r.images.map((im) => `
+      <div class="city-thumb" data-img-id="${mmxEsc(im.id)}" style="position:relative;display:inline-block;margin:0 6px 6px 0">
+        <img src="${mmxEsc(im.url)}" alt="" style="width:64px;height:48px;object-fit:cover;border-radius:6px;display:block" />
+        <button type="button" data-city-act="delete" title="Удалить картинку" style="position:absolute;top:-6px;right:-6px;width:18px;height:18px;border-radius:50%;border:0;background:var(--loss);color:#fff;font-size:12px;line-height:18px;padding:0;cursor:pointer">×</button>
+      </div>`).join('');
+    return `
     <tr data-city="${mmxEsc(r.city)}">
-      <td style="width:72px">${r.imageUrl ? `<img src="${mmxEsc(r.imageUrl)}" alt="" style="width:64px;height:48px;object-fit:cover;border-radius:6px" />` : '<div style="width:64px;height:48px;border-radius:6px;background:var(--bg);display:flex;align-items:center;justify-content:center;color:var(--text-faint);font-size:11px">нет</div>'}</td>
-      <td><b>${mmxEsc(r.city)}</b><div class="panel__hint" style="margin:0">${r.imageUrl ? 'Картинка загружена' : 'Картинки нет'}</div></td>
-      <td style="white-space:nowrap">
-        <button type="button" class="btn btn--ghost" data-city-act="upload">${r.imageUrl ? 'Заменить' : 'Загрузить'}</button>
-        ${r.imageUrl ? '<button type="button" class="btn btn--ghost" data-city-act="delete">Удалить</button>' : ''}
-      </td>
-    </tr>`).join('')}</tbody></table>`;
+      <td style="width:130px"><b>${mmxEsc(r.city)}</b><div class="panel__hint" style="margin:0">${r.images.length} / ${max}</div></td>
+      <td>${thumbs || '<span class="panel__hint" style="margin:0">Картинок нет</span>'}</td>
+      <td style="white-space:nowrap"><button type="button" class="btn btn--ghost" data-city-act="add"${r.images.length >= max ? ' disabled title="Достигнут максимум"' : ''}>Добавить</button></td>
+    </tr>`;
+  }).join('')}</tbody></table>`;
 }
 
 async function loadCityImagesPage() {
@@ -5353,10 +5505,10 @@ async function loadCityImagesPage() {
     document.getElementById('cityImagesReloadBtn').addEventListener('click', loadCityImagesPage);
     document.getElementById('cityImagesList').addEventListener('click', (e) => {
       const btn = e.target.closest('[data-city-act]');
-      if (!btn || cityImagesBusy) return;
+      if (!btn || btn.disabled || cityImagesBusy) return;
       const city = btn.closest('tr').dataset.city;
-      if (btn.dataset.cityAct === 'upload') { cityImagesPickCity = city; document.getElementById('cityImagesFile').click(); }
-      else cityImagesDelete(city);
+      if (btn.dataset.cityAct === 'add') { cityImagesPickCity = city; document.getElementById('cityImagesFile').click(); }
+      else cityImagesDelete(city, btn.closest('.city-thumb').dataset.imgId);
     });
     document.getElementById('cityImagesFile').addEventListener('change', (e) => {
       const file = e.target.files[0];
@@ -5374,6 +5526,12 @@ async function loadCityImagesPage() {
   }
 }
 
+function cityImagesApply(city, images) {
+  const row = cityImagesRows.find((x) => x.city === city);
+  if (row) { row.images = images; row.imageUrl = images[0] ? images[0].url : null; }
+  renderCityImages();
+}
+
 async function cityImagesUpload(city, file) {
   if (cityImagesBusy) return;
   cityImagesBusy = true;
@@ -5381,28 +5539,24 @@ async function cityImagesUpload(city, file) {
   try {
     cityImagesSetStatus(`Загружаю картинку для «${city}»…`, false);
     const url = await uploadMyMarketFile(file);
-    const r = await api(`/shop-admin/city-images/${encodeURIComponent(city)}`, { method: 'PUT', body: JSON.stringify({ imageUrl: url }) });
-    const row = cityImagesRows.find((x) => x.city === city);
-    if (row) row.imageUrl = r.imageUrl;
-    renderCityImages();
-    cityImagesSetStatus(`Картинка для «${city}» сохранена`, false);
+    const r = await api(`/shop-admin/city-images/${encodeURIComponent(city)}`, { method: 'POST', body: JSON.stringify({ imageUrl: url }) });
+    cityImagesApply(city, r.images);
+    cityImagesSetStatus(`Картинка для «${city}» добавлена`, false);
   } catch (err) {
-    cityImagesSetStatus(`Не удалось сохранить картинку для «${city}»: ${err.message}`, true);
+    cityImagesSetStatus(`Не удалось добавить картинку для «${city}»: ${err.message}`, true);
   } finally {
     cityImagesBusy = false;
     document.getElementById('cityImagesList').removeAttribute('aria-busy');
   }
 }
 
-async function cityImagesDelete(city) {
+async function cityImagesDelete(city, id) {
   if (cityImagesBusy) return;
-  if (!confirm(`Удалить картинку города «${city}»?`)) return;
+  if (!confirm(`Удалить эту картинку города «${city}»?`)) return;
   cityImagesBusy = true;
   try {
-    await api(`/shop-admin/city-images/${encodeURIComponent(city)}`, { method: 'DELETE' });
-    const row = cityImagesRows.find((x) => x.city === city);
-    if (row) row.imageUrl = null;
-    renderCityImages();
+    const r = await api(`/shop-admin/city-images/${encodeURIComponent(city)}/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    cityImagesApply(city, r.images);
     cityImagesSetStatus(`Картинка города «${city}» удалена`, false);
   } catch (err) {
     cityImagesSetStatus(`Не удалось удалить: ${err.message}`, true);

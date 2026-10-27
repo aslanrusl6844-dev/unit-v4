@@ -186,6 +186,7 @@ model Product {
   videoUrl        String?   // Отдельное поле "Видео URL" — только внешняя ссылка, ничего не загружается на Vercel
   quantityVariants String?  // JSON-массив [{quantity, unit, price}] — варианты количества (1/2/3/4 шт или кг)
   details         Json?     // массив URL фото/видео «Детали» товара (порядок = порядок массива)
+  videos          String[]  @default([]) // до 3 видео товара (URL mp4/webm), порядок важен
   showcaseOnly    Boolean   @default(false) // товар создан внутри витрины: в общий каталог My Market не попадает, виден только в витринах, куда привязан
   // Себестоимость именно для витрины My Market — отдельно от общей
   // costPrice (которая используется Kaspi/Ozon/WB), т.к. закупочная цена
@@ -661,6 +662,16 @@ model CityImage {
   updatedAt DateTime @updatedAt
 }
 
+model CityImageSlide {
+  id        String   @id @default(cuid())
+  city      String
+  imageUrl  String
+  position  Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([city, position])
+}
+
 model YardSettings {
   id             String   @id @default("main")
   instructionUrl String?
@@ -853,6 +864,7 @@ model Showcase {
   bannerTitle String?
   bannerText  String?
   banners     String[] @default([]) // маленькая карусель ниже (URL картинок, порядок важен); в API также как smallBanners
+  videos      String[] @default([]) // до 3 видео витрины (URL mp4/webm), порядок важен
   bigBanners  String[] @default([]) // большая карусель сверху (до 10 URL, порядок важен); пусто → показывается bannerUrl
   videoUrl    String?  // ссылка на видео витрины
   published   Boolean  @default(false) // опубликована ли в приложении

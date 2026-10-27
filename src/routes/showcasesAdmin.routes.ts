@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../db/prisma';
 import { logger } from '../utils/logger';
 import { mapDbError } from './showcases.errors';
+import { videosSchema } from '../services/productExtras';
 
 /**
  * Подбаннерные витрины — АДМИНИСТРАТИВНАЯ часть. Путь: /api/shop-admin/showcases/...
@@ -179,6 +180,7 @@ const createShowcase = z.object({
   bannerText: optText(1000),
   banners: bannersSchema.optional(),
   bigBanners: bannersSchema.optional(),
+  videos: videosSchema.optional(),
   videoUrl: videoUrlSchema,
   published: z.boolean().optional(),
 });
@@ -200,6 +202,7 @@ showcasesAdminRouter.post('/', async (req, res) => {
         bannerText: blankToNull(d.bannerText) ?? null,
         banners: uniqueUrls(d.banners ?? []),
         bigBanners: uniqueUrls(d.bigBanners ?? []),
+        videos: d.videos ?? [],
         videoUrl: blankToNull(d.videoUrl) ?? null,
         // Новая витрина по умолчанию скрыта: наполняем, потом публикуем.
         published: d.published ?? false,
@@ -269,6 +272,7 @@ const patchShowcase = z.object({
   bannerText: optText(1000),
   banners: bannersSchema.optional(),
   bigBanners: bannersSchema.optional(),
+  videos: videosSchema.optional(),
   videoUrl: videoUrlSchema,
   published: z.boolean().optional(),
   sortOrder: z.number().int().min(0).max(1_000_000).optional(),
@@ -292,6 +296,7 @@ showcasesAdminRouter.patch('/:id', async (req, res) => {
     }
     if (d.banners !== undefined) data.banners = uniqueUrls(d.banners);
     if (d.bigBanners !== undefined) data.bigBanners = uniqueUrls(d.bigBanners);
+    if (d.videos !== undefined) data.videos = d.videos;
     const row = await prisma.showcase.update({ where: { id: existing.id }, data });
     res.json(row);
   } catch (err: any) {

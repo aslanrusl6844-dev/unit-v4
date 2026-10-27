@@ -80,8 +80,20 @@ const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
 // JSON-обёртку, и держится ниже жёсткого предела самого Vercel (~4.5 МБ).
 const MAX_IMAGE_BYTES = 2.5 * 1024 * 1024;
 
+/**
+ * Баннеры главной (4 слота): purpose='banner' разрешает ещё GIF и короткие видео MP4/WEBM.
+ * Для остальных мест (фото товаров и т. д.) ничего не меняется. Предел размера — из-за
+ * того же ограничения Vercel на тело запроса (~4.5 МБ, в base64 файл «пухнет» на треть),
+ * поэтому 3 000 000 байт: в base64 это ~4.0 МБ, как и у express.json() (4mb).
+ */
+export const BANNER_ALLOWED_TYPES = [...ALLOWED_IMAGE_TYPES, 'image/gif', 'video/mp4', 'video/webm'];
+export const MAX_BANNER_BYTES = 3_000_000;
+/** Видео товара и витрины (purpose='video'): только MP4/WEBM, предел как у баннеров. */
+export const VIDEO_ALLOWED_TYPES = ['video/mp4', 'video/webm'];
+
 const uploadSchema = z.object({
   kind: z.literal('image'),
+  purpose: z.enum(['banner', 'video']).optional(),
   filename: z.string().min(1),
   contentType: z.string().min(1),
   dataBase64: z.string().min(1),
@@ -93,6 +105,10 @@ shopMediaRouter.post('/upload', async (req, res) => {
     return res.status(400).json({ error: 'Неверные данные загрузки', details: parsed.error.flatten() });
   }
   const { filename, contentType, dataBase64 } = parsed.data;
+  const isVideo = parsed.data.purpose === 'video';
+  const isBanner = parsed.data.purpose === 'banner' || isVideo; // видео товара/витрины: тот же предел, что у баннеров
+  const allowedTypes = isVideo ? VIDEO_ALLOWED_TYPES : isBanner ? BANNER_ALLOWED_TYPES : ALLOWED_IMAGE_TYPES;
+  const maxBytes = isBanner ? MAX_BANNER_BYTES : MAX_IMAGE_BYTES;
 
   // Честно отказываем, если Blob не настроен — НЕ 500, конкретный текст,
   // как договорились. Проверяем ДО декодирования/обращения к Blob, чтобы
@@ -101,8 +117,14 @@ shopMediaRouter.post('/upload', async (req, res) => {
     return res.status(501).json({ error: 'добавьте Blob', details: 'BLOB_READ_WRITE_TOKEN не задан в переменных окружения — загрузка файлом недоступна, используйте поле URL.' });
   }
 
-  if (!ALLOWED_IMAGE_TYPES.includes(contentType)) {
-    return res.status(400).json({ error: `Недопустимый формат файла: ${contentType}. Разрешено: ${ALLOWED_IMAGE_TYPES.join(', ')}` });
+  if (!allowedTypes.includes(contentType)) {
+    return res.status(400).json({
+      error: isVideo
+        ? 'Формат не поддерживается. Нужен MP4 или WEBM'
+        : isBanner
+        ? 'Формат не поддерживается. Нужен JPEG, PNG, WEBP, GIF, MP4 или WEBM'
+        : `Недопустимый формат файла: ${contentType}. Разрешено: ${ALLOWED_IMAGE_TYPES.join(', ')}`,
+    });
   }
 
   let buffer: Buffer;
@@ -112,15 +134,17 @@ shopMediaRouter.post('/upload', async (req, res) => {
     return res.status(400).json({ error: 'Не удалось декодировать файл', details: String(err?.message ?? err) });
   }
 
-  if (buffer.length > MAX_IMAGE_BYTES) {
+  if (buffer.length > maxBytes) {
     return res.status(413).json({
-      error: `Файл слишком большой: ${(buffer.length / 1024 / 1024).toFixed(1)} МБ, максимум ${(MAX_IMAGE_BYTES / 1024 / 1024).toFixed(1)} МБ`,
+      error: isBanner
+        ? `Файл слишком большой: ${(buffer.length / 1e6).toFixed(1)} МБ, максимум ${maxBytes / 1e6} МБ`
+        : `Файл слишком большой: ${(buffer.length / 1024 / 1024).toFixed(1)} МБ, максимум ${(maxBytes / 1024 / 1024).toFixed(1)} МБ`,
       details: 'Ограничение ниже, чем изначально заявленные 10 МБ, из-за предела Vercel на размер тела запроса (~4.5 МБ) — большой файл в base64 в него не помещается.',
     });
   }
 
   try {
-    const pathname = `shop/image/${Date.now()}-${filename.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+    const pathname = `shop/${isVideo ? 'video' : isBanner ? 'banner' : 'image'}/${Date.now()}-${filename.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
     const blob = await put(pathname, buffer, {
       access: 'public',
       contentType,

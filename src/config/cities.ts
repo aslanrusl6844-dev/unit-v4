@@ -28,3 +28,6 @@ export function resolveCity(raw: unknown): string | null {
   if (!key) return null;
   return BY_KEY.get(key) ?? ALIASES.get(key) ?? null;
 }
+
+/** Максимум картинок (слайдов) на один город. */
+export const MAX_CITY_IMAGES = 10;
