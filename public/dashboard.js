@@ -3356,18 +3356,74 @@ const MM_IMAGE_MAX_MB = 2.5;
  * а не общее "API error 500", которое раньше скрывало настоящую причину
  * (например, PayloadTooLargeError, замаскированный под "внутреннюю ошибку").
  */
-async function uploadMyMarketFile(file) {
-  if (!MM_IMAGE_TYPES.includes(file.type)) {
-    throw new Error(`Формат ${file.type || '(неизвестен)'} не поддерживается — нужен JPEG/PNG/WEBP`);
+// Баннеры главной: ещё GIF и короткие видео. Предел согласован с сервером (MAX_BANNER_BYTES) —
+// Vercel не пропускает тело запроса больше ~4.5 МБ, а в base64 файл вырастает на треть.
+const MM_BANNER_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'video/mp4', 'video/webm'];
+const MM_BANNER_MAX_BYTES = 3000000;
+const MM_BANNER_MAX_VIDEO_SEC = 10;
+const MM_BANNER_FORMAT_ERROR = 'Формат не поддерживается. Нужен JPEG, PNG, WEBP, GIF, MP4 или WEBM';
+
+function mmIsVideoUrl(url) {
+  return /\.(mp4|webm)(\?|#|$)/i.test(String(url || ''));
+}
+
+/** Превью баннера: видео → <video autoplay loop muted>, иначе <img>. */
+function mmBannerPreviewEl(url) {
+  if (mmIsVideoUrl(url)) {
+    const v = document.createElement('video');
+    v.src = url; v.autoplay = true; v.loop = true; v.muted = true; v.playsInline = true;
+    v.setAttribute('autoplay', ''); v.setAttribute('loop', ''); v.setAttribute('muted', ''); v.setAttribute('playsinline', '');
+    return v;
   }
-  if (file.size > MM_IMAGE_MAX_MB * 1024 * 1024) {
-    throw new Error(`Файл слишком большой: ${(file.size / 1024 / 1024).toFixed(1)} МБ, максимум ${MM_IMAGE_MAX_MB} МБ`);
+  const img = document.createElement('img');
+  img.alt = ''; img.src = url;
+  return img;
+}
+
+/** Длительность видео из метаданных; null — не удалось определить (тогда не блокируем). */
+function mmVideoDuration(file) {
+  return new Promise((resolve) => {
+    try {
+      const v = document.createElement('video');
+      const objUrl = URL.createObjectURL(file);
+      const done = (d) => { URL.revokeObjectURL(objUrl); resolve(d); };
+      v.preload = 'metadata';
+      v.onloadedmetadata = () => done(Number.isFinite(v.duration) ? v.duration : null);
+      v.onerror = () => done(null);
+      setTimeout(() => done(null), 4000);
+      v.src = objUrl;
+    } catch { resolve(null); }
+  });
+}
+
+async function uploadMyMarketFile(file, opts) {
+  const banner = !!(opts && opts.banner);
+  if (banner) {
+    if (!MM_BANNER_TYPES.includes(file.type)) throw new Error(MM_BANNER_FORMAT_ERROR);
+    if (file.size > MM_BANNER_MAX_BYTES) {
+      throw new Error(`Файл слишком большой: ${(file.size / 1e6).toFixed(1)} МБ, максимум ${MM_BANNER_MAX_BYTES / 1e6} МБ`);
+    }
+    if (file.type.startsWith('video/')) {
+      const dur = await mmVideoDuration(file);
+      if (dur !== null && dur > MM_BANNER_MAX_VIDEO_SEC + 0.5) {
+        throw new Error(`Видео слишком длинное: ${dur.toFixed(1)} с, максимум ${MM_BANNER_MAX_VIDEO_SEC} с`);
+      }
+    }
+  } else {
+    if (!MM_IMAGE_TYPES.includes(file.type)) {
+      throw new Error(`Формат ${file.type || '(неизвестен)'} не поддерживается — нужен JPEG/PNG/WEBP`);
+    }
+    if (file.size > MM_IMAGE_MAX_MB * 1024 * 1024) {
+      throw new Error(`Файл слишком большой: ${(file.size / 1024 / 1024).toFixed(1)} МБ, максимум ${MM_IMAGE_MAX_MB} МБ`);
+    }
   }
   const dataBase64 = await readFileAsBase64(file);
   const res = await fetch('/api/shop/admin/upload', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ kind: 'image', filename: file.name, contentType: file.type, dataBase64 }),
+    body: JSON.stringify(banner
+      ? { kind: 'image', purpose: 'banner', filename: file.name, contentType: file.type, dataBase64 }
+      : { kind: 'image', filename: file.name, contentType: file.type, dataBase64 }),
   });
   let body = null;
   try { body = await res.json(); } catch { /* тело не JSON — обработаем ниже по res.ok/статусу */ }
@@ -3657,11 +3713,11 @@ async function renderMyMarketBannerSlots() {
 
   container.innerHTML = banners.map((b) => `
     <div class="banner-slot" data-slot="${b.slot}">
-      ${b.imageUrl ? `<img src="${b.imageUrl}" alt="" onerror="this.style.display='none'" />` : `<div style="width:100%;height:90px;background:var(--bg);border-radius:6px;display:flex;align-items:center;justify-content:center;color:var(--text-faint);font-size:11px">нет фото</div>`}
+      ${b.imageUrl && mmIsVideoUrl(b.imageUrl) ? `<video src="${b.imageUrl}" autoplay loop muted playsinline></video>` : b.imageUrl ? `<img src="${b.imageUrl}" alt="" onerror="this.style.display='none'" />` : `<div style="width:100%;height:90px;background:var(--bg);border-radius:6px;display:flex;align-items:center;justify-content:center;color:var(--text-faint);font-size:11px">нет фото</div>`}
       <input type="text" placeholder="URL фото баннера" class="cost-input mm-banner-image" value="${b.imageUrl ?? ''}" />
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
         <button type="button" class="btn btn--ghost mm-banner-upload-btn" style="font-size:12px">Загрузить с компьютера</button>
-        <input type="file" class="mm-banner-file" accept="image/jpeg,image/png,image/webp" hidden />
+        <input type="file" class="mm-banner-file" accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm" hidden />
         <span class="mm-banner-upload-status" style="font-size:11px;color:var(--text-faint)"></span>
       </div>
       <input type="text" placeholder="Заголовок" class="cost-input mm-banner-title" value="${b.title ?? ''}" />
@@ -3695,12 +3751,9 @@ async function renderMyMarketBannerSlots() {
       uploadStatus.style.color = 'var(--text-faint)';
       uploadStatus.textContent = 'Загружаю…';
       try {
-        const url = await uploadMyMarketFile(file);
+        const url = await uploadMyMarketFile(file, { banner: true });
         slotEl.querySelector('.mm-banner-image').value = url;
-        const preview = document.createElement('img');
-        preview.alt = '';
-        preview.src = url;
-        slotEl.firstElementChild.replaceWith(preview);
+        slotEl.firstElementChild.replaceWith(mmBannerPreviewEl(url));
         uploadStatus.textContent = 'Загружено — нажмите «Сохранить слот»';
       } catch (err) {
         uploadStatus.style.color = 'var(--loss)';
