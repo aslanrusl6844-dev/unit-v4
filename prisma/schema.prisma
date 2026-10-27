@@ -867,7 +867,8 @@ model Showcase {
   videos      String[] @default([]) // до 3 видео витрины (URL mp4/webm), порядок важен
   bigBannerTexts String[] @default([]) // текст на каждом баннере большой карусели (тот же порядок, что bigBanners; '' — без текста)
   bigBannerTextColors String[] @default([]) // цвет текста: 'white' | 'black' (тот же порядок; пусто → white)
-  bigBannerFontStyles String[] @default([]) // шрифт: 'normal' | 'bold' | 'large' (тот же порядок; пусто → normal)
+  bigBannerFontStyles String[] @default([]) // УСТАРЕЛО: прежний выбор шрифта, не используется
+  bigBannerSizes String[] @default([]) // размеры строк текста, % через запятую: '30,15' (тот же порядок, что bigBanners; пусто → 20 на строку)
   bigBanners  String[] @default([]) // большая карусель сверху (до 10 URL, порядок важен); пусто → показывается bannerUrl
   videoUrl    String?  // ссылка на видео витрины
   published   Boolean  @default(false) // опубликована ли в приложении

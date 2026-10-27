@@ -1411,9 +1411,9 @@ describe('текст и цвет баннеров большой карусел�
     const page = (await pub(`/${s.id}`)).json;
     assert.deepEqual(page.bigBanners, [U(1), U(2), U(3)]);
     assert.deepEqual(page.bigBannerItems, [
-      { url: U(1), text: 'Скидка 40%', textColor: 'white', fontStyle: 'normal' },
-      { url: U(2), text: 'Новинка', textColor: 'black', fontStyle: 'normal' },
-      { url: U(3), text: null, textColor: 'white', fontStyle: 'normal' },
+      { url: U(1), text: 'Скидка 40%', sizes: [20], textColor: 'white' },
+      { url: U(2), text: 'Новинка', sizes: [20], textColor: 'black' },
+      { url: U(3), text: null, sizes: [], textColor: 'white' },
     ]);
     const adminRow = (await adm('GET', `/${s.id}`)).json;
     assert.deepEqual(adminRow.bigBannerTexts, ['Скидка 40%', 'Новинка', '']);
@@ -1425,12 +1425,12 @@ describe('текст и цвет баннеров большой карусел�
     const row = tables.showcase.find((r: Row) => r.id === s.id)!;
     delete row.bigBannerTexts; delete row.bigBannerTextColors;
     assert.deepEqual((await pub(`/${s.id}`)).json.bigBannerItems, [
-      { url: U(1), text: null, textColor: 'white', fontStyle: 'normal' }, { url: U(2), text: null, textColor: 'white', fontStyle: 'normal' },
+      { url: U(1), text: null, sizes: [], textColor: 'white' }, { url: U(2), text: null, sizes: [], textColor: 'white' },
     ]);
     const only = await newShowcase({ published: true, bannerUrl: OLD });
     const p2 = (await pub(`/${only.id}`)).json;
     assert.deepEqual(p2.bigBanners, [OLD]);
-    assert.deepEqual(p2.bigBannerItems, [{ url: OLD, text: null, textColor: 'white', fontStyle: 'normal' }]);
+    assert.deepEqual(p2.bigBannerItems, [{ url: OLD, text: null, sizes: [], textColor: 'white' }]);
     const none = await newShowcase({ published: true });
     assert.deepEqual((await pub(`/${none.id}`)).json.bigBannerItems, []);
   });
@@ -1440,9 +1440,9 @@ describe('текст и цвет баннеров большой карусел�
     const r = await adm('PATCH', `/${s.id}`, { bigBanners: [U(2), U(3), U(1)] });
     assert.equal(r.status, 200);
     assert.deepEqual((await pub(`/${s.id}`)).json.bigBannerItems, [
-      { url: U(2), text: 'Два', textColor: 'white', fontStyle: 'normal' },
-      { url: U(3), text: null, textColor: 'white', fontStyle: 'normal' },
-      { url: U(1), text: 'Один', textColor: 'black', fontStyle: 'normal' },
+      { url: U(2), text: 'Два', sizes: [20], textColor: 'white' },
+      { url: U(3), text: null, sizes: [], textColor: 'white' },
+      { url: U(1), text: 'Один', sizes: [20], textColor: 'black' },
     ]);
   });
 
@@ -1459,43 +1459,62 @@ describe('текст и цвет баннеров большой карусел�
     assert.deepEqual(tables.showcase.find((r: Row) => r.id === s.id)!.bigBannerTexts, []);
   });
 
-  test('валидация: цвет только white/black, текст до 300 символов, максимум 10, ссылка http(s)', async () => {
+  test('валидация: цвет только white/black, текст до 600 символов, максимум 10, ссылка http(s)', async () => {
     const s = await newShowcase({ published: true });
     const bad: unknown[] = [
       [{ url: U(1), textColor: 'red' }],
-      [{ url: U(1), fontStyle: 'huge' }],
-      [{ url: U(1), text: 'x'.repeat(301) }],
+      [{ url: U(1), text: 'x', sizes: [0] }],
+      [{ url: U(1), text: 'x', sizes: [101] }],
+      [{ url: U(1), text: 'x', sizes: [10.5] }],
+      [{ url: U(1), text: 'x', sizes: ['big'] }],
+      [{ url: U(1), text: 'x'.repeat(601) }],
       [{ url: 'javascript:alert(1)' }],
       Array.from({ length: 11 }, (_, i) => ({ url: U(i) })),
     ];
     for (const bigBannerItems of bad) assert.equal((await adm('PATCH', `/${s.id}`, { bigBannerItems })).status, 400, JSON.stringify(bigBannerItems).slice(0, 60));
-    assert.equal((await adm('PATCH', `/${s.id}`, { bigBannerItems: [{ url: U(1), text: 'x'.repeat(300), textColor: 'black' }] })).status, 200);
+    assert.equal((await adm('PATCH', `/${s.id}`, { bigBannerItems: [{ url: U(1), text: 'x'.repeat(600), textColor: 'black' }] })).status, 200);
   });
 
-  test('fontStyle: normal/bold/large сохраняются, многострочный текст отдаётся с \\n; без fontStyle — normal', async () => {
+  test('sizes: размер каждой строки сохраняется и отдаётся; text многострочный (\\n)', async () => {
     const s = await newShowcase({
       published: true,
       bigBannerItems: [
-        { url: U(1), text: 'Строка 1\r\nСтрока 2\n\nСтрока 4', textColor: 'black', fontStyle: 'large' },
-        { url: U(2), text: 'Жирно', fontStyle: 'bold' },
-        { url: U(3), text: 'Обычно' },
+        { url: U(1), text: 'CELL29\r\nИскусство ухода', sizes: [30, 15], textColor: 'white' },
+        { url: U(2), text: 'Одна строка', sizes: [55] },
+        { url: U(3), text: 'Без\nразмеров' },
+        { url: U(4), text: 'A\nB\nC', sizes: [40] },
       ],
     });
     const page = (await pub(`/${s.id}`)).json;
     assert.deepEqual(page.bigBannerItems, [
-      { url: U(1), text: 'Строка 1\nСтрока 2\n\nСтрока 4', textColor: 'black', fontStyle: 'large' },
-      { url: U(2), text: 'Жирно', textColor: 'white', fontStyle: 'bold' },
-      { url: U(3), text: 'Обычно', textColor: 'white', fontStyle: 'normal' },
+      { url: U(1), text: 'CELL29\nИскусство ухода', sizes: [30, 15], textColor: 'white' },
+      { url: U(2), text: 'Одна строка', sizes: [55], textColor: 'white' },
+      { url: U(3), text: 'Без\nразмеров', sizes: [20, 20], textColor: 'white' },
+      { url: U(4), text: 'A\nB\nC', sizes: [40, 20, 20], textColor: 'white' },
     ]);
-    assert.deepEqual((await adm('GET', `/${s.id}`)).json.bigBannerFontStyles, ['large', 'bold', 'normal']);
+    assert.deepEqual((await adm('GET', `/${s.id}`)).json.bigBannerSizes, ['30,15', '55', '20,20', '40,20,20']);
+    assert.equal('fontStyle' in page.bigBannerItems[0], false);
   });
 
-  test('старые данные без bigBannerFontStyles → fontStyle normal; PATCH только bigBanners сохраняет шрифт за ссылкой', async () => {
-    const s = await newShowcase({ published: true, bigBannerItems: [{ url: U(1), text: 'A', fontStyle: 'bold' }, { url: U(2), text: 'B', fontStyle: 'large' }] });
+  test('пустые строки по краям срезаются вместе с размерами; пусто → text null, sizes []', async () => {
+    const s = await newShowcase({
+      published: true,
+      bigBannerItems: [{ url: U(1), text: '\n  Верх  \n\nНиз\n ', sizes: [1, 2, 3, 4, 5] }, { url: U(2), text: '  \n ', sizes: [9] }],
+    });
+    assert.deepEqual((await pub(`/${s.id}`)).json.bigBannerItems, [
+      { url: U(1), text: 'Верх\n\nНиз', sizes: [2, 3, 4], textColor: 'white' },
+      { url: U(2), text: null, sizes: [], textColor: 'white' },
+    ]);
+  });
+
+  test('старые данные: текст без bigBannerSizes (и прежний bigBannerFontStyles) → размер 20 на строку; PATCH только bigBanners сохраняет размеры за ссылкой', async () => {
+    const s = await newShowcase({ published: true, bigBannerItems: [{ url: U(1), text: 'A\nB', sizes: [30, 15] }, { url: U(2), text: 'C', sizes: [60] }] });
     await adm('PATCH', `/${s.id}`, { bigBanners: [U(2), U(1)] });
-    assert.deepEqual((await pub(`/${s.id}`)).json.bigBannerItems.map((b: any) => b.fontStyle), ['large', 'bold']);
-    delete tables.showcase.find((r: Row) => r.id === s.id)!.bigBannerFontStyles;
-    assert.deepEqual((await pub(`/${s.id}`)).json.bigBannerItems.map((b: any) => b.fontStyle), ['normal', 'normal']);
+    assert.deepEqual((await pub(`/${s.id}`)).json.bigBannerItems.map((b: any) => b.sizes), [[60], [30, 15]]);
+    const row = tables.showcase.find((r: Row) => r.id === s.id)!;
+    delete row.bigBannerSizes;
+    row.bigBannerFontStyles = ['large', 'bold'];
+    assert.deepEqual((await pub(`/${s.id}`)).json.bigBannerItems.map((b: any) => b.sizes), [[20], [20, 20]]);
   });
 
   test('список витрин (иконки) формат не меняет', async () => {

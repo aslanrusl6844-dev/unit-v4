@@ -124,10 +124,10 @@ showcasesRouter.get('/:id', async (req, res) => {
     // bigBanners — большая карусель сверху (пусто → запасной bannerUrl, как раньше);
     // smallBanners — маленькая карусель ниже (то же, что banners, оставлено для совместимости).
     const smallBanners: string[] = Array.isArray(showcase.banners) ? showcase.banners : [];
-    const bigItems = bigBannerItemsOf(showcase); // {url, text, textColor, fontStyle}; пусто → запасной bannerUrl
+    const bigItems = bigBannerItemsOf(showcase); // {url, text, sizes, textColor}; пусто → запасной bannerUrl
     res.json({
       ...publicShowcase(showcase),
-      // bigBanners — только ссылки (как раньше); bigBannerItems — те же баннеры с текстом (многострочным), цветом и начертанием (fontStyle: normal | bold | large).
+      // bigBanners — только ссылки (как раньше); bigBannerItems — те же баннеры с текстом (многострочный, \n), sizes (размер в % для каждой строки; по умолчанию 20) и цветом текста.
       bigBanners: bigItems.map((b) => b.url),
       bigBannerItems: bigItems,
       smallBanners,
