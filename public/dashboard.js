@@ -3659,6 +3659,11 @@ async function renderMyMarketBannerSlots() {
     <div class="banner-slot" data-slot="${b.slot}">
       ${b.imageUrl ? `<img src="${b.imageUrl}" alt="" onerror="this.style.display='none'" />` : `<div style="width:100%;height:90px;background:var(--bg);border-radius:6px;display:flex;align-items:center;justify-content:center;color:var(--text-faint);font-size:11px">нет фото</div>`}
       <input type="text" placeholder="URL фото баннера" class="cost-input mm-banner-image" value="${b.imageUrl ?? ''}" />
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+        <button type="button" class="btn btn--ghost mm-banner-upload-btn" style="font-size:12px">Загрузить с компьютера</button>
+        <input type="file" class="mm-banner-file" accept="image/jpeg,image/png,image/webp" hidden />
+        <span class="mm-banner-upload-status" style="font-size:11px;color:var(--text-faint)"></span>
+      </div>
       <input type="text" placeholder="Заголовок" class="cost-input mm-banner-title" value="${b.title ?? ''}" />
       <input type="text" placeholder="Подзаголовок" class="cost-input mm-banner-subtitle" value="${b.subtitle ?? ''}" />
       <div style="display:flex;gap:6px">
@@ -3676,6 +3681,35 @@ async function renderMyMarketBannerSlots() {
   `).join('');
 
   container.querySelectorAll('.banner-slot').forEach((slotEl) => {
+    // Загрузка фото с компьютера: файл → Blob (uploadMyMarketFile) → ссылка в поле «URL фото баннера» + превью.
+    // Сохраняется, как и раньше, только по кнопке «Сохранить слот».
+    const fileInput = slotEl.querySelector('.mm-banner-file');
+    const uploadBtn = slotEl.querySelector('.mm-banner-upload-btn');
+    const uploadStatus = slotEl.querySelector('.mm-banner-upload-status');
+    uploadBtn.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', async () => {
+      const file = fileInput.files[0];
+      fileInput.value = '';
+      if (!file) return;
+      uploadBtn.disabled = true;
+      uploadStatus.style.color = 'var(--text-faint)';
+      uploadStatus.textContent = 'Загружаю…';
+      try {
+        const url = await uploadMyMarketFile(file);
+        slotEl.querySelector('.mm-banner-image').value = url;
+        const preview = document.createElement('img');
+        preview.alt = '';
+        preview.src = url;
+        slotEl.firstElementChild.replaceWith(preview);
+        uploadStatus.textContent = 'Загружено — нажмите «Сохранить слот»';
+      } catch (err) {
+        uploadStatus.style.color = 'var(--loss)';
+        uploadStatus.textContent = 'Не удалось загрузить: ' + err.message;
+      } finally {
+        uploadBtn.disabled = false;
+      }
+    });
+
     slotEl.querySelector('.mm-banner-save').addEventListener('click', async () => {
       const slot = slotEl.dataset.slot;
       const payload = {
