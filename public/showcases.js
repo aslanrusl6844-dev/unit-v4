@@ -156,6 +156,8 @@ function scBannersHtml(kind) {
       <td style="white-space:nowrap">
         <button type="button" class="btn btn--ghost" data-sc="b-up" ${i === 0 ? 'disabled' : ''}>↑</button>
         <button type="button" class="btn btn--ghost" data-sc="b-down" ${i === list.length - 1 ? 'disabled' : ''}>↓</button>
+        ${extras ? `<button type="button" class="btn btn--ghost" data-sc="b-replace" title="Заменить картинку, текст и цвет останутся">Поменять фото</button>
+        <input type="file" class="sc-bb-replace" accept="image/jpeg,image/png,image/webp" hidden />` : ''}
         <button type="button" class="btn btn--ghost" data-sc="b-remove">Убрать</button>
       </td>
     </tr>`).join('')}</tbody></table>`;
@@ -429,6 +431,33 @@ async function scPSearch(box) {
   }
 }
 
+// «Поменять фото» у баннера большой карусели: меняется только url, текст/размеры/цвет остаются.
+async function scReplaceBannerPhoto(fileEl) {
+  const file = fileEl.files && fileEl.files[0];
+  if (!file || scState.busy) return;
+  const oldUrl = scList('big')[Number(fileEl.closest('[data-bi]').dataset.bi)];
+  scState.busy = true;
+  scRoot().setAttribute('aria-busy', 'true');
+  try {
+    scSetStatus('Загружаю картинку…', '');
+    const url = await uploadMyMarketFile(file);
+    const list = scList('big');
+    const i = list.indexOf(oldUrl); // баннер мог сдвинуться за время загрузки — ищем по прежней ссылке
+    if (i < 0) { scSetStatus('Баннер уже убран — фото не заменено', 'error'); return; }
+    if (list.some((u, k) => k !== i && u === url)) { scSetStatus('Такая картинка уже есть среди баннеров', 'error'); return; }
+    list[i] = url; // параллельные массивы (строки текста, размеры, цвет) не трогаем
+    scBannersRefresh('big'); // перерисовка показывает превью новой картинки
+    scSetStatus('Фото заменено — нажмите «Сохранить», чтобы применить', '');
+  } catch (err) {
+    scSetStatus(scErr(err), 'error');
+  } finally {
+    fileEl.value = '';
+    scState.busy = false;
+    const r = scRoot();
+    if (r) r.removeAttribute('aria-busy');
+  }
+}
+
 async function scHandleClick(e) {
   const btn = e.target.closest('[data-sc]');
   if (!btn || btn.disabled) return;
@@ -475,6 +504,11 @@ async function scHandleClick(e) {
       (scState.videos || []).splice(Number(btn.closest('[data-vi]').dataset.vi), 1);
       scVideosRefresh();
       scSetStatus('Видео убрано — нажмите «Сохранить», чтобы применить', '');
+    }
+    else if (act === 'b-replace') {
+      // Только открываем выбор файла; саму замену делает обработчик change (scReplaceBannerPhoto).
+      const fileEl = btn.closest('tr').querySelector('.sc-bb-replace');
+      if (fileEl) fileEl.click();
     }
     else if (act === 'bl-add' || act === 'bl-remove') {
       const i = Number(btn.closest('[data-bi]').dataset.bi);
@@ -635,7 +669,10 @@ function scWireOnce() {
     }
     return true;
   };
-  root.addEventListener('change', bbEdit);
+  root.addEventListener('change', (e) => {
+    if (e.target.classList && e.target.classList.contains('sc-bb-replace')) { scReplaceBannerPhoto(e.target); return; }
+    bbEdit(e);
+  });
   root.addEventListener('input', (e) => {
     if (bbEdit(e)) return;
     if (e.target.id !== 'scSearch') return;
