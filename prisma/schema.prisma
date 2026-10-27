@@ -862,7 +862,8 @@ model Showcase {
   bannerUrl   String?  // собственный рекламный баннер витрины
   bannerTitle String?
   bannerText  String?
-  banners     String[] @default([]) // несколько баннеров витрины (URL картинок, порядок важен)
+  banners     String[] @default([]) // маленькая карусель ниже (URL картинок, порядок важен); в API также как smallBanners
+  bigBanners  String[] @default([]) // большая карусель сверху (до 10 URL, порядок важен); пусто → показывается bannerUrl
   videoUrl    String?  // ссылка на видео витрины
   published   Boolean  @default(false) // опубликована ли в приложении
   sortOrder   Int      @default(0)

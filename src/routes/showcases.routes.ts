@@ -119,9 +119,15 @@ showcasesRouter.get('/:id', async (req, res) => {
       if (products.length > 0) outCollections.push({ id: c.id, title: c.title, products });
     }
     // banners / videoUrl — только на странице витрины; список (иконки) не меняется.
+    // bigBanners — большая карусель сверху (пусто → запасной bannerUrl, как раньше);
+    // smallBanners — маленькая карусель ниже (то же, что banners, оставлено для совместимости).
+    const smallBanners: string[] = Array.isArray(showcase.banners) ? showcase.banners : [];
+    const bigList: string[] = Array.isArray(showcase.bigBanners) ? showcase.bigBanners : [];
     res.json({
       ...publicShowcase(showcase),
-      banners: Array.isArray(showcase.banners) ? showcase.banners : [],
+      bigBanners: bigList.length ? bigList : showcase.bannerUrl ? [showcase.bannerUrl] : [],
+      smallBanners,
+      banners: smallBanners,
       videoUrl: showcase.videoUrl ?? null,
       // Товары именно этой витрины в порядке админки (видимые покупателю); нет товаров — [].
       products: links
