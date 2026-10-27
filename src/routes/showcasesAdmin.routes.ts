@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../db/prisma';
 import { logger } from '../utils/logger';
 import { mapDbError } from './showcases.errors';
-import { BANNER_TEXT_COLORS, resolveBigBannerWrite } from '../services/showcaseBanners';
+import { BANNER_FONT_STYLES, BANNER_TEXT_COLORS, resolveBigBannerWrite } from '../services/showcaseBanners';
 import { videosSchema } from '../services/productExtras';
 
 /**
@@ -31,8 +31,9 @@ const bannersSchema = z.array(imageUrl).max(MAX_BANNERS, `Не больше ${MA
 const bigBannerItemsSchema = z
   .array(z.object({
     url: imageUrl,
-    text: z.string().trim().max(120, 'Текст баннера — не длиннее 120 символов').nullable().optional(),
+    text: z.string().trim().max(300, 'Текст баннера — не длиннее 300 символов').nullable().optional(),
     textColor: z.enum(BANNER_TEXT_COLORS).optional(),
+    fontStyle: z.enum(BANNER_FONT_STYLES).optional(), // normal | bold | large
   }))
   .max(MAX_BANNERS, `Не больше ${MAX_BANNERS} баннеров`);
 const videoUrlSchema = z
@@ -188,7 +189,7 @@ const createShowcase = z.object({
   bannerText: optText(1000),
   banners: bannersSchema.optional(),
   bigBanners: bannersSchema.optional(),
-  bigBannerItems: bigBannerItemsSchema.optional(), // {url, text, textColor} — имеет приоритет над bigBanners
+  bigBannerItems: bigBannerItemsSchema.optional(), // {url, text, textColor, fontStyle} — имеет приоритет над bigBanners
   videos: videosSchema.optional(),
   videoUrl: videoUrlSchema,
   published: z.boolean().optional(),
@@ -281,7 +282,7 @@ const patchShowcase = z.object({
   bannerText: optText(1000),
   banners: bannersSchema.optional(),
   bigBanners: bannersSchema.optional(),
-  bigBannerItems: bigBannerItemsSchema.optional(), // {url, text, textColor} — имеет приоритет над bigBanners
+  bigBannerItems: bigBannerItemsSchema.optional(), // {url, text, textColor, fontStyle} — имеет приоритет над bigBanners
   videos: videosSchema.optional(),
   videoUrl: videoUrlSchema,
   published: z.boolean().optional(),
