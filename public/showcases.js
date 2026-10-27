@@ -265,6 +265,83 @@ function scSearchBox(scope, cid) {
     <div class="sc-presults" style="flex-basis:100%"></div></div>`;
 }
 
+// ---- Загрузка товаров из Excel ----
+const SC_XL_HEADERS = ['Артикул', 'Название', 'Цена', 'Старая цена', 'Описание', 'Ссылка на фото'];
+const SC_XL_BATCH = 10; // строк за один запрос (иначе таймаут serverless-функции)
+const SC_XL_MAX_ROWS = 1000;
+// Заголовок колонки (в нижнем регистре, без пробелов по краям и «:») → поле строки.
+const SC_XL_ALIASES = {
+  article: ['артикул', 'sku', 'код', 'код товара', 'артикул товара'],
+  name: ['название', 'наименование', 'name', 'название товара'],
+  price: ['цена', 'price'],
+  oldPrice: ['старая цена', 'цена до скидки', 'old price', 'oldprice'],
+  description: ['описание', 'description'],
+  photo: ['ссылка на фото', 'фото', 'ссылка на изображение', 'photo', 'image'],
+};
+
+function scExcelBlockHtml(c) {
+  const r = scState.importResult && scState.importResult.showcaseId === c.id ? scState.importResult : null;
+  let result = '';
+  if (r) {
+    const parts = [`Создано: ${r.created}`, `обновлено: ${r.updated}`, `добавлено в витрину: ${r.linked}`];
+    if (r.unchanged) parts.push(`без изменений: ${r.unchanged}`);
+    parts.push(`ошибок: ${r.errors.length}`);
+    const shown = r.errors.slice(0, 50).map((e) => `<li>${e.row ? `строка ${scEsc(e.row)}` : 'строка ?'}${e.article ? ` · ${scEsc(e.article)}` : ''}: ${scEsc(e.error)}</li>`).join('');
+    result = `<div id="scImportResult" style="margin-top:8px;font-size:13px">
+      <div><b>Результат загрузки из Excel</b> (строк в файле: ${r.total}): ${parts.join(' · ')}</div>
+      ${r.created ? '<div class="panel__hint" style="margin:4px 0">Новые товары созданы без раздела и пока не в продаже — откройте карточку («Изменить») и включите «В продаже», иначе покупатель их не увидит.</div>' : ''}
+      ${r.errors.length ? `<ul style="margin:6px 0 0 18px;padding:0;color:var(--loss)">${shown}${r.errors.length > 50 ? `<li>…и ещё ${r.errors.length - 50}</li>` : ''}</ul>` : ''}
+    </div>`;
+  }
+  return `<div style="margin:8px 0">
+      <div class="panel__hint" style="margin:0 0 4px">Загрузка из Excel: колонки ${SC_XL_HEADERS.map((h) => `«${h}»`).join(', ')}. Артикул уже есть — товар обновится (пустые ячейки ничего не стирают), нет — создастся новый (нужны Название и Цена) и добавится в витрину. Обновление меняет сам товар везде, где он показывается.</div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button type="button" class="btn btn--ghost" data-sc="pxl-template">Скачать шаблон Excel</button>
+        <input type="file" id="scXlsxFile" accept=".xlsx,.xls" />
+        <button type="button" class="btn btn--accent" data-sc="pxl-upload">Загрузить Excel</button>
+      </div>
+      ${result}
+    </div>`;
+}
+
+// Файл → { rows: [{row, article, name, price, oldPrice, description, photo}], error }
+function scParseExcel(arrayBuffer) {
+  const wb = XLSX.read(arrayBuffer, { type: 'array' });
+  const sheetName = wb.SheetNames.includes('Товары') ? 'Товары' : wb.SheetNames[0];
+  if (!sheetName) return { rows: [], error: 'В файле нет листов' };
+  const aoa = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1, defval: '', raw: true });
+  const norm = (v) => String(v == null ? '' : v).trim().toLowerCase().replace(/[:：]+$/, '').replace(/\s+/g, ' ');
+  let headerIdx = -1;
+  let cols = {};
+  for (let i = 0; i < Math.min(aoa.length, 10) && headerIdx < 0; i++) {
+    const found = {};
+    (aoa[i] || []).forEach((cell, j) => {
+      const key = norm(cell);
+      for (const [field, names] of Object.entries(SC_XL_ALIASES)) if (names.includes(key) && found[field] === undefined) found[field] = j;
+    });
+    if (found.article !== undefined) { headerIdx = i; cols = found; }
+  }
+  if (headerIdx < 0) return { rows: [], error: `Не нашёл колонку «Артикул» в первых строках листа «${sheetName}». Скачайте шаблон и заполните его.` };
+  const rows = [];
+  for (let i = headerIdx + 1; i < aoa.length; i++) {
+    const line = aoa[i] || [];
+    const get = (f) => (cols[f] === undefined ? '' : line[cols[f]]);
+    const rec = { row: i + 1, article: get('article'), name: get('name'), price: get('price'), oldPrice: get('oldPrice'), description: get('description'), photo: get('photo') };
+    if (Object.keys(SC_XL_ALIASES).every((f) => String(rec[f] == null ? '' : rec[f]).trim() === '')) continue; // пустая строка
+    rows.push(rec);
+  }
+  return { rows, error: null };
+}
+
+function scReadFile(file) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = (e) => resolve(e.target.result);
+    fr.onerror = () => reject(new Error('Не удалось прочитать файл'));
+    fr.readAsArrayBuffer(file);
+  });
+}
+
 function scProductsHtml(c) {
   return `<div style="margin-top:22px;border-top:1px solid var(--border);padding-top:14px">
     <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
@@ -278,6 +355,7 @@ function scProductsHtml(c) {
       <textarea id="scBulkCodes" rows="4" style="width:100%;max-width:520px;box-sizing:border-box" placeholder="1000123&#10;1000124, 1000125"></textarea>
       <div><button type="button" class="btn btn--accent" data-sc="pbulk">Добавить все</button></div>
     </div>
+    ${scExcelBlockHtml(c)}
     <div id="scProducts">${scProductRows(c.products, 'p')}</div></div>`;
 }
 
@@ -577,6 +655,53 @@ async function scHandleClick(e) {
       // Та же карточка товара, что в разделе «Товары»; после сохранения товар попадёт и в каталог, и в эту витрину.
       const showcaseId = scState.current.id;
       openMyMarketNewProductCardForShowcase(showcaseId, (msg) => scOpen(showcaseId, msg));
+    } else if (act === 'pxl-template') {
+      if (typeof XLSX === 'undefined') { scSetStatus('Не загрузилась библиотека Excel — обновите страницу', 'error'); return; }
+      const wb = XLSX.utils.book_new();
+      const main = XLSX.utils.aoa_to_sheet([SC_XL_HEADERS]);
+      main['!cols'] = [{ wch: 16 }, { wch: 36 }, { wch: 12 }, { wch: 14 }, { wch: 50 }, { wch: 44 }];
+      XLSX.utils.book_append_sheet(wb, main, 'Товары');
+      const sample = XLSX.utils.aoa_to_sheet([
+        SC_XL_HEADERS,
+        ['SKU-001', 'Кроссовки беговые', 15000, 20000, 'Лёгкие кроссовки для бега', 'https://example.com/photo.jpg'],
+        [],
+        ['Как заполнять'],
+        ['Заполняйте лист «Товары»; этот лист — только пример, он не загружается.'],
+        ['Артикул — sku товара или артикул витрины. Есть в каталоге — товар обновится, нет — создастся новый (нужны Название и Цена).'],
+        ['Пустая ячейка у существующего товара ничего не меняет. Новое фото становится главным, прежние остаются.'],
+      ]);
+      sample['!cols'] = [{ wch: 16 }, { wch: 36 }, { wch: 12 }, { wch: 14 }, { wch: 50 }, { wch: 44 }];
+      XLSX.utils.book_append_sheet(wb, sample, 'Пример');
+      XLSX.writeFile(wb, 'showcase-products-template.xlsx');
+      scSetStatus('Шаблон скачан', '');
+    } else if (act === 'pxl-upload') {
+      if (typeof XLSX === 'undefined') { scSetStatus('Не загрузилась библиотека Excel — обновите страницу', 'error'); return; }
+      const fileEl = document.getElementById('scXlsxFile');
+      const file = fileEl && fileEl.files && fileEl.files[0];
+      if (!file) { scSetStatus('Выберите файл Excel (.xlsx)', 'error'); return; }
+      scSetStatus('Читаю файл…', '');
+      let parsed;
+      try { parsed = scParseExcel(await scReadFile(file)); }
+      catch (err) { scSetStatus(`Не удалось прочитать файл: ${scErr(err)}`, 'error'); return; }
+      if (parsed.error) { scSetStatus(parsed.error, 'error'); return; }
+      if (!parsed.rows.length) { scSetStatus('В файле нет строк с товарами — заполните лист «Товары» по шаблону', 'error'); return; }
+      if (parsed.rows.length > SC_XL_MAX_ROWS) { scSetStatus(`В файле ${parsed.rows.length} строк — за один раз можно не больше ${SC_XL_MAX_ROWS}`, 'error'); return; }
+      const total = { showcaseId: scState.current.id, total: parsed.rows.length, created: 0, updated: 0, linked: 0, unchanged: 0, errors: [] };
+      for (let i = 0; i < parsed.rows.length; i += SC_XL_BATCH) {
+        scSetStatus(`Загружаю товары… ${Math.min(i + SC_XL_BATCH, parsed.rows.length)} из ${parsed.rows.length}`, '');
+        const batch = parsed.rows.slice(i, i + SC_XL_BATCH);
+        try {
+          const r = await api(`${base}/products/import`, { method: 'POST', body: JSON.stringify({ rows: batch }) });
+          for (const k of ['created', 'updated', 'linked', 'unchanged']) total[k] += r[k] || 0;
+          total.errors.push(...(r.errors || []));
+        } catch (err) {
+          // Пачка не дошла (сеть/таймаут): её строки — ошибки, остальные пачки продолжаем.
+          batch.forEach((b) => total.errors.push({ row: b.row, article: String(b.article == null ? '' : b.article), error: `пачка не загружена: ${scErr(err)}` }));
+        }
+      }
+      scState.importResult = total;
+      fileEl.value = '';
+      await scOpen(scState.current.id, `Excel загружен: создано ${total.created}, обновлено ${total.updated}, ошибок ${total.errors.length}`);
     } else if (act === 'pbulk') {
       const area = document.getElementById('scBulkCodes');
       const codes = area.value.trim();
