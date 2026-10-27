@@ -108,15 +108,17 @@ function scList(kind) {
   return scState[f] || (scState[f] = []);
 }
 
-// Большая карусель: у каждого баннера есть текст и цвет текста (параллельные массивы, тот же порядок).
+// Большая карусель: у каждого баннера есть текст (многострочный), цвет и шрифт (параллельные массивы, тот же порядок).
 function scBigExtras() {
   const n = scList('big').length;
   const texts = scState.bigBannerTexts || (scState.bigBannerTexts = []);
   const colors = scState.bigBannerTextColors || (scState.bigBannerTextColors = []);
+  const fonts = scState.bigBannerFontStyles || (scState.bigBannerFontStyles = []);
   while (texts.length < n) texts.push('');
   while (colors.length < n) colors.push('white');
-  texts.length = n; colors.length = n;
-  return [texts, colors];
+  while (fonts.length < n) fonts.push('normal');
+  texts.length = n; colors.length = n; fonts.length = n;
+  return [texts, colors, fonts];
 }
 
 function scBannersHtml(kind) {
@@ -127,12 +129,18 @@ function scBannersHtml(kind) {
     <tr data-bi="${i}">
       <td>${scThumb(u)}</td>
       <td style="word-break:break-all">${scEsc(u)}${extras ? `
-        <div style="display:flex;gap:6px;margin-top:4px;flex-wrap:wrap">
-          <input type="text" class="sc-bb-text" maxlength="120" placeholder="Текст на баннере (необязательно)" value="${scEsc(extras[0][i])}" style="max-width:260px" />
+        <div style="display:flex;gap:6px;margin-top:4px;flex-wrap:wrap;align-items:flex-start">
+          <textarea class="sc-bb-text" rows="3" maxlength="300" placeholder="Текст на баннере (необязательно). Enter — новая строка" style="max-width:260px;width:100%">${scEsc(extras[0][i])}</textarea>
+          <div style="display:flex;flex-direction:column;gap:6px">
+          <select class="sc-bb-font" title="Шрифт">
+            <option value="normal"${extras[2][i] === 'normal' ? ' selected' : ''}>Обычный</option>
+            <option value="bold"${extras[2][i] === 'bold' ? ' selected' : ''}>Жирный</option>
+            <option value="large"${extras[2][i] === 'large' ? ' selected' : ''}>Крупный жирный</option>
+          </select>
           <select class="sc-bb-color" title="Цвет текста">
             <option value="white"${extras[1][i] === 'black' ? '' : ' selected'}>Белый текст</option>
             <option value="black"${extras[1][i] === 'black' ? ' selected' : ''}>Чёрный текст</option>
-          </select></div>` : ''}</td>
+          </select></div></div>` : ''}</td>
       <td style="white-space:nowrap">
         <button type="button" class="btn btn--ghost" data-sc="b-up" ${i === 0 ? 'disabled' : ''}>↑</button>
         <button type="button" class="btn btn--ghost" data-sc="b-down" ${i === list.length - 1 ? 'disabled' : ''}>↓</button>
@@ -292,8 +300,13 @@ function scFormData() {
     banners: (scState.banners || []).slice(),
     bigBanners: (scState.bigBanners || []).slice(),
     bigBannerItems: (() => {
-      const [texts, colors] = scBigExtras();
-      return (scState.bigBanners || []).map((url, i) => ({ url, text: (texts[i] || '').trim() || null, textColor: colors[i] === 'black' ? 'black' : 'white' }));
+      const [texts, colors, fonts] = scBigExtras();
+      return (scState.bigBanners || []).map((url, i) => ({
+        url,
+        text: (texts[i] || '').trim() || null,
+        textColor: colors[i] === 'black' ? 'black' : 'white',
+        fontStyle: fonts[i] === 'bold' || fonts[i] === 'large' ? fonts[i] : 'normal',
+      }));
     })(),
     videos: (scState.videos || []).slice(),
     videoUrl: v('scVideoUrl').trim() || null,
@@ -343,6 +356,7 @@ async function scOpen(id, okText) {
     scState.bigBanners = Array.isArray(scState.current.bigBanners) ? scState.current.bigBanners.slice() : [];
     scState.bigBannerTexts = Array.isArray(scState.current.bigBannerTexts) ? scState.current.bigBannerTexts.slice() : [];
     scState.bigBannerTextColors = Array.isArray(scState.current.bigBannerTextColors) ? scState.current.bigBannerTextColors.slice() : [];
+    scState.bigBannerFontStyles = Array.isArray(scState.current.bigBannerFontStyles) ? scState.current.bigBannerFontStyles.slice() : [];
     scBigExtras(); // старые витрины без текстов: выравниваем по числу баннеров
     scState.videos = Array.isArray(scState.current.videos) ? scState.current.videos.slice() : [];
     scState.status = okText || '';
@@ -408,7 +422,7 @@ async function scHandleClick(e) {
   const cid = colEl && colEl.dataset.cid;
   const col = cid && scState.current && scState.current.collections.find((x) => x.id === cid);
   try {
-    if (act === 'new') { scState.editingNew = true; scState.current = null; scState.banners = []; scState.bigBanners = []; scState.bigBannerTexts = []; scState.bigBannerTextColors = []; scState.videos = []; scSetStatus('', ''); scRender(); }
+    if (act === 'new') { scState.editingNew = true; scState.current = null; scState.banners = []; scState.bigBanners = []; scState.bigBannerTexts = []; scState.bigBannerTextColors = []; scState.bigBannerFontStyles = []; scState.videos = []; scSetStatus('', ''); scRender(); }
     else if (act === 'reload') await loadShowcases();
     else if (act === 'v-add') {
       const fileEl = document.getElementById('scVideoAddFile');
@@ -565,10 +579,11 @@ function scWireOnce() {
   let timer = null;
   const bbEdit = (e) => {
     const t = e.target;
-    if (!t.classList || !(t.classList.contains('sc-bb-text') || t.classList.contains('sc-bb-color'))) return false;
+    if (!t.classList || !(t.classList.contains('sc-bb-text') || t.classList.contains('sc-bb-color') || t.classList.contains('sc-bb-font'))) return false;
     const i = Number(t.closest('[data-bi]').dataset.bi);
-    const [texts, colors] = scBigExtras();
+    const [texts, colors, fonts] = scBigExtras();
     if (t.classList.contains('sc-bb-text')) texts[i] = t.value;
+    else if (t.classList.contains('sc-bb-font')) fonts[i] = ['bold', 'large'].includes(t.value) ? t.value : 'normal';
     else colors[i] = t.value === 'black' ? 'black' : 'white';
     return true;
   };

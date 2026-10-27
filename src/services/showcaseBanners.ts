@@ -1,17 +1,29 @@
 /**
  * Большая карусель витрины: bigBanners (URL) + параллельные массивы bigBannerTexts /
- * bigBannerTextColors — по одному элементу на баннер, в том же порядке. Старые витрины
- * (только URL) работают: текст = null, цвет = белый.
+ * bigBannerTextColors / bigBannerFontStyles — по одному элементу на баннер, в том же порядке.
+ * Старые витрины (только URL) работают: текст = null, цвет = белый, шрифт = normal.
+ * Текст многострочный (\n сохраняется).
  */
 export const BANNER_TEXT_COLORS = ['white', 'black'] as const;
 export type BannerTextColor = (typeof BANNER_TEXT_COLORS)[number];
 export const DEFAULT_BANNER_TEXT_COLOR: BannerTextColor = 'white';
+export const BANNER_FONT_STYLES = ['normal', 'bold', 'large'] as const; // обычный / жирный / крупный жирный
+export type BannerFontStyle = (typeof BANNER_FONT_STYLES)[number];
+export const DEFAULT_BANNER_FONT_STYLE: BannerFontStyle = 'normal';
 
 export interface BigBannerItem {
   url: string;
   text: string | null;
   textColor: BannerTextColor;
+  fontStyle: BannerFontStyle;
 }
+
+const asFont = (v: unknown): BannerFontStyle => (v === 'bold' || v === 'large' ? v : DEFAULT_BANNER_FONT_STYLE);
+/** Переводы строк приводим к \n, пробелы по краям убираем; пусто → null. */
+const asText = (v: unknown): string | null => {
+  const t = typeof v === 'string' ? v.replace(/\r\n?/g, '\n').trim() : '';
+  return t || null;
+};
 
 const asColor = (v: unknown): BannerTextColor => (v === 'black' ? 'black' : DEFAULT_BANNER_TEXT_COLOR);
 
@@ -20,12 +32,12 @@ export function bigBannerItemsOf(row: any): BigBannerItem[] {
   const urls: string[] = Array.isArray(row?.bigBanners) ? row.bigBanners.filter((u: unknown) => typeof u === 'string') : [];
   const texts: unknown[] = Array.isArray(row?.bigBannerTexts) ? row.bigBannerTexts : [];
   const colors: unknown[] = Array.isArray(row?.bigBannerTextColors) ? row.bigBannerTextColors : [];
+  const fonts: unknown[] = Array.isArray(row?.bigBannerFontStyles) ? row.bigBannerFontStyles : [];
   if (!urls.length) {
-    return row?.bannerUrl ? [{ url: row.bannerUrl, text: null, textColor: DEFAULT_BANNER_TEXT_COLOR }] : [];
+    return row?.bannerUrl ? [{ url: row.bannerUrl, text: null, textColor: DEFAULT_BANNER_TEXT_COLOR, fontStyle: DEFAULT_BANNER_FONT_STYLE }] : [];
   }
   return urls.map((url, i) => {
-    const t = typeof texts[i] === 'string' ? (texts[i] as string).trim() : '';
-    return { url, text: t || null, textColor: asColor(colors[i]) };
+    return { url, text: asText(texts[i]), textColor: asColor(colors[i]), fontStyle: asFont(fonts[i]) };
   });
 }
 
@@ -33,6 +45,7 @@ export interface BigBannerWrite {
   bigBanners: string[];
   bigBannerTexts: string[];
   bigBannerTextColors: string[];
+  bigBannerFontStyles: string[];
 }
 
 /**
@@ -41,15 +54,15 @@ export interface BigBannerWrite {
  * Повторы ссылок убираются (остаётся первый). Ни того ни другого — null (поле не трогаем).
  */
 export function resolveBigBannerWrite(
-  input: { items?: Array<{ url: string; text?: string | null; textColor?: string }>; urls?: string[] },
+  input: { items?: Array<{ url: string; text?: string | null; textColor?: string; fontStyle?: string }>; urls?: string[] },
   existing?: any,
 ): BigBannerWrite | null {
   let items: BigBannerItem[];
   if (input.items !== undefined) {
-    items = input.items.map((it) => ({ url: it.url, text: (it.text ?? '').trim() || null, textColor: asColor(it.textColor) }));
+    items = input.items.map((it) => ({ url: it.url, text: asText(it.text), textColor: asColor(it.textColor), fontStyle: asFont(it.fontStyle) }));
   } else if (input.urls !== undefined) {
     const prev = new Map(bigBannerItemsOfRaw(existing).map((it) => [it.url, it]));
-    items = input.urls.map((url) => prev.get(url) ?? { url, text: null, textColor: DEFAULT_BANNER_TEXT_COLOR });
+    items = input.urls.map((url) => prev.get(url) ?? { url, text: null, textColor: DEFAULT_BANNER_TEXT_COLOR, fontStyle: DEFAULT_BANNER_FONT_STYLE });
   } else {
     return null;
   }
@@ -59,6 +72,7 @@ export function resolveBigBannerWrite(
     bigBanners: unique.map((it) => it.url),
     bigBannerTexts: unique.map((it) => it.text ?? ''),
     bigBannerTextColors: unique.map((it) => it.textColor),
+    bigBannerFontStyles: unique.map((it) => it.fontStyle),
   };
 }
 

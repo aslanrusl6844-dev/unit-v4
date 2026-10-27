@@ -1411,9 +1411,9 @@ describe('текст и цвет баннеров большой карусел�
     const page = (await pub(`/${s.id}`)).json;
     assert.deepEqual(page.bigBanners, [U(1), U(2), U(3)]);
     assert.deepEqual(page.bigBannerItems, [
-      { url: U(1), text: 'Скидка 40%', textColor: 'white' },
-      { url: U(2), text: 'Новинка', textColor: 'black' },
-      { url: U(3), text: null, textColor: 'white' },
+      { url: U(1), text: 'Скидка 40%', textColor: 'white', fontStyle: 'normal' },
+      { url: U(2), text: 'Новинка', textColor: 'black', fontStyle: 'normal' },
+      { url: U(3), text: null, textColor: 'white', fontStyle: 'normal' },
     ]);
     const adminRow = (await adm('GET', `/${s.id}`)).json;
     assert.deepEqual(adminRow.bigBannerTexts, ['Скидка 40%', 'Новинка', '']);
@@ -1425,12 +1425,12 @@ describe('текст и цвет баннеров большой карусел�
     const row = tables.showcase.find((r: Row) => r.id === s.id)!;
     delete row.bigBannerTexts; delete row.bigBannerTextColors;
     assert.deepEqual((await pub(`/${s.id}`)).json.bigBannerItems, [
-      { url: U(1), text: null, textColor: 'white' }, { url: U(2), text: null, textColor: 'white' },
+      { url: U(1), text: null, textColor: 'white', fontStyle: 'normal' }, { url: U(2), text: null, textColor: 'white', fontStyle: 'normal' },
     ]);
     const only = await newShowcase({ published: true, bannerUrl: OLD });
     const p2 = (await pub(`/${only.id}`)).json;
     assert.deepEqual(p2.bigBanners, [OLD]);
-    assert.deepEqual(p2.bigBannerItems, [{ url: OLD, text: null, textColor: 'white' }]);
+    assert.deepEqual(p2.bigBannerItems, [{ url: OLD, text: null, textColor: 'white', fontStyle: 'normal' }]);
     const none = await newShowcase({ published: true });
     assert.deepEqual((await pub(`/${none.id}`)).json.bigBannerItems, []);
   });
@@ -1440,9 +1440,9 @@ describe('текст и цвет баннеров большой карусел�
     const r = await adm('PATCH', `/${s.id}`, { bigBanners: [U(2), U(3), U(1)] });
     assert.equal(r.status, 200);
     assert.deepEqual((await pub(`/${s.id}`)).json.bigBannerItems, [
-      { url: U(2), text: 'Два', textColor: 'white' },
-      { url: U(3), text: null, textColor: 'white' },
-      { url: U(1), text: 'Один', textColor: 'black' },
+      { url: U(2), text: 'Два', textColor: 'white', fontStyle: 'normal' },
+      { url: U(3), text: null, textColor: 'white', fontStyle: 'normal' },
+      { url: U(1), text: 'Один', textColor: 'black', fontStyle: 'normal' },
     ]);
   });
 
@@ -1459,16 +1459,43 @@ describe('текст и цвет баннеров большой карусел�
     assert.deepEqual(tables.showcase.find((r: Row) => r.id === s.id)!.bigBannerTexts, []);
   });
 
-  test('валидация: цвет только white/black, текст до 120 символов, максимум 10, ссылка http(s)', async () => {
+  test('валидация: цвет только white/black, текст до 300 символов, максимум 10, ссылка http(s)', async () => {
     const s = await newShowcase({ published: true });
     const bad: unknown[] = [
       [{ url: U(1), textColor: 'red' }],
-      [{ url: U(1), text: 'x'.repeat(121) }],
+      [{ url: U(1), fontStyle: 'huge' }],
+      [{ url: U(1), text: 'x'.repeat(301) }],
       [{ url: 'javascript:alert(1)' }],
       Array.from({ length: 11 }, (_, i) => ({ url: U(i) })),
     ];
     for (const bigBannerItems of bad) assert.equal((await adm('PATCH', `/${s.id}`, { bigBannerItems })).status, 400, JSON.stringify(bigBannerItems).slice(0, 60));
-    assert.equal((await adm('PATCH', `/${s.id}`, { bigBannerItems: [{ url: U(1), text: 'x'.repeat(120), textColor: 'black' }] })).status, 200);
+    assert.equal((await adm('PATCH', `/${s.id}`, { bigBannerItems: [{ url: U(1), text: 'x'.repeat(300), textColor: 'black' }] })).status, 200);
+  });
+
+  test('fontStyle: normal/bold/large сохраняются, многострочный текст отдаётся с \\n; без fontStyle — normal', async () => {
+    const s = await newShowcase({
+      published: true,
+      bigBannerItems: [
+        { url: U(1), text: 'Строка 1\r\nСтрока 2\n\nСтрока 4', textColor: 'black', fontStyle: 'large' },
+        { url: U(2), text: 'Жирно', fontStyle: 'bold' },
+        { url: U(3), text: 'Обычно' },
+      ],
+    });
+    const page = (await pub(`/${s.id}`)).json;
+    assert.deepEqual(page.bigBannerItems, [
+      { url: U(1), text: 'Строка 1\nСтрока 2\n\nСтрока 4', textColor: 'black', fontStyle: 'large' },
+      { url: U(2), text: 'Жирно', textColor: 'white', fontStyle: 'bold' },
+      { url: U(3), text: 'Обычно', textColor: 'white', fontStyle: 'normal' },
+    ]);
+    assert.deepEqual((await adm('GET', `/${s.id}`)).json.bigBannerFontStyles, ['large', 'bold', 'normal']);
+  });
+
+  test('старые данные без bigBannerFontStyles → fontStyle normal; PATCH только bigBanners сохраняет шрифт за ссылкой', async () => {
+    const s = await newShowcase({ published: true, bigBannerItems: [{ url: U(1), text: 'A', fontStyle: 'bold' }, { url: U(2), text: 'B', fontStyle: 'large' }] });
+    await adm('PATCH', `/${s.id}`, { bigBanners: [U(2), U(1)] });
+    assert.deepEqual((await pub(`/${s.id}`)).json.bigBannerItems.map((b: any) => b.fontStyle), ['large', 'bold']);
+    delete tables.showcase.find((r: Row) => r.id === s.id)!.bigBannerFontStyles;
+    assert.deepEqual((await pub(`/${s.id}`)).json.bigBannerItems.map((b: any) => b.fontStyle), ['normal', 'normal']);
   });
 
   test('список витрин (иконки) формат не меняет', async () => {
