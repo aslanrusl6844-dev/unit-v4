@@ -266,71 +266,117 @@ function scSearchBox(scope, cid) {
 }
 
 // ---- Загрузка товаров из Excel ----
-const SC_XL_HEADERS = ['Артикул', 'Название', 'Цена', 'Старая цена', 'Описание', 'Ссылка на фото'];
+// Те же колонки и правила разбора, что у загрузки в «My Market» (dashboard.js: MM_UPLOAD_COLUMN_ALIASES, mm*).
+const SC_XL_HEADERS = ['Артикул *', 'Название *', 'Категория *', 'Подкатегория', 'Тип *', 'Код модели', 'Бренд', 'Цвет', 'Размер', 'Пол', 'Цена на витрине, ₸ *', 'Цена до скидки, ₸', 'Остаток, шт *', 'Доставка', 'В продаже', 'Ссылки на фото', 'Видео', 'Описание', 'Состав / комплектация'];
 const SC_XL_BATCH = 10; // строк за один запрос (иначе таймаут serverless-функции)
 const SC_XL_MAX_ROWS = 1000;
-// Заголовок колонки (в нижнем регистре, без пробелов по краям и «:») → поле строки.
-const SC_XL_ALIASES = {
-  article: ['артикул', 'sku', 'код', 'код товара', 'артикул товара'],
-  name: ['название', 'наименование', 'name', 'название товара'],
-  price: ['цена', 'price'],
-  oldPrice: ['старая цена', 'цена до скидки', 'old price', 'oldprice'],
-  description: ['описание', 'description'],
-  photo: ['ссылка на фото', 'фото', 'ссылка на изображение', 'photo', 'image'],
-};
 
 function scExcelBlockHtml(c) {
   const r = scState.importResult && scState.importResult.showcaseId === c.id ? scState.importResult : null;
   let result = '';
   if (r) {
-    const parts = [`Создано: ${r.created}`, `обновлено: ${r.updated}`, `добавлено в витрину: ${r.linked}`];
-    if (r.unchanged) parts.push(`без изменений: ${r.unchanged}`);
-    parts.push(`ошибок: ${r.errors.length}`);
-    const shown = r.errors.slice(0, 50).map((e) => `<li>${e.row ? `строка ${scEsc(e.row)}` : 'строка ?'}${e.article ? ` · ${scEsc(e.article)}` : ''}: ${scEsc(e.error)}</li>`).join('');
+    const parts = [`Добавлено: ${r.created}`, `обновлено: ${r.updated}`, `ошибок: ${r.errors.length}`];
+    const line = (e) => `${e.row ? `строка ${scEsc(e.row)}` : 'строка ?'}${e.sku ? ` · ${scEsc(e.sku)}` : ''}`;
+    const errs = r.errors.slice(0, 50).map((e) => `<li>${line(e)}: ${scEsc(e.error)}</li>`).join('');
+    const warns = r.warnings.slice(0, 30).map((e) => `<li>${line(e)}: ${scEsc(e.message)}</li>`).join('');
     result = `<div id="scImportResult" style="margin-top:8px;font-size:13px">
       <div><b>Результат загрузки из Excel</b> (строк в файле: ${r.total}): ${parts.join(' · ')}</div>
-      ${r.created ? '<div class="panel__hint" style="margin:4px 0">Новые товары созданы без раздела и пока не в продаже — откройте карточку («Изменить») и включите «В продаже», иначе покупатель их не увидит.</div>' : ''}
-      ${r.errors.length ? `<ul style="margin:6px 0 0 18px;padding:0;color:var(--loss)">${shown}${r.errors.length > 50 ? `<li>…и ещё ${r.errors.length - 50}</li>` : ''}</ul>` : ''}
+      ${r.errors.length ? `<ul style="margin:6px 0 0 18px;padding:0;color:var(--loss)">${errs}${r.errors.length > 50 ? `<li>…и ещё ${r.errors.length - 50}</li>` : ''}</ul>` : ''}
+      ${r.warnings.length ? `<div class="panel__hint" style="margin:6px 0 0">Замечания (товары при этом сохранены):</div><ul style="margin:2px 0 0 18px;padding:0">${warns}${r.warnings.length > 30 ? `<li>…и ещё ${r.warnings.length - 30}</li>` : ''}</ul>` : ''}
     </div>`;
   }
   return `<div style="margin:8px 0">
-      <div class="panel__hint" style="margin:0 0 4px">Загрузка из Excel: колонки ${SC_XL_HEADERS.map((h) => `«${h}»`).join(', ')}. Артикул уже есть — товар обновится (пустые ячейки ничего не стирают), нет — создастся новый (нужны Название и Цена) и добавится в витрину. Обновление меняет сам товар везде, где он показывается.</div>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <button type="button" class="btn btn--ghost" data-sc="pxl-template">Скачать шаблон Excel</button>
-        <input type="file" id="scXlsxFile" accept=".xlsx,.xls" />
-        <button type="button" class="btn btn--accent" data-sc="pxl-upload">Загрузить Excel</button>
+      <div class="panel__hint" style="margin:0 0 4px">Массовая загрузка из Excel. Артикул уже есть — товар обновится и попадёт в витрину; нет — создастся новый и тоже попадёт в витрину. Пустая ячейка у существующего товара ничего не стирает. Несколько фото — через «|».</div>
+      <div style="margin:0 0 6px"><button type="button" class="btn btn--ghost" data-sc="pxl-template">Скачать шаблон Excel</button></div>
+      <div id="scXlsxDrop" data-sc="pxl-pick" role="button" tabindex="0" style="border:2px dashed var(--border);border-radius:10px;padding:18px 12px;text-align:center;cursor:pointer;max-width:520px">
+        Перетащите Excel сюда или нажмите для выбора
       </div>
+      <input type="file" id="scXlsxFile" accept=".xlsx,.xls" style="display:none" />
       ${result}
     </div>`;
 }
 
-// Файл → { rows: [{row, article, name, price, oldPrice, description, photo}], error }
+// Файл → { rows: [{row, sku, name, ..., images, videoUrl}], error }. Пустые ячейки остаются null.
 function scParseExcel(arrayBuffer) {
   const wb = XLSX.read(arrayBuffer, { type: 'array' });
-  const sheetName = wb.SheetNames.includes('Товары') ? 'Товары' : wb.SheetNames[0];
+  const sheetName = wb.SheetNames[0];
   if (!sheetName) return { rows: [], error: 'В файле нет листов' };
-  const aoa = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1, defval: '', raw: true });
-  const norm = (v) => String(v == null ? '' : v).trim().toLowerCase().replace(/[:：]+$/, '').replace(/\s+/g, ' ');
-  let headerIdx = -1;
-  let cols = {};
-  for (let i = 0; i < Math.min(aoa.length, 10) && headerIdx < 0; i++) {
-    const found = {};
-    (aoa[i] || []).forEach((cell, j) => {
-      const key = norm(cell);
-      for (const [field, names] of Object.entries(SC_XL_ALIASES)) if (names.includes(key) && found[field] === undefined) found[field] = j;
-    });
-    if (found.article !== undefined) { headerIdx = i; cols = found; }
-  }
-  if (headerIdx < 0) return { rows: [], error: `Не нашёл колонку «Артикул» в первых строках листа «${sheetName}». Скачайте шаблон и заполните его.` };
+  const raw = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { defval: '' });
+  const headerToField = {};
+  for (const [field, aliases] of Object.entries(MM_UPLOAD_COLUMN_ALIASES)) aliases.forEach((a) => { headerToField[a] = field; });
   const rows = [];
-  for (let i = headerIdx + 1; i < aoa.length; i++) {
-    const line = aoa[i] || [];
-    const get = (f) => (cols[f] === undefined ? '' : line[cols[f]]);
-    const rec = { row: i + 1, article: get('article'), name: get('name'), price: get('price'), oldPrice: get('oldPrice'), description: get('description'), photo: get('photo') };
-    if (Object.keys(SC_XL_ALIASES).every((f) => String(rec[f] == null ? '' : rec[f]).trim() === '')) continue; // пустая строка
-    rows.push(rec);
-  }
+  let hasSku = false;
+  raw.forEach((line, idx) => {
+    const n = {};
+    Object.keys(line).forEach((k) => {
+      const f = headerToField[mmNormalizeHeaderCell(k)];
+      if (f) { n[f] = line[k]; if (f === 'sku') hasSku = true; }
+    });
+    const t = (v) => (v == null ? '' : String(v).trim());
+    const empty = (v) => (t(v) === '' ? null : t(v));
+    const num = (v) => mmParseNum(t(v).replace(/[\s\u00a0]/g, '')); // «1 500,5» тоже число
+    if (Object.values(n).every((v) => t(v) === '')) return; // пустая строка
+    rows.push({
+      row: idx + 2,
+      sku: t(n.sku),
+      name: t(n.name),
+      category: t(n.category),
+      subcategory: empty(n.subcategory),
+      type: t(n.type),
+      shopPrice: num(n.shopPrice),
+      shopOldPrice: num(n.shopOldPrice),
+      shopStock: num(n.shopStock),
+      shopDelivery: mmParseDelivery(n.shopDelivery),
+      shopActive: mmParseActive(n.shopActive),
+      images: mmParseImages(n.images),
+      description: mmComposeDescription(empty(n.description), { model: empty(n.model), brand: empty(n.brand), color: empty(n.color), size: empty(n.size), gender: empty(n.gender) }),
+      composition: empty(n.composition),
+      videoUrl: mmParseVideoUrl(n.videoUrl),
+    });
+  });
+  if (!hasSku && raw.length) return { rows: [], error: 'Не нашёл колонку «Артикул» в первой строке. Скачайте шаблон и заполните его.' };
   return { rows, error: null };
+}
+
+// Загрузка выбранного/перетащенного файла пачками; показывает итог.
+async function scImportFile(file) {
+  if (!file || scState.busy || !scState.current) return;
+  if (typeof XLSX === 'undefined') { scSetStatus('Не загрузилась библиотека Excel — обновите страницу', 'error'); return; }
+  if (!/\.xlsx?$/i.test(file.name)) { scSetStatus('Нужен файл Excel (.xlsx или .xls)', 'error'); return; }
+  scState.busy = true;
+  scRoot().setAttribute('aria-busy', 'true');
+  const showcaseId = scState.current.id;
+  try {
+    scSetStatus('Читаю файл…', '');
+    let parsed;
+    try { parsed = scParseExcel(await scReadFile(file)); }
+    catch (err) { scSetStatus(`Не удалось прочитать файл: ${scErr(err)}`, 'error'); return; }
+    if (parsed.error) { scSetStatus(parsed.error, 'error'); return; }
+    if (!parsed.rows.length) { scSetStatus('В файле нет строк с товарами — заполните шаблон', 'error'); return; }
+    if (parsed.rows.length > SC_XL_MAX_ROWS) { scSetStatus(`В файле ${parsed.rows.length} строк — за один раз можно не больше ${SC_XL_MAX_ROWS}`, 'error'); return; }
+    const total = { showcaseId, total: parsed.rows.length, created: 0, updated: 0, linked: 0, errors: [], warnings: [] };
+    for (let i = 0; i < parsed.rows.length; i += SC_XL_BATCH) {
+      scSetStatus(`Загружаю товары… ${Math.min(i + SC_XL_BATCH, parsed.rows.length)} из ${parsed.rows.length}`, '');
+      const batch = parsed.rows.slice(i, i + SC_XL_BATCH);
+      try {
+        const r = await api(`/shop-admin/showcases/${encodeURIComponent(showcaseId)}/products/import`, { method: 'POST', body: JSON.stringify({ rows: batch }) });
+        for (const k of ['created', 'updated', 'linked']) total[k] += r[k] || 0;
+        total.errors.push(...(r.errors || []));
+        total.warnings.push(...(r.warnings || []));
+      } catch (err) {
+        // Пачка не дошла (сеть/таймаут): её строки — ошибки, остальные пачки продолжаем.
+        batch.forEach((b) => total.errors.push({ row: b.row, sku: b.sku, error: `пачка не загружена: ${scErr(err)}` }));
+      }
+    }
+    scState.importResult = total;
+    await scOpen(showcaseId, `Excel загружен: добавлено ${total.created}, обновлено ${total.updated}, ошибок ${total.errors.length}`);
+  } finally {
+    const fe = document.getElementById('scXlsxFile');
+    if (fe) fe.value = '';
+    scState.busy = false;
+    const r = scRoot();
+    if (r) r.removeAttribute('aria-busy');
+  }
 }
 
 function scReadFile(file) {
@@ -658,50 +704,17 @@ async function scHandleClick(e) {
     } else if (act === 'pxl-template') {
       if (typeof XLSX === 'undefined') { scSetStatus('Не загрузилась библиотека Excel — обновите страницу', 'error'); return; }
       const wb = XLSX.utils.book_new();
-      const main = XLSX.utils.aoa_to_sheet([SC_XL_HEADERS]);
-      main['!cols'] = [{ wch: 16 }, { wch: 36 }, { wch: 12 }, { wch: 14 }, { wch: 50 }, { wch: 44 }];
-      XLSX.utils.book_append_sheet(wb, main, 'Товары');
-      const sample = XLSX.utils.aoa_to_sheet([
+      const sheet = XLSX.utils.aoa_to_sheet([
         SC_XL_HEADERS,
-        ['SKU-001', 'Кроссовки беговые', 15000, 20000, 'Лёгкие кроссовки для бега', 'https://example.com/photo.jpg'],
-        [],
-        ['Как заполнять'],
-        ['Заполняйте лист «Товары»; этот лист — только пример, он не загружается.'],
-        ['Артикул — sku товара или артикул витрины. Есть в каталоге — товар обновится, нет — создастся новый (нужны Название и Цена).'],
-        ['Пустая ячейка у существующего товара ничего не меняет. Новое фото становится главным, прежние остаются.'],
+        ['SKU-001', 'Крем для лица', 'Красота и здоровье', 'Уход за кожей', 'Крем', 'MODEL-1', 'Бренд', 'Белый', '50 мл', 'Унисекс', 18900, 24900, 15, 'ракета', 'да', 'https://example.com/1.jpg|https://example.com/2.jpg', '', 'Описание товара', 'Состав / комплектация'],
       ]);
-      sample['!cols'] = [{ wch: 16 }, { wch: 36 }, { wch: 12 }, { wch: 14 }, { wch: 50 }, { wch: 44 }];
-      XLSX.utils.book_append_sheet(wb, sample, 'Пример');
+      sheet['!cols'] = SC_XL_HEADERS.map((h) => ({ wch: Math.max(14, h.length + 2) }));
+      XLSX.utils.book_append_sheet(wb, sheet, 'Товары');
       XLSX.writeFile(wb, 'showcase-products-template.xlsx');
       scSetStatus('Шаблон скачан', '');
-    } else if (act === 'pxl-upload') {
-      if (typeof XLSX === 'undefined') { scSetStatus('Не загрузилась библиотека Excel — обновите страницу', 'error'); return; }
-      const fileEl = document.getElementById('scXlsxFile');
-      const file = fileEl && fileEl.files && fileEl.files[0];
-      if (!file) { scSetStatus('Выберите файл Excel (.xlsx)', 'error'); return; }
-      scSetStatus('Читаю файл…', '');
-      let parsed;
-      try { parsed = scParseExcel(await scReadFile(file)); }
-      catch (err) { scSetStatus(`Не удалось прочитать файл: ${scErr(err)}`, 'error'); return; }
-      if (parsed.error) { scSetStatus(parsed.error, 'error'); return; }
-      if (!parsed.rows.length) { scSetStatus('В файле нет строк с товарами — заполните лист «Товары» по шаблону', 'error'); return; }
-      if (parsed.rows.length > SC_XL_MAX_ROWS) { scSetStatus(`В файле ${parsed.rows.length} строк — за один раз можно не больше ${SC_XL_MAX_ROWS}`, 'error'); return; }
-      const total = { showcaseId: scState.current.id, total: parsed.rows.length, created: 0, updated: 0, linked: 0, unchanged: 0, errors: [] };
-      for (let i = 0; i < parsed.rows.length; i += SC_XL_BATCH) {
-        scSetStatus(`Загружаю товары… ${Math.min(i + SC_XL_BATCH, parsed.rows.length)} из ${parsed.rows.length}`, '');
-        const batch = parsed.rows.slice(i, i + SC_XL_BATCH);
-        try {
-          const r = await api(`${base}/products/import`, { method: 'POST', body: JSON.stringify({ rows: batch }) });
-          for (const k of ['created', 'updated', 'linked', 'unchanged']) total[k] += r[k] || 0;
-          total.errors.push(...(r.errors || []));
-        } catch (err) {
-          // Пачка не дошла (сеть/таймаут): её строки — ошибки, остальные пачки продолжаем.
-          batch.forEach((b) => total.errors.push({ row: b.row, article: String(b.article == null ? '' : b.article), error: `пачка не загружена: ${scErr(err)}` }));
-        }
-      }
-      scState.importResult = total;
-      fileEl.value = '';
-      await scOpen(scState.current.id, `Excel загружен: создано ${total.created}, обновлено ${total.updated}, ошибок ${total.errors.length}`);
+    } else if (act === 'pxl-pick') {
+      const fe = document.getElementById('scXlsxFile');
+      if (fe) fe.click();
     } else if (act === 'pbulk') {
       const area = document.getElementById('scBulkCodes');
       const codes = area.value.trim();
@@ -796,7 +809,24 @@ function scWireOnce() {
   };
   root.addEventListener('change', (e) => {
     if (e.target.classList && e.target.classList.contains('sc-bb-replace')) { scReplaceBannerPhoto(e.target); return; }
+    if (e.target.id === 'scXlsxFile') { scImportFile(e.target.files && e.target.files[0]); return; }
     bbEdit(e);
+  });
+  const dropZone = (e) => (e.target.closest ? e.target.closest('#scXlsxDrop') : null);
+  root.addEventListener('dragover', (e) => {
+    const z = dropZone(e);
+    if (!z) return;
+    e.preventDefault();
+    z.style.background = 'var(--hover, rgba(127,127,127,.12))';
+  });
+  root.addEventListener('dragleave', (e) => { const z = dropZone(e); if (z) z.style.background = ''; });
+  root.addEventListener('drop', (e) => {
+    const z = dropZone(e);
+    if (!z) return;
+    e.preventDefault(); // иначе браузер откроет файл вместо загрузки
+    z.style.background = '';
+    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) scImportFile(f);
   });
   root.addEventListener('input', (e) => {
     if (bbEdit(e)) return;
@@ -806,6 +836,12 @@ function scWireOnce() {
     timer = setTimeout(loadShowcases, 300);
   });
   root.addEventListener('keydown', (e) => {
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.id === 'scXlsxDrop') {
+      e.preventDefault();
+      const fe = document.getElementById('scXlsxFile');
+      if (fe) fe.click();
+      return;
+    }
     if (e.key === 'Enter' && e.target.id === 'scVideoAddUrl') {
       e.preventDefault(); // Enter в поле ссылки = «Добавить по ссылке», а не сохранение формы
       const b = document.querySelector('[data-sc="v-add-url"]');
