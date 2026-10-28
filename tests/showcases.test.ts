@@ -1538,93 +1538,142 @@ describe('импорт товаров витрины из Excel (/products/impor
   const imp = (id: string, rows: Row[]) => adm('POST', `/${id}/products/import`, { rows });
   const bySku = (sku: string) => tables.product.find((p: Row) => p.sku === sku);
   const linkedIds = (id: string) => tables.showcaseProduct.filter((l: Row) => l.showcaseId === id).map((l: Row) => l.productId);
+  const full = (o: Row = {}): Row => ({
+    row: 2, sku: 'CELL29-001', name: 'Крем', category: 'Красота и здоровье', subcategory: 'Уход', type: 'Крем',
+    shopPrice: 18900, shopOldPrice: 24900, shopStock: 15, shopDelivery: 'rocket', shopActive: true,
+    images: JSON.stringify(['https://img.example/1.jpg', 'https://img.example/2.jpg']),
+    description: 'Описание', composition: 'Произведено в Корее', videoUrl: null, ...o,
+  });
+  const sum = (j: Row) => ({ created: j.created, updated: j.updated, linked: j.linked, errors: j.errors.length });
 
-  test('новый артикул → создаётся товар «только для витрин» и добавляется в витрину', async () => {
+  test('новый артикул → создаётся товар со всеми полями и добавляется в витрину', async () => {
     const s = await newShowcase();
-    const r = await imp(s.id, [{ row: 2, article: 'NEW-1', name: 'Кроссовки', price: 15000, oldPrice: 20000, description: 'Лёгкие', photo: 'https://img.example/a.jpg' }]);
+    const r = await imp(s.id, [full()]);
     assert.equal(r.status, 200, r.text);
-    assert.deepEqual({ ...r.json, errors: r.json.errors.length }, { created: 1, updated: 0, linked: 1, unchanged: 0, errors: 0 });
-    const p = bySku('NEW-1')!;
-    assert.equal(p.name, 'Кроссовки');
-    assert.equal(p.shopPrice, 15000);
-    assert.equal(p.shopOldPrice, 20000);
-    assert.equal(p.description, 'Лёгкие');
-    assert.deepEqual(JSON.parse(p.images), ['https://img.example/a.jpg']);
+    assert.deepEqual(sum(r.json), { created: 1, updated: 0, linked: 1, errors: 0 });
+    const p = bySku('CELL29-001')!;
+    assert.equal(p.category, 'Красота и здоровье');
+    assert.equal(p.subcategory, 'Уход');
+    assert.equal(p.type, 'Крем');
+    assert.equal(p.shopPrice, 18900);
+    assert.equal(p.shopOldPrice, 24900);
+    assert.equal(p.shopStock, 15);
+    assert.equal(p.shopDelivery, 'rocket');
+    assert.equal(p.shopActive, true);
+    assert.equal(p.composition, 'Произведено в Корее');
+    assert.deepEqual(JSON.parse(p.images), ['https://img.example/1.jpg', 'https://img.example/2.jpg']); // несколько фото
     assert.equal(p.showcaseOnly, true);
-    assert.equal(p.shopActive, false); // раздела нет — в продажу включают в карточке
     assert.match(p.shopArticle, /^\d{7}$/);
     assert.deepEqual(linkedIds(s.id), [p.id]);
   });
 
-  test('артикул есть (sku) → обновляются только заполненные ячейки, фото ставится первым; товар добавляется в витрину', async () => {
+  test('артикул есть → данные обновляются, пустые необязательные ячейки ничего не стирают, товар попадает в витрину', async () => {
     const s = await newShowcase();
-    const p = seedProduct({ sku: 'EX-1', name: 'Старое', shopPrice: 1000, shopOldPrice: 1500, description: 'Было', images: JSON.stringify(['https://img.example/old.jpg']) });
-    const r = await imp(s.id, [{ row: 2, article: 'EX-1', name: 'Новое', price: '2 500,5', oldPrice: '', description: '', photo: 'https://img.example/new.jpg' }]);
-    assert.deepEqual({ ...r.json, errors: r.json.errors.length }, { created: 0, updated: 1, linked: 1, unchanged: 0, errors: 0 });
+    const p = seedProduct({ sku: 'EX-1', name: 'Старое', shopOldPrice: 1500, description: 'Было', composition: 'Состав', subcategory: 'Старая', shopDelivery: 'truck', images: JSON.stringify(['https://img.example/old.jpg']) });
+    const r = await imp(s.id, [full({ sku: 'EX-1', name: 'Новое', subcategory: null, shopOldPrice: null, shopDelivery: null, description: null, composition: null, images: null })]);
+    assert.deepEqual(sum(r.json), { created: 0, updated: 1, linked: 1, errors: 0 });
     assert.equal(p.name, 'Новое');
-    assert.equal(p.shopPrice, 2500.5);
-    assert.equal(p.shopOldPrice, 1500); // пустая ячейка ничего не стёрла
+    assert.equal(p.shopPrice, 18900);
+    assert.equal(p.shopStock, 15);
+    assert.equal(p.shopOldPrice, 1500);
     assert.equal(p.description, 'Было');
-    assert.deepEqual(JSON.parse(p.images), ['https://img.example/new.jpg', 'https://img.example/old.jpg']);
+    assert.equal(p.composition, 'Состав');
+    assert.equal(p.subcategory, 'Старая');
+    assert.equal(p.shopDelivery, 'truck');
+    assert.deepEqual(JSON.parse(p.images), ['https://img.example/old.jpg']);
     assert.deepEqual(linkedIds(s.id), [p.id]);
-    assert.equal(tables.product.length, 1); // дубль не создан
+    assert.equal(tables.product.length, 1);
   });
 
-  test('артикул витрины тоже находит товар; уже в витрине → не дублируется; без изменений считается отдельно', async () => {
+  test('заполненные ячейки перезаписывают данные, фото заменяются списком из файла', async () => {
     const s = await newShowcase();
-    const p = seedProduct({ sku: 'EX-2', shopArticle: '7001234', shopPrice: 100 });
+    const p = seedProduct({ sku: 'EX-2', description: 'Было', images: JSON.stringify(['https://img.example/old.jpg']) });
+    await imp(s.id, [full({ sku: 'EX-2', images: 'https://img.example/a.jpg|https://img.example/b.jpg\nhttps://img.example/a.jpg' })]);
+    assert.equal(p.description, 'Описание');
+    assert.deepEqual(JSON.parse(p.images), ['https://img.example/a.jpg', 'https://img.example/b.jpg']);
+  });
+
+  test('уже в витрине → не дублируется (обновлён, linked=0)', async () => {
+    const s = await newShowcase();
+    const p = seedProduct({ sku: 'EX-3' });
     await adm('POST', `/${s.id}/products`, { productId: p.id });
-    const r = await imp(s.id, [{ article: '7001234', price: 300 }, { article: 'EX-2' }]);
-    assert.deepEqual({ ...r.json, errors: r.json.errors.length }, { created: 0, updated: 1, linked: 0, unchanged: 1, errors: 0 });
-    assert.equal(p.shopPrice, 300);
+    const r = await imp(s.id, [full({ sku: 'EX-3' })]);
+    assert.deepEqual(sum(r.json), { created: 0, updated: 1, linked: 0, errors: 0 });
     assert.equal(linkedIds(s.id).length, 1);
   });
 
-  test('числовой артикул из Excel (12345) работает как строка', async () => {
+  test('«В продаже»: нет → выключено; категория не из списка → сохраняется с замечанием', async () => {
     const s = await newShowcase();
-    const r = await imp(s.id, [{ article: 12345, name: 'Число', price: 10 }]);
-    assert.equal(r.json.created, 1);
-    assert.ok(bySku('12345'));
+    const r = await imp(s.id, [
+      full({ sku: 'A-1', shopActive: false }),
+      full({ sku: 'A-2', category: 'Моя выдуманная' }),
+    ]);
+    assert.deepEqual(sum(r.json), { created: 2, updated: 0, linked: 2, errors: 0 });
+    assert.equal(bySku('A-1')!.shopActive, false);
+    assert.equal(bySku('A-2')!.shopActive, false);
+    assert.equal(r.json.warnings.length, 1);
+    assert.equal(r.json.warnings[0].sku, 'A-2');
+    assert.match(r.json.warnings[0].message, /не из списка/);
   });
 
-  test('ошибки по строкам не мешают остальным: нет артикула, нет цены/названия у нового, артикул площадки, плохая цена/фото', async () => {
+  test('видео: ссылка сохраняется; плохие ссылки на фото дают замечание, а не ошибку', async () => {
     const s = await newShowcase();
-    seedProduct({ sku: 'OWN-1', kaspiSku: 'KASPI-77' });
+    const r = await imp(s.id, [full({ videoUrl: 'https://v.example/a.mp4', images: 'https://ok.example/1.jpg|javascript:alert(1)' })]);
+    assert.deepEqual(sum(r.json), { created: 1, updated: 0, linked: 1, errors: 0 });
+    const p = bySku('CELL29-001')!;
+    assert.equal(p.videoUrl, 'https://v.example/a.mp4');
+    assert.deepEqual(p.videos, ['https://v.example/a.mp4']);
+    assert.deepEqual(JSON.parse(p.images), ['https://ok.example/1.jpg']);
+    assert.equal(r.json.warnings.length, 1);
+  });
+
+  test('ошибки по строкам не мешают остальным', async () => {
+    const s = await newShowcase();
     const r = await imp(s.id, [
-      { row: 2, article: '', name: 'Без артикула', price: 1 },
-      { row: 3, article: 'NEW-A', name: 'Без цены' },
-      { row: 4, article: 'NEW-B', price: 5 },
-      { row: 5, article: 'KASPI-77', name: 'Чужой', price: 1 },
-      { row: 6, article: 'OWN-1', price: 'abc' },
-      { row: 7, article: 'OWN-1', photo: 'javascript:alert(1)' },
-      { row: 8, article: 'OK-1', name: 'Хороший', price: 50 },
+      full({ row: 2, sku: '' }),
+      full({ row: 3, sku: 'E-2', name: '' }),
+      full({ row: 4, sku: 'E-3', category: '' }),
+      full({ row: 5, sku: 'E-4', type: '' }),
+      full({ row: 6, sku: 'E-5', shopPrice: null }),
+      full({ row: 7, sku: 'E-6', shopStock: null }),
+      full({ row: 8, sku: 'E-7', shopStock: 1.5 }),
+      full({ row: 9, sku: 'E-8', shopPrice: -5 }),
+      full({ row: 10, sku: 'OK-1' }),
     ]);
     assert.equal(r.status, 200, r.text);
     assert.equal(r.json.created, 1);
-    assert.deepEqual(r.json.errors.map((e: Row) => e.row), [2, 3, 4, 5, 6, 7]);
+    assert.deepEqual(r.json.errors.map((e: Row) => e.row), [2, 3, 4, 5, 6, 7, 8, 9]);
     assert.match(r.json.errors[0].error, /артикул/);
-    assert.match(r.json.errors[2].error, /Название и Цена/);
-    assert.match(r.json.errors[3].error, /площадки/);
-    assert.match(r.json.errors[4].error, /Цена/);
-    assert.match(r.json.errors[5].error, /http/);
+    assert.match(r.json.errors[1].error, /название/);
+    assert.match(r.json.errors[2].error, /категория/);
+    assert.match(r.json.errors[3].error, /тип/);
+    assert.match(r.json.errors[4].error, /цена/);
+    assert.match(r.json.errors[5].error, /остаток/);
+    assert.equal(tables.product.length, 1);
     assert.ok(bySku('OK-1'));
-    assert.equal(bySku('KASPI-77'), undefined); // товар-дубль под артикулом площадки не создан
-    assert.equal(tables.product.length, 2);
   });
 
   test('повтор артикула в одном файле: вторая строка обновляет созданный товар', async () => {
     const s = await newShowcase();
-    const r = await imp(s.id, [{ article: 'DUP-1', name: 'Первый', price: 10 }, { article: 'DUP-1', name: 'Второй', price: 20 }]);
-    assert.deepEqual({ ...r.json, errors: r.json.errors.length }, { created: 1, updated: 1, linked: 1, unchanged: 0, errors: 0 });
+    const r = await imp(s.id, [full({ sku: 'DUP-1', name: 'Первый' }), full({ sku: 'DUP-1', name: 'Второй' })]);
+    assert.deepEqual(sum(r.json), { created: 1, updated: 1, linked: 1, errors: 0 });
     assert.equal(bySku('DUP-1')!.name, 'Второй');
     assert.equal(linkedIds(s.id).length, 1);
+  });
+
+  test('числа из Excel: артикул числом, цена строкой «1 500,5»', async () => {
+    const s = await newShowcase();
+    const r = await imp(s.id, [full({ sku: 12345, shopPrice: '1 500,5', shopStock: '7' })]);
+    assert.equal(r.json.created, 1, r.text);
+    assert.equal(bySku('12345')!.shopPrice, 1500.5);
+    assert.equal(bySku('12345')!.shopStock, 7);
   });
 
   test('лимит витрины: товар сверх лимита не создаётся и не обновляется', async () => {
     const s = await newShowcase();
     for (let i = 0; i < 500; i++) tables.showcaseProduct.push({ id: newId(), showcaseId: s.id, productId: `fake${i}`, sortOrder: i + 1 });
     const extra = seedProduct({ sku: 'EX-LIM', name: 'Как было' });
-    const r = await imp(s.id, [{ article: 'NEW-LIM', name: 'Новый', price: 1 }, { article: 'EX-LIM', name: 'Изменено', price: 2 }]);
+    const r = await imp(s.id, [full({ sku: 'NEW-LIM' }), full({ sku: 'EX-LIM', name: 'Изменено' })]);
     assert.equal(r.json.errors.length, 2);
     assert.match(r.json.errors[0].error, /лимит/);
     assert.equal(bySku('NEW-LIM'), undefined);
@@ -1634,20 +1683,16 @@ describe('импорт товаров витрины из Excel (/products/impor
   test('валидация запроса: пустой список, больше 25 строк → 400; нет витрины → 404', async () => {
     const s = await newShowcase();
     assert.equal((await imp(s.id, [])).status, 400);
-    assert.equal((await imp(s.id, Array.from({ length: 26 }, (_, i) => ({ article: `X${i}`, name: 'n', price: 1 })))).status, 400);
-    assert.equal((await imp('no-such-showcase', [{ article: 'X', name: 'n', price: 1 }])).status, 404);
+    assert.equal((await imp(s.id, Array.from({ length: 26 }, (_, i) => full({ sku: `X${i}` })))).status, 400);
+    assert.equal((await imp('no-such-showcase', [full()])).status, 404);
   });
 
-  test('созданный товар виден в админке витрины и не ломает массовую загрузку по артикулам', async () => {
+  test('не ломает массовую загрузку по артикулам', async () => {
     const s = await newShowcase();
-    await imp(s.id, [{ article: 'NEW-9', name: 'Из Excel', price: 10 }]);
-    const detail = (await adm('GET', `/${s.id}`)).json;
-    assert.deepEqual(detail.products.map((p: Row) => p.name), ['Из Excel']);
-    assert.equal(detail.products[0].showcaseOnly, true);
-    const other = seedProduct({ sku: 'BULK-1', shopArticle: '3999991' });
+    await imp(s.id, [full({ sku: 'NEW-9' })]);
+    seedProduct({ sku: 'BULK-1', shopArticle: '3999991' });
     const b = await adm('POST', `/${s.id}/products/bulk`, { codes: 'BULK-1\nNEW-9' });
     assert.deepEqual(b.json.added.map((x: Row) => x.code), ['BULK-1']);
     assert.deepEqual(b.json.alreadyIn, ['NEW-9']);
-    assert.ok(other);
   });
 });

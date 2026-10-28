@@ -5,7 +5,7 @@ import { logger } from '../utils/logger';
 import { mapDbError } from './showcases.errors';
 import { BANNER_TEXT_COLORS, MAX_LINE_SIZE, MIN_LINE_SIZE, resolveBigBannerWrite } from '../services/showcaseBanners';
 import { showcaseVideosSchema } from '../services/productExtras';
-import { MAX_IMPORT_BATCH, mergePhoto, normalizeImportRow } from '../services/showcaseImport';
+import { MAX_IMPORT_BATCH, mergeVideos, normalizeImportRow, resolveActive } from '../services/showcaseImport';
 import { maybeGenerateShopArticle } from '../services/shopArticle';
 
 /**
@@ -436,14 +436,13 @@ showcasesAdminRouter.post('/:id/products/bulk', async (req, res) => {
 });
 
 /**
- * Импорт товаров из Excel (колонки: Артикул, Название, Цена, Старая цена, Описание, Ссылка на фото).
+ * Загрузка товаров из Excel (шаблон «Товары» — те же колонки, что у загрузки My Market).
  * Файл разбирает браузер и шлёт строки небольшими пачками (иначе таймаут serverless-функции).
- *  • Артикул найден (sku или артикул витрины) → заполненные ячейки обновляют товар
- *    (пустые ячейки ничего не стирают), товар при необходимости добавляется в витрину;
- *  • не найден → создаётся новый товар («только для витрин», без раздела — в продажу его
- *    включают в карточке) и добавляется в витрину; нужны Название и Цена;
- *  • артикул площадки (Kaspi/Ozon/WB) или id — ошибка строки, а не новый товар-дубль.
- * Каждая строка обрабатывается отдельно: ошибка в одной не мешает остальным.
+ *  • Артикул (sku) найден → товар обновляется и добавляется в витрину (если его там нет);
+ *  • не найден → создаётся новый товар («только для витрин») и добавляется в витрину.
+ * Обязательные поля применяются всегда, необязательные — только если ячейка заполнена
+ * (пустая ничего не стирает). Каждая строка обрабатывается отдельно: ошибка в одной не
+ * мешает остальным. «В продаже» включается только для категории из списка разделов витрины.
  */
 showcasesAdminRouter.post('/:id/products/import', async (req, res) => {
   const parsed = z.object({ rows: z.array(z.record(z.any())).min(1).max(MAX_IMPORT_BATCH) }).safeParse(req.body);
@@ -452,105 +451,73 @@ showcasesAdminRouter.post('/:id/products/import', async (req, res) => {
     const showcase = await prisma.showcase.findUnique({ where: { id: req.params.id } });
     if (!showcase) return res.status(404).json({ error: 'Витрина не найдена' });
 
-    const rows = [] as Array<ReturnType<typeof normalizeImportRow> & { index: number }>;
-    parsed.data.rows.forEach((r, index) => rows.push({ ...normalizeImportRow(r), index }));
-    const codes = Array.from(new Set(rows.flatMap((r) => (r.ok ? [r.row.article] : []))));
-
-    const found: any[] = codes.length
-      ? await prisma.product.findMany({
-          where: {
-            OR: [
-              { sku: { in: codes } }, { shopArticle: { in: codes } }, { id: { in: codes } },
-              { kaspiSku: { in: codes } }, { ozonOfferId: { in: codes } }, { wbArticle: { in: codes } },
-            ],
-          },
-        })
-      : [];
-    const bySku = new Map<string, any>();
-    const byShopArticle = new Map<string, any>();
-    const foreign = new Set<string>(); // коды, совпавшие только с артикулом площадки / id
-    for (const p of found) {
-      if (p.sku) bySku.set(p.sku, p);
-      if (p.shopArticle) byShopArticle.set(p.shopArticle, p);
-      for (const v of [p.id, p.kaspiSku, p.ozonOfferId, p.wbArticle]) if (typeof v === 'string' && v) foreign.add(v);
-    }
+    const norm = parsed.data.rows.map((raw) => ({ raw, n: normalizeImportRow(raw) }));
+    const skus = Array.from(new Set(norm.flatMap((x) => (x.n.ok ? [x.n.row.sku] : []))));
+    const found: any[] = skus.length ? await prisma.product.findMany({ where: { sku: { in: skus } } }) : [];
+    const bySku = new Map<string, any>(found.map((p) => [p.sku, p]));
 
     const links: any[] = await prisma.showcaseProduct.findMany({ where: { showcaseId: showcase.id } });
     const linked = new Set<string>(links.map((l) => l.productId));
     let lastOrder = links.reduce((m, l) => Math.max(m, l.sortOrder ?? 0), 0);
 
-    const out = { created: 0, updated: 0, linked: 0, unchanged: 0, errors: [] as Array<{ row: number | null; article: string; error: string }> };
-    const fail1 = (r: any, article: string, error: string) => out.errors.push({ row: r.ok ? r.row.row : null, article, error });
+    const out = {
+      created: 0, updated: 0, linked: 0,
+      errors: [] as Array<{ row: number | null; sku: string; error: string }>,
+      warnings: [] as Array<{ row: number | null; sku: string; message: string }>,
+    };
+    const rowNoOf = (raw: Record<string, unknown>) => (typeof raw.row === 'number' ? raw.row : null);
 
-    for (const r of rows) {
-      if (!r.ok) {
-        const raw = parsed.data.rows[r.index];
-        out.errors.push({ row: typeof raw.row === 'number' ? raw.row : null, article: String(raw.article ?? ''), error: r.error });
-        continue;
-      }
-      const d = r.row;
+    for (const { raw, n } of norm) {
+      if (!n.ok) { out.errors.push({ row: rowNoOf(raw), sku: n.sku || String(raw.sku ?? ''), error: n.error }); continue; }
+      const d = n.row;
       try {
-        const a = bySku.get(d.article);
-        const b = byShopArticle.get(d.article);
-        if (a && b && a.id !== b.id) { fail1(r, d.article, 'артикул совпал с двумя разными товарами (sku одного и артикул витрины другого)'); continue; }
-        const product = a ?? b ?? null;
-
-        if (!product && foreign.has(d.article)) {
-          fail1(r, d.article, 'артикул совпал с артикулом площадки (Kaspi/Ozon/WB) или id — укажите sku или артикул витрины');
-          continue;
-        }
-        if (!product && (!d.name || d.price == null)) {
-          fail1(r, d.article, 'такого артикула нет в каталоге: для нового товара нужны Название и Цена');
-          continue;
-        }
+        const product = bySku.get(d.sku) ?? null;
         const needLink = !product || !linked.has(product.id);
         if (needLink && linked.size >= MAX_PRODUCTS_PER_LIST) {
-          fail1(r, d.article, `в витрине уже ${MAX_PRODUCTS_PER_LIST} товаров — лимит`);
+          out.errors.push({ row: d.row, sku: d.sku, error: `в витрине уже ${MAX_PRODUCTS_PER_LIST} товаров — лимит` });
           continue;
         }
+        const { active, downgraded } = resolveActive(d.shopActive, d.category);
+        for (const w of n.warnings) out.warnings.push({ row: d.row, sku: d.sku, message: w });
+        if (downgraded) out.warnings.push({ row: d.row, sku: d.sku, message: `категория «${d.category}» не из списка разделов витрины — товар сохранён, но «В продаже» не включено` });
 
         let target = product;
         if (!product) {
-          const price = d.price as number;
-          const article = await maybeGenerateShopArticle({ currentShopArticle: null, effectivePrice: price, effectiveActive: false });
+          const article = await maybeGenerateShopArticle({ currentShopArticle: null, effectivePrice: d.shopPrice, effectiveActive: active });
           target = await prisma.product.create({
             data: {
-              sku: d.article,
-              name: d.name as string,
-              costPrice: 0,
-              shopPrice: price,
-              shopOldPrice: d.oldPrice,
-              description: d.description,
-              images: d.photo ? JSON.stringify([d.photo]) : null,
+              sku: d.sku, name: d.name, costPrice: 0,
+              category: d.category, subcategory: d.subcategory, type: d.type,
+              shopPrice: d.shopPrice, shopOldPrice: d.shopOldPrice, shopStock: d.shopStock,
+              shopDelivery: d.shopDelivery, shopActive: active,
+              description: d.description, composition: d.composition,
+              images: d.images ? JSON.stringify(d.images) : null,
+              videoUrl: d.videoUrl,
+              videos: d.videoUrl ? [d.videoUrl] : [],
               showcaseOnly: true,
-              shopActive: false,
               ...(article ? { shopArticle: article } : {}),
             },
           });
           bySku.set(target.sku, target);
-          if (target.shopArticle) byShopArticle.set(target.shopArticle, target);
           out.created += 1;
         } else {
-          const data: Record<string, unknown> = {};
-          if (d.name) data.name = d.name;
-          if (d.price != null) data.shopPrice = d.price;
-          if (d.oldPrice != null) data.shopOldPrice = d.oldPrice;
+          const data: Record<string, unknown> = {
+            name: d.name, category: d.category, type: d.type,
+            shopPrice: d.shopPrice, shopStock: d.shopStock, shopActive: active,
+            ...(active ? { shopArchived: false } : {}),
+          };
+          if (d.subcategory) data.subcategory = d.subcategory;
+          if (d.shopOldPrice != null) data.shopOldPrice = d.shopOldPrice;
+          if (d.shopDelivery) data.shopDelivery = d.shopDelivery;
           if (d.description) data.description = d.description;
-          if (d.photo) data.images = mergePhoto(product.images, d.photo);
-          if (Object.keys(data).length) {
-            const article = await maybeGenerateShopArticle({
-              currentShopArticle: product.shopArticle ?? null,
-              effectivePrice: (data.shopPrice as number | undefined) ?? product.shopPrice,
-              effectiveActive: product.shopActive,
-            });
-            if (article) data.shopArticle = article;
-            target = await prisma.product.update({ where: { id: product.id }, data });
-            bySku.set(target.sku, target);
-            if (target.shopArticle) byShopArticle.set(target.shopArticle, target);
-            out.updated += 1;
-          } else if (!needLink) {
-            out.unchanged += 1;
-          }
+          if (d.composition) data.composition = d.composition;
+          if (d.images) data.images = JSON.stringify(d.images);
+          if (d.videoUrl) { data.videoUrl = d.videoUrl; data.videos = mergeVideos(product.videos, d.videoUrl); }
+          const article = await maybeGenerateShopArticle({ currentShopArticle: product.shopArticle ?? null, effectivePrice: d.shopPrice, effectiveActive: active });
+          if (article) data.shopArticle = article;
+          target = await prisma.product.update({ where: { id: product.id }, data });
+          bySku.set(target.sku, target);
+          out.updated += 1;
         }
 
         if (needLink) {
@@ -563,7 +530,7 @@ showcasesAdminRouter.post('/:id/products/import', async (req, res) => {
           linked.add(target.id);
         }
       } catch (err: any) {
-        fail1(r, d.article, isUniqueViolation(err) ? 'такой артикул уже занят' : `не удалось сохранить: ${String(err?.message ?? err).slice(0, 200)}`);
+        out.errors.push({ row: d.row, sku: d.sku, error: isUniqueViolation(err) ? 'такой артикул уже занят' : `не удалось сохранить: ${String(err?.message ?? err).slice(0, 200)}` });
       }
     }
     res.json(out);
