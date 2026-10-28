@@ -71,6 +71,13 @@ globalThis.fetch = (async (url: any, init?: any) => {
     if (t.includes('bad')) return new Response(JSON.stringify({ error: { status: 'INVALID_ARGUMENT' } }), { status: 400 });
     return new Response(JSON.stringify({ name: 'projects/p/messages/1' }), { status: 200 });
   }
+  if (init?.method === 'HEAD' && String(url).startsWith('https://img-check.example/')) {
+    const u = String(url);
+    if (u.includes('missing')) return new Response(null, { status: 404 });
+    if (u.includes('page')) return new Response(null, { status: 200, headers: { 'content-type': 'text/html' } });
+    if (u.includes('big')) return new Response(null, { status: 200, headers: { 'content-type': 'image/jpeg', 'content-length': '2500000' } });
+    return new Response(null, { status: 200, headers: { 'content-type': 'image/jpeg', 'content-length': '200000' } });
+  }
   return realFetch(url, init);
 }) as typeof fetch;
 
@@ -368,5 +375,41 @@ describe('пуш с кодом выдачи — только покупател�
   test('Firebase отказал → функция не бросает исключение', async () => {
     tokens = [{ phone: '77011112233', token: 'fcm-bad' }];
     await assert.doesNotReject(() => sendPickupCodePush('77011112233', '22222', 'MM-103'));
+  });
+});
+
+describe('картинка пуша: проверка ссылки и предупреждения', () => {
+  const send = (imageUrl: string) => call('POST', '/api/push-admin/send', { title: 'А', body: 'Б', imageUrl, audience: 'all' });
+  beforeEach(() => { tokens = [{ phone: '1', token: 'fcm-device-x' }, { phone: '2', token: tok(1) }]; });
+
+  test('нормальная картинка: уходит в Firebase (notification.image, android, data) и в Expo (richContent); предупреждения нет', async () => {
+    const url = 'https://img-check.example/ok.jpg';
+    const r = await send(url);
+    assert.equal(r.json.sent, 2);
+    assert.equal(r.json.imageWarning, undefined);
+    const m = fcmCalls[0].message;
+    assert.equal(m.notification.image, url);
+    assert.equal(m.android.notification.image, url);
+    assert.equal(m.data.image, url);
+    assert.deepEqual(expoCalls[0][0].richContent, { image: url });
+  });
+
+  test('тяжелее 1 МБ → пуш уходит, но с предупреждением про Android', async () => {
+    const r = await send('https://img-check.example/big.jpg');
+    assert.equal(r.json.sent, 2);
+    assert.match(r.json.imageWarning, /1 МБ/);
+  });
+
+  test('ссылка 404 / не картинка → предупреждение, пуш всё равно отправлен', async () => {
+    const a = await send('https://img-check.example/missing.jpg');
+    assert.match(a.json.imageWarning, /недоступна/);
+    const b = await send('https://img-check.example/page.html');
+    assert.match(b.json.imageWarning, /не на картинку/);
+    assert.equal(b.json.sent, 2);
+  });
+
+  test('без картинки проверка не выполняется и предупреждения нет', async () => {
+    const r = await call('POST', '/api/push-admin/send', { title: 'А', body: 'Б', audience: 'all' });
+    assert.equal(r.json.imageWarning, undefined);
   });
 });
