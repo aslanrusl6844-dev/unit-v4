@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../db/prisma';
-import { sendPush } from '../services/push.service';
+import { sendBroadcast } from '../services/pushBroadcast.service';
 import { logger } from '../utils/logger';
 import { normalizePhone } from './shop.routes';
 import { yardApplyPayment, yardApplyAccept, yardApplyClose, YardTransitionError } from '../services/yard.service';
@@ -447,21 +447,17 @@ yardAdminRouter.post('/instruction', async (req, res) => {
 });
 
 
-// Рассылка push всем.
+// Рассылка push всем: ВСЕ токены из базы одним пакетом (параллельно, Expo и FCM),
+// а не по одному устройству подряд — иначе serverless-функция не успевала дойти до остальных.
 yardAdminRouter.post('/push/broadcast', async (req, res) => {
   const { title, body } = req.body ?? {};
   if (!title || !body) return res.status(400).json({ error: 'Нужны title и body' });
   try {
-    const all = await prisma.shopCustomerPushToken.findMany();
-    const seen = new Set<string>();
-    let sent = 0;
-    for (const t of all) {
-      if (seen.has(t.token)) continue;
-      seen.add(t.token);
-      await sendPush(t.phone, { title, body }, true);
-      sent++;
-    }
-    res.json({ sent });
+    const all = await prisma.shopCustomerPushToken.findMany({ select: { token: true } });
+    const tokens = all.map((t: { token: string }) => t.token);
+    if (!tokens.length) return res.status(404).json({ error: 'Нет получателей с зарегистрированным токеном' });
+    const r = await sendBroadcast({ title: String(title), body: String(body), tokens });
+    res.json({ ...r, ok: true });
   } catch (err: any) {
     res.status(500).json({ error: 'Не удалось отправить', details: String(err?.message ?? err) });
   }

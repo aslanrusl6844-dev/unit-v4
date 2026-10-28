@@ -20,6 +20,7 @@ export interface BroadcastInput {
   body: string;
   imageUrl?: string | null;
   tokens: string[];
+  data?: Record<string, string>; // доп. поля data (type и т.п.); по умолчанию type=broadcast
 }
 export interface BroadcastResult {
   total: number; // токенов получено
@@ -33,8 +34,8 @@ export interface BroadcastResult {
 }
 
 /** Одно сообщение Expo: без картинки поля richContent/image не добавляются вовсе. */
-export function buildExpoMessage(token: string, title: string, body: string, imageUrl?: string | null) {
-  const msg: Record<string, unknown> = { to: token, title, body, sound: 'default', data: { type: 'broadcast' } };
+export function buildExpoMessage(token: string, title: string, body: string, imageUrl?: string | null, data?: Record<string, string>) {
+  const msg: Record<string, unknown> = { to: token, title, body, sound: 'default', data: { type: 'broadcast', ...(data ?? {}) } };
   if (imageUrl) {
     msg.richContent = { image: imageUrl };
     (msg.data as Record<string, unknown>).image = imageUrl;
@@ -86,14 +87,14 @@ export async function sendBroadcast(input: BroadcastInput): Promise<BroadcastRes
   };
   const chunks: Record<string, unknown>[][] = [];
   for (let i = 0; i < expo.length; i += EXPO_CHUNK) {
-    chunks.push(expo.slice(i, i + EXPO_CHUNK).map((t) => buildExpoMessage(t, input.title, input.body, input.imageUrl)));
+    chunks.push(expo.slice(i, i + EXPO_CHUNK).map((t) => buildExpoMessage(t, input.title, input.body, input.imageUrl, input.data)));
   }
   for (let i = 0; i < chunks.length; i += PARALLEL_CHUNKS) {
     const parts = await Promise.all(chunks.slice(i, i + PARALLEL_CHUNKS).map(sendChunk));
     for (const p of parts) { result.sent += p.sent; result.failed += p.failed; result.notRegistered += p.notRegistered; }
   }
   if (fcm.length) {
-    const f = await sendFcmBroadcast(fcm, input.title, input.body, input.imageUrl);
+    const f = await sendFcmBroadcast(fcm, input.title, input.body, input.imageUrl, undefined, input.data);
     result.sent += f.sent; result.failed += f.failed; result.notRegistered += f.notRegistered;
     if (f.error) result.fcmError = f.error;
   }

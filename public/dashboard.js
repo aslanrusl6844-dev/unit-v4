@@ -6082,7 +6082,8 @@ document.getElementById('pushSendBtn')?.addEventListener('click', async () => {
   status.style.color = '';
   try {
     const r = await api('/yard-admin/push/broadcast', { method: 'POST', body: JSON.stringify({ title, body }) });
-    status.textContent = 'Отправлено: ' + r.sent;
+    status.textContent = `Отправлено: ${r.sent} из ${r.total}` + (r.failed ? `, ошибок: ${r.failed}` : '') + (r.fcmError ? ` · Firebase: ${r.fcmError}` : '');
+    if (r.failed || r.fcmError) status.style.color = 'var(--loss)';
     document.getElementById('pushTitle').value = '';
     document.getElementById('pushBody').value = '';
   } catch (err) {
