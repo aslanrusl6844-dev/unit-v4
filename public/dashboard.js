@@ -2806,6 +2806,26 @@ function renderMyMarketQtyList() {
   }));
 }
 
+// Цена варианта = цена витрины × количество. Пока поле цены не правили руками — пересчитывается
+// при смене количества/единицы/цены витрины; после ручной правки остаётся то, что введено.
+function resetMyMarketQtyAddForm() {
+  ['mmQtyAddQuantity', 'mmQtyAddPrice'].forEach((id) => { const el = document.getElementById(id); if (el) { el.value = ''; el.dataset.manual = ''; } });
+}
+
+function mmQtyAutoPrice(quantity, shopPriceRaw) {
+  const shop = shopPriceRaw === '' || shopPriceRaw == null ? NaN : Number(shopPriceRaw);
+  if (!(quantity > 0) || !Number.isFinite(shop) || shop < 0) return '';
+  return String(Math.round(shop * quantity * 100) / 100);
+}
+
+function updateMyMarketQtyAutoPrice() {
+  const priceEl = document.getElementById('mmQtyAddPrice');
+  if (!priceEl || priceEl.dataset.manual === '1') return;
+  const form = document.getElementById('mymarketProductCardForm');
+  const qtyRaw = document.getElementById('mmQtyAddQuantity').value;
+  priceEl.value = qtyRaw === '' ? '' : mmQtyAutoPrice(Number(qtyRaw), form ? form.elements.shopPrice.value : '');
+}
+
 function addMyMarketQtyVariant() {
   const status = document.getElementById('mmQtyStatus');
   const quantity = Number(document.getElementById('mmQtyAddQuantity').value);
@@ -2821,6 +2841,7 @@ function addMyMarketQtyVariant() {
   myMarketCardQty.sort((a, b) => (a.unit === b.unit ? a.quantity - b.quantity : a.unit < b.unit ? -1 : 1));
   document.getElementById('mmQtyAddQuantity').value = '';
   document.getElementById('mmQtyAddPrice').value = '';
+  document.getElementById('mmQtyAddPrice').dataset.manual = '';
   renderMyMarketQtyList();
 }
 
@@ -2889,6 +2910,10 @@ async function handleMyMarketDetailFiles(files) {
 
 function initMyMarketQtyDetails() {
   document.getElementById('mmQtyAddBtn').addEventListener('click', addMyMarketQtyVariant);
+  document.getElementById('mmQtyAddQuantity').addEventListener('input', updateMyMarketQtyAutoPrice);
+  document.getElementById('mmQtyAddPrice').addEventListener('input', (e) => { e.target.dataset.manual = e.target.value === '' ? '' : '1'; }); // очистил поле — снова авторасчёт
+  const shopPriceEl = document.getElementById('mymarketProductCardForm').elements.shopPrice;
+  if (shopPriceEl) shopPriceEl.addEventListener('input', updateMyMarketQtyAutoPrice);
   document.getElementById('mmVideosAddBtn').addEventListener('click', () => document.getElementById('mmVideosFileInput').click());
   document.getElementById('mmVideosFileInput').addEventListener('change', (e) => {
     const f = e.target.files[0];
@@ -3303,6 +3328,7 @@ function openMyMarketProductCard(id) {
   }
   myMarketCardVideo = p.shopVideo ?? null;
   myMarketCardQty = mmxParse(p.quantityVariants);
+  resetMyMarketQtyAddForm();
   myMarketCardDetails = (Array.isArray(p.details) ? p.details : mmxParse(p.details)).filter((u) => typeof u === 'string');
   myMarketCardVideos = Array.isArray(p.videos) ? p.videos.filter((u) => typeof u === 'string') : [];
   document.getElementById('mmVideosStatus').textContent = '';
@@ -3325,6 +3351,7 @@ function closeMyMarketProductCard() {
   myMarketCardImages = [];
   myMarketCardVideo = null;
   myMarketCardQty = [];
+  resetMyMarketQtyAddForm();
   myMarketCardDetails = [];
   myMarketCardVideos = [];
   myMarketCardShowcaseLink = null;
