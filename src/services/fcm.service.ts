@@ -68,9 +68,9 @@ async function getAccessToken(sa: ServiceAccount): Promise<string> {
 }
 
 /** Сообщение FCM v1. Без картинки полей image нет вовсе. */
-export function buildFcmMessage(token: string, title: string, body: string, imageUrl?: string | null) {
+export function buildFcmMessage(token: string, title: string, body: string, imageUrl?: string | null, data?: Record<string, string>) {
   const notification: Record<string, string> = { title, body };
-  const message: Record<string, any> = { token, notification, data: { type: 'broadcast' } };
+  const message: Record<string, any> = { token, notification, data: { type: 'broadcast', ...(data ?? {}) } };
   if (imageUrl) {
     notification.image = imageUrl;
     message.data.image = imageUrl;
@@ -82,7 +82,7 @@ export function buildFcmMessage(token: string, title: string, body: string, imag
 
 export interface FcmResult { sent: number; failed: number; notRegistered: number; error?: string }
 
-export async function sendFcmBroadcast(tokens: string[], title: string, body: string, imageUrl?: string | null, rawKey = process.env.FIREBASE_KEY): Promise<FcmResult> {
+export async function sendFcmBroadcast(tokens: string[], title: string, body: string, imageUrl?: string | null, rawKey = process.env.FIREBASE_KEY, extraData?: Record<string, string>): Promise<FcmResult> {
   const result: FcmResult = { sent: 0, failed: 0, notRegistered: 0 };
   if (!tokens.length) return result;
   let sa: ServiceAccount;
@@ -101,7 +101,7 @@ export async function sendFcmBroadcast(tokens: string[], title: string, body: st
       const res = await fetchWithTimeout(url, {
         method: 'POST',
         headers: { Authorization: `Bearer ${access}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: buildFcmMessage(token, title, body, imageUrl) }),
+        body: JSON.stringify({ message: buildFcmMessage(token, title, body, imageUrl, extraData) }),
       });
       if (res.ok) { result.sent++; return; }
       const data: any = await res.json().catch(() => ({}));

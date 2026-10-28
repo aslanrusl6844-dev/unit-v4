@@ -302,3 +302,71 @@ describe('Firebase (FCM HTTP v1) напрямую для FCM-токенов', ()
     assert.deepEqual((await call('GET', '/api/push-admin/audience')).json, { total: 1, expo: 0, fcm: 1, firebaseConfigured: false });
   });
 });
+
+describe('рассылка «всем» берёт ВСЕ токены из базы (Двор: /api/yard-admin/push/broadcast)', () => {
+  test('30 устройств с разными телефонами (Expo и FCM) → каждое получает пуш, никто не потерян', async () => {
+    tokens = [];
+    for (let i = 0; i < 12; i++) tokens.push({ phone: `7701${i}`, token: tok(i) });
+    for (let i = 0; i < 18; i++) tokens.push({ phone: `7702${i}`, token: `fcm-device-${i}` });
+    const r = await call('POST', '/api/yard-admin/push/broadcast', { title: 'Привет', body: 'Всем' });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.deepEqual([r.json.total, r.json.sent, r.json.failed], [30, 30, 0]);
+    assert.equal(expoCalls.flat().length, 12);
+    assert.equal(fcmCalls.length, 18);
+    assert.equal(new Set(fcmCalls.map((c) => c.message.token)).size, 18);
+    assert.ok(fcmCalls.every((c) => c.message.notification.title === 'Привет' && c.message.notification.body === 'Всем'));
+  });
+
+  test('нет токенов → 404; нет title/body → 400', async () => {
+    tokens = [];
+    assert.equal((await call('POST', '/api/yard-admin/push/broadcast', { title: 'a', body: 'b' })).status, 404);
+    assert.equal((await call('POST', '/api/yard-admin/push/broadcast', { title: 'a' })).status, 400);
+  });
+
+  test('push-admin «всем»: те же 30 устройств все получают пуш', async () => {
+    tokens = [];
+    for (let i = 0; i < 30; i++) tokens.push({ phone: `7703${i}`, token: i % 2 ? tok(i) : `fcm-device-${i}` });
+    const r = await call('POST', '/api/push-admin/send', { title: 'А', body: 'Б', audience: 'all' });
+    assert.deepEqual([r.json.total, r.json.sent, r.json.failed], [30, 30, 0]);
+  });
+});
+
+describe('пуш с кодом выдачи — только покупателю заказа', () => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { sendPickupCodePush } = require('../src/lib/expoPush');
+
+  test('FCM-токен покупателя: Firebase получает «Код выдачи: 12345», больше никто', async () => {
+    tokens = [{ phone: '77011112233', token: 'fcm-buyer' }, { phone: '77019998877', token: 'fcm-other' }, { phone: '77015556677', token: tok(1) }];
+    await sendPickupCodePush('77011112233', '12345', 'MM-100');
+    assert.equal(expoCalls.length, 0);
+    assert.equal(fcmCalls.length, 1);
+    const m = fcmCalls[0].message;
+    assert.equal(m.token, 'fcm-buyer');
+    assert.equal(m.notification.body, 'Код выдачи: 12345');
+    assert.equal(m.data.type, 'pickup_code');
+    assert.equal(m.data.pickupCode, '12345');
+    assert.equal(m.data.orderNumber, 'MM-100');
+  });
+
+  test('Expo-токен покупателя: уходит через Expo, текст «Код выдачи: 54321»', async () => {
+    tokens = [{ phone: '77011112233', token: tok(7) }, { phone: '77019998877', token: 'fcm-other' }];
+    await sendPickupCodePush('77011112233', '54321', 'MM-101');
+    assert.equal(fcmCalls.length, 0);
+    assert.equal(expoCalls.length, 1);
+    assert.equal(expoCalls[0].length, 1);
+    assert.equal(expoCalls[0][0].to, tok(7));
+    assert.equal(expoCalls[0][0].body, 'Код выдачи: 54321');
+    assert.equal((expoCalls[0][0].data as Row).type, 'pickup_code');
+  });
+
+  test('нет токена у покупателя → ничего не отправляется и ошибки нет', async () => {
+    tokens = [{ phone: '77019998877', token: 'fcm-other' }];
+    await sendPickupCodePush('77011112233', '11111', 'MM-102');
+    assert.equal(fcmCalls.length + expoCalls.length, 0);
+  });
+
+  test('Firebase отказал → функция не бросает исключение', async () => {
+    tokens = [{ phone: '77011112233', token: 'fcm-bad' }];
+    await assert.doesNotReject(() => sendPickupCodePush('77011112233', '22222', 'MM-103'));
+  });
+});
