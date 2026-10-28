@@ -100,3 +100,29 @@ export async function sendBroadcast(input: BroadcastInput): Promise<BroadcastRes
   }
   return result;
 }
+
+export const PUSH_IMAGE_MAX_BYTES = 1_000_000; // Android не показывает в пуше картинки тяжелее ~1 МБ
+const IMAGE_OK_TYPES = /^image\/(jpeg|jpg|png|gif|webp)\b/i;
+
+/**
+ * Проверка картинки пуша ДО отправки: доступна ли по ссылке, это ли картинка, не тяжелее ли 1 МБ.
+ * Ничего не блокирует — возвращает понятное предупреждение, почему картинка может не показаться
+ * (система телефона сама скачивает её по ссылке; при ошибке пуш приходит без картинки).
+ */
+export async function checkPushImage(url: string): Promise<string | null> {
+  const c = new AbortController();
+  const t = setTimeout(() => c.abort(), 5000);
+  try {
+    const res = await fetch(url, { method: 'HEAD', signal: c.signal, redirect: 'follow' });
+    if (!res.ok) return `Картинка недоступна по ссылке (HTTP ${res.status}) — телефон не сможет её скачать, пуш придёт без картинки`;
+    const type = res.headers.get('content-type') ?? '';
+    if (type && !IMAGE_OK_TYPES.test(type)) return `Ссылка ведёт не на картинку (${type.split(';')[0]}) — нужен JPG/PNG/GIF/WEBP`;
+    const len = Number(res.headers.get('content-length') ?? 0);
+    if (len > PUSH_IMAGE_MAX_BYTES) return `Картинка весит ${(len / 1e6).toFixed(1)} МБ — Android не показывает в пуше картинки тяжелее 1 МБ. Уменьши фото`;
+    return null;
+  } catch {
+    return 'Не удалось проверить картинку по ссылке — убедись, что она открывается без входа';
+  } finally {
+    clearTimeout(t);
+  }
+}

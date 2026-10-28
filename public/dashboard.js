@@ -3474,6 +3474,28 @@ function mmVideoDuration(file) {
   });
 }
 
+// Картинка пуша: Android не показывает в уведомлении файлы тяжелее ~1 МБ — сжимаем в браузере до JPEG ≤ ~800 КБ.
+async function mmShrinkForPush(file) {
+  try {
+    if (!/^image\/(jpeg|png|webp)$/.test(file.type) || typeof createImageBitmap !== 'function') return file;
+    if (file.size <= 700 * 1024 && file.type !== 'image/webp') return file;
+    const bmp = await createImageBitmap(file);
+    const scale = Math.min(1, 1200 / Math.max(bmp.width, bmp.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(bmp.width * scale));
+    canvas.height = Math.max(1, Math.round(bmp.height * scale));
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    for (const q of [0.85, 0.75, 0.65, 0.5]) {
+      const blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', q));
+      if (blob && blob.size <= 800 * 1024) return new File([blob], file.name.replace(/\.\w+$/, '') + '.jpg', { type: 'image/jpeg' });
+    }
+    return file;
+  } catch { return file; }
+}
+
 async function uploadMyMarketFile(file, opts) {
   const video = !!(opts && opts.video); // видео товара/витрины: только MP4/WEBM
   const banner = !!(opts && opts.banner);
@@ -5448,8 +5470,10 @@ async function broadcastSend(audience) {
     status.style.color = r.failed ? 'var(--warn)' : 'var(--profit, inherit)';
     status.textContent = `Принято: ${r.sent}, ошибок: ${r.failed}` + (r.notRegistered ? ` (устройство не зарегистрировано: ${r.notRegistered})` : '')
       + ` · Firebase: ${r.fcmTokens}, Expo: ${r.expoTokens}` + (r.withImage ? ' · с картинкой' : ' · без картинки')
-      + (r.fcmError ? ` · Firebase: ${r.fcmError}` : '');
+      + (r.fcmError ? ` · Firebase: ${r.fcmError}` : '')
+      + (r.imageWarning ? ` · ⚠ ${r.imageWarning}` : '');
     if (r.fcmError) status.style.color = 'var(--loss)';
+    else if (r.imageWarning) status.style.color = 'var(--warn)';
   } catch (err) {
     fail('Не удалось отправить: ' + err.message);
   } finally {
@@ -5469,7 +5493,7 @@ async function loadBroadcastPage() {
       const st = document.getElementById('bcImageStatus');
       st.style.color = 'var(--text-faint)';
       st.textContent = `Загружаю ${file.name}…`;
-      try { broadcastImage = await uploadMyMarketFile(file); st.textContent = ''; renderBroadcastImage(); }
+      try { broadcastImage = await uploadMyMarketFile(await mmShrinkForPush(file)); st.textContent = ''; renderBroadcastImage(); }
       catch (err) { st.style.color = 'var(--loss)'; st.textContent = err.message; }
     });
     document.getElementById('bcImageUrlBtn').addEventListener('click', () => {

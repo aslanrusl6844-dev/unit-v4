@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../db/prisma';
 import { logger } from '../utils/logger';
 import { normalizePhone } from './shop.routes';
-import { sendBroadcast, isExpoToken } from '../services/pushBroadcast.service';
+import { sendBroadcast, isExpoToken, checkPushImage } from '../services/pushBroadcast.service';
 
 /**
  * Админка → «Рассылка»: пуш всем покупателям с токеном (ShopCustomerPushToken)
@@ -55,9 +55,10 @@ pushAdminRouter.post('/send', async (req, res) => {
     }
     if (!tokens.length) return res.status(404).json({ error: 'Нет получателей с зарегистрированным токеном' });
 
+    const imageWarning = imageUrl ? await checkPushImage(imageUrl) : null;
     const result = await sendBroadcast({ title, body, imageUrl, tokens });
     logger.info({ audience, ...result }, '[PushAdmin] Рассылка отправлена');
-    res.json({ ok: true, audience, ...result });
+    res.json({ ok: true, audience, ...result, ...(imageWarning ? { imageWarning } : {}) });
   } catch (err: any) {
     logger.error({ err }, '[PushAdmin] POST /send упал');
     res.status(500).json({ error: 'Не удалось отправить рассылку', details: String(err?.message ?? err) });
