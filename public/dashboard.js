@@ -4616,6 +4616,7 @@ async function runMyMarketCourierApplicationDecision(id, action) {
   try {
     await api(`/shop-admin/courier-applications/${id}/${action}`, { method: 'POST' });
     await loadMyMarketCourierApplications();
+    await loadMyMarketCouriers(); // одобренный сразу появляется в «Активных» снизу
   } catch (err) {
     alert(`Не удалось ${action === 'approve' ? 'одобрить' : 'отклонить'} заявку: ` + err.message);
   }
@@ -4786,9 +4787,9 @@ function renderMyMarketCouriersTable() {
       <td>${c.phone}</td>
       <td class="name-cell" style="font-size:11px">${c.address ?? '—'}</td>
       <td>${c.vehicle ?? '—'}</td>
-      <td style="font-size:11px">${c.requisitesType === 'kaspi' ? 'Kaspi' : 'Карта'}: ${c.requisitesValue}</td>
+      <td style="font-size:11px">${c.requisitesValue ? `${c.requisitesType === 'kaspi' ? 'Kaspi' : 'Карта'}: ${c.requisitesValue}` : '—'}</td>
       <td style="font-size:11px">${c.agreeContractAt ? fmtOrderDateTime(c.agreeContractAt) : '—'}</td>
-      <td>${c.active ? '<span style="color:var(--accent)">● Активен</span>' : '<span style="color:var(--loss)">● Заблокирован</span>'}</td>
+      <td>${c.pendingRegistration ? '<span style="color:var(--warn)">● Одобрен, ждёт регистрации</span>' : c.active ? '<span style="color:var(--accent)">● Активен</span>' : '<span style="color:var(--loss)">● Заблокирован</span>'}</td>
       <td class="num">${c.ordersClosed ?? 0}</td>
       <td class="num" style="font-weight:700;color:var(--accent)">${fmtMoney(c.totalEarned ?? 0)}</td>
     </tr>
@@ -4813,17 +4814,21 @@ function openCourierCard(id) {
       <div><strong>Телефон:</strong> ${c.phone}</div>
       <div><strong>Адрес:</strong> ${c.address ?? '—'}</div>
       <div><strong>Авто:</strong> ${c.vehicle ?? '—'}</div>
-      <div><strong>Реквизиты:</strong> ${c.requisitesType === 'kaspi' ? 'Kaspi' : 'Карта'}: ${c.requisitesValue}</div>
+      <div><strong>Реквизиты:</strong> ${c.requisitesValue ? `${c.requisitesType === 'kaspi' ? 'Kaspi' : 'Карта'}: ${c.requisitesValue}` : '—'}</div>
+      ${c.city ? `<div><strong>Город:</strong> ${c.city}</div>` : ''}
       <div><strong>Согласие:</strong> ${c.agreeContractAt ? fmtOrderDateTime(c.agreeContractAt) : '—'}</div>
-      <div><strong>Статус:</strong> ${c.active ? 'Активен' : 'Заблокирован'}</div>
+      <div><strong>Статус:</strong> ${c.pendingRegistration ? 'Одобрен, ждёт регистрации' : c.active ? 'Активен' : 'Заблокирован'}</div>
     </div>
-    <div style="display:flex;justify-content:flex-end;margin-top:10px">
+    ${c.pendingRegistration
+      ? '<p class="panel__hint" style="margin-top:10px">Заявка одобрена. Фото, адрес, авто и реквизиты появятся здесь, когда курьер заполнит анкету в приложении.</p>'
+      : `<div style="display:flex;justify-content:flex-end;margin-top:10px">
       <button class="btn ${c.active ? 'btn--ghost' : 'btn--accent'}" id="mmCourierBlockBtn" style="${c.active ? 'color:var(--loss)' : ''}">
         ${c.active ? 'Заблокировать' : 'Разблокировать'}
       </button>
-    </div>
+    </div>`}
   `;
-  document.getElementById('mmCourierBlockBtn').addEventListener('click', async () => {
+  const blockBtn = document.getElementById('mmCourierBlockBtn');
+  if (blockBtn) blockBtn.addEventListener('click', async () => {
     try {
       await api(`/shop-admin/couriers/${c.id}/block`, { method: 'POST', body: JSON.stringify({ active: !c.active }) });
       closeCourierCard();
