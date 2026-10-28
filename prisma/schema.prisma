@@ -933,3 +933,15 @@ model PushToken {
 
   @@index([phone])
 }
+
+// Напоминание о корзине: одно отправленное пуш-напоминание на событие «в корзину» (ShopEvent.cart).
+// eventId уникален — одно событие никогда не напоминается дважды; (phone, sentAt) — не чаще раза в сутки на номер.
+model CartReminder {
+  id     String   @id @default(cuid())
+  eventId String  @unique
+  phone  String
+  sku    String
+  sentAt DateTime @default(now())
+
+  @@index([phone, sentAt])
+}
