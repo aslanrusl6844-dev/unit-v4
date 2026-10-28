@@ -995,13 +995,42 @@ shopAdminRouter.get('/couriers', async (_req, res) => {
       ]),
     );
 
-    res.json(
-      couriers.map((c: { id: string }) => ({
+    // Одобренные заявки, по которым курьер ещё не прошёл регистрацию в приложении (строки Courier нет):
+    // показываем их в «Активных» сразу после «Одобрить», с пометкой «ждёт регистрации». Фото, адрес, авто и
+    // реквизиты появятся здесь сами, когда курьер заполнит анкету в приложении (POST /courier/register).
+    const approved: Array<{ id: string; phone: string; name: string; city: string; iin: string | null; reviewedAt: Date | null; createdAt: Date }> =
+      await prisma.shopCourierApplication.findMany({ where: { status: 'approved', archived: false }, orderBy: { reviewedAt: 'desc' } });
+    const registeredPhones = new Set((couriers as Array<{ phone: string }>).map((c) => c.phone));
+    const waiting = approved
+      .filter((a) => !registeredPhones.has(a.phone))
+      .map((a) => ({
+        id: `app:${a.id}`,
+        pendingRegistration: true,
+        name: a.name,
+        phone: a.phone,
+        iin: a.iin,
+        city: a.city,
+        address: null,
+        vehicle: null,
+        idPhotoUrl: null,
+        facePhotoUrl: null,
+        requisitesType: null,
+        requisitesValue: null,
+        agreeContractAt: null,
+        active: true,
+        createdAt: a.reviewedAt ?? a.createdAt,
+        ordersClosed: 0,
+        totalEarned: 0,
+      }));
+
+    res.json([
+      ...waiting,
+      ...couriers.map((c: { id: string }) => ({
         ...c,
         ordersClosed: statsByCourier.get(c.id)?.ordersClosed ?? 0,
         totalEarned: statsByCourier.get(c.id)?.totalEarned ?? 0,
       })),
-    );
+    ]);
   } catch (err: any) {
     logger.error({ err }, '[Shop Admin] GET /couriers упал');
     res.status(500).json({ error: 'Не удалось получить список курьеров', details: String(err?.message ?? err) });
