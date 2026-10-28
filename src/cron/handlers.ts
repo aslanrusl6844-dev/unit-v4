@@ -41,3 +41,9 @@ export async function runWarmup() {
   await prisma.$queryRaw`SELECT 1`;
   return { ok: true, ms: Date.now() - startedAt };
 }
+
+/** Напоминания о корзине (товар в корзине > 24 ч, заказа нет). */
+export async function runCartReminder() {
+  const { runCartReminders } = await import('../services/cartReminder.service');
+  return runCartReminders();
+}
