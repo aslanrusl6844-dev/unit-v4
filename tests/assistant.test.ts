@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 process.env.DATABASE_URL = 'postgresql://stub:stub@127.0.0.1:1/none';
 /* eslint-disable @typescript-eslint/no-var-requires */
-const { rankProducts, extractSkus, diverseSample, streamClaude } = require('../src/services/assistant.service');
+const { rankProducts, extractSkus, diverseSample, matchShowcases, streamClaude } = require('../src/services/assistant.service');
 const { sanitizeMessages } = require('../src/routes/assistant.routes');
 
 const items = [
@@ -34,4 +34,19 @@ test('streamClaude разбирает SSE', async () => {
   const full = await streamClaude({ apiKey: 'k', model: 'm', system: 's', messages: [{ role: 'user', content: 'a' }], onDelta: (t) => got.push(t), fetchImpl: fake });
   assert.equal(full, 'Привет');
   assert.deepEqual(got, ['При', 'вет']);
+});
+
+test('matchShowcases находит бренд по названию', () => {
+  const sc = [
+    { id: 'a', title: 'Sellers', type: 'brand', description: null, count: 3 },
+    { id: 'b', title: '9-9', type: 'brand', description: null, count: 2 },
+  ];
+  assert.deepEqual(matchShowcases(sc, 'что есть у Sellers для лица?').map((x: any) => x.id), ['a']);
+  assert.deepEqual(matchShowcases(sc, 'крем 9-9 есть?').map((x: any) => x.id), ['b']);
+  assert.deepEqual(matchShowcases(sc, 'мне нужно 99 штук').map((x: any) => x.id), []);
+});
+
+test('rankProducts учитывает бренд витрины', () => {
+  const it = [{ sku: '5', name: 'Крем', category: 'Красота', subcategory: null, type: null, price: 1, image: null, showcases: ['Sellers'] }, items[1]];
+  assert.equal(rankProducts(it, 'sellers')[0].sku, '5');
 });

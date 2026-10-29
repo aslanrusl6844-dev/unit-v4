@@ -3,7 +3,7 @@ import { env } from '../config/env';
 import { logger } from '../utils/logger';
 import { SHOP_CATEGORIES } from '../config/shopCategories';
 import {
-  ChatMessage, DEFAULT_MODEL, buildSystemPrompt, diverseSample, extractSkus, loadCatalog, rankProducts, streamClaude,
+  ChatMessage, DEFAULT_MODEL, buildSystemPrompt, diverseSample, extractSkus, loadCatalog, matchShowcases, rankProducts, streamClaude,
 } from '../services/assistant.service';
 
 export const assistantRouter = Router();
@@ -48,11 +48,15 @@ assistantRouter.post('/', async (req, res) => {
   res.on('close', () => ac.abort());
 
   try {
-    const catalog = await loadCatalog();
+    const { items: catalog, showcases } = await loadCatalog();
     const lastUsers = messages.filter((m) => m.role === 'user').slice(-2).map((m) => m.content).join(' ');
-    let found = rankProducts(catalog, lastUsers, 14);
+    // Названа витрина/бренд — сначала её товары, потом остальные совпадения.
+    const named = matchShowcases(showcases, lastUsers).map((x) => x.title);
+    const inNamed = named.length ? catalog.filter((p) => p.showcases?.some((t) => named.includes(t))) : [];
+    let found = rankProducts(inNamed.length ? inNamed : catalog, lastUsers, 14);
+    if (inNamed.length && found.length < 14) found = [...found, ...inNamed.filter((p) => !found.includes(p))].slice(0, 14);
     if (!found.length) found = diverseSample(catalog, 12);
-    const system = buildSystemPrompt(found, [...SHOP_CATEGORIES]);
+    const system = buildSystemPrompt(found, [...SHOP_CATEGORIES], showcases);
     const full = await streamClaude({
       apiKey, model: process.env.ASSISTANT_MODEL || DEFAULT_MODEL, system, messages, signal: ac.signal,
       onDelta: (t) => send('delta', { text: t }),
