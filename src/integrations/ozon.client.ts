@@ -9,7 +9,7 @@ import { cleanOzonDescription, cleanOzonComposition, isCompositionAttributeName,
  * Клиент для Ozon Seller API.
  * Документация: https://docs.ozon.ru/api/seller
  *
- * Заказы берём через POST /v3/posting/fbs/list (+ /v2/posting/fbo/list для FBO),
+ * Заказы берём через POST /v4/posting/fbs/list (курсор),
  * а реальные удержания (комиссия, логистика, эквайринг) — через
  * POST /v3/finance/transaction/list, т.к. в самом заказе комиссия не всегда
  * отражена финально (может меняться после начисления).
@@ -42,7 +42,13 @@ interface OzonPostingProduct {
   offer_id: string;
   name: string;
   quantity: number;
-  price: string;
+  price: string | { amount?: string | number; currency?: string } | number;
+}
+
+/** В v4 цена приходит объектом {amount, currency}, раньше — строкой. */
+function ozonMoney(v: unknown): number {
+  if (v && typeof v === 'object') return Number((v as { amount?: unknown }).amount ?? 0) || 0;
+  return Number(v ?? 0) || 0;
 }
 
 interface OzonPosting {
@@ -403,50 +409,51 @@ export class OzonClient {
   /**
    * Точная форма запроса к Ozon (для диагностики — см. п.1 вопроса):
    *
-   *   POST {OZON_API_BASE_URL}/v3/posting/fbs/list
+   *   POST {OZON_API_BASE_URL}/v4/posting/fbs/list
    *   Headers:
    *     Client-Id: <из формы в Настройках или OZON_CLIENT_ID>
    *     Api-Key:   <из формы в Настройках или OZON_API_KEY>
    *     Content-Type: application/json
    *   Body:
    *     {
-   *       "dir": "asc",
+   *       "cursor": "",
    *       "filter": { "since": "<ISO-дата>", "to": "<ISO-дата>" },
    *       "limit": 100,
-   *       "offset": 0,
+   *       "sort_dir": "ASC",
    *       "with": { "analytics_data": true, "financial_data": false }
    *     }
    */
   private async fetchAllFbsPostings(http: AxiosInstance, dateFrom: Date, dateTo: Date): Promise<OzonPosting[]> {
+    // Ozon отключил POST /v3/posting/fbs/list (400 «obsolete method», затем 404).
+    // Замена — POST /v4/posting/fbs/list: постраничность не по offset, а по
+    // курсору (в запросе cursor, в ответе cursor + has_next).
     const limit = 100;
-    let offset = 0;
+    let cursor = '';
     const all: OzonPosting[] = [];
+    const seenCursors = new Set<string>();
 
     // eslint-disable-next-line no-constant-condition
     while (true) {
       const requestBody = {
-        dir: 'asc',
+        cursor,
         filter: {
           since: dateFrom.toISOString(),
           to: dateTo.toISOString(),
         },
         limit,
-        offset,
+        sort_dir: 'ASC',
         with: { analytics_data: true, financial_data: false },
       };
 
       let data: any;
       try {
-        const response = await http.post('/v3/posting/fbs/list', requestBody);
+        const response = await http.post('/v4/posting/fbs/list', requestBody);
         data = response.data;
       } catch (err: any) {
-        // Логируем ТОЧНОЕ тело ответа Ozon при ошибке — по одному коду
-        // статуса (400/401/403) не понять причину, а тело обычно содержит
-        // понятное описание (например "wrong client-id format" и т.п.).
         const ozonErrorBody = err?.response?.data;
         logger.error(
           { status: err?.response?.status, body: ozonErrorBody, requestBody },
-          '[Ozon] Ошибка запроса заказов (fbs/list)',
+          '[Ozon] Ошибка запроса заказов (v4/posting/fbs/list)',
         );
         throw new Error(
           `Ozon API вернул ошибку ${err?.response?.status ?? ''} при запросе заказов: ` +
@@ -454,11 +461,16 @@ export class OzonClient {
         );
       }
 
-      const postings: OzonPosting[] = data.result?.postings ?? [];
+      // Ответ может прийти как {postings,...} или в обёртке {result:{postings,...}}.
+      const body = data?.result && !Array.isArray(data.postings) ? data.result : data;
+      const postings: OzonPosting[] = Array.isArray(body?.postings) ? body.postings : [];
       all.push(...postings);
 
-      if (postings.length < limit) break;
-      offset += limit;
+      const nextCursor: string = typeof body?.cursor === 'string' ? body.cursor : '';
+      const hasNext = body?.has_next === true;
+      if (!hasNext || !nextCursor || postings.length === 0 || seenCursors.has(nextCursor)) break;
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
     }
 
     return all;
@@ -579,7 +591,7 @@ export class OzonClient {
       externalSku: p.offer_id,
       name: p.name,
       quantity: p.quantity,
-      price: Number(p.price),
+      price: ozonMoney(p.price),
     }));
 
     const totalRevenue = items.reduce((sum, i) => sum + i.price * i.quantity, 0);
