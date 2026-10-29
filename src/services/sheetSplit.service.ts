@@ -1,0 +1,119 @@
+import sharp from 'sharp';
+
+/** Строки/столбцы листа-сетки, нарезанного на слайды. */
+export type Grid = { rows: number; cols: number };
+
+const LOW_VAR = 30; // дисперсия яркости вдоль линии, ниже которой линия считается «пустой» (фон/промежуток)
+
+type Run = { start: number; end: number };
+
+function lowRuns(variance: number[], minLen: number): Run[] {
+  const runs: Run[] = [];
+  let s = -1;
+  for (let i = 0; i <= variance.length; i++) {
+    const low = i < variance.length && variance[i] < LOW_VAR;
+    if (low && s < 0) s = i;
+    if (!low && s >= 0) {
+      if (i - s >= minLen) runs.push({ start: s, end: i });
+      s = -1;
+    }
+  }
+  return runs;
+}
+
+function lineVariance(data: Uint8Array, w: number, h: number, axis: 'col' | 'row'): number[] {
+  const n = axis === 'col' ? w : h;
+  const m = axis === 'col' ? h : w;
+  const out: number[] = new Array(n).fill(0);
+  for (let i = 0; i < n; i++) {
+    let sum = 0, sum2 = 0;
+    for (let j = 0; j < m; j++) {
+      const v = axis === 'col' ? data[j * w + i] : data[i * w + j];
+      sum += v; sum2 += v * v;
+    }
+    const mean = sum / m;
+    out[i] = sum2 / m - mean * mean;
+  }
+  return out;
+}
+
+/** Ищет сетку по пустым промежуткам между слайдами. null — не уверены. */
+export function detectGrid(vc: number[], vr: number[], w: number, h: number): Grid | null {
+  const inner = (runs: Run[], size: number) => runs.filter((r) => r.start > size * 0.05 && r.end < size * 0.95);
+  const cols = inner(lowRuns(vc, Math.max(3, Math.round(w * 0.004))), w).length + 1;
+  const rows = inner(lowRuns(vr, Math.max(3, Math.round(h * 0.004))), h).length + 1;
+  if (cols * rows < 2 || cols * rows > 12 || cols > 6 || rows > 12) return null;
+  return { rows, cols };
+}
+
+/** Границы ячеек по одной оси: ищем пустые промежутки у ожидаемых позиций, иначе режем поровну. */
+export function cutRanges(variance: number[], size: number, parts: number): Run[] {
+  const cell = size / parts;
+  const runs = lowRuns(variance, 2);
+  const ranges: Run[] = [];
+  let from = 0;
+  const lead = runs.find((r) => r.start === 0 && r.end < cell * 0.3);
+  if (lead) from = lead.end;
+  for (let k = 1; k <= parts; k++) {
+    let to: number;
+    if (k === parts) {
+      const tail = runs.find((r) => r.end === size && r.start > size - cell * 0.3);
+      to = tail ? tail.start : size;
+    } else {
+      const expected = k * cell;
+      const gap = runs
+        .filter((r) => (r.start + r.end) / 2 > expected - cell * 0.25 && (r.start + r.end) / 2 < expected + cell * 0.25)
+        .sort((a, b) => Math.abs((a.start + a.end) / 2 - expected) - Math.abs((b.start + b.end) / 2 - expected))[0];
+      to = gap ? gap.start : Math.round(expected);
+      ranges.push({ start: from, end: Math.max(from + 1, to) });
+      from = gap ? gap.end : Math.round(expected);
+      continue;
+    }
+    ranges.push({ start: from, end: Math.max(from + 1, to) });
+  }
+  return ranges;
+}
+
+export type SplitResult = { grid: Grid; auto: boolean; slices: Buffer[] };
+
+/** Режет лист с несколькими слайдами на отдельные картинки (по строкам слева направо, сверху вниз). */
+export async function splitSheet(input: Buffer, grid?: Grid): Promise<SplitResult> {
+  const img = sharp(input, { failOn: 'none' }).rotate();
+  const meta = await img.metadata();
+  const w = meta.width ?? 0;
+  const h = meta.height ?? 0;
+  if (w < 50 || h < 50) throw new Error('картинка слишком маленькая');
+  // Для анализа уменьшаем: быстрее и устойчивее к шуму.
+  const scale = Math.min(1, 1200 / Math.max(w, h));
+  const aw = Math.max(1, Math.round(w * scale));
+  const ah = Math.max(1, Math.round(h * scale));
+  const gray = await img.clone().resize(aw, ah).greyscale().raw().toBuffer();
+  const vc = lineVariance(gray, aw, ah, 'col');
+  const vr = lineVariance(gray, aw, ah, 'row');
+  const auto = !grid;
+  const g = grid ?? detectGrid(vc, vr, aw, ah);
+  if (!g) throw new Error('не смог определить сетку — напишите её, например 2x5 (строк × столбцов)');
+  const xs = cutRanges(vc, aw, g.cols);
+  const ys = cutRanges(vr, ah, g.rows);
+  const png = await img.clone().png().toBuffer();
+  const slices: Buffer[] = [];
+  for (const y of ys) {
+    for (const x of xs) {
+      const left = Math.max(0, Math.round(x.start / scale));
+      const top = Math.max(0, Math.round(y.start / scale));
+      const width = Math.min(w - left, Math.max(1, Math.round((x.end - x.start) / scale)));
+      const height = Math.min(h - top, Math.max(1, Math.round((y.end - y.start) / scale)));
+      slices.push(await sharp(png).extract({ left, top, width, height }).jpeg({ quality: 92 }).toBuffer());
+    }
+  }
+  return { grid: g, auto, slices };
+}
+
+/** «2x5», «2×5», «2 на 5» → { rows: 2, cols: 5 }. */
+export function parseGrid(text: string): Grid | null {
+  const m = /^\s*(\d{1,2})\s*(?:x|х|×|\*|на)\s*(\d{1,2})\s*$/i.exec(text);
+  if (!m) return null;
+  const rows = Number(m[1]), cols = Number(m[2]);
+  if (rows < 1 || cols < 1 || rows * cols < 2 || rows * cols > 12) return null;
+  return { rows, cols };
+}
