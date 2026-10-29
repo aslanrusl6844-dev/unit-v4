@@ -1146,12 +1146,15 @@ shopAdminRouter.post('/couriers/bulk-delete', async (req, res) => {
     const couriers: Array<{ id: string; name: string; phone: string }> = courierIds.length
       ? await prisma.courier.findMany({ where: { id: { in: courierIds } } })
       : [];
-    const withOrders: Array<{ courierId: string | null }> = couriers.length
-      ? await prisma.shopOrder.groupBy({ by: ['courierId'], where: { courierId: { in: couriers.map((c) => c.id) } }, _count: { id: true } })
+    const courierIdList = couriers.map((c) => c.id);
+    const ordersGrouped = courierIdList.length
+      ? await prisma.shopOrder.groupBy({ by: ['courierId'], where: { courierId: { in: courierIdList } }, _count: { id: true } })
       : [];
-    const withPayouts: Array<{ courierId: string }> = couriers.length
-      ? await prisma.courierPayout.groupBy({ by: ['courierId'], where: { courierId: { in: couriers.map((c) => c.id) } }, _count: { id: true } })
+    const payoutsGrouped = courierIdList.length
+      ? await prisma.courierPayout.groupBy({ by: ['courierId'], where: { courierId: { in: courierIdList } }, _count: { id: true } })
       : [];
+    const withOrders = ordersGrouped as unknown as Array<{ courierId: string | null }>;
+    const withPayouts = payoutsGrouped as unknown as Array<{ courierId: string }>;
     const busy = new Set<string>([
       ...withOrders.map((g) => g.courierId).filter((x): x is string => !!x),
       ...withPayouts.map((g) => g.courierId),
