@@ -119,3 +119,16 @@ test('inferIntent: обычная речь', async () => {
   assert.equal(inferIntent('цена 4500 / 6000'), null);
   assert.equal(parsePrices('артикул 2728897 цена 4500').price, 4500);
 });
+
+test('peekGrid: лист распознаётся, обычное фото нет', async () => {
+  const { peekGrid } = await import('../src/services/sheetSplit.service');
+  const sharp = (await import('sharp')).default;
+  const n = (seed: number, w: number, h: number) => { const b = Buffer.alloc(w * h * 3); for (let i = 0; i < b.length; i++) b[i] = (i * 37 + seed * 91 + ((i >> 3) % 7) * 20 + ((i / (w * 3)) | 0) * 3) % 256; return b; };
+  const cw = 200, ch = 200, gap = 8;
+  const comps: any[] = [];
+  for (let r = 0; r < 2; r++) for (let c = 0; c < 2; c++) comps.push({ input: await sharp(n(r * 2 + c, cw, ch), { raw: { width: cw, height: ch, channels: 3 } }).png().toBuffer(), left: gap + c * (cw + gap), top: gap + r * (ch + gap) });
+  const sheet = await sharp({ create: { width: 2 * cw + 3 * gap, height: 2 * ch + 3 * gap, channels: 3, background: '#fff' } }).composite(comps).png().toBuffer();
+  assert.deepEqual(await peekGrid(sheet), { rows: 2, cols: 2 });
+  const photo = await sharp(n(5, 600, 600), { raw: { width: 600, height: 600, channels: 3 } }).png().toBuffer();
+  assert.equal(await peekGrid(photo), null);
+});
