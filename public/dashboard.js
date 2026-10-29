@@ -95,8 +95,7 @@ function qs(params) {
 const PAGE_LOADERS = {
   overview: loadOverviewPage,
   orders: loadOrdersPage,
-  ozonreturns: loadOzonReturnsPage,
-  ozonfbo: loadOzonFboPage,
+  ozonfbo: loadOzonPage,
   products: loadProductsPage,
   finance: loadFinancePage,
   reviews: loadReviewsPage,
@@ -410,6 +409,29 @@ async function loadOrdersMeta() {
   }
 }
 
+// Страница «Озон: FBO и возвраты»: две вкладки — FBO и Возвраты.
+function ozActiveTab() {
+  return document.querySelector('#ozTabs button.is-active')?.dataset.oztab || 'fbo';
+}
+async function loadOzonPage() {
+  const tabs = document.getElementById('ozTabs');
+  if (!tabs.dataset.bound) {
+    tabs.dataset.bound = '1';
+    tabs.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-oztab]');
+      if (!btn) return;
+      tabs.querySelectorAll('button').forEach((b) => b.classList.toggle('is-active', b === btn));
+      loadOzonPage();
+    });
+    document.getElementById('ozReturnsSchema').addEventListener('change', renderOzonReturns);
+  }
+  const tab = ozActiveTab();
+  document.getElementById('ozTabFbo').hidden = tab !== 'fbo';
+  document.getElementById('ozTabReturns').hidden = tab !== 'returns';
+  if (tab === 'returns') await loadOzonReturnsPage();
+  else await loadOzonFboPage();
+}
+
 // ---------- Возвраты Озон ----------
 let ozonReturnsCache = [];
 const ozEsc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -436,7 +458,13 @@ async function loadOzonReturnsPage() {
 function renderOzonReturns() {
   const tbody = document.querySelector('#ozReturnsTable tbody');
   const q = (document.getElementById('ozReturnsSearch').value || '').trim().toLowerCase();
-  const rows = ozonReturnsCache.filter((r) => !q || JSON.stringify([r.postingNumber, r.orderNumber, r.productName, r.offerId, r.reason, r.status, r.placeName, r.placeAddress, r.targetPlaceName, r.targetPlaceAddress]).toLowerCase().includes(q));
+  const schema = (document.getElementById('ozReturnsSchema').value || '').toLowerCase();
+  const rows = ozonReturnsCache.filter((r) => (!schema || String(r.schema || '').toLowerCase() === schema) && (!q || JSON.stringify([r.postingNumber, r.orderNumber, r.productName, r.offerId, r.reason, r.status, r.placeName, r.placeAddress, r.targetPlaceName, r.targetPlaceAddress]).toLowerCase().includes(q)));
+  const reasons = new Map();
+  for (const r of rows) reasons.set(r.reason || 'Причина не указана', (reasons.get(r.reason || 'Причина не указана') || 0) + (r.quantity || 1));
+  document.getElementById('ozReturnsReasons').innerHTML = reasons.size
+    ? 'Причины: ' + Array.from(reasons.entries()).sort((x, y) => y[1] - x[1]).map(([k, v]) => `<span class="mp-tag">${ozEsc(k)} — ${v}</span>`).join(' ')
+    : '';
   if (!rows.length) {
     tbody.innerHTML = '<tr><td colspan="8" style="color:var(--text-faint)">Возвратов нет</td></tr>';
     return;
@@ -463,10 +491,10 @@ async function loadOzonFboPage() {
   const err = (id, cols, e) => setBody(id, `<tr><td colspan="${cols}" style="color:var(--danger,#d33)">Не удалось загрузить: ${ozEsc(e)}</td></tr>`);
   const empty = (id, cols) => setBody(id, `<tr><td colspan="${cols}" style="color:var(--text-faint)">Нет данных</td></tr>`);
   document.getElementById('ozFboWarehouses').innerHTML = '<div style="color:var(--text-faint)">Загрузка…</div>';
-  ['ozFboSoldTable', 'ozFboRetTable'].forEach((id) => setBody(id, '<tr><td colspan="7" style="color:var(--text-faint)">Загрузка…</td></tr>'));
+  setBody('ozFboSoldTable', '<tr><td colspan="4" style="color:var(--text-faint)">Загрузка…</td></tr>');
   let res;
   try { res = await api(`/ozon-fbo?${qs({ from: state.from, to: state.to })}`); }
-  catch (e) { document.getElementById('ozFboWarehouses').innerHTML = `<div style="color:var(--danger,#d33)">Не удалось загрузить: ${ozEsc(e.message)}</div>`; ['ozFboSoldTable', 'ozFboRetTable'].forEach((id) => err(id, 7, e.message)); return; }
+  catch (e) { document.getElementById('ozFboWarehouses').innerHTML = `<div style="color:var(--danger,#d33)">Не удалось загрузить: ${ozEsc(e.message)}</div>`; err('ozFboSoldTable', 4, e.message); return; }
 
   const stocks = res.stocks.rows;
   const wh = document.getElementById('ozFboWarehouses');
@@ -501,17 +529,6 @@ async function loadOzonFboPage() {
   else if (!sold.length) empty('ozFboSoldTable', 4);
   else setBody('ozFboSoldTable', sold.map((r) => `<tr><td>${ozEsc(r.name || r.offerId)}${r.offerId ? `<div style="font-size:11.5px;color:var(--text-muted)">${ozEsc(r.offerId)}</div>` : ''}</td><td class="num">${r.sold}</td><td class="num">${r.cancelled}</td><td class="num">${fmtMoney(r.revenue)}</td></tr>`).join(''));
   document.getElementById('ozFboSoldInfo').textContent = res.sold.error ? '' : `Продано: ${sold.reduce((s, r) => s + r.sold, 0)} шт`;
-
-  const rets = res.returns.rows;
-  if (res.returns.error) err('ozFboRetTable', 7, res.returns.error);
-  else if (!rets.length) empty('ozFboRetTable', 7);
-  else setBody('ozFboRetTable', rets.map((r) => `<tr><td>${r.statusChangedAt ? fmtOrderDateTime(r.statusChangedAt) : '—'}</td><td>${ozEsc(r.postingNumber || r.orderNumber || '—')}</td><td>${ozEsc(r.productName || '—')}</td><td class="num">${r.quantity}</td><td>${ozEsc(r.reason || '—')}</td><td>${ozEsc(r.status || '—')}</td><td>${ozEsc(r.placeName || r.targetPlaceName || '—')}</td></tr>`).join(''));
-  document.getElementById('ozFboRetInfo').textContent = res.returns.error ? '' : `Возвратов: ${rets.length}`;
-  const reasons = new Map();
-  for (const r of rets) reasons.set(r.reason || 'Причина не указана', (reasons.get(r.reason || 'Причина не указана') || 0) + (r.quantity || 1));
-  document.getElementById('ozFboRetReasons').innerHTML = reasons.size
-    ? 'Причины: ' + Array.from(reasons.entries()).sort((a, b) => b[1] - a[1]).map(([k, v]) => `<span class="mp-tag">${ozEsc(k)} — ${v}</span>`).join(' ')
-    : '';
 }
 
 // Те же статусы, что NON_SALE_STATUSES в src/services/analytics.service.ts.

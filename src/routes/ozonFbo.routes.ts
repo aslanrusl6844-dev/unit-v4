@@ -7,8 +7,8 @@ export const ozonFboRouter = Router();
 const msg = (err: any) => String(err?.message ?? err);
 
 /**
- * GET /api/ozon-fbo?from=&to= — раздел FBO: остатки на складах Ozon, продажи
- * FBO за период (по товарам) и возвраты FBO с причинами. Каждый блок
+ * GET /api/ozon-fbo?from=&to= — раздел FBO: остатки на складах Ozon и продажи
+ * FBO за период (по товарам). Возвраты — отдельная вкладка (/api/ozon-returns). Каждый блок
  * загружается отдельно: ошибка одного не ломает остальные.
  */
 ozonFboRouter.get('/', async (req, res) => {
@@ -16,10 +16,9 @@ ozonFboRouter.get('/', async (req, res) => {
   const dateTo = to ? almatyEndOfDay(to) : new Date();
   const dateFrom = from ? almatyStartOfDay(from) : new Date(dateTo.getTime() - 30 * 24 * 3600 * 1000);
 
-  const [stocksR, postingsR, returnsR] = await Promise.allSettled([
+  const [stocksR, postingsR] = await Promise.allSettled([
     ozonClient.fetchFboStocks(),
     ozonClient.fetchFboPostings(dateFrom, dateTo),
-    ozonClient.fetchReturns(dateFrom, dateTo),
   ]);
 
   const stocks = stocksR.status === 'fulfilled' ? stocksR.value : [];
@@ -33,12 +32,10 @@ ozonFboRouter.get('/', async (req, res) => {
       soldMap.set(key, e);
     }
   }
-  const fboReturns = returnsR.status === 'fulfilled' ? returnsR.value.filter((r) => /fbo/i.test(r.schema)) : [];
 
   res.json({
     ok: true,
     stocks: { rows: stocks, error: stocksR.status === 'rejected' ? msg(stocksR.reason) : null },
     sold: { rows: Array.from(soldMap.values()).sort((a, b) => b.sold - a.sold), error: postingsR.status === 'rejected' ? msg(postingsR.reason) : null },
-    returns: { rows: fboReturns, error: returnsR.status === 'rejected' ? msg(returnsR.reason) : null },
   });
 });
