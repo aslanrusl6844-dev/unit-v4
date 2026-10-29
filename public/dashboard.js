@@ -462,16 +462,39 @@ async function loadOzonFboPage() {
   const setBody = (id, html) => { document.querySelector(`#${id} tbody`).innerHTML = html; };
   const err = (id, cols, e) => setBody(id, `<tr><td colspan="${cols}" style="color:var(--danger,#d33)">Не удалось загрузить: ${ozEsc(e)}</td></tr>`);
   const empty = (id, cols) => setBody(id, `<tr><td colspan="${cols}" style="color:var(--text-faint)">Нет данных</td></tr>`);
-  ['ozFboStockTable', 'ozFboSoldTable', 'ozFboRetTable'].forEach((id) => setBody(id, '<tr><td colspan="7" style="color:var(--text-faint)">Загрузка…</td></tr>'));
+  document.getElementById('ozFboWarehouses').innerHTML = '<div style="color:var(--text-faint)">Загрузка…</div>';
+  ['ozFboSoldTable', 'ozFboRetTable'].forEach((id) => setBody(id, '<tr><td colspan="7" style="color:var(--text-faint)">Загрузка…</td></tr>'));
   let res;
   try { res = await api(`/ozon-fbo?${qs({ from: state.from, to: state.to })}`); }
-  catch (e) { ['ozFboStockTable', 'ozFboSoldTable', 'ozFboRetTable'].forEach((id) => err(id, 7, e.message)); return; }
+  catch (e) { document.getElementById('ozFboWarehouses').innerHTML = `<div style="color:var(--danger,#d33)">Не удалось загрузить: ${ozEsc(e.message)}</div>`; ['ozFboSoldTable', 'ozFboRetTable'].forEach((id) => err(id, 7, e.message)); return; }
 
   const stocks = res.stocks.rows;
-  if (res.stocks.error) err('ozFboStockTable', 5, res.stocks.error);
-  else if (!stocks.length) empty('ozFboStockTable', 5);
-  else setBody('ozFboStockTable', stocks.map((r) => `<tr><td>${ozEsc(r.name || r.offerId || r.sku)}${r.offerId ? `<div style="font-size:11.5px;color:var(--text-muted)">${ozEsc(r.offerId)}</div>` : ''}</td><td>${ozEsc(r.warehouse)}</td><td class="num">${r.free}</td><td class="num">${r.reserved}</td><td class="num">${r.promised}</td></tr>`).join(''));
-  document.getElementById('ozFboStockInfo').textContent = res.stocks.error ? '' : `Всего доступно: ${stocks.reduce((s, r) => s + r.free, 0)} шт · позиций: ${stocks.length}`;
+  const wh = document.getElementById('ozFboWarehouses');
+  if (res.stocks.error) wh.innerHTML = `<div style="color:var(--danger,#d33)">Не удалось загрузить остатки: ${ozEsc(res.stocks.error)}</div>`;
+  else if (!stocks.length) wh.innerHTML = '<div style="color:var(--text-faint)">Нет данных</div>';
+  else {
+    // Группировка по складу (в названии склада Ozon обычно есть город, напр. «ЕКАТЕРИНБУРГ_РФЦ»).
+    const byWh = new Map();
+    for (const r of stocks) {
+      const k = r.warehouse || 'Склад не указан';
+      if (!byWh.has(k)) byWh.set(k, []);
+      byWh.get(k).push(r);
+    }
+    const groups = Array.from(byWh.entries()).map(([name, rows]) => ({
+      name, rows: rows.sort((x, y) => y.free - x.free),
+      free: rows.reduce((s2, r) => s2 + r.free, 0),
+      reserved: rows.reduce((s2, r) => s2 + r.reserved, 0),
+      promised: rows.reduce((s2, r) => s2 + r.promised, 0),
+    })).sort((x, y) => (y.free + y.reserved + y.promised) - (x.free + x.reserved + x.promised));
+    wh.innerHTML = groups.map((g) => `
+      <details style="margin-bottom:8px" ${groups.length <= 3 ? 'open' : ''}>
+        <summary style="cursor:pointer;font-weight:600">${ozEsc(g.name)} — товаров (наименований): ${g.rows.length}, на складе: ${g.free} шт${g.reserved ? `, в резерве: ${g.reserved}` : ''}${g.promised ? `, в пути: ${g.promised}` : ''}</summary>
+        <div class="table-wrap"><table class="table"><thead><tr><th>Товар</th><th class="num">Доступно</th><th class="num">В резерве</th><th class="num">В пути</th></tr></thead><tbody>
+          ${g.rows.map((r) => `<tr><td>${ozEsc(r.name || r.offerId || r.sku)}${r.offerId ? `<div style="font-size:11.5px;color:var(--text-muted)">${ozEsc(r.offerId)}</div>` : ''}</td><td class="num">${r.free}</td><td class="num">${r.reserved}</td><td class="num">${r.promised}</td></tr>`).join('')}
+        </tbody></table></div>
+      </details>`).join('');
+  }
+  document.getElementById('ozFboStockInfo').textContent = res.stocks.error ? '' : `Складов: ${new Set(stocks.map((r) => r.warehouse)).size} · всего на складах: ${stocks.reduce((s2, r) => s2 + r.free, 0)} шт`;
 
   const sold = res.sold.rows;
   if (res.sold.error) err('ozFboSoldTable', 4, res.sold.error);
