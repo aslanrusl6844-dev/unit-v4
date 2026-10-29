@@ -945,3 +945,21 @@ model CartReminder {
 
   @@index([phone, sentAt])
 }
+
+// Черновик товара из Telegram-бота: фото → агент «Детали» → одобрение → (позже) инфографика → товар.
+model ProductDraft {
+  id        String   @id @default(cuid())
+  chatId    String
+  status    String   @default("collecting") // collecting | details_working | details_review | done | cancelled
+  photos    String[] @default([])
+  price     Float?
+  oldPrice  Float?
+  notes     String?  // что владелец писал текстом при сборе фото
+  data      Json?    // результат агента «Детали»
+  revisions Int      @default(0)
+  productId String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([chatId, status])
+}

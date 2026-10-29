@@ -145,7 +145,7 @@ function collectRoutes(stack: any[], prefix: string, out: RouteInfo[]): void {
 }
 
 // Независимое от реализации описание ожидаемых публичных путей.
-const EXPECTED_PUBLIC_EXACT = ['/api/health', '/api/kaspi/price-feed.xml'];
+const EXPECTED_PUBLIC_EXACT = ['/api/health', '/api/kaspi/price-feed.xml', '/api/telegram-agent/webhook'];
 function expectedPublic(p: string): boolean {
   if (EXPECTED_PUBLIC_EXACT.includes(p)) return true;
   return p.startsWith('/api/shop/') && p !== '/api/shop/admin' && !p.startsWith('/api/shop/admin/');
@@ -240,7 +240,7 @@ describe('Express-приложение целиком (src/expressApp.ts)', () =
 
   test('публичные маршруты не отклоняются защитой админки (без x-app-key приложение отвечает своим 401)', async () => {
     for (const r of routes.filter((x) => expectedPublic(x.path))) {
-      if (r.path === '/api/kaspi/price-feed.xml') continue; // отдельный тест ниже
+      if (r.path === '/api/kaspi/price-feed.xml' || r.path === '/api/telegram-agent/webhook') continue; // публичные, свои тесты
       const res = await request(port, { method: r.method, path: r.path });
       assert.equal(deniedByGuard(res), false, `${r.method} ${r.path}`);
       if (r.path.startsWith('/api/shop/')) {
