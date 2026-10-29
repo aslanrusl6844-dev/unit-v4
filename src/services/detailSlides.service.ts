@@ -135,6 +135,6 @@ export async function renderDetailSlides(
   if (d.usage) nodes.push(textSlide('Применение', 'Как использовать', d.usage, d.name));
   if (d.features.length > 4 && !scenes.length) nodes.push(featuresSlide(d));
   const out: Buffer[] = [];
-  for (const n of nodes.slice(0, 9)) out.push(await toPng(n));
+  for (const n of nodes.slice(0, 10)) out.push(await toPng(n));
   return out;
 }
