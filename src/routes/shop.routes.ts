@@ -1069,13 +1069,46 @@ shopRouter.get('/orders', async (req, res) => {
     // этот фильтр, даже если телефон совпадает частично/по формату.
     const myOrders = allOrders.filter((o: typeof allOrders[number]) => phonesMatch(phone, o.phone));
 
+    // В заказе хранится только sku/название/цена — картинки нет. Приложению
+    // нужна обложка товара (в т.ч. витринных товаров, которых нет в общем
+    // каталоге), поэтому подкладываем image по артикулу. Ошибка поиска
+    // картинок список заказов не ломает — просто будет без фото.
+    const parsedItems = new Map<string, any[]>();
+    for (const o of myOrders) {
+      try { parsedItems.set(o.id, JSON.parse(o.items)); } catch { parsedItems.set(o.id, []); }
+    }
+    const covers = new Map<string, string>();
+    try {
+      const skus = Array.from(new Set(
+        Array.from(parsedItems.values()).flat().map((it: any) => String(it?.sku ?? '')).filter(Boolean),
+      ));
+      if (skus.length) {
+        const prods = await prisma.product.findMany({
+          where: { OR: [{ shopArticle: { in: skus } }, { sku: { in: skus } }] },
+          select: { sku: true, shopArticle: true, images: true },
+        });
+        for (const p of prods) {
+          let first: string | undefined;
+          try { first = (p.images ? JSON.parse(p.images) : [])[0]; } catch { first = undefined; }
+          if (!first) continue;
+          if (p.shopArticle) covers.set(p.shopArticle, first);
+          covers.set(p.sku, first);
+        }
+      }
+    } catch (e) {
+      logger.warn({ err: e }, '[Shop API] GET /orders: не удалось подобрать картинки товаров');
+    }
+
     res.json(myOrders.map((o: typeof allOrders[number]) => ({
       id: o.id,
       number: o.number,
       status: o.status,
       pickupCode: o.pickupCode,
       total: o.total,
-      items: JSON.parse(o.items),
+      items: (parsedItems.get(o.id) ?? []).map((it: any) => ({
+        ...it,
+        image: it?.image || covers.get(String(it?.sku ?? '')) || undefined,
+      })),
       createdAt: o.createdAt,
       city: o.city,
       street: o.street,
