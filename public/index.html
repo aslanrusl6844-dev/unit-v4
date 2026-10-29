@@ -27,6 +27,7 @@
       <button class="nav-item is-active" data-page="overview"><i class="ni">▤</i>Обзор</button>
       <button class="nav-item" data-page="orders"><i class="ni">🛒</i>Заказы</button>
       <button class="nav-item" data-page="ozonreturns"><i class="ni">↩</i>Возвраты Озон</button>
+      <button class="nav-item" data-page="ozonfbo"><i class="ni">🏭</i>FBO Озон</button>
       <button class="nav-item" data-page="products"><i class="ni">📦</i>Товары</button>
       <button class="nav-item" data-page="finance"><i class="ni">💰</i>Финансы</button>
       <button class="nav-item" data-page="reviews"><i class="ni">★</i>Отзывы</button>
@@ -181,6 +182,18 @@
             </table>
           </div>
         </div>
+      </section>
+
+      <!-- ============ FBO ОЗОН ============ -->
+      <section class="page" id="page-ozonfbo" hidden>
+        <div class="page__head"><h1>FBO Озон</h1><p>Склады Озона (Россия): остатки, продажи за период и возвраты с причинами.</p></div>
+        <div class="panel"><div class="panel__head"><h2>Остатки по складам Озона (по городам)</h2><span id="ozFboStockInfo" style="font-size:12.5px;color:var(--text-muted)"></span></div>
+          <div id="ozFboWarehouses"></div></div>
+        <div class="panel"><div class="panel__head"><h2>Продано за период</h2><span id="ozFboSoldInfo" style="font-size:12.5px;color:var(--text-muted)"></span></div>
+          <div class="table-wrap"><table class="table" id="ozFboSoldTable"><thead><tr><th>Товар</th><th class="num">Продано, шт</th><th class="num">Отменено, шт</th><th class="num">Сумма</th></tr></thead><tbody></tbody></table></div></div>
+        <div class="panel"><div class="panel__head"><h2>Возвраты FBO</h2><span id="ozFboRetInfo" style="font-size:12.5px;color:var(--text-muted)"></span></div>
+          <div id="ozFboRetReasons" style="margin-bottom:10px;font-size:12.5px"></div>
+          <div class="table-wrap"><table class="table" id="ozFboRetTable"><thead><tr><th>Дата</th><th>Отправление</th><th>Товар</th><th class="num">Кол-во</th><th>Причина</th><th>Статус</th><th>Склад</th></tr></thead><tbody></tbody></table></div></div>
       </section>
 
       <!-- ============ ТОВАРЫ ============ -->
