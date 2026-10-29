@@ -497,9 +497,9 @@ export class OzonClient {
   /** Отправления FBO за период: POST /v3/posting/fbo/list (постранично по offset). */
   async fetchFboPostings(dateFrom: Date, dateTo: Date): Promise<OzonFboPosting[]> {
     const http = await this.getHttp();
-    const limit = 1000;
+    const limit = 100; // Ozon: Limit должен быть в диапазоне (0, 100]
     const out: OzonFboPosting[] = [];
-    for (let page = 0; page < 30; page++) {
+    for (let page = 0; page < 200; page++) {
       let data: any;
       try {
         const response = await http.post('/v3/posting/fbo/list', {
