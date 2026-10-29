@@ -533,9 +533,21 @@ async function loadOrders() {
     updateOrdersSelectedCount();
     return;
   }
+  // Причины отмены/возврата для заказов Озон — из «Возвратов Озон» (по номеру отправления).
+  const ozonReasons = new Map();
+  if (res.orders.some((o) => o.marketplace === 'OZON' && isNonSaleOrderStatus(o.status))) {
+    try {
+      const rr = await api(`/ozon-returns?${qs({ from: state.from, to: state.to })}`);
+      for (const r of rr.returns || []) if (r.postingNumber) ozonReasons.set(r.postingNumber, r);
+    } catch { /* причины — вспомогательные, список заказов показываем и без них */ }
+  }
   tbody.innerHTML = res.orders.map((o) => {
     // Отменённые/отклонённые/возвращённые — зачёркнуты и не входят в суммы аналитики.
     const dead = isNonSaleOrderStatus(o.status);
+    const oz = dead && o.marketplace === 'OZON' ? ozonReasons.get(o.externalId) : null;
+    const reasonHtml = oz
+      ? `<div style="display:inline-block;text-decoration:none;font-size:11.5px;color:var(--text-muted)">${ozEsc(oz.reason || '')}${oz.targetPlaceName ? ` → ${ozEsc(oz.targetPlaceName)}` : ''}</div>`
+      : '';
     const strike = dead ? ' style="text-decoration:line-through;opacity:.55"' : '';
     return `
     <tr>
@@ -543,7 +555,7 @@ async function loadOrders() {
       <td${strike}>${o.externalId}</td>
       <td><span class="mp-tag"><i class="dot dot--${o.marketplace.toLowerCase()}"></i>${mpLabel(o.marketplace)}</span></td>
       <td${strike}>${fmtOrderDateTime(o.orderDate)}</td>
-      <td${strike}>${o.status}${dead ? ' <span style="text-decoration:none;display:inline-block;color:var(--danger,#d33)">· отклонён</span>' : ''}</td>
+      <td${strike}>${o.status}${dead ? ' <span style="text-decoration:none;display:inline-block;color:var(--danger,#d33)">· отклонён</span>' : ''}${reasonHtml}</td>
       <td class="num"${strike}>${fmtMoney(o.totalRevenue)}</td>
       <td>${orderActionCell(o)}</td>
     </tr>`;
