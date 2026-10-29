@@ -40,8 +40,8 @@ function lineVariance(data: Uint8Array, w: number, h: number, axis: 'col' | 'row
 /** Ищет сетку по пустым промежуткам между слайдами. null — не уверены. */
 export function detectGrid(vc: number[], vr: number[], w: number, h: number): Grid | null {
   const inner = (runs: Run[], size: number) => runs.filter((r) => r.start > size * 0.05 && r.end < size * 0.95);
-  const cols = inner(lowRuns(vc, Math.max(3, Math.round(w * 0.004))), w).length + 1;
-  const rows = inner(lowRuns(vr, Math.max(3, Math.round(h * 0.004))), h).length + 1;
+  const cols = inner(lowRuns(vc, 2), w).length + 1;
+  const rows = inner(lowRuns(vr, 2), h).length + 1;
   if (cols * rows < 2 || cols * rows > 12 || cols > 6 || rows > 12) return null;
   return { rows, cols };
 }
@@ -76,8 +76,19 @@ export function cutRanges(variance: number[], size: number, parts: number): Run[
 
 export type SplitResult = { grid: Grid; auto: boolean; slices: Buffer[] };
 
+/** Квадрат 1:1 как на маркетплейсах: слайд целиком по центру, фон — его же размытая копия (ничего не обрезаем). */
+export async function toSquare(slice: Buffer, size = 1080): Promise<Buffer> {
+  const meta = await sharp(slice).metadata();
+  const w = meta.width ?? size;
+  const h = meta.height ?? size;
+  if (Math.abs(w - h) <= 2) return sharp(slice).resize(size, size, { fit: 'fill' }).jpeg({ quality: 92 }).toBuffer();
+  const bg = await sharp(slice).resize(size, size, { fit: 'cover' }).blur(28).modulate({ brightness: 1.03 }).toBuffer();
+  const fg = await sharp(slice).resize(size, size, { fit: 'inside', kernel: 'lanczos3' }).toBuffer();
+  return sharp(bg).composite([{ input: fg, gravity: 'centre' }]).jpeg({ quality: 92 }).toBuffer();
+}
+
 /** Режет лист с несколькими слайдами на отдельные картинки (по строкам слева направо, сверху вниз). */
-export async function splitSheet(input: Buffer, grid?: Grid): Promise<SplitResult> {
+export async function splitSheet(input: Buffer, grid?: Grid, square = true): Promise<SplitResult> {
   const img = sharp(input, { failOn: 'none' }).rotate();
   const meta = await img.metadata();
   const w = meta.width ?? 0;
@@ -103,7 +114,8 @@ export async function splitSheet(input: Buffer, grid?: Grid): Promise<SplitResul
       const top = Math.max(0, Math.round(y.start / scale));
       const width = Math.min(w - left, Math.max(1, Math.round((x.end - x.start) / scale)));
       const height = Math.min(h - top, Math.max(1, Math.round((y.end - y.start) / scale)));
-      slices.push(await sharp(png).extract({ left, top, width, height }).jpeg({ quality: 92 }).toBuffer());
+      const piece = await sharp(png).extract({ left, top, width, height }).png().toBuffer();
+      slices.push(square ? await toSquare(piece) : await sharp(piece).jpeg({ quality: 92 }).toBuffer());
     }
   }
   return { grid: g, auto, slices };
