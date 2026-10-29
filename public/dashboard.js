@@ -424,6 +424,7 @@ async function loadOzonPage() {
       loadOzonPage();
     });
     document.getElementById('ozReturnsSchema').addEventListener('change', renderOzonReturns);
+    document.getElementById('ozReturnsPickup').addEventListener('change', renderOzonReturns);
   }
   const tab = ozActiveTab();
   document.getElementById('ozTabFbo').hidden = tab !== 'fbo';
@@ -455,11 +456,38 @@ async function loadOzonReturnsPage() {
   if (!search.dataset.bound) { search.dataset.bound = '1'; search.addEventListener('input', renderOzonReturns); }
 }
 
+// ---- Возвраты Озон: куда пришёл возврат и нужно ли его забрать ----
+const OZ_PICKED_KEY = 'ozReturnsPicked';
+function ozPickedSet() {
+  try { return new Set(JSON.parse(localStorage.getItem(OZ_PICKED_KEY) || '[]')); } catch { return new Set(); }
+}
+function ozSetPicked(id, on) {
+  const set = ozPickedSet();
+  if (on) set.add(id); else set.delete(id);
+  try { localStorage.setItem(OZ_PICKED_KEY, JSON.stringify(Array.from(set))); } catch { /* без сохранения отметка живёт до перезагрузки */ }
+}
+// Возврат идёт в Казахстан, если в названии/адресе места назначения есть Казахстан или казахстанский город.
+function ozIsKz(r) {
+  return /казахстан|алматы|астана|шымкент|караганд|kazakhstan/i.test(`${r.targetPlaceName || ''} ${r.targetPlaceAddress || ''}`);
+}
+// Доставлен ли возврат получателю: по тексту статуса Озона (выдан/вручён/доставлен/получен).
+function ozIsDelivered(r) {
+  return /выдан|вручен|доставлен|получен|забран/i.test(String(r.status || ''));
+}
+function ozPickupState(r) {
+  if (!ozIsKz(r)) return { key: 'ru', html: '<span style="color:var(--text-muted)">Остаётся у Озона (Россия)</span>' };
+  const where = `${ozEsc(r.targetPlaceName || '')}${r.targetPlaceAddress ? `, ${ozEsc(r.targetPlaceAddress)}` : ''}`;
+  if (ozPickedSet().has(r.id)) return { key: 'picked', html: '<span style="color:var(--text-muted)">✓ Забрал</span>' };
+  if (ozIsDelivered(r)) return { key: 'ready', html: `<span style="color:#15803d;font-weight:600">✅ Доставлен — можно забирать</span><div style="font-size:11.5px">${where}</div>` };
+  return { key: 'waiting', html: `<span style="color:#b45309;font-weight:600">⏳ Ожидается в Казахстане</span><div style="font-size:11.5px;color:var(--text-muted)">${where}</div>` };
+}
+
 function renderOzonReturns() {
   const tbody = document.querySelector('#ozReturnsTable tbody');
   const q = (document.getElementById('ozReturnsSearch').value || '').trim().toLowerCase();
   const schema = (document.getElementById('ozReturnsSchema').value || '').toLowerCase();
-  const rows = ozonReturnsCache.filter((r) => (!schema || String(r.schema || '').toLowerCase() === schema) && (!q || JSON.stringify([r.postingNumber, r.orderNumber, r.productName, r.offerId, r.reason, r.status, r.placeName, r.placeAddress, r.targetPlaceName, r.targetPlaceAddress]).toLowerCase().includes(q)));
+  const pickupFilter = document.getElementById('ozReturnsPickup').value;
+  const rows = ozonReturnsCache.filter((r) => (!pickupFilter || ozPickupState(r).key === pickupFilter) && (!schema || String(r.schema || '').toLowerCase() === schema) && (!q || JSON.stringify([r.postingNumber, r.orderNumber, r.productName, r.offerId, r.reason, r.status, r.placeName, r.placeAddress, r.targetPlaceName, r.targetPlaceAddress]).toLowerCase().includes(q)));
   const reasons = new Map();
   for (const r of rows) reasons.set(r.reason || 'Причина не указана', (reasons.get(r.reason || 'Причина не указана') || 0) + (r.quantity || 1));
   document.getElementById('ozReturnsReasons').innerHTML = reasons.size
@@ -479,10 +507,15 @@ function renderOzonReturns() {
       <td>${ozEsc(r.productName || '—')}${r.offerId ? `<div style="font-size:11.5px;color:var(--text-muted)">${ozEsc(r.offerId)}</div>` : ''}</td>
       <td class="num">${r.quantity}</td>
       <td>${ozEsc(r.reason || '—')}</td>
-      <td>${ozEsc(r.status || '—')}</td>
+      <td>${(() => { const st = ozPickupState(r); return `${st.html}<div style="font-size:11.5px;color:var(--text-muted)">Статус Озона: ${ozEsc(r.status || '—')}</div>${st.key === 'ready' || st.key === 'waiting' ? `<label style="font-size:12px"><input type="checkbox" data-oz-picked="${ozEsc(r.id)}" /> забрал</label>` : st.key === 'picked' ? `<label style="font-size:12px"><input type="checkbox" checked data-oz-picked="${ozEsc(r.id)}" /> забрал</label>` : ''}<details style="font-size:11px"><summary style="cursor:pointer;color:var(--text-faint)">данные Озона</summary><pre style="white-space:pre-wrap;max-width:320px">${ozEsc(JSON.stringify(r.raw, null, 1))}</pre></details>`; })()}</td>
       <td>${place(r.placeName, r.placeAddress)}</td>
       <td>${place(r.targetPlaceName, r.targetPlaceAddress)}</td>
     </tr>`).join('');
+  tbody.querySelectorAll('input[data-oz-picked]').forEach((cb) => {
+    cb.addEventListener('change', () => { ozSetPicked(cb.dataset.ozPicked, cb.checked); renderOzonReturns(); });
+  });
+  const kzReady = rows.filter((r) => ozPickupState(r).key === 'ready').length;
+  document.getElementById('ozReturnsInfo').textContent = `Возвратов: ${rows.length}${kzReady ? ` · готовы к выдаче в Казахстане: ${kzReady}` : ''}`;
 }
 
 // ---------- FBO Озон ----------
