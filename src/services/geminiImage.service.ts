@@ -2,6 +2,14 @@ export const DEFAULT_IMAGE_MODEL = 'gemini-2.5-flash-image';
 
 export type RefImage = { data: Buffer; mime: string };
 
+/** Определяет тип картинки по первым байтам (Telegram/Blob иногда отдают application/octet-stream). */
+export function sniffImageMime(buf: Buffer, fallback = 'image/jpeg'): string {
+  if (buf.length > 3 && buf[0] === 0xff && buf[1] === 0xd8) return 'image/jpeg';
+  if (buf.length > 8 && buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
+  if (buf.length > 12 && buf.subarray(0, 4).toString() === 'RIFF' && buf.subarray(8, 12).toString() === 'WEBP') return 'image/webp';
+  return fallback;
+}
+
 export function buildScenePrompt(scene: string): string {
   return [
     'Edit/compose a premium e-commerce product photograph for a marketplace detail page, vertical 3:4.',
@@ -30,7 +38,7 @@ export async function generateScene(opts: {
       contents: [{
         parts: [
           { text: buildScenePrompt(opts.scene) },
-          ...opts.refs.slice(0, 3).map((r) => ({ inline_data: { mime_type: r.mime, data: r.data.toString('base64') } })),
+          ...opts.refs.slice(0, 3).map((r) => ({ inline_data: { mime_type: sniffImageMime(r.data), data: r.data.toString('base64') } })),
         ],
       }],
       generationConfig: { responseModalities: ['IMAGE'], imageConfig: { aspectRatio: '3:4' } },
@@ -65,8 +73,9 @@ export async function generateSceneOpenAI(opts: {
   form.append('quality', 'medium');
   form.append('n', '1');
   opts.refs.slice(0, 3).forEach((r, i) => {
-    const ext = r.mime.includes('png') ? 'png' : r.mime.includes('webp') ? 'webp' : 'jpg';
-    form.append('image[]', new Blob([new Uint8Array(r.data)], { type: r.mime }), `ref${i}.${ext}`);
+    const mime = sniffImageMime(r.data);
+    const ext = mime.includes('png') ? 'png' : mime.includes('webp') ? 'webp' : 'jpg';
+    form.append('image[]', new Blob([new Uint8Array(r.data)], { type: mime }), `ref${i}.${ext}`);
   });
   const res = await f('https://api.openai.com/v1/images/edits', {
     method: 'POST',

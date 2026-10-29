@@ -7,7 +7,7 @@ import { answerCallback, downloadFile, escapeHtml, isAllowedChat, sendMessage, s
 import { DEFAULT_AGENT_MODEL, ProductDetails, parsePrices, runDetailsAgent } from './productAgent.service';
 import { maybeGenerateShopArticle } from './shopArticle';
 import { renderDetailSlides, SceneImage } from './detailSlides.service';
-import { generateSceneAuto } from './geminiImage.service';
+import { generateSceneAuto, sniffImageMime } from './geminiImage.service';
 
 type DraftData = { mode?: 'attach'; result?: ProductDetails; slides?: string[] };
 const dataOf = (d: { data: unknown } | null | undefined): DraftData => ((d?.data as DraftData | null) ?? {});
@@ -140,7 +140,7 @@ const planOf = (d: { data: unknown }): Plan[] => ((d.data as any)?.plan as Plan[
 
 async function loadPhotos(urls: string[], limit = 4) {
   const got = await Promise.all(urls.slice(0, limit).map((u) =>
-    fetch(u).then(async (r) => (r.ok ? { data: Buffer.from(await r.arrayBuffer()), mime: r.headers.get('content-type') || 'image/jpeg' } : null)).catch(() => null)));
+    fetch(u).then(async (r) => (r.ok ? await (async () => { const data = Buffer.from(await r.arrayBuffer()); return { data, mime: sniffImageMime(data) }; })() : null)).catch(() => null)));
   return got.filter(Boolean) as Array<{ data: Buffer; mime: string }>;
 }
 
@@ -338,7 +338,7 @@ async function addPhoto(chatId: string, fileId: string, caption: string | undefi
     return;
   }
   const file = await downloadFile(fileId);
-  const blob = await put(`tg/${draft.id}/${Date.now()}.jpg`, file.buffer, { access: 'public', contentType: file.contentType, token: env.blobToken });
+  const blob = await put(`tg/${draft.id}/${Date.now()}.jpg`, file.buffer, { access: 'public', contentType: sniffImageMime(file.buffer), token: env.blobToken });
   const attach = isAttach(draft);
   const prices = caption && !attach ? parsePrices(caption) : {};
   await prisma.productDraft.update({
