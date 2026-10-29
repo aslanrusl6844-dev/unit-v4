@@ -907,6 +907,57 @@ shopAdminRouter.post('/courier-invites', async (req, res) => {
   }
 });
 
+/**
+ * Список вакансий (приглашений) для вкладки «Вакансия»: сама вакансия + статус связанной заявки
+ * по тому же телефону (null — заявку ещё не подавали). Без кэша — рабочий список.
+ */
+shopAdminRouter.get('/courier-invites', async (_req, res) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    const invites: Array<{ phone: string; firstName: string; lastName: string; iin: string; createdAt: Date }> =
+      await prisma.shopCourierInvite.findMany({ orderBy: { createdAt: 'desc' } });
+    const apps: Array<{ phone: string; status: string }> = invites.length
+      ? await prisma.shopCourierApplication.findMany({ where: { phone: { in: invites.map((i) => i.phone) } } })
+      : [];
+    const statusByPhone = new Map(apps.map((a) => [a.phone, a.status]));
+    res.json(invites.map((i) => ({ ...i, applicationStatus: statusByPhone.get(i.phone) ?? null })));
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] GET /courier-invites упал');
+    res.status(500).json({ error: 'Не удалось получить вакансии', details: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * «Удалить» вакансию: стирает приглашение по телефону и связанную заявку (если есть) — после этого
+ * номер «чистый», на него можно снова отправить вакансию. Одобренных курьеров не трогаем: если по
+ * номеру заявка одобрена или курьер уже зарегистрирован — 409, ничего не удаляется. Работает и для
+ * записи из «Архива», у которой вакансии уже нет (только заявка).
+ */
+shopAdminRouter.delete('/courier-invites/:phone', async (req, res) => {
+  try {
+    const phone = normalizePhone(req.params.phone);
+    if (!phone) return res.status(400).json({ error: 'Некорректный номер телефона' });
+
+    const [application, courier] = await Promise.all([
+      prisma.shopCourierApplication.findUnique({ where: { phone } }),
+      prisma.courier.findUnique({ where: { phone } }),
+    ]);
+    if (courier || application?.status === 'approved') {
+      return res.status(409).json({ error: 'Курьер по этому номеру одобрен — удалить можно только вакансию без одобренного курьера' });
+    }
+
+    const [invite, app] = await prisma.$transaction([
+      prisma.shopCourierInvite.deleteMany({ where: { phone } }),
+      prisma.shopCourierApplication.deleteMany({ where: { phone, status: { not: 'approved' } } }),
+    ]);
+    if (!invite.count && !app.count) return res.status(404).json({ error: 'Вакансия не найдена' });
+    res.json({ ok: true, invitesDeleted: invite.count, applicationsDeleted: app.count });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] DELETE /courier-invites/:phone упал');
+    res.status(500).json({ error: 'Не удалось удалить вакансию', details: String(err?.message ?? err) });
+  }
+});
+
 shopAdminRouter.get('/courier-applications', async (req, res) => {
   try {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
