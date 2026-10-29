@@ -101,8 +101,8 @@ test('нарезка листа: команда, сетка, разрезани�
   assert.deepEqual(out.grid, { rows: 2, cols: 3 });
   assert.equal(out.slices.length, 6);
   const m = await sharp(out.slices[0]).metadata();
-  assert.equal(m.width, 1080);
-  assert.equal(m.height, 1080);
+  assert.equal(m.width, m.height);
+  assert.equal(m.width, ch); // исходные пиксели: сторона квадрата = большая сторона слайда, без растяжения
   const raw = await splitSheet(sheet, undefined, false);
   const rm = await sharp(raw.slices[0]).metadata();
   assert.ok(Math.abs((rm.width ?? 0) - cw) <= 3 && Math.abs((rm.height ?? 0) - ch) <= 3, `размер ${rm.width}x${rm.height}`);
