@@ -474,12 +474,29 @@ function ozIsKz(r) {
 function ozIsDelivered(r) {
   return /выдан|вручен|доставлен|получен|забран/i.test(String(r.status || ''));
 }
+// Три шага пути возврата в Казахстан: 1) на складе Озона, 2) в пути в пункт назначения, 3) доставлен.
+// Шаг определяется по тексту статуса Озона; если статус непонятен — показываем 1-й шаг и сам статус Озона.
+function ozIsInTransit(r) {
+  return /в пути|отправлен|передан|транзит|перевоз|следует/i.test(String(r.status || ''));
+}
+function ozStepper(r, step) {
+  const target = `${ozEsc(r.targetPlaceName || '')}${r.targetPlaceAddress ? `, ${ozEsc(r.targetPlaceAddress)}` : ''}`;
+  const from = ozEsc(r.placeName || 'склад Озона');
+  const line = (n, text, extra) => {
+    const done = n < step;
+    const cur = n === step;
+    const color = cur ? (n === 3 ? '#15803d' : '#b45309') : (done ? 'var(--text-muted)' : 'var(--text-faint)');
+    const mark = done ? '✓' : cur ? (n === 3 ? '✅' : '●') : '○';
+    return `<div style="color:${color};${cur ? 'font-weight:600' : ''}">${mark} ${text}${cur && extra ? `<div style="font-weight:400;font-size:11.5px">${extra}</div>` : ''}</div>`;
+  };
+  return line(1, 'На складе Озона', from) + line(2, 'Отправлен в Казахстан', target) + line(3, 'Доставлен — можно забирать', target);
+}
 function ozPickupState(r) {
   if (!ozIsKz(r)) return { key: 'ru', html: '<span style="color:var(--text-muted)">Остаётся у Озона (Россия)</span>' };
-  const where = `${ozEsc(r.targetPlaceName || '')}${r.targetPlaceAddress ? `, ${ozEsc(r.targetPlaceAddress)}` : ''}`;
   if (ozPickedSet().has(r.id)) return { key: 'picked', html: '<span style="color:var(--text-muted)">✓ Забрал</span>' };
-  if (ozIsDelivered(r)) return { key: 'ready', html: `<span style="color:#15803d;font-weight:600">✅ Доставлен — можно забирать</span><div style="font-size:11.5px">${where}</div>` };
-  return { key: 'waiting', html: `<span style="color:#b45309;font-weight:600">⏳ Ожидается в Казахстане</span><div style="font-size:11.5px;color:var(--text-muted)">${where}</div>` };
+  if (ozIsDelivered(r)) return { key: 'ready', html: ozStepper(r, 3) };
+  if (ozIsInTransit(r)) return { key: 'waiting', html: ozStepper(r, 2) };
+  return { key: 'waiting', html: ozStepper(r, 1) };
 }
 
 function renderOzonReturns() {
