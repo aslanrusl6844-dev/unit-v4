@@ -62,3 +62,11 @@ test('generateSceneAuto: порядок провайдеров и запасно
   assert.deepEqual(calls, ['openai']);
   await assert.rejects(generateSceneAuto({ refs: [], scene: 's', env: {} as any }), /нет ключей/);
 });
+
+test('sniffImageMime', async () => {
+  const { sniffImageMime } = await import('../src/services/geminiImage.service');
+  assert.equal(sniffImageMime(Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0])), 'image/jpeg');
+  assert.equal(sniffImageMime(Buffer.from('89504e470d0a1a0a0000', 'hex')), 'image/png');
+  assert.equal(sniffImageMime(Buffer.from('RIFF\0\0\0\0WEBPVP8 ')), 'image/webp');
+  assert.equal(sniffImageMime(Buffer.from('xxxxxxxx')), 'image/jpeg');
+});
