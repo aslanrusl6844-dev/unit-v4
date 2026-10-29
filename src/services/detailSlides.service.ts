@@ -90,15 +90,51 @@ function featuresSlide(d: ProductDetails): Node {
       ]))), d.name);
 }
 
-/** Слайды «Детали»: обложка с фото, состав, характеристики, преимущества, применение — только то, что есть в карточке. */
-export async function renderDetailSlides(d: ProductDetails, firstPhoto: Buffer | null, photoMime = 'image/jpeg'): Promise<Buffer[]> {
-  const uri = firstPhoto ? `data:${photoMime};base64,${firstPhoto.toString('base64')}` : null;
-  const nodes: Node[] = [coverSlide(d, uri)];
+const dataUri = (img: { data: Buffer; mime: string }) => `data:${img.mime};base64,${img.data.toString('base64')}`;
+
+/** Слайд-сцена: картинка от нейросети на всю высоту + затемнение снизу + заголовок и подпись. */
+function sceneSlide(img: { data: Buffer; mime: string }, headline: string, caption: string): Node {
+  return h('div', { width: W, height: H, position: 'relative', fontFamily: 'Manrope, ManropeLat', color: '#fff' }, [
+    h('img', { position: 'absolute', top: 0, left: 0, width: W, height: H, objectFit: 'cover' }, undefined, { src: dataUri(img), width: W, height: H }),
+    h('div', { position: 'absolute', left: 0, bottom: 0, width: W, height: 620, backgroundImage: 'linear-gradient(to top, rgba(18,28,22,0.92), rgba(18,28,22,0))' }, ''),
+    h('div', { position: 'absolute', left: 72, bottom: 84, width: W - 144, flexDirection: 'column' }, [
+      h('div', { fontSize: fit(headline.length, 70, 54, 22), fontWeight: 800, lineHeight: 1.1 }, headline),
+      h('div', { fontSize: 34, lineHeight: 1.35, marginTop: 20, color: '#e6efe9' }, caption),
+    ]),
+  ]);
+}
+
+/** Слайд с реальным фото (другой ракурс) на мягком фоне. */
+function angleSlide(img: { data: Buffer; mime: string }, label: string, name: string): Node {
+  return frame(label, 'Ракурс', h('div', { width: W - 144, height: 900, backgroundColor: SOFT, borderRadius: 32, alignItems: 'center', justifyContent: 'center' },
+    h('img', { width: W - 144, height: 900, objectFit: 'contain', borderRadius: 32 }, undefined, { src: dataUri(img), width: W - 144, height: 900 })), name);
+}
+
+export type SceneImage = { img: { data: Buffer; mime: string }; headline: string; caption: string };
+
+/**
+ * Слайды «Детали» в стиле rich content: сцены от нейросети (если есть), реальные ракурсы,
+ * состав, характеристики, применение. Весь текст рисуем сами — нейросеть путает кириллицу.
+ */
+export async function renderDetailSlides(
+  d: ProductDetails,
+  firstPhoto: Buffer | null,
+  photoMime = 'image/jpeg',
+  extra: { scenes?: SceneImage[]; otherPhotos?: Array<{ data: Buffer; mime: string }> } = {},
+): Promise<Buffer[]> {
+  const scenes = extra.scenes ?? [];
+  const nodes: Node[] = [];
+  if (scenes.length) {
+    scenes.forEach((sc, i) => nodes.push(sceneSlide(sc.img, i === 0 ? d.name : sc.headline, i === 0 ? sc.headline : sc.caption)));
+  } else {
+    nodes.push(coverSlide(d, firstPhoto ? dataUri({ data: firstPhoto, mime: photoMime }) : null));
+  }
+  (extra.otherPhotos ?? []).slice(0, 2).forEach((p, i) => nodes.push(angleSlide(p, i === 0 ? 'Другой ракурс' : 'Детали упаковки', d.name)));
   if (d.composition) nodes.push(textSlide('Состав', 'Что внутри', d.composition, d.name));
   if (d.characteristics.length) nodes.push(charsSlide(d));
   if (d.usage) nodes.push(textSlide('Применение', 'Как использовать', d.usage, d.name));
-  if (d.features.length > 4) nodes.push(featuresSlide(d));
+  if (d.features.length > 4 && !scenes.length) nodes.push(featuresSlide(d));
   const out: Buffer[] = [];
-  for (const n of nodes.slice(0, 5)) out.push(await toPng(n));
+  for (const n of nodes.slice(0, 9)) out.push(await toPng(n));
   return out;
 }

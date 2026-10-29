@@ -23,3 +23,24 @@ test('parseAttachCommand', async () => {
   assert.equal(parseAttachCommand('Детали крем для рук'), 'крем для рук');
   assert.equal(parseAttachCommand('4500 / 6000'), null);
 });
+
+test('generateScene: разбор ответа Gemini и ошибки', async () => {
+  const { generateScene, buildScenePrompt } = await import('../src/services/geminiImage.service');
+  const png = Buffer.from('89504e47', 'hex');
+  let sent: any;
+  const ok = (async (url: string, init: any) => {
+    sent = { url, body: JSON.parse(init.body), key: init.headers['x-goog-api-key'] };
+    return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: 'ok' }, { inlineData: { mimeType: 'image/png', data: png.toString('base64') } }] } }] }), { status: 200 });
+  }) as any;
+  const r = await generateScene({ apiKey: 'K', refs: [{ data: png, mime: 'image/jpeg' }], scene: 'marble table', fetchImpl: ok });
+  assert.equal(r.mime, 'image/png');
+  assert.deepEqual(r.data, png);
+  assert.equal(sent.key, 'K');
+  assert.match(sent.url, /gemini-2\.5-flash-image:generateContent$/);
+  assert.equal(sent.body.generationConfig.imageConfig.aspectRatio, '3:4');
+  assert.match(buildScenePrompt('x'), /Do NOT add any extra text/);
+  const bad = (async () => new Response('{"error":"quota"}', { status: 429 })) as any;
+  await assert.rejects(generateScene({ apiKey: 'K', refs: [], scene: 's', fetchImpl: bad }), /Gemini 429/);
+  const empty = (async () => new Response(JSON.stringify({ candidates: [{ finishReason: 'SAFETY', content: { parts: [{ text: 'no' }] } }] }), { status: 200 })) as any;
+  await assert.rejects(generateScene({ apiKey: 'K', refs: [], scene: 's', fetchImpl: empty }), /не вернул картинку \(SAFETY\)/);
+});

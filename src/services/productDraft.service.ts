@@ -6,7 +6,8 @@ import { logger } from '../utils/logger';
 import { answerCallback, downloadFile, escapeHtml, isAllowedChat, sendMessage, sendPhotos } from '../lib/telegramBot';
 import { DEFAULT_AGENT_MODEL, ProductDetails, parsePrices, runDetailsAgent } from './productAgent.service';
 import { maybeGenerateShopArticle } from './shopArticle';
-import { renderDetailSlides } from './detailSlides.service';
+import { renderDetailSlides, SceneImage } from './detailSlides.service';
+import { generateScene } from './geminiImage.service';
 
 type DraftData = { mode?: 'attach'; result?: ProductDetails; slides?: string[] };
 const dataOf = (d: { data: unknown } | null | undefined): DraftData => ((d?.data as DraftData | null) ?? {});
@@ -139,8 +140,27 @@ async function runDetails(draftId: string, feedback: string | null) {
       feedback,
       previous: feedback ? (dataOf(draft).result ?? null) : null,
     });
-    const first = await fetch(draft.photos[0]).then(async (r) => (r.ok ? { buf: Buffer.from(await r.arrayBuffer()), mime: r.headers.get('content-type') || 'image/jpeg' } : null)).catch(() => null);
-    const pngs = await renderDetailSlides(result, first?.buf ?? null, first?.mime ?? 'image/jpeg');
+    const loaded = (await Promise.all(draft.photos.slice(0, 4).map((u: string) =>
+      fetch(u).then(async (r) => (r.ok ? { data: Buffer.from(await r.arrayBuffer()), mime: r.headers.get('content-type') || 'image/jpeg' } : null)).catch(() => null),
+    ))).filter(Boolean) as Array<{ data: Buffer; mime: string }>;
+    // Красивые сцены от нейросети — параллельно, неудачные просто пропускаем (останется шаблон).
+    const geminiKey = process.env.GEMINI_API_KEY;
+    const sceneErrors: string[] = [];
+    let scenes: SceneImage[] = [];
+    if (geminiKey && loaded.length && result.scenes.length) {
+      const settled = await Promise.all(result.scenes.map((sc) =>
+        generateScene({ apiKey: geminiKey, model: process.env.GEMINI_IMAGE_MODEL, refs: loaded, scene: sc.prompt, timeoutMs: 38_000 })
+          .then((img) => ({ img, headline: sc.headline, caption: sc.caption } as SceneImage))
+          .catch((e) => { sceneErrors.push(String(e?.message ?? e).slice(0, 160)); return null; }),
+      ));
+      scenes = settled.filter(Boolean) as SceneImage[];
+    }
+    const pngs = await renderDetailSlides(result, loaded[0]?.data ?? null, loaded[0]?.mime ?? 'image/jpeg', { scenes, otherPhotos: loaded.slice(1) });
+    if (geminiKey && result.scenes.length && !scenes.length) {
+      await sendMessage(draft.chatId, `⚠️ Красивые фоны не получились (${escapeHtml(sceneErrors[0] ?? 'нет ответа')}), сделал простые слайды.`);
+    } else if (!geminiKey) {
+      await sendMessage(draft.chatId, '⚠️ Нет ключа GEMINI_API_KEY на сервере — сделал простые слайды без красивых фонов.');
+    }
     const slides: string[] = [];
     for (let n = 0; n < pngs.length; n++) {
       const b = await put(`details/${draftId}/${Date.now()}-${n + 1}.png`, pngs[n], { access: 'public', contentType: 'image/png', token: env.blobToken });
