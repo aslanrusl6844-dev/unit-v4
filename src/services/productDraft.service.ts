@@ -1,9 +1,9 @@
 import { waitUntil } from '@vercel/functions';
-import { put } from '@vercel/blob';
+import { list, put } from '@vercel/blob';
 import { prisma } from '../db/prisma';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
-import { answerCallback, downloadFile, escapeHtml, isAllowedChat, sendMessage, sendPhotos } from '../lib/telegramBot';
+import { answerCallback, downloadFile, escapeHtml, isAllowedChat, sendMessage, sendPhotos, webhookSecret } from '../lib/telegramBot';
 import { DEFAULT_AGENT_MODEL, ProductDetails, parsePrices, runDetailsAgent } from './productAgent.service';
 import { maybeGenerateShopArticle } from './shopArticle';
 import { renderDetailSlides, SceneImage } from './detailSlides.service';
@@ -118,9 +118,30 @@ async function finishAttach(draftId: string) {
 
 async function activeDraft(chatId: string) {
   return prisma.productDraft.findFirst({
-    where: { chatId, status: { in: ['collecting', 'details_working', 'details_review'] } },
+    where: { chatId, status: { in: ['collecting', 'details_working', 'details_rendering', 'details_review'] } },
     orderBy: { createdAt: 'asc' },
   });
+}
+
+let selfBaseUrl = '';
+/** Адрес этого же сервера — по нему разносим генерацию сцен на отдельные вызовы (у каждого свои 60 с). */
+export function setSelfBaseUrl(url: string) { if (url) selfBaseUrl = url; }
+
+const MAX_SCENES = 6;
+const SCENE_FALLBACKS = [
+  { headline: 'Главное в деталях', caption: 'Качество, которое видно сразу', prompt: 'bright minimalist studio with soft daylight, pastel gradient backdrop, subtle props related to the product category, elegant composition' },
+  { headline: 'Крупным планом', caption: 'Упаковка и важные детали', prompt: 'close-up macro view of the product, shallow depth of field, soft natural light, clean neutral surface' },
+  { headline: 'Для каждого дня', caption: 'Удобно и практично', prompt: 'cozy lifestyle scene in a warm home interior where this kind of product is used, natural window light, product in the foreground' },
+  { headline: 'Со всех сторон', caption: 'Смотрите, что внутри набора', prompt: 'product shown from a different angle (three-quarter view) on a colored seamless background with a soft shadow' },
+];
+
+type Plan = { headline: string; caption: string; prompt: string };
+const planOf = (d: { data: unknown }): Plan[] => ((d.data as any)?.plan as Plan[] | undefined) ?? [];
+
+async function loadPhotos(urls: string[], limit = 4) {
+  const got = await Promise.all(urls.slice(0, limit).map((u) =>
+    fetch(u).then(async (r) => (r.ok ? { data: Buffer.from(await r.arrayBuffer()), mime: r.headers.get('content-type') || 'image/jpeg' } : null)).catch(() => null)));
+  return got.filter(Boolean) as Array<{ data: Buffer; mime: string }>;
 }
 
 async function runDetails(draftId: string, feedback: string | null) {
@@ -140,39 +161,103 @@ async function runDetails(draftId: string, feedback: string | null) {
       feedback,
       previous: feedback ? (dataOf(draft).result ?? null) : null,
     });
-    const loaded = (await Promise.all(draft.photos.slice(0, 4).map((u: string) =>
-      fetch(u).then(async (r) => (r.ok ? { data: Buffer.from(await r.arrayBuffer()), mime: r.headers.get('content-type') || 'image/jpeg' } : null)).catch(() => null),
-    ))).filter(Boolean) as Array<{ data: Buffer; mime: string }>;
-    // Красивые сцены от нейросети — параллельно, неудачные просто пропускаем (останется шаблон).
+    const plan: Plan[] = [...result.scenes];
+    for (const f of SCENE_FALLBACKS) if (plan.length < 4) plan.push(f);
+    plan.splice(MAX_SCENES);
+    await prisma.productDraft.update({ where: { id: draftId }, data: { data: { ...dataOf(draft), result, plan, runId: Date.now() } as any, status: 'details_working' } });
+
     const geminiKey = process.env.GEMINI_API_KEY;
-    const sceneErrors: string[] = [];
-    let scenes: SceneImage[] = [];
-    if (geminiKey && loaded.length && result.scenes.length) {
-      const settled = await Promise.all(result.scenes.map((sc) =>
-        generateScene({ apiKey: geminiKey, model: process.env.GEMINI_IMAGE_MODEL, refs: loaded, scene: sc.prompt, timeoutMs: 38_000 })
-          .then((img) => ({ img, headline: sc.headline, caption: sc.caption } as SceneImage))
-          .catch((e) => { sceneErrors.push(String(e?.message ?? e).slice(0, 160)); return null; }),
-      ));
-      scenes = settled.filter(Boolean) as SceneImage[];
+    if (!geminiKey || !selfBaseUrl) {
+      await sendMessage(draft.chatId, !geminiKey ? '⚠️ Нет ключа GEMINI_API_KEY на сервере — делаю простые слайды без красивых фонов.' : '⚠️ Не знаю адрес сервера — делаю простые слайды без красивых фонов.');
+      return await finalizeSlides(draftId, true);
     }
-    const pngs = await renderDetailSlides(result, loaded[0]?.data ?? null, loaded[0]?.mime ?? 'image/jpeg', { scenes, otherPhotos: loaded.slice(1) });
-    if (geminiKey && result.scenes.length && !scenes.length) {
-      await sendMessage(draft.chatId, `⚠️ Красивые фоны не получились (${escapeHtml(sceneErrors[0] ?? 'нет ответа')}), сделал простые слайды.`);
-    } else if (!geminiKey) {
-      await sendMessage(draft.chatId, '⚠️ Нет ключа GEMINI_API_KEY на сервере — сделал простые слайды без красивых фонов.');
+    await sendMessage(draft.chatId, `Карточка готова, рисую ${plan.length} картинок-сцен (около минуты)…`);
+    // Каждая сцена — отдельный вызов сервера со своим лимитом времени. Дочерний вызов отвечает сразу.
+    const results = await Promise.all(plan.map((_, index) =>
+      fetch(`${selfBaseUrl}/api/telegram-agent/scene`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-telegram-bot-api-secret-token': webhookSecret() },
+        body: JSON.stringify({ draftId, index }),
+        signal: AbortSignal.timeout(15_000),
+      }).then((r) => r.ok).catch(() => false)));
+    if (results.every((ok) => !ok)) {
+      await sendMessage(draft.chatId, '⚠️ Не удалось запустить рисование сцен — делаю простые слайды.');
+      await finalizeSlides(draftId, true);
     }
-    const slides: string[] = [];
-    for (let n = 0; n < pngs.length; n++) {
-      const b = await put(`details/${draftId}/${Date.now()}-${n + 1}.png`, pngs[n], { access: 'public', contentType: 'image/png', token: env.blobToken });
-      slides.push(b.url);
-    }
-    await prisma.productDraft.update({ where: { id: draftId }, data: { data: { ...dataOf(draft), result, slides } as any, status: 'details_review' } });
-    await sendPhotos(draft.chatId, slides);
-    await sendMessage(draft.chatId, formatDraft(result, draft.price, draft.oldPrice, draft.revisions), reviewButtons(draftId));
   } catch (err: any) {
     logger.error({ err: String(err?.message ?? err) }, '[ProductAgent] ошибка агента «Детали»');
     await prisma.productDraft.update({ where: { id: draftId }, data: { status: dataOf(draft).result ? 'details_review' : 'collecting' } });
     await sendMessage(draft.chatId, `Не получилось: ${escapeHtml(String(err?.message ?? err)).slice(0, 300)}\nНапишите «готово» ещё раз${dataOf(draft).result ? ' или опишите правку заново' : ''}.`);
+  }
+}
+
+const sceneDir = (d: { id: string; data: unknown }) => `scenes/${d.id}/${(d.data as any)?.runId ?? 0}/`;
+
+/** Дочерний вызов: рисует одну сцену, кладёт в Blob, а последняя завершившаяся запускает сборку слайдов. */
+export async function handleSceneJob(draftId: string, index: number): Promise<void> {
+  const draft = await prisma.productDraft.findUnique({ where: { id: draftId } });
+  if (!draft || draft.status !== 'details_working') return;
+  const plan = planOf(draft);
+  const scene = plan[index];
+  if (!scene) return;
+  const dir = sceneDir(draft);
+  try {
+    const key = process.env.GEMINI_API_KEY;
+    if (!key) throw new Error('нет GEMINI_API_KEY');
+    const refs = await loadPhotos(draft.photos, 3);
+    if (!refs.length) throw new Error('не удалось загрузить фото');
+    const img = await generateScene({ apiKey: key, model: process.env.GEMINI_IMAGE_MODEL, refs, scene: scene.prompt, timeoutMs: 50_000 });
+    await put(`${dir}${index}.${img.mime.includes('jpeg') ? 'jpg' : 'png'}`, img.data, { access: 'public', contentType: img.mime, addRandomSuffix: false, token: env.blobToken });
+  } catch (err: any) {
+    const msg = String(err?.message ?? err).slice(0, 300);
+    logger.error({ err: msg, index }, '[ProductAgent] сцена не получилась');
+    await put(`${dir}${index}.fail`, msg, { access: 'public', contentType: 'text/plain', addRandomSuffix: false, token: env.blobToken }).catch(() => undefined);
+  }
+  const { blobs } = await list({ prefix: dir, token: env.blobToken });
+  if (blobs.length >= plan.length) await finalizeSlides(draftId, false);
+}
+
+/** Собирает слайды из готовых сцен (кто успел) и шаблонов, шлёт альбом и текст на одобрение. */
+async function finalizeSlides(draftId: string, noScenes: boolean): Promise<void> {
+  const claim = await prisma.productDraft.updateMany({ where: { id: draftId, status: 'details_working' }, data: { status: 'details_rendering' } });
+  if (claim.count === 0) return; // кто-то другой уже собирает
+  const draft = await prisma.productDraft.findUnique({ where: { id: draftId } });
+  if (!draft) return;
+  const prev = dataOf(draft);
+  try {
+    const result = prev.result as ProductDetails;
+    const plan = planOf(draft);
+    const loaded = await loadPhotos(draft.photos, 4);
+    const scenes: SceneImage[] = [];
+    const errors: string[] = [];
+    if (!noScenes) {
+      const { blobs } = await list({ prefix: sceneDir(draft), token: env.blobToken });
+      for (let i = 0; i < plan.length; i++) {
+        const ok = blobs.find((b) => /\.(png|jpg)$/.test(b.pathname) && b.pathname.startsWith(`${sceneDir(draft)}${i}.`));
+        if (ok) {
+          const r = await fetch(ok.url);
+          if (r.ok) { scenes.push({ img: { data: Buffer.from(await r.arrayBuffer()), mime: ok.pathname.endsWith('.jpg') ? 'image/jpeg' : 'image/png' }, headline: plan[i].headline, caption: plan[i].caption }); continue; }
+        }
+        const fail = blobs.find((b) => b.pathname === `${sceneDir(draft)}${i}.fail`);
+        if (fail) errors.push(await fetch(fail.url).then((r) => r.text()).catch(() => '?'));
+      }
+    }
+    const pngs = await renderDetailSlides(result, loaded[0]?.data ?? null, loaded[0]?.mime ?? 'image/jpeg', { scenes, otherPhotos: loaded.slice(1) });
+    const slides: string[] = [];
+    for (let n = 0; n < pngs.length; n++) {
+      const b = await put(`details/${draftId}/r${draft.revisions}-${n + 1}.png`, pngs[n], { access: 'public', contentType: 'image/png', addRandomSuffix: true, token: env.blobToken });
+      slides.push(b.url);
+    }
+    await prisma.productDraft.update({ where: { id: draftId }, data: { data: { ...prev, slides } as any, status: 'details_review' } });
+    if (!noScenes && errors.length) {
+      await sendMessage(draft.chatId, `⚠️ ${errors.length} из ${plan.length} сцен не получились: ${escapeHtml(errors[0]).slice(0, 200)}`);
+    }
+    await sendPhotos(draft.chatId, slides.slice(0, 10));
+    await sendMessage(draft.chatId, formatDraft(result, draft.price, draft.oldPrice, draft.revisions), reviewButtons(draftId));
+  } catch (err: any) {
+    logger.error({ err: String(err?.message ?? err) }, '[ProductAgent] ошибка сборки слайдов');
+    await prisma.productDraft.update({ where: { id: draftId }, data: { status: prev.slides ? 'details_review' : 'collecting' } });
+    await sendMessage(draft.chatId, `Не получилось собрать слайды: ${escapeHtml(String(err?.message ?? err)).slice(0, 300)}\nНапишите «готово» ещё раз.`);
   }
 }
 
@@ -313,7 +398,18 @@ async function handleText(chatId: string, text: string) {
     return sendMessage(chatId, 'Записал примечание. Ещё фото или «готово».');
   }
 
-  if (draft.status === 'details_working') return sendMessage(chatId, 'Ещё работаю над карточкой, минутку…');
+  if (draft.status === 'details_working' || draft.status === 'details_rendering') {
+    const stale = Date.now() - draft.updatedAt.getTime() > 150_000;
+    if (stale && draft.status === 'details_working') {
+      await sendMessage(chatId, 'Долго рисуется — собираю из того, что успело.');
+      return waitUntil(finalizeSlides(draft.id, false));
+    }
+    if (stale) {
+      await prisma.productDraft.update({ where: { id: draft.id }, data: { status: (dataOf(draft).slides ? 'details_review' : 'collecting') } });
+      return sendMessage(chatId, 'Сборка зависла. Напишите «готово» ещё раз.');
+    }
+    return sendMessage(chatId, 'Ещё работаю над карточкой, минутку…');
+  }
 
   if (draft.status === 'details_review') {
     if (draft.revisions >= MAX_REVISIONS) return sendMessage(chatId, 'Слишком много правок подряд. Одобрите текущий вариант или «отмена».', reviewButtons(draft.id));

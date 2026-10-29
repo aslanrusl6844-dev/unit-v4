@@ -12,7 +12,7 @@ export const detailsSchema = z.object({
   composition: z.string().max(1500).nullable().optional(),
   characteristics: z.array(z.object({ name: z.string().max(80), value: z.string().max(300) })).max(14).default([]),
   usage: z.string().max(900).nullable().optional(),
-  scenes: z.array(z.object({ headline: z.string().max(50), caption: z.string().max(110), prompt: z.string().max(400) })).max(3).default([]), // сцены для нейросети
+  scenes: z.array(z.object({ headline: z.string().max(50), caption: z.string().max(110), prompt: z.string().max(400) })).max(6).default([]), // сцены для нейросети
   features: z.array(z.string().max(120)).max(8).default([]), // продающие тезисы для инфографики (следующий этап)
   notFound: z.array(z.string().max(160)).max(10).default([]),
   questions: z.array(z.string().max(200)).max(5).default([]),
@@ -49,7 +49,7 @@ ${taxonomy || '(пока пусто)'}
 - "name" — как продаётся: бренд + что это + объём/размер (если видно). Без капса и эмодзи.
 - "description" — 2–4 предложения для покупателя, без обещаний лечения и «лучший в мире».
 - "features" — 3–6 коротких продающих тезисов, только то, что подтверждено фото/описанием.
-- "scenes" — 2–3 сцены для красивых картинок «rich content» (как у Pinduoduo/Coupang). Для каждой: "headline" (до 6 слов, продающий заголовок), "caption" (1 короткая строка), "prompt" — описание фона/сцены НА АНГЛИЙСКОМ (место, свет, реквизит, ракурс), без текста на картинке и без выдуманных свойств товара. Сцены: 1) героическая — товар на красивом фоне по категории; 2) крупный план/текстура упаковки или ракурс; 3) ингредиенты или ситуация использования (только если подтверждено фото).
+- "scenes" — 4–6 РАЗНЫХ сцен для красивых картинок «rich content» (как у Pinduoduo/Coupang). Для каждой: "headline" (до 6 слов, продающий заголовок), "caption" (1 короткая строка), "prompt" — описание фона/сцены НА АНГЛИЙСКОМ (место, свет, реквизит, ракурс), без текста на картинке и без выдуманных свойств товара. Сцены должны отличаться друг от друга: 1) героическая — товар на красивом фоне по категории; 2) крупный план упаковки/текстуры; 3) другой ракурс на цветном студийном фоне; 4) ситуация использования (без людей); 5) ингредиенты или материалы вокруг товара (только если подтверждено фото); 6) подарочная/лайфстайл подача.
 - "usage" — способ применения/хранения, ТОЛЬКО если написан на упаковке, иначе null.
 - "questions" — что нужно уточнить у владельца (если что-то критичное неясно).
 Верни ТОЛЬКО JSON без пояснений:
@@ -86,7 +86,7 @@ export async function runDetailsAgent(opts: {
       headers: { 'content-type': 'application/json', 'x-api-key': opts.apiKey, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({
         model: opts.model || DEFAULT_AGENT_MODEL,
-        max_tokens: 2200,
+        max_tokens: 2800,
         system: buildDetailsPrompt(opts.taxonomy),
         messages: [{ role: 'user', content: attempt ? [...content, { type: 'text', text: `Прошлый ответ не прошёл проверку: ${lastError}. Исправь и верни только JSON.` }] : content }],
       }),

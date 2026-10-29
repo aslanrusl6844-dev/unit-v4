@@ -4,7 +4,7 @@ import { waitUntil } from '@vercel/functions';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
 import { setWebhook, webhookSecret } from '../lib/telegramBot';
-import { handleUpdate } from '../services/productDraft.service';
+import { handleSceneJob, handleUpdate, setSelfBaseUrl } from '../services/productDraft.service';
 
 export const telegramAgentRouter = Router();
 
@@ -18,6 +18,8 @@ function secretOk(given: string | undefined): boolean {
 /** Публичный путь (см. adminAuth), защита — секретный заголовок Telegram. */
 telegramAgentRouter.post('/webhook', (req, res) => {
   if (!secretOk(req.header('x-telegram-bot-api-secret-token'))) return res.status(401).json({ ok: false });
+  const host = req.header('x-forwarded-host') || req.header('host');
+  if (host) setSelfBaseUrl(`https://${host}`);
   res.json({ ok: true }); // Telegram ждёт быстрый ответ; работа идёт дальше в фоне
   waitUntil(handleUpdate(req.body).catch((err) => logger.error({ err: String(err?.message ?? err) }, '[TelegramAgent] webhook')));
 });
@@ -32,4 +34,13 @@ telegramAgentRouter.get('/setup', async (req, res) => {
   } catch (err: any) {
     res.status(502).json({ error: 'Не удалось зарегистрировать вебхук', details: String(err?.message ?? err) });
   }
+});
+
+/** Служебный: рисует одну сцену (зовёт сам сервер, защита — тот же секрет). Отвечает сразу, работа в фоне. */
+telegramAgentRouter.post('/scene', (req, res) => {
+  if (!secretOk(req.header('x-telegram-bot-api-secret-token'))) return res.status(401).json({ ok: false });
+  const { draftId, index } = req.body ?? {};
+  if (typeof draftId !== 'string' || !Number.isInteger(index)) return res.status(400).json({ ok: false });
+  res.json({ ok: true });
+  waitUntil(handleSceneJob(draftId, index).catch((err) => logger.error({ err: String(err?.message ?? err) }, '[TelegramAgent] scene')));
 });
