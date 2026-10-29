@@ -17,6 +17,7 @@ import { reviewsRouter } from './routes/reviews.routes';
 import { marginCalculatorRouter } from './routes/marginCalculator.routes';
 import { settingsRouter } from './routes/settings.routes';
 import { nichesRouter } from './routes/niches.routes';
+import { assistantRouter } from './routes/assistant.routes';
 import { shopRouter } from './routes/shop.routes';
 import { shopAdminRouter } from './routes/shopAdmin.routes';
 import { shopMediaRouter } from './routes/shopMedia.routes';
@@ -95,7 +96,8 @@ app.use((req, res, next) => {
   // как и синхронизации, им нужен длинный лимит, а не 8 секунд для запросов к базе.
   const isSyncRoute = req.url.startsWith('/api/sync/')
     || req.url.startsWith('/api/ozon-fbo')
-    || req.url.startsWith('/api/ozon-returns');
+    || req.url.startsWith('/api/ozon-returns')
+    || req.url.startsWith('/api/shop/assistant');
   const timeoutMs = isSyncRoute ? 55000 : 8000;
   const timer = setTimeout(() => {
     if (!res.headersSent) {
@@ -148,6 +150,8 @@ app.use('/api/shop/admin', shopMediaRouter);
 app.use('/api/shop/showcases', showcasesRouter);
 app.use('/api/shop-admin/showcases', showcasesAdminRouter);
 app.use('/api/shop-admin/city-images', cityImagesAdminRouter);
+// Ассистент — до shopRouter (своя проверка x-app-key, длинный стрим).
+app.use('/api/shop/assistant', assistantRouter);
 app.use('/api/shop', shopRouter);
 app.use('/api/shop-admin', shopAdminRouter);
 // «Двор» — своя подсистема, свои таблицы, свои заказы, свои деньги. Не
