@@ -11,6 +11,7 @@ export const detailsSchema = z.object({
   description: z.string().max(1500),
   composition: z.string().max(1500).nullable().optional(),
   characteristics: z.array(z.object({ name: z.string().max(80), value: z.string().max(300) })).max(14).default([]),
+  usage: z.string().max(900).nullable().optional(),
   features: z.array(z.string().max(120)).max(8).default([]), // продающие тезисы для инфографики (следующий этап)
   notFound: z.array(z.string().max(160)).max(10).default([]),
   questions: z.array(z.string().max(200)).max(5).default([]),
@@ -47,9 +48,10 @@ ${taxonomy || '(пока пусто)'}
 - "name" — как продаётся: бренд + что это + объём/размер (если видно). Без капса и эмодзи.
 - "description" — 2–4 предложения для покупателя, без обещаний лечения и «лучший в мире».
 - "features" — 3–6 коротких продающих тезисов, только то, что подтверждено фото/описанием.
+- "usage" — способ применения/хранения, ТОЛЬКО если написан на упаковке, иначе null.
 - "questions" — что нужно уточнить у владельца (если что-то критичное неясно).
 Верни ТОЛЬКО JSON без пояснений:
-{"name":"","category":"","subcategory":null,"type":"","description":"","composition":null,"characteristics":[{"name":"","value":""}],"features":[],"notFound":[],"questions":[]}`;
+{"name":"","category":"","subcategory":null,"type":"","description":"","composition":null,"usage":null,"characteristics":[{"name":"","value":""}],"features":[],"notFound":[],"questions":[]}`;
 }
 
 export async function runDetailsAgent(opts: {
