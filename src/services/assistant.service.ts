@@ -1,5 +1,5 @@
 import { prisma } from '../db/prisma';
-import { SHOP_VISIBLE_WHERE, toShopProduct } from '../routes/shop.routes';
+import { SHOP_VISIBLE_IN_SHOWCASE_WHERE, SHOP_VISIBLE_WHERE, toShopProduct } from '../routes/shop.routes';
 import { PERSONA, SHOP_KNOWLEDGE } from '../config/assistantKnowledge';
 
 export interface ChatMessage { role: 'user' | 'assistant'; content: string }
@@ -7,7 +7,13 @@ export interface CatalogItem {
   sku: string; name: string; category: string | null; subcategory: string | null;
   type: string | null; price: number | null; image: string | null;
   stock?: number | null; info?: string;
+  /** Полный состав и характеристики — для «найденных товаров» в промпте. */
+  details?: string;
+  /** Витрины (бренды/магазины), в которых лежит товар. */
+  showcases?: string[];
 }
+export interface ShowcaseInfo { id: string; title: string; type: string; description: string | null; count: number }
+export interface Catalog { items: CatalogItem[]; showcases: ShowcaseInfo[] }
 
 export const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
 
@@ -24,8 +30,10 @@ export function rankProducts(items: CatalogItem[], query: string, limit = 8): Ca
     const name = norm(it.name);
     const meta = norm([it.category, it.subcategory, it.type].filter(Boolean).join(' '));
     const info = norm(it.info ?? '');
+    const brands = norm((it.showcases ?? []).join(' '));
     let score = 0;
     for (const t of q) {
+      if (brands.includes(t)) score += 3;
       if (name.includes(t)) score += 3;
       else if (meta.includes(t)) score += 2;
       else if (info.includes(t)) score += 1;
@@ -34,6 +42,19 @@ export function rankProducts(items: CatalogItem[], query: string, limit = 8): Ca
   }).filter((x) => x.score > 0);
   scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, limit).map((x) => x.it);
+}
+
+/** Витрины, названные в запросе (по границе слова, чтобы «9-9» не цеплялось за любое число). */
+export function matchShowcases(showcases: ShowcaseInfo[], query: string): ShowcaseInfo[] {
+  const q = ' ' + norm(query).replace(/[^a-zа-я0-9-]+/g, ' ') + ' ';
+  const qt = new Set(tokens(query));
+  return showcases.filter((sc) => {
+    const t = norm(sc.title).replace(/[^a-zа-я0-9-]+/g, ' ').trim();
+    if (!t) return false;
+    if (q.includes(' ' + t + ' ')) return true;
+    const parts = tokens(sc.title);
+    return parts.length > 0 && parts.every((w) => w.length >= 3 && qt.has(w));
+  });
 }
 
 /** Достаём артикулы из маркеров {{артикул}} (формат приложения); {{витрина:id}} пропускаем. */
@@ -57,30 +78,67 @@ export function diverseSample(items: CatalogItem[], limit = 12): CatalogItem[] {
   return out;
 }
 
-let cache: { at: number; items: CatalogItem[] } | null = null;
+let cache: { at: number; data: Catalog } | null = null;
 const CACHE_MS = 5 * 60_000;
 
-export async function loadCatalog(): Promise<CatalogItem[]> {
-  if (cache && Date.now() - cache.at < CACHE_MS) return cache.items;
-  const rows = await prisma.product.findMany({ where: SHOP_VISIBLE_WHERE, take: 3000 });
-  const items = rows.map((r: any) => {
+export async function loadCatalog(): Promise<Catalog> {
+  if (cache && Date.now() - cache.at < CACHE_MS) return cache.data;
+  const scs = await prisma.showcase.findMany({ where: { published: true }, orderBy: { sortOrder: 'asc' } });
+  const links = scs.length
+    ? await prisma.showcaseProduct.findMany({ where: { showcaseId: { in: scs.map((x: any) => x.id) } } })
+    : [];
+  const inShowcaseIds = [...new Set(links.map((l: any) => l.productId))];
+  const [open, inSc] = await Promise.all([
+    prisma.product.findMany({ where: SHOP_VISIBLE_WHERE, take: 3000 }),
+    inShowcaseIds.length
+      ? prisma.product.findMany({ where: { ...SHOP_VISIBLE_IN_SHOWCASE_WHERE, id: { in: inShowcaseIds } } })
+      : Promise.resolve([]),
+  ]);
+  const titleById = new Map<string, string>((scs as any[]).map((x) => [String(x.id), String(x.title)] as [string, string]));
+  const scByProduct = new Map<string, string[]>();
+  const countBySc = new Map<string, number>();
+  for (const l of links as any[]) {
+    scByProduct.set(l.productId, [...(scByProduct.get(l.productId) ?? []), titleById.get(l.showcaseId) ?? '']);
+  }
+  const seen = new Set<string>();
+  const items: CatalogItem[] = [];
+  for (const r of [...(open as any[]), ...(inSc as any[])]) {
+    if (seen.has(r.id)) continue;
+    seen.add(r.id);
     const p = toShopProduct(r);
-    return {
+    const chars = (p.characteristics ?? []).map((c: any) => `${c.name}: ${c.value}`).join('; ');
+    const clean = (x: unknown) => String(x ?? '').replace(/\s+/g, ' ').trim();
+    const sc = scByProduct.get(r.id) ?? [];
+    for (const l of links as any[]) if (l.productId === r.id) countBySc.set(l.showcaseId, (countBySc.get(l.showcaseId) ?? 0) + 1);
+    items.push({
       sku: String(p.sku), name: p.name, category: p.category ?? null, subcategory: p.subcategory ?? null,
       type: p.type ?? null, price: p.price ?? null, stock: p.stock ?? null,
-      info: [p.description, p.composition].filter(Boolean).join(' ').replace(/\s+/g, ' ').slice(0, 240),
+      info: clean([p.description, p.composition, chars].join(' ')),
+      details: [
+        p.description ? `описание: ${clean(p.description).slice(0, 500)}` : '',
+        p.composition ? `состав: ${clean(p.composition).slice(0, 700)}` : '',
+        chars ? `характеристики: ${clean(chars).slice(0, 300)}` : '',
+      ].filter(Boolean).join(' | '),
+      showcases: sc,
       image: Array.isArray(p.images) && p.images[0] ? String(p.images[0]) : null,
-    } as CatalogItem;
-  });
-  cache = { at: Date.now(), items };
-  return items;
+    });
+  }
+  const showcases: ShowcaseInfo[] = (scs as any[]).map((x) => ({
+    id: x.id, title: x.title, type: x.type, description: x.description ?? null, count: countBySc.get(x.id) ?? 0,
+  }));
+  const data = { items, showcases };
+  cache = { at: Date.now(), data };
+  return data;
 }
 
-export function buildSystemPrompt(found: CatalogItem[], categories: string[]): string {
+export function buildSystemPrompt(found: CatalogItem[], categories: string[], showcases: ShowcaseInfo[] = []): string {
   const list = found.length
-    ? found.map((p) => `- ${p.name} | артикул ${p.sku} | ${[p.category, p.subcategory].filter(Boolean).join(' / ')} | ${p.price} ₸ | ${p.stock != null && p.stock <= 0 ? 'НЕТ В НАЛИЧИИ' : 'в наличии'}${p.info ? ' | ' + p.info : ''}`).join('\n')
+    ? found.map((p) => `- ${p.name} | артикул ${p.sku} | ${[p.category, p.subcategory].filter(Boolean).join(' / ')}${p.showcases?.length ? ' | витрина: ' + p.showcases.join(', ') : ''} | ${p.price} ₸ | ${p.stock != null && p.stock <= 0 ? 'НЕТ В НАЛИЧИИ' : 'в наличии'}${p.details ? ' | ' + p.details : ''}`).join('\n')
     : '(ничего не найдено — не придумывай товары, уточни запрос или предложи посмотреть раздел)';
-  return `${PERSONA}\n\n${SHOP_KNOWLEDGE}\n\nРАЗДЕЛЫ КАТАЛОГА: ${categories.join(', ')}\n\nНАЙДЕННЫЕ ТОВАРЫ:\n${list}`;
+  const sc = showcases.length
+    ? showcases.map((x) => `- ${x.title} (${x.type === 'brand' ? 'бренд' : 'магазин'}) | id: ${x.id} | товаров: ${x.count}${x.description ? ' | ' + x.description.replace(/\s+/g, ' ').slice(0, 200) : ''}`).join('\n')
+    : '(витрин нет)';
+  return `${PERSONA}\n\n${SHOP_KNOWLEDGE}\n\nРАЗДЕЛЫ КАТАЛОГА: ${categories.join(', ')}\n\nВИТРИНЫ (бренды и магазины на главной; витрину можно предложить маркером {{витрина:id}}):\n${sc}\n\nНАЙДЕННЫЕ ТОВАРЫ:\n${list}`;
 }
 
 /** Стрим ответа Claude. onDelta вызывается с чистыми кусками текста. */
