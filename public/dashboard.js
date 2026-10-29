@@ -2199,7 +2199,7 @@ function wireMyMarketTabsOnce() {
     const isInviteTab = btn.dataset.apptab === 'invite';
     document.getElementById('mmCourierInvitePanel').hidden = !isInviteTab;
     document.getElementById('mmCourierAppListWrap').hidden = isInviteTab;
-    if (isInviteTab) return; // форма вакансии — список грузить не нужно
+    if (isInviteTab) { loadMyMarketCourierInvites(); return; } // вкладка вакансий: форма + список отправленных
     document.getElementById('mmCourierAppSearch').value = '';
     loadMyMarketCourierApplications();
   });
@@ -4499,11 +4499,64 @@ async function runMyMarketSendCourierInvite() {
     document.getElementById('mmCourierInviteLastName').value = '';
     document.getElementById('mmCourierInvitePhone').value = '';
     document.getElementById('mmCourierInviteIin').value = '';
+    await loadMyMarketCourierInvites();
   } catch (err) {
     statusEl.style.color = 'var(--loss)';
     statusEl.textContent = 'Ошибка: ' + err.message;
   } finally {
     btn.disabled = false;
+  }
+}
+
+/** «+7…» для подтверждения и таблиц: в базе телефон лежит как 77011112233. */
+function mmInvitePhoneLabel(phone) {
+  const p = String(phone || '');
+  return /^\d+$/.test(p) ? '+' + p : p;
+}
+
+/** Удалить вакансию по телефону: invite и связанная заявка стираются на сервере; одобренных курьеров сервер не трогает (409). */
+async function runMyMarketDeleteCourierInvite(phone) {
+  if (!confirm(`Удалить вакансию на ${mmInvitePhoneLabel(phone)}?`)) return;
+  try {
+    await api(`/shop-admin/courier-invites/${encodeURIComponent(phone)}`, { method: 'DELETE' });
+    if (mmCourierAppsTab() === 'invite') await loadMyMarketCourierInvites();
+    else await loadMyMarketCourierApplications();
+  } catch (err) {
+    alert('Не удалось удалить вакансию: ' + err.message);
+  }
+}
+
+const MM_INVITE_APP_STATUS_LABELS = { pending: 'Ожидает', approved: 'Одобрена', rejected: 'Отказано' };
+
+async function loadMyMarketCourierInvites() {
+  const tbody = document.querySelector('#mmCourierInvitesTable tbody');
+  try {
+    const invites = await api('/shop-admin/courier-invites');
+    if (!invites.length) {
+      tbody.innerHTML = '<tr><td colspan="6" style="color:var(--text-faint)">Вакансий нет</td></tr>';
+      return;
+    }
+    tbody.innerHTML = invites.map((i) => {
+      const appLabel = i.applicationStatus ? (MM_INVITE_APP_STATUS_LABELS[i.applicationStatus] ?? i.applicationStatus) : 'Не подавал';
+      // Одобренного курьера не удаляем — кнопки нет (сервер тоже ответит 409).
+      const delCell = i.applicationStatus === 'approved'
+        ? ''
+        : `<button class="link-btn" data-invite-delete="${mmEsc(i.phone)}" style="color:var(--loss)">Удалить</button>`;
+      return `
+        <tr>
+          <td>${mmEsc(mmInvitePhoneLabel(i.phone))}</td>
+          <td class="name-cell">${mmEsc(`${i.firstName} ${i.lastName}`.trim())}</td>
+          <td>${mmEsc(i.iin || '—')}</td>
+          <td>${fmtOrderDateTime(i.createdAt)}</td>
+          <td>${mmEsc(appLabel)}</td>
+          <td style="white-space:nowrap">${delCell}</td>
+        </tr>`;
+    }).join('');
+    tbody.querySelectorAll('button[data-invite-delete]').forEach((btn) => {
+      btn.addEventListener('click', () => runMyMarketDeleteCourierInvite(btn.dataset.inviteDelete));
+    });
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="6" style="color:var(--loss)">Не удалось загрузить вакансии: ${mmEsc(err.message)}</td></tr>`;
   }
 }
 
@@ -4556,10 +4609,14 @@ function renderMyMarketCourierApplicationsTable() {
         : `<span>${statusLabel}</span>`;
     // Кнопки решения — ТОЛЬКО для ещё не решённой (pending) заявки. У
     // одобренной (во «Активных») их быть не должно — решение уже принято.
-    const decisionCell = a.status === 'pending'
+    let decisionCell = a.status === 'pending'
       ? `<button class="link-btn" data-app-action="approve" data-app-id="${a.id}" style="color:var(--accent)">Одобрить</button>
          <button class="link-btn" data-app-action="reject" data-app-id="${a.id}" style="color:var(--loss)">Отказать</button>`
       : '';
+    // В «Архиве» — «Удалить» (вакансия по телефону + заявка). Одобренных не трогаем: кнопки у них нет.
+    if (tab === 'archived' && a.status !== 'approved') {
+      decisionCell += `<button class="link-btn" data-invite-delete="${mmEsc(a.phone)}" style="color:var(--loss)">Удалить</button>`;
+    }
     return `
       <tr>
         <td><input type="checkbox" data-courierapp-select="${a.id}" ${myMarketSelectedCourierAppIds.has(a.id) ? 'checked' : ''} /></td>
@@ -4576,6 +4633,9 @@ function renderMyMarketCourierApplicationsTable() {
 
   tbody.querySelectorAll('button[data-app-action]').forEach((btn) => {
     btn.addEventListener('click', () => runMyMarketCourierApplicationDecision(btn.dataset.appId, btn.dataset.appAction));
+  });
+  tbody.querySelectorAll('button[data-invite-delete]').forEach((btn) => {
+    btn.addEventListener('click', () => runMyMarketDeleteCourierInvite(btn.dataset.inviteDelete));
   });
   tbody.querySelectorAll('input[data-courierapp-select]').forEach((box) => {
     box.addEventListener('change', () => {
