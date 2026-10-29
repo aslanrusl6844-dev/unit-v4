@@ -16,3 +16,10 @@ test('extractJson + schema', () => {
   assert.throws(() => extractJson('нет'));
   assert.equal(detailsSchema.safeParse({ name: 'Крем', category: 'нет такой', type: 'x', description: '' }).success, false);
 });
+
+test('parseAttachCommand', async () => {
+  const { parseAttachCommand } = await import('../src/services/productDraft.service');
+  assert.equal(parseAttachCommand('детали 1234567'), '1234567');
+  assert.equal(parseAttachCommand('Детали крем для рук'), 'крем для рук');
+  assert.equal(parseAttachCommand('4500 / 6000'), null);
+});

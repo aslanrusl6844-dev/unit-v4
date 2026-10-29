@@ -9,10 +9,11 @@ import { maybeGenerateShopArticle } from './shopArticle';
 
 const MAX_REVISIONS = 6;
 const MAX_PHOTOS = 10;
+const MAX_DETAILS = 10;
 
 const HELP =
-  'Пришлите 1–5 фото товара по очереди. Цену напишите текстом, например <b>4500 / 6000</b> (цена / старая цена). ' +
-  'Когда всё отправили — напишите <b>готово</b>. Отмена — <b>отмена</b>.';
+  'Новый товар: пришлите 1–5 фото товара по очереди. Цену напишите текстом, например <b>4500 / 6000</b> (цена / старая цена). ' +
+  'Когда всё отправили — напишите <b>готово</b>. Отмена — <b>отмена</b>.\n\nДобавить фото в «Детали» существующего товара: <b>детали 1234567</b> (артикул или название), затем фото и «готово».';
 
 export type TgUpdate = {
   update_id?: number;
@@ -59,6 +60,63 @@ async function taxonomyText(): Promise<string> {
     if (v) by.get(k)!.add(v);
   }
   return [...by.entries()].map(([k, v]) => `${k}: ${[...v].slice(0, 30).join('; ')}`).join('\n');
+}
+
+
+const isAttach = (d: { data: unknown } | null | undefined) => (d?.data as any)?.mode === 'attach';
+
+/** «детали 1234567» / «детали <sku>» / «детали часть названия» → запрос поиска, иначе null. */
+export function parseAttachCommand(text: string): string | null {
+  const m = /^\s*(?:\/details|детали)\s+(.+)$/i.exec(text.trim());
+  return m ? m[1].trim().slice(0, 100) : null;
+}
+
+async function startAttach(chatId: string, query: string): Promise<boolean> {
+  const exact = await prisma.product.findFirst({
+    where: { OR: [{ shopArticle: query }, { sku: query }] },
+    select: { id: true, name: true, details: true },
+  });
+  let target = exact;
+  if (!target) {
+    const found = await prisma.product.findMany({
+      where: { name: { contains: query, mode: 'insensitive' } },
+      select: { id: true, name: true, details: true, shopArticle: true },
+      take: 6,
+    });
+    if (!found.length) {
+      await sendMessage(chatId, `Не нашёл товар «${escapeHtml(query)}». Укажите артикул (7 цифр) или часть названия: <b>детали 1234567</b>`);
+      return false;
+    }
+    if (found.length > 1) {
+      await sendMessage(chatId, 'Нашёл несколько, уточните артикулом:\n' + found.map((p: { name: string; shopArticle: string | null }) => `• ${escapeHtml(p.name)} — ${p.shopArticle ?? 'без артикула'}`).join('\n'));
+      return false;
+    }
+    target = found[0];
+  }
+  const have = Array.isArray(target.details) ? target.details.length : 0;
+  await prisma.productDraft.create({ data: { chatId, productId: target.id, data: { mode: 'attach' } } });
+  await sendMessage(
+    chatId,
+    `Загружаю в «Детали» товара <b>${escapeHtml(target.name)}</b> (сейчас там ${have} из ${MAX_DETAILS}). Присылайте фото по очереди, в конце напишите <b>готово</b>.`,
+  );
+  return true;
+}
+
+async function finishAttach(draftId: string) {
+  const draft = await prisma.productDraft.findUnique({ where: { id: draftId } });
+  if (!draft || draft.status !== 'collecting' || !draft.productId) return;
+  const claim = await prisma.productDraft.updateMany({ where: { id: draftId, status: 'collecting' }, data: { status: 'done' } });
+  if (claim.count === 0) return;
+  const product = await prisma.product.findUnique({ where: { id: draft.productId }, select: { name: true, details: true } });
+  if (!product) return void (await sendMessage(draft.chatId, 'Товар не найден (удалён?).'));
+  const current = Array.isArray(product.details) ? (product.details as string[]) : [];
+  const merged = [...current, ...draft.photos.filter((u: string) => !current.includes(u))].slice(0, MAX_DETAILS);
+  const skipped = current.length + draft.photos.length - merged.length;
+  await prisma.product.update({ where: { id: draft.productId }, data: { details: merged } });
+  await sendMessage(
+    draft.chatId,
+    `Готово: в «Детали» товара <b>${escapeHtml(product.name)}</b> теперь ${merged.length} фото (добавлено ${merged.length - current.length}${skipped > 0 ? `, не поместилось ${skipped}: максимум ${MAX_DETAILS}` : ''}). Откройте товар в приложении и проверьте.`,
+  );
 }
 
 async function activeDraft(chatId: string) {
@@ -136,6 +194,12 @@ async function approveDetails(draftId: string) {
 
 async function addPhoto(chatId: string, fileId: string, caption: string | undefined) {
   let draft = await activeDraft(chatId);
+  const cmd = caption ? parseAttachCommand(caption) : null;
+  if (cmd && !draft) {
+    if (!(await startAttach(chatId, cmd))) return;
+    draft = await activeDraft(chatId);
+    caption = undefined;
+  }
   if (draft && draft.status !== 'collecting') {
     await sendMessage(chatId, 'Сначала завершите текущий товар: одобрите, напишите правки или «отмена».');
     return;
@@ -157,16 +221,17 @@ async function addPhoto(chatId: string, fileId: string, caption: string | undefi
   }
   const file = await downloadFile(fileId);
   const blob = await put(`tg/${draft.id}/${Date.now()}.jpg`, file.buffer, { access: 'public', contentType: file.contentType, token: env.blobToken });
-  const prices = caption ? parsePrices(caption) : {};
+  const attach = isAttach(draft);
+  const prices = caption && !attach ? parsePrices(caption) : {};
   await prisma.productDraft.update({
     where: { id: draft.id },
     data: {
       photos: { push: blob.url },
       ...(prices.price ? { price: prices.price, oldPrice: prices.oldPrice ?? null } : {}),
-      ...(caption && !prices.price ? { notes: [draft.notes, caption].filter(Boolean).join('\n') } : {}),
+      ...(caption && !attach && !prices.price ? { notes: [draft.notes, caption].filter(Boolean).join('\n') } : {}),
     },
   });
-  if (isNew) await sendMessage(chatId, 'Принял фото. ' + HELP);
+  if (isNew && !attach) await sendMessage(chatId, 'Принял фото. ' + HELP);
 }
 
 async function handleText(chatId: string, text: string) {
@@ -179,7 +244,21 @@ async function handleText(chatId: string, text: string) {
     if (draft) await prisma.productDraft.update({ where: { id: draft.id }, data: { status: 'cancelled' } });
     return sendMessage(chatId, draft ? 'Отменил. Можно начинать новый товар.' : 'Нечего отменять.');
   }
+  const cmd = parseAttachCommand(t);
+  if (cmd) {
+    if (draft) return sendMessage(chatId, 'Сначала завершите текущее: «готово» или «отмена».');
+    await startAttach(chatId, cmd);
+    return;
+  }
   if (!draft) return sendMessage(chatId, HELP);
+
+  if (draft.status === 'collecting' && isAttach(draft)) {
+    if (['готово', '/done', 'done', 'все', 'всё'].includes(low)) {
+      if (!draft.photos.length) return sendMessage(chatId, 'Фото ещё нет. Пришлите хотя бы одно.');
+      return finishAttach(draft.id);
+    }
+    return sendMessage(chatId, 'Жду фото для «Деталей». Когда всё отправили — «готово», отмена — «отмена».');
+  }
 
   if (draft.status === 'collecting') {
     if (['готово', '/done', 'done', 'все', 'всё'].includes(low)) {
