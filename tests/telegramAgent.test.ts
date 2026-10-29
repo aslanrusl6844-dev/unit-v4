@@ -78,3 +78,28 @@ test('parseRawCommand', async () => {
   assert.equal(parseRawCommand('детали 1234567'), null);
   assert.equal(parseAttachCommand('картинки 1234567'), null);
 });
+
+test('нарезка листа: команда, сетка, разрезание', async () => {
+  const { parseSliceCommand } = await import('../src/services/productDraft.service');
+  const { parseGrid, splitSheet } = await import('../src/services/sheetSplit.service');
+  assert.deepEqual(parseSliceCommand('нарезать 1234567 2x5'), { query: '1234567', grid: { rows: 2, cols: 5 } });
+  assert.deepEqual(parseSliceCommand('Лист крем для рук'), { query: 'крем для рук', grid: undefined });
+  assert.equal(parseSliceCommand('детали 1234567'), null);
+  assert.deepEqual(parseGrid('2х5'), { rows: 2, cols: 5 });
+  assert.equal(parseGrid('1x1'), null);
+  assert.equal(parseGrid('привет'), null);
+  // лист 2x3: цветные ячейки на белом фоне с промежутками
+  const sharp = (await import('sharp')).default;
+  const cw = 100, ch = 150, gap = 10, cols = 3, rows = 2;
+  const comps: any[] = [];
+  const noise = (seed: number) => { const b = Buffer.alloc(cw * ch * 3); for (let i = 0; i < b.length; i++) b[i] = (i * 37 + seed * 91 + ((i >> 3) % 7) * 20) % 256; return b; };
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    comps.push({ input: await sharp(noise(r * cols + c), { raw: { width: cw, height: ch, channels: 3 } }).png().toBuffer(), left: gap + c * (cw + gap), top: gap + r * (ch + gap) });
+  }
+  const sheet = await sharp({ create: { width: cols * cw + (cols + 1) * gap, height: rows * ch + (rows + 1) * gap, channels: 3, background: '#fff' } }).composite(comps).png().toBuffer();
+  const out = await splitSheet(sheet);
+  assert.deepEqual(out.grid, { rows: 2, cols: 3 });
+  assert.equal(out.slices.length, 6);
+  const m = await sharp(out.slices[0]).metadata();
+  assert.ok(Math.abs((m.width ?? 0) - cw) <= 3 && Math.abs((m.height ?? 0) - ch) <= 3, `размер ${m.width}x${m.height}`);
+});
