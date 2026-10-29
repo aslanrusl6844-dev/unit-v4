@@ -8,9 +8,9 @@ import { DEFAULT_AGENT_MODEL, ProductDetails, parsePrices, runDetailsAgent } fro
 import { maybeGenerateShopArticle } from './shopArticle';
 import { renderDetailSlides, SceneImage } from './detailSlides.service';
 import { generateSceneAuto, sniffImageMime } from './geminiImage.service';
-import { Grid, parseGrid, splitSheet } from './sheetSplit.service';
+import { Grid, parseGrid, peekGrid, splitSheet } from './sheetSplit.service';
 
-type DraftData = { mode?: 'attach' | 'slice' | 'ask'; grid?: Grid; slices?: string[]; raw?: boolean; result?: ProductDetails; slides?: string[] };
+type DraftData = { mode?: 'attach' | 'slice' | 'ask' | 'await_article'; grid?: Grid; slices?: string[]; raw?: boolean; result?: ProductDetails; slides?: string[] };
 const dataOf = (d: { data: unknown } | null | undefined): DraftData => ((d?.data as DraftData | null) ?? {});
 
 const MAX_REVISIONS = 6;
@@ -107,6 +107,41 @@ export function parseSliceCommand(text: string): { query: string; grid?: Grid } 
 export function parseRawCommand(text: string): string | null {
   const m = /^\s*(?:\/images|картинки|готовые)\s+(.+)$/i.exec(text.trim());
   return m ? m[1].trim().slice(0, 100) : null;
+}
+
+/** Находит товар по артикулу/sku/названию. Если не нашёл или несколько — сам пишет в чат и возвращает null. */
+async function resolveTarget(chatId: string, query: string): Promise<{ id: string; name: string; details: unknown } | null> {
+  const exact = await prisma.product.findFirst({
+    where: { OR: [{ shopArticle: query }, { sku: query }] },
+    select: { id: true, name: true, details: true },
+  });
+  if (exact) return exact;
+  const found = await prisma.product.findMany({
+    where: { name: { contains: query, mode: 'insensitive' } },
+    select: { id: true, name: true, details: true, shopArticle: true },
+    take: 6,
+  });
+  if (!found.length) {
+    await sendMessage(chatId, `Не нашёл товар «${escapeHtml(query)}». Укажите артикул (7 цифр) или часть названия.`);
+    return null;
+  }
+  if (found.length > 1) {
+    await sendMessage(chatId, 'Нашёл несколько, уточните артикулом:\n' + found.map((p: { name: string; shopArticle: string | null }) => `• ${escapeHtml(p.name)} — ${p.shopArticle ?? 'без артикула'}`).join('\n'));
+    return null;
+  }
+  return found[0];
+}
+
+/** Лист уже загружен и ждёт артикул: привязываем к товару и сразу режем. */
+async function bindSheetToProduct(draftId: string, chatId: string, query: string, grid?: Grid) {
+  const target = await resolveTarget(chatId, query);
+  if (!target) return;
+  const draft = await prisma.productDraft.findUnique({ where: { id: draftId } });
+  if (!draft?.photos[0]) return;
+  await prisma.productDraft.update({ where: { id: draftId }, data: { productId: target.id, data: { mode: 'slice', ...(grid ? { grid } : {}) } as any } });
+  const buf = Buffer.from(await (await fetch(draft.photos[0])).arrayBuffer());
+  await sendMessage(chatId, `Товар: <b>${escapeHtml(target.name)}</b>. Режу лист…`);
+  await reviewSlices(draftId, buf, grid);
 }
 
 async function startAttach(chatId: string, query: string, raw = false, slice?: { grid?: Grid }, ask = false): Promise<boolean> {
@@ -478,7 +513,15 @@ async function addPhoto(chatId: string, fileId: string, caption: string | undefi
       ...(caption && !attach && !prices.price ? { notes: [draft.notes, caption].filter(Boolean).join('\n') } : {}),
     },
   });
-  if (isNew && !attach) await sendMessage(chatId, 'Принял фото. ' + HELP);
+  if (isNew && !attach) {
+    const g = await peekGrid(file.buffer).catch(() => null);
+    if (g) {
+      await prisma.productDraft.update({ where: { id: draft.id }, data: { data: { mode: 'await_article', grid: g } as any } });
+      await sendMessage(chatId, `Похоже на лист из ${g.rows * g.cols} слайдов (${g.rows}×${g.cols}). Чтобы нарезать и загрузить их в «Детали», пришлите <b>артикул товара</b> (7 цифр). Если это фото нового товара — напишите «готово».`);
+    } else {
+      await sendMessage(chatId, 'Принял фото. ' + HELP);
+    }
+  }
 }
 
 async function handleText(chatId: string, text: string) {
@@ -490,6 +533,10 @@ async function handleText(chatId: string, text: string) {
   if (['отмена', '/cancel', 'cancel'].includes(low)) {
     if (draft) await prisma.productDraft.update({ where: { id: draft.id }, data: { status: 'cancelled' } });
     return sendMessage(chatId, draft ? 'Отменил. Можно начинать новый товар.' : 'Нечего отменять.');
+  }
+  if (draft && dataOf(draft).mode === 'await_article' && draft.photos.length) {
+    const inf0 = inferIntent(t);
+    if (inf0) return bindSheetToProduct(draft.id, chatId, inf0.article, inf0.grid ?? dataOf(draft).grid);
   }
   if (/^\d{7}$/.test(t)) {
     if (!(await supersede(chatId, draft))) return;

@@ -157,3 +157,18 @@ export function parseGrid(text: string): Grid | null {
   if (rows < 1 || cols < 1 || rows * cols < 2 || rows * cols > 12) return null;
   return { rows, cols };
 }
+
+/** Быстрая проверка: похоже ли фото на лист из нескольких слайдов (по пустым промежуткам). */
+export async function peekGrid(input: Buffer): Promise<Grid | null> {
+  const img = sharp(input, { failOn: 'none' }).rotate();
+  const meta = await img.metadata();
+  const w = meta.width ?? 0;
+  const h = meta.height ?? 0;
+  if (w < 300 || h < 300) return null;
+  const scale = Math.min(1, 1200 / Math.max(w, h));
+  const aw = Math.max(1, Math.round(w * scale));
+  const ah = Math.max(1, Math.round(h * scale));
+  const gray = await img.resize(aw, ah).greyscale().raw().toBuffer();
+  const g = detectGrid(lineVariance(gray, aw, ah, 'col'), lineVariance(gray, aw, ah, 'row'), aw, ah);
+  return g && g.rows * g.cols >= 4 ? g : null;
+}
