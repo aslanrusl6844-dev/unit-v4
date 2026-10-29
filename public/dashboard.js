@@ -96,6 +96,7 @@ const PAGE_LOADERS = {
   overview: loadOverviewPage,
   orders: loadOrdersPage,
   ozonreturns: loadOzonReturnsPage,
+  ozonfbo: loadOzonFboPage,
   products: loadProductsPage,
   finance: loadFinancePage,
   reviews: loadReviewsPage,
@@ -454,6 +455,40 @@ function renderOzonReturns() {
       <td>${place(r.placeName, r.placeAddress)}</td>
       <td>${place(r.targetPlaceName, r.targetPlaceAddress)}</td>
     </tr>`).join('');
+}
+
+// ---------- FBO Озон ----------
+async function loadOzonFboPage() {
+  const setBody = (id, html) => { document.querySelector(`#${id} tbody`).innerHTML = html; };
+  const err = (id, cols, e) => setBody(id, `<tr><td colspan="${cols}" style="color:var(--danger,#d33)">Не удалось загрузить: ${ozEsc(e)}</td></tr>`);
+  const empty = (id, cols) => setBody(id, `<tr><td colspan="${cols}" style="color:var(--text-faint)">Нет данных</td></tr>`);
+  ['ozFboStockTable', 'ozFboSoldTable', 'ozFboRetTable'].forEach((id) => setBody(id, '<tr><td colspan="7" style="color:var(--text-faint)">Загрузка…</td></tr>'));
+  let res;
+  try { res = await api(`/ozon-fbo?${qs({ from: state.from, to: state.to })}`); }
+  catch (e) { ['ozFboStockTable', 'ozFboSoldTable', 'ozFboRetTable'].forEach((id) => err(id, 7, e.message)); return; }
+
+  const stocks = res.stocks.rows;
+  if (res.stocks.error) err('ozFboStockTable', 5, res.stocks.error);
+  else if (!stocks.length) empty('ozFboStockTable', 5);
+  else setBody('ozFboStockTable', stocks.map((r) => `<tr><td>${ozEsc(r.name || r.offerId || r.sku)}${r.offerId ? `<div style="font-size:11.5px;color:var(--text-muted)">${ozEsc(r.offerId)}</div>` : ''}</td><td>${ozEsc(r.warehouse)}</td><td class="num">${r.free}</td><td class="num">${r.reserved}</td><td class="num">${r.promised}</td></tr>`).join(''));
+  document.getElementById('ozFboStockInfo').textContent = res.stocks.error ? '' : `Всего доступно: ${stocks.reduce((s, r) => s + r.free, 0)} шт · позиций: ${stocks.length}`;
+
+  const sold = res.sold.rows;
+  if (res.sold.error) err('ozFboSoldTable', 4, res.sold.error);
+  else if (!sold.length) empty('ozFboSoldTable', 4);
+  else setBody('ozFboSoldTable', sold.map((r) => `<tr><td>${ozEsc(r.name || r.offerId)}${r.offerId ? `<div style="font-size:11.5px;color:var(--text-muted)">${ozEsc(r.offerId)}</div>` : ''}</td><td class="num">${r.sold}</td><td class="num">${r.cancelled}</td><td class="num">${fmtMoney(r.revenue)}</td></tr>`).join(''));
+  document.getElementById('ozFboSoldInfo').textContent = res.sold.error ? '' : `Продано: ${sold.reduce((s, r) => s + r.sold, 0)} шт`;
+
+  const rets = res.returns.rows;
+  if (res.returns.error) err('ozFboRetTable', 7, res.returns.error);
+  else if (!rets.length) empty('ozFboRetTable', 7);
+  else setBody('ozFboRetTable', rets.map((r) => `<tr><td>${r.statusChangedAt ? fmtOrderDateTime(r.statusChangedAt) : '—'}</td><td>${ozEsc(r.postingNumber || r.orderNumber || '—')}</td><td>${ozEsc(r.productName || '—')}</td><td class="num">${r.quantity}</td><td>${ozEsc(r.reason || '—')}</td><td>${ozEsc(r.status || '—')}</td><td>${ozEsc(r.placeName || r.targetPlaceName || '—')}</td></tr>`).join(''));
+  document.getElementById('ozFboRetInfo').textContent = res.returns.error ? '' : `Возвратов: ${rets.length}`;
+  const reasons = new Map();
+  for (const r of rets) reasons.set(r.reason || 'Причина не указана', (reasons.get(r.reason || 'Причина не указана') || 0) + (r.quantity || 1));
+  document.getElementById('ozFboRetReasons').innerHTML = reasons.size
+    ? 'Причины: ' + Array.from(reasons.entries()).sort((a, b) => b[1] - a[1]).map(([k, v]) => `<span class="mp-tag">${ozEsc(k)} — ${v}</span>`).join(' ')
+    : '';
 }
 
 // Те же статусы, что NON_SALE_STATUSES в src/services/analytics.service.ts.

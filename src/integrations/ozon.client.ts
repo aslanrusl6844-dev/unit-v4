@@ -181,6 +181,9 @@ function normalizeOzonReturn(r: any): OzonReturnRow {
   };
 }
 
+export interface OzonFboStockRow { sku: string; offerId: string; name: string; warehouse: string; free: number; reserved: number; promised: number }
+export interface OzonFboPosting { postingNumber: string; status: string; createdAt: string | null; offerId: string; name: string; quantity: number; price: number }
+
 export class OzonClient {
   async isConfigured(): Promise<boolean> {
     const creds = await getOzonCredentials();
@@ -453,6 +456,83 @@ export class OzonClient {
 
     logger.info(`[Ozon] Загружено отправлений: ${orders.length}`);
     return orders;
+  }
+
+  /**
+   * Остатки на складах Ozon (FBO): POST /v2/analytics/stock_on_warehouses,
+   * постранично (limit/offset). Поля ответа разбираются терпимо (rows может
+   * лежать в result.rows или rows).
+   */
+  async fetchFboStocks(): Promise<OzonFboStockRow[]> {
+    const http = await this.getHttp();
+    const limit = 1000;
+    const out: OzonFboStockRow[] = [];
+    for (let page = 0; page < 30; page++) {
+      let data: any;
+      try {
+        const response = await http.post('/v2/analytics/stock_on_warehouses', { limit, offset: page * limit, warehouse_type: 'ALL' });
+        data = response.data;
+      } catch (err: any) {
+        const body = err?.response?.data;
+        logger.error({ status: err?.response?.status, body }, '[Ozon] Ошибка запроса остатков FBO');
+        throw new Error(`Ozon API вернул ошибку ${err?.response?.status ?? ''} при запросе остатков FBO: ${JSON.stringify(body) || err?.message || err}`);
+      }
+      const rows: any[] = data?.result?.rows ?? data?.rows ?? [];
+      for (const r of rows) {
+        out.push({
+          sku: String(r?.sku ?? ''),
+          offerId: pickStr(r?.item_code, r?.offer_id),
+          name: pickStr(r?.item_name, r?.name),
+          warehouse: pickStr(r?.warehouse_name),
+          free: Number(r?.free_to_sell_amount ?? 0) || 0,
+          reserved: Number(r?.reserved_amount ?? 0) || 0,
+          promised: Number(r?.promised_amount ?? 0) || 0,
+        });
+      }
+      if (rows.length < limit) break;
+    }
+    return out;
+  }
+
+  /** Отправления FBO за период: POST /v3/posting/fbo/list (постранично по offset). */
+  async fetchFboPostings(dateFrom: Date, dateTo: Date): Promise<OzonFboPosting[]> {
+    const http = await this.getHttp();
+    const limit = 1000;
+    const out: OzonFboPosting[] = [];
+    for (let page = 0; page < 30; page++) {
+      let data: any;
+      try {
+        const response = await http.post('/v3/posting/fbo/list', {
+          dir: 'ASC',
+          filter: { since: dateFrom.toISOString(), to: dateTo.toISOString() },
+          limit,
+          offset: page * limit,
+          with: { analytics_data: true, financial_data: false },
+        });
+        data = response.data;
+      } catch (err: any) {
+        const body = err?.response?.data;
+        logger.error({ status: err?.response?.status, body }, '[Ozon] Ошибка запроса отправлений FBO');
+        throw new Error(`Ozon API вернул ошибку ${err?.response?.status ?? ''} при запросе продаж FBO: ${JSON.stringify(body) || err?.message || err}`);
+      }
+      const list: any[] = Array.isArray(data?.result) ? data.result : (data?.result?.postings ?? data?.postings ?? []);
+      for (const p of list) {
+        for (const prod of Array.isArray(p?.products) ? p.products : []) {
+          const price = prod?.price;
+          out.push({
+            postingNumber: pickStr(p?.posting_number),
+            status: pickStr(p?.status),
+            createdAt: pickStr(p?.created_at, p?.in_process_at) || null,
+            offerId: pickStr(prod?.offer_id),
+            name: pickStr(prod?.name),
+            quantity: Number(prod?.quantity ?? 1) || 1,
+            price: Number((price && typeof price === 'object' ? price.amount ?? price.price : price) ?? 0) || 0,
+          });
+        }
+      }
+      if (list.length < limit) break;
+    }
+    return out;
   }
 
   /**
