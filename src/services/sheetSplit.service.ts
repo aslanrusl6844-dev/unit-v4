@@ -76,15 +76,43 @@ export function cutRanges(variance: number[], size: number, parts: number): Run[
 
 export type SplitResult = { grid: Grid; auto: boolean; slices: Buffer[] };
 
-/** Квадрат 1:1 как на маркетплейсах: слайд целиком по центру, фон — его же размытая копия (ничего не обрезаем). */
-export async function toSquare(slice: Buffer, size = 1080): Promise<Buffer> {
+/** Средний цвет полосы пикселей у края картинки. */
+async function edgeColor(img: Buffer, edge: 'top' | 'bottom' | 'left' | 'right', w: number, h: number) {
+  const t = Math.max(1, Math.round(Math.min(w, h) * 0.02));
+  const region = edge === 'top' ? { left: 0, top: 0, width: w, height: t }
+    : edge === 'bottom' ? { left: 0, top: h - t, width: w, height: t }
+    : edge === 'left' ? { left: 0, top: 0, width: t, height: h }
+    : { left: w - t, top: 0, width: t, height: h };
+  const st = await sharp(img).extract(region).resize(1, 1, { fit: 'fill' }).raw().toBuffer();
+  return { r: st[0], g: st[1], b: st[2] };
+}
+
+/**
+ * Квадрат 1:1 для маркетплейса БЕЗ потери качества: слайд остаётся в исходных пикселях (ничего не растягиваем и не обрезаем),
+ * недостающие поля заливаются ровным цветом краёв слайда (сверху — цвет верхнего края, снизу — нижнего).
+ */
+export async function toSquare(slice: Buffer): Promise<Buffer> {
   const meta = await sharp(slice).metadata();
-  const w = meta.width ?? size;
-  const h = meta.height ?? size;
-  if (Math.abs(w - h) <= 2) return sharp(slice).resize(size, size, { fit: 'fill' }).jpeg({ quality: 92 }).toBuffer();
-  const bg = await sharp(slice).resize(size, size, { fit: 'cover' }).blur(28).modulate({ brightness: 1.03 }).toBuffer();
-  const fg = await sharp(slice).resize(size, size, { fit: 'inside', kernel: 'lanczos3' }).toBuffer();
-  return sharp(bg).composite([{ input: fg, gravity: 'centre' }]).jpeg({ quality: 92 }).toBuffer();
+  const w = meta.width ?? 0;
+  const h = meta.height ?? 0;
+  const size = Math.max(w, h);
+  const q = { quality: 95, chromaSubsampling: '4:4:4' } as const;
+  if (w === h) return sharp(slice).jpeg(q).toBuffer();
+  const wide = w > h;
+  const a = await edgeColor(slice, wide ? 'top' : 'left', w, h);
+  const b = await edgeColor(slice, wide ? 'bottom' : 'right', w, h);
+  const pad = size - (wide ? h : w);
+  const first = Math.floor(pad / 2);
+  const second = pad - first;
+  return sharp(slice)
+    .extend(wide ? { top: first, bottom: second, left: 0, right: 0, background: a } : { top: 0, bottom: 0, left: first, right: second, background: a })
+    .composite([{
+      input: { create: { width: wide ? w : second, height: wide ? second : h, channels: 3, background: b } },
+      left: wide ? 0 : first + w,
+      top: wide ? first + h : 0,
+    }])
+    .jpeg(q)
+    .toBuffer();
 }
 
 /** Режет лист с несколькими слайдами на отдельные картинки (по строкам слева направо, сверху вниз). */
