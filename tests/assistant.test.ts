@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 process.env.DATABASE_URL = 'postgresql://stub:stub@127.0.0.1:1/none';
 /* eslint-disable @typescript-eslint/no-var-requires */
-const { rankProducts, extractSkus, MarkerStripper, streamClaude } = require('../src/services/assistant.service');
+const { rankProducts, extractSkus, diverseSample, streamClaude } = require('../src/services/assistant.service');
 const { sanitizeMessages } = require('../src/routes/assistant.routes');
 
 const items = [
@@ -16,11 +16,9 @@ test('rankProducts находит по словоформе', () => {
   assert.deepEqual(rankProducts(items, 'телевизор'), []);
 });
 
-test('extractSkus и MarkerStripper', () => {
-  assert.deepEqual(extractSkus('Смотрите [[sku:1]] и [[sku: 2 ]]'), ['1', '2']);
-  const s = new MarkerStripper();
-  const out = ['Вот ', 'платье [', '[sku:', '1]] ок'].map((c) => s.push(c)).join('') + s.flush();
-  assert.equal(out, 'Вот платье  ок');
+test('extractSkus берёт {{артикул}} и пропускает витрины', () => {
+  assert.deepEqual(extractSkus('Смотрите {{1}} и {{ 2 }} и {{витрина:abc}}'), ['1', '2']);
+  assert.equal(diverseSample([...items, ...items, ...items], 12).length, 4);
 });
 
 test('sanitizeMessages обрезает и начинает с user', () => {

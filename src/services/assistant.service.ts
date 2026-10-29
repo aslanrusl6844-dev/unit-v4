@@ -6,6 +6,7 @@ export interface ChatMessage { role: 'user' | 'assistant'; content: string }
 export interface CatalogItem {
   sku: string; name: string; category: string | null; subcategory: string | null;
   type: string | null; price: number | null; image: string | null;
+  stock?: number | null; info?: string;
 }
 
 export const DEFAULT_MODEL = 'claude-haiku-4-5-20251001';
@@ -22,10 +23,12 @@ export function rankProducts(items: CatalogItem[], query: string, limit = 8): Ca
   const scored = items.map((it) => {
     const name = norm(it.name);
     const meta = norm([it.category, it.subcategory, it.type].filter(Boolean).join(' '));
+    const info = norm(it.info ?? '');
     let score = 0;
     for (const t of q) {
       if (name.includes(t)) score += 3;
-      else if (meta.includes(t)) score += 1;
+      else if (meta.includes(t)) score += 2;
+      else if (info.includes(t)) score += 1;
     }
     return { it, score };
   }).filter((x) => x.score > 0);
@@ -33,33 +36,25 @@ export function rankProducts(items: CatalogItem[], query: string, limit = 8): Ca
   return scored.slice(0, limit).map((x) => x.it);
 }
 
-/** Достаём артикулы [[sku:123]] из текста ответа. */
+/** Достаём артикулы из маркеров {{артикул}} (формат приложения); {{витрина:id}} пропускаем. */
 export function extractSkus(text: string): string[] {
   const out: string[] = [];
-  for (const m of text.matchAll(/\[\[\s*sku\s*:\s*([^\]\s]+)\s*\]\]/gi)) if (!out.includes(m[1])) out.push(m[1]);
+  for (const m of text.matchAll(/\{\{\s*([^}:]+?)\s*\}\}/g)) if (!out.includes(m[1])) out.push(m[1]);
   return out;
 }
 
-/** Потоковый фильтр: не пропускает [[sku:..]] в видимый текст, даже если маркер пришёл по кускам. */
-export class MarkerStripper {
-  private buf = '';
-  push(chunk: string): string {
-    this.buf += chunk;
-    let out = '';
-    for (;;) {
-      const open = this.buf.indexOf('[[');
-      if (open === -1) {
-        // хвост "[" может быть началом маркера — придержим
-        if (this.buf.endsWith('[')) { out += this.buf.slice(0, -1); this.buf = '['; } else { out += this.buf; this.buf = ''; }
-        return out;
-      }
-      out += this.buf.slice(0, open);
-      const close = this.buf.indexOf(']]', open);
-      if (close === -1) { this.buf = this.buf.slice(open); return out; }
-      this.buf = this.buf.slice(close + 2);
-    }
+/** Если по словам ничего не нашлось — разнообразная выборка: по одному-два товара из каждого раздела. */
+export function diverseSample(items: CatalogItem[], limit = 12): CatalogItem[] {
+  const seen = new Map<string, number>();
+  const out: CatalogItem[] = [];
+  for (const it of items) {
+    const k = it.category ?? '';
+    if ((seen.get(k) ?? 0) >= 2) continue;
+    seen.set(k, (seen.get(k) ?? 0) + 1);
+    out.push(it);
+    if (out.length >= limit) break;
   }
-  flush(): string { const r = /^\[\[?$/.test(this.buf) || this.buf.startsWith('[[') ? '' : this.buf; this.buf = ''; return r; }
+  return out;
 }
 
 let cache: { at: number; items: CatalogItem[] } | null = null;
@@ -72,7 +67,9 @@ export async function loadCatalog(): Promise<CatalogItem[]> {
     const p = toShopProduct(r);
     return {
       sku: String(p.sku), name: p.name, category: p.category ?? null, subcategory: p.subcategory ?? null,
-      type: p.type ?? null, price: p.price ?? null, image: Array.isArray(p.images) && p.images[0] ? String(p.images[0]) : null,
+      type: p.type ?? null, price: p.price ?? null, stock: p.stock ?? null,
+      info: [p.description, p.composition].filter(Boolean).join(' ').replace(/\s+/g, ' ').slice(0, 240),
+      image: Array.isArray(p.images) && p.images[0] ? String(p.images[0]) : null,
     } as CatalogItem;
   });
   cache = { at: Date.now(), items };
@@ -81,8 +78,8 @@ export async function loadCatalog(): Promise<CatalogItem[]> {
 
 export function buildSystemPrompt(found: CatalogItem[], categories: string[]): string {
   const list = found.length
-    ? found.map((p) => `- артикул ${p.sku}: ${p.name} (${[p.category, p.subcategory].filter(Boolean).join(' / ')}), ${p.price} ₸`).join('\n')
-    : '(по последнему запросу ничего не найдено — не придумывай товары, предложи уточнить запрос или посмотреть раздел)';
+    ? found.map((p) => `- ${p.name} | артикул ${p.sku} | ${[p.category, p.subcategory].filter(Boolean).join(' / ')} | ${p.price} ₸ | ${p.stock != null && p.stock <= 0 ? 'НЕТ В НАЛИЧИИ' : 'в наличии'}${p.info ? ' | ' + p.info : ''}`).join('\n')
+    : '(ничего не найдено — не придумывай товары, уточни запрос или предложи посмотреть раздел)';
   return `${PERSONA}\n\n${SHOP_KNOWLEDGE}\n\nРАЗДЕЛЫ КАТАЛОГА: ${categories.join(', ')}\n\nНАЙДЕННЫЕ ТОВАРЫ:\n${list}`;
 }
 

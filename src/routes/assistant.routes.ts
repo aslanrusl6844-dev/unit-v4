@@ -3,7 +3,7 @@ import { env } from '../config/env';
 import { logger } from '../utils/logger';
 import { SHOP_CATEGORIES } from '../config/shopCategories';
 import {
-  ChatMessage, DEFAULT_MODEL, MarkerStripper, buildSystemPrompt, extractSkus, loadCatalog, rankProducts, streamClaude,
+  ChatMessage, DEFAULT_MODEL, buildSystemPrompt, diverseSample, extractSkus, loadCatalog, rankProducts, streamClaude,
 } from '../services/assistant.service';
 
 export const assistantRouter = Router();
@@ -50,15 +50,13 @@ assistantRouter.post('/', async (req, res) => {
   try {
     const catalog = await loadCatalog();
     const lastUsers = messages.filter((m) => m.role === 'user').slice(-2).map((m) => m.content).join(' ');
-    const found = rankProducts(catalog, lastUsers, 8);
+    let found = rankProducts(catalog, lastUsers, 14);
+    if (!found.length) found = diverseSample(catalog, 12);
     const system = buildSystemPrompt(found, [...SHOP_CATEGORIES]);
-    const strip = new MarkerStripper();
     const full = await streamClaude({
       apiKey, model: process.env.ASSISTANT_MODEL || DEFAULT_MODEL, system, messages, signal: ac.signal,
-      onDelta: (t) => { const clean = strip.push(t); if (clean) send('delta', { text: clean }); },
+      onDelta: (t) => send('delta', { text: t }),
     });
-    const tail = strip.flush();
-    if (tail) send('delta', { text: tail });
     const bySku = new Map(catalog.map((p) => [p.sku, p]));
     const cards = extractSkus(full).map((s) => bySku.get(s)).filter(Boolean).slice(0, 4);
     send('products', { items: cards });
