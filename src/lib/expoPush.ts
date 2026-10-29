@@ -29,3 +29,27 @@ export async function sendPickupCodePush(phone: string, pickupCode: string, orde
     logger.error({ err: String(err?.message ?? err) }, '[PickupPush] sendPickupCodePush упал');
   }
 }
+
+/**
+ * Пуш курьеру при «Одобрить» заявки (вкладка «Курьеры» в админке). Токен — из той же таблицы, что и для
+ * чата/кода выдачи (ShopCustomerPushToken по нормализованному телефону заявки). Токена нет или отправка
+ * не удалась — только в лог, исключение наружу не бросается: одобрение заявки от этого не страдает.
+ */
+export async function sendCourierApprovedPush(phone: string): Promise<void> {
+  try {
+    const record = await prisma.shopCustomerPushToken.findUnique({ where: { phone } });
+    if (!record?.token) {
+      logger.info({ phone }, '[CourierApprovedPush] Токен не зарегистрирован — одобрено без пуша');
+      return;
+    }
+    const r = await sendBroadcast({
+      title: 'My Market',
+      body: 'Ваша заявка на курьера одобрена. Откройте «Я курьер» и заполните данные.',
+      tokens: [record.token],
+      data: { type: 'courier_approved' },
+    });
+    if (r.sent < 1) logger.error({ failed: r.failed, notRegistered: r.notRegistered, fcmError: r.fcmError }, '[CourierApprovedPush] Пуш не принят');
+  } catch (err: any) {
+    logger.error({ err: String(err?.message ?? err) }, '[CourierApprovedPush] sendCourierApprovedPush упал');
+  }
+}

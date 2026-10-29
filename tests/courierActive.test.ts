@@ -19,6 +19,7 @@ const stub: Row = {
   courier: { findMany: async () => couriers.map((c) => ({ ...c })) },
   courierPayout: { groupBy: async () => [] },
   shopCourierApplication: {
+    findUnique: async (a: Row) => { const x = apps.find((r) => r.id === a.where.id); return x ? { ...x } : null; },
     findMany: async (a: Row) => apps.filter((x) => Object.entries(a.where ?? {}).every(([k, v]) => x[k] === v)).map((x) => ({ ...x })),
     update: async (a: Row) => {
       const x = apps.find((r) => r.id === a.where.id);

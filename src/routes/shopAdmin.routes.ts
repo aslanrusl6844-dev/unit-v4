@@ -16,6 +16,7 @@ import { ozonTypeKey } from '../services/sync.service';
 import { hintCategoryByName, hintRuleCatalogPairs, starterCatalogPairs, buildCatalog } from '../services/categoryHints';
 import { editOrderNotify } from '../lib/telegram';
 import { sendSms } from '../services/sms.service';
+import { sendCourierApprovedPush } from '../lib/expoPush';
 import { parseImageZip, parseBulkText, normalizeKey, cleanName, capitalizeFirst, ImportError } from '../services/catalogTypeImport';
 
 export const shopAdminRouter = Router();
@@ -973,10 +974,14 @@ shopAdminRouter.get('/courier-applications', async (req, res) => {
 /** «Одобрить» — после этого телефон проходит POST /courier/register. Остаётся в «Заявках» (archived не трогаем). */
 shopAdminRouter.post('/courier-applications/:id/approve', async (req, res) => {
   try {
+    const before = await prisma.shopCourierApplication.findUnique({ where: { id: req.params.id } });
+    if (!before) return res.status(404).json({ error: 'Заявка не найдена' });
     const application = await prisma.shopCourierApplication.update({
       where: { id: req.params.id },
       data: { status: 'approved', reviewedAt: new Date() },
     });
+    // Пуш курьеру — только при переходе в «Одобрена» (повторный клик не дублирует). Нет токена/ошибка пуша — одобрение всё равно прошло.
+    if (before.status !== 'approved') await sendCourierApprovedPush(application.phone);
     res.json(application);
   } catch (err: any) {
     if (err?.code === 'P2025') return res.status(404).json({ error: 'Заявка не найдена' });
