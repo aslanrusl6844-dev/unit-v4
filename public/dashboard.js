@@ -95,6 +95,7 @@ function qs(params) {
 const PAGE_LOADERS = {
   overview: loadOverviewPage,
   orders: loadOrdersPage,
+  ozonreturns: loadOzonReturnsPage,
   products: loadProductsPage,
   finance: loadFinancePage,
   reviews: loadReviewsPage,
@@ -406,6 +407,53 @@ async function loadOrdersMeta() {
     });
     deliverySelect.dataset.loaded = '1';
   }
+}
+
+// ---------- Возвраты Озон ----------
+let ozonReturnsCache = [];
+const ozEsc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+async function loadOzonReturnsPage() {
+  const tbody = document.querySelector('#ozReturnsTable tbody');
+  const info = document.getElementById('ozReturnsInfo');
+  tbody.innerHTML = '<tr><td colspan="8" style="color:var(--text-faint)">Загрузка…</td></tr>';
+  try {
+    const res = await api(`/ozon-returns?${qs({ from: state.from, to: state.to })}`);
+    ozonReturnsCache = res.returns || [];
+    info.textContent = `Возвратов за период: ${ozonReturnsCache.length}`;
+  } catch (err) {
+    ozonReturnsCache = [];
+    info.textContent = '';
+    tbody.innerHTML = `<tr><td colspan="8" style="color:var(--danger,#d33)">Не удалось загрузить возвраты Озон: ${ozEsc(err.message)}</td></tr>`;
+    return;
+  }
+  renderOzonReturns();
+  const search = document.getElementById('ozReturnsSearch');
+  if (!search.dataset.bound) { search.dataset.bound = '1'; search.addEventListener('input', renderOzonReturns); }
+}
+
+function renderOzonReturns() {
+  const tbody = document.querySelector('#ozReturnsTable tbody');
+  const q = (document.getElementById('ozReturnsSearch').value || '').trim().toLowerCase();
+  const rows = ozonReturnsCache.filter((r) => !q || JSON.stringify([r.postingNumber, r.orderNumber, r.productName, r.offerId, r.reason, r.status, r.placeName, r.placeAddress, r.targetPlaceName, r.targetPlaceAddress]).toLowerCase().includes(q));
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="8" style="color:var(--text-faint)">Возвратов нет</td></tr>';
+    return;
+  }
+  const place = (name, addr) => (name || addr)
+    ? `<div>${ozEsc(name || '—')}</div>${addr ? `<div style="font-size:11.5px;color:var(--text-muted)">${ozEsc(addr)}</div>` : ''}`
+    : '—';
+  tbody.innerHTML = rows.map((r) => `
+    <tr>
+      <td>${r.statusChangedAt ? fmtOrderDateTime(r.statusChangedAt) : '—'}</td>
+      <td>${ozEsc(r.postingNumber || r.orderNumber || '—')}<div style="font-size:11.5px;color:var(--text-muted)">${ozEsc(r.schema)}</div></td>
+      <td>${ozEsc(r.productName || '—')}${r.offerId ? `<div style="font-size:11.5px;color:var(--text-muted)">${ozEsc(r.offerId)}</div>` : ''}</td>
+      <td class="num">${r.quantity}</td>
+      <td>${ozEsc(r.reason || '—')}</td>
+      <td>${ozEsc(r.status || '—')}</td>
+      <td>${place(r.placeName, r.placeAddress)}</td>
+      <td>${place(r.targetPlaceName, r.targetPlaceAddress)}</td>
+    </tr>`).join('');
 }
 
 // Те же статусы, что NON_SALE_STATUSES в src/services/analytics.service.ts.

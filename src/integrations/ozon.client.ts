@@ -132,6 +132,55 @@ const OZON_ATTR_ID_TYPE = 8229;        // «Тип»
 // чтобы не спрашивать их у Ozon на каждой пачке.
 const ozonAttrNamesCache = new Map<string, Map<number, string>>();
 
+export interface OzonReturnRow {
+  id: string;
+  postingNumber: string;
+  orderNumber: string;
+  schema: string;            // FBS / FBO
+  status: string;            // видимый статус возврата
+  statusChangedAt: string | null;
+  reason: string;            // причина возврата (как её пишет Ozon)
+  productName: string;
+  offerId: string;
+  quantity: number;
+  price: number;
+  placeName: string;         // где сейчас / откуда
+  placeAddress: string;
+  targetPlaceName: string;   // куда направлен возврат
+  targetPlaceAddress: string;
+  returnedAt: string | null; // момент окончания логистики возврата
+  raw: unknown;
+}
+
+function pickStr(...vals: unknown[]): string {
+  for (const v of vals) if (typeof v === 'string' && v.trim()) return v.trim();
+  return '';
+}
+
+function normalizeOzonReturn(r: any): OzonReturnRow {
+  const product = r?.product ?? {};
+  const price = product?.price;
+  return {
+    id: String(r?.id ?? ''),
+    postingNumber: pickStr(r?.posting_number),
+    orderNumber: pickStr(r?.order_number, r?.order_id != null ? String(r.order_id) : ''),
+    schema: pickStr(r?.schema, r?.return_schema),
+    status: pickStr(r?.visual?.status?.display_name, r?.visual?.status?.sys_name, r?.status),
+    statusChangedAt: pickStr(r?.visual?.change_moment) || null,
+    reason: pickStr(r?.return_reason_name, r?.reason),
+    productName: pickStr(product?.name, r?.product_name),
+    offerId: pickStr(product?.offer_id, r?.offer_id),
+    quantity: Number(product?.quantity ?? r?.quantity ?? (Array.isArray(r?.exemplars) ? r.exemplars.length : 1)) || 1,
+    price: Number((price && typeof price === 'object' ? price.price : price) ?? 0) || 0,
+    placeName: pickStr(r?.place?.name),
+    placeAddress: pickStr(r?.place?.address),
+    targetPlaceName: pickStr(r?.target_place?.name),
+    targetPlaceAddress: pickStr(r?.target_place?.address),
+    returnedAt: pickStr(r?.logistic?.final_moment, r?.logistic?.technical_return_moment) || null,
+    raw: r,
+  };
+}
+
 export class OzonClient {
   async isConfigured(): Promise<boolean> {
     const creds = await getOzonCredentials();
@@ -404,6 +453,46 @@ export class OzonClient {
 
     logger.info(`[Ozon] Загружено отправлений: ${orders.length}`);
     return orders;
+  }
+
+  /**
+   * Возвраты Ozon (FBS и FBO): POST /v1/returns/list.
+   * Фильтр — по моменту смены статуса (visual_status_change_moment), пагинация
+   * по last_id (+ has_next). Схема ответа публично описана неполно, поэтому
+   * разбор терпимый, а сырой элемент возврата отдаётся целиком (raw) — чтобы
+   * в интерфейсе можно было показать всё, что вернул Ozon.
+   */
+  async fetchReturns(dateFrom: Date, dateTo: Date): Promise<OzonReturnRow[]> {
+    const http = await this.getHttp();
+    const rows: OzonReturnRow[] = [];
+    let lastId = 0;
+    for (let page = 0; page < 40; page++) {
+      let data: any;
+      try {
+        const response = await http.post('/v1/returns/list', {
+          filter: {
+            visual_status_change_moment: { time_from: dateFrom.toISOString(), time_to: dateTo.toISOString() },
+          },
+          limit: 500,
+          last_id: lastId,
+        });
+        data = response.data;
+      } catch (err: any) {
+        const body = err?.response?.data;
+        logger.error({ status: err?.response?.status, body }, '[Ozon] Ошибка запроса возвратов (/v1/returns/list)');
+        throw new Error(
+          `Ozon API вернул ошибку ${err?.response?.status ?? ''} при запросе возвратов: ${JSON.stringify(body) || err?.message || err}`,
+        );
+      }
+      const body = data?.result && !Array.isArray(data.returns) ? data.result : data;
+      const list: any[] = Array.isArray(body?.returns) ? body.returns : [];
+      for (const r of list) rows.push(normalizeOzonReturn(r));
+      if (!list.length || body?.has_next !== true) break;
+      const next = Number(list[list.length - 1]?.id);
+      if (!next || next === lastId) break;
+      lastId = next;
+    }
+    return rows;
   }
 
   /**
