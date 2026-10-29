@@ -91,7 +91,11 @@ app.use((req, _res, next) => {
  *   диагностика зависшего подключения к базе.
  */
 app.use((req, res, next) => {
-  const isSyncRoute = req.url.startsWith('/api/sync/');
+  // /api/ozon-fbo и /api/ozon-returns ходят во внешний API Ozon (несколько страниц) —
+  // как и синхронизации, им нужен длинный лимит, а не 8 секунд для запросов к базе.
+  const isSyncRoute = req.url.startsWith('/api/sync/')
+    || req.url.startsWith('/api/ozon-fbo')
+    || req.url.startsWith('/api/ozon-returns');
   const timeoutMs = isSyncRoute ? 55000 : 8000;
   const timer = setTimeout(() => {
     if (!res.headersSent) {
@@ -99,7 +103,7 @@ app.use((req, res, next) => {
       res.status(504).json({
         error: `Таймаут запроса (>${timeoutMs / 1000}с)`,
         hint: isSyncRoute
-          ? 'Синхронизация не успела завершиться за отведённое время. Попробуйте синхронизировать более короткий период (например, 7 дней вместо 30).'
+          ? 'Запрос к площадке не успел завершиться за отведённое время. Попробуйте синхронизировать более короткий период (например, 7 дней вместо 30).'
           : 'Вероятно, не удаётся подключиться к базе данных. Проверьте DATABASE_URL и статус проекта в Neon Dashboard.',
       });
     }
