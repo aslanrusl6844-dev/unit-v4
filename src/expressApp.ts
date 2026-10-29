@@ -18,6 +18,7 @@ import { marginCalculatorRouter } from './routes/marginCalculator.routes';
 import { settingsRouter } from './routes/settings.routes';
 import { nichesRouter } from './routes/niches.routes';
 import { assistantRouter } from './routes/assistant.routes';
+import { telegramAgentRouter } from './routes/telegramAgent.routes';
 import { shopRouter } from './routes/shop.routes';
 import { shopAdminRouter } from './routes/shopAdmin.routes';
 import { shopMediaRouter } from './routes/shopMedia.routes';
@@ -97,7 +98,8 @@ app.use((req, res, next) => {
   const isSyncRoute = req.url.startsWith('/api/sync/')
     || req.url.startsWith('/api/ozon-fbo')
     || req.url.startsWith('/api/ozon-returns')
-    || req.url.startsWith('/api/shop/assistant');
+    || req.url.startsWith('/api/shop/assistant')
+    || req.url.startsWith('/api/telegram-agent');
   const timeoutMs = isSyncRoute ? 55000 : 8000;
   const timer = setTimeout(() => {
     if (!res.headersSent) {
@@ -162,6 +164,8 @@ app.use('/api/shop', yardRouter);
 app.use('/api/shop', categoriesRouter);
 app.use('/api/yard-admin', yardAdminRouter);
 app.use('/api/push-admin', pushAdminRouter);
+// Telegram-бот для заведения товаров (вебхук публичный по секрету, /setup — админский).
+app.use('/api/telegram-agent', telegramAgentRouter);
 // Оптовики раздела «Товары» — полки по оптовикам, перенос товара, накладные (PDF/ZIP).
 app.use('/api/wholesalers', wholesalersRouter);
 
