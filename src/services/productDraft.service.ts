@@ -207,7 +207,7 @@ export async function handleSceneJob(draftId: string, index: number): Promise<vo
     const img = await generateSceneAuto({ refs, scene: scene.prompt });
     await put(`${dir}${index}.${img.mime.includes('jpeg') ? 'jpg' : 'png'}`, img.data, { access: 'public', contentType: img.mime, addRandomSuffix: false, token: env.blobToken });
   } catch (err: any) {
-    const msg = String(err?.message ?? err).slice(0, 300);
+    const msg = String(err?.message ?? err).slice(0, 700);
     logger.error({ err: msg, index }, '[ProductAgent] сцена не получилась');
     await put(`${dir}${index}.fail`, msg, { access: 'public', contentType: 'text/plain', addRandomSuffix: false, token: env.blobToken }).catch(() => undefined);
   }
@@ -248,7 +248,7 @@ async function finalizeSlides(draftId: string, noScenes: boolean): Promise<void>
     }
     await prisma.productDraft.update({ where: { id: draftId }, data: { data: { ...prev, slides } as any, status: 'details_review' } });
     if (!noScenes && errors.length) {
-      await sendMessage(draft.chatId, `⚠️ ${errors.length} из ${plan.length} сцен не получились: ${escapeHtml(errors[0]).slice(0, 200)}`);
+      await sendMessage(draft.chatId, `⚠️ ${errors.length} из ${plan.length} сцен не получились: ${escapeHtml(errors[0].slice(0, 700))}`);
     }
     await sendPhotos(draft.chatId, slides.slice(0, 10));
     await sendMessage(draft.chatId, formatDraft(result, draft.price, draft.oldPrice, draft.revisions), reviewButtons(draftId));
