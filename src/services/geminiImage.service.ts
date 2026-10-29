@@ -70,7 +70,7 @@ export async function generateSceneOpenAI(opts: {
   form.append('model', opts.model || DEFAULT_OPENAI_MODEL);
   form.append('prompt', buildScenePrompt(opts.scene));
   form.append('size', '1024x1536');
-  form.append('quality', 'medium');
+  form.append('quality', ['low', 'medium', 'high'].includes(process.env.OPENAI_IMAGE_QUALITY ?? '') ? process.env.OPENAI_IMAGE_QUALITY! : 'low');
   form.append('n', '1');
   opts.refs.slice(0, 3).forEach((r, i) => {
     const mime = sniffImageMime(r.data);
