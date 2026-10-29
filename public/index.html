@@ -26,6 +26,7 @@
       <div class="nav-group-label">Магазин</div>
       <button class="nav-item is-active" data-page="overview"><i class="ni">▤</i>Обзор</button>
       <button class="nav-item" data-page="orders"><i class="ni">🛒</i>Заказы</button>
+      <button class="nav-item" data-page="ozonreturns"><i class="ni">↩</i>Возвраты Озон</button>
       <button class="nav-item" data-page="products"><i class="ni">📦</i>Товары</button>
       <button class="nav-item" data-page="finance"><i class="ni">💰</i>Финансы</button>
       <button class="nav-item" data-page="reviews"><i class="ni">★</i>Отзывы</button>
@@ -156,6 +157,25 @@
             <table class="table" id="ordersTable">
               <thead>
                 <tr><th><input type="checkbox" id="ordersSelectAll" /></th><th>№</th><th>Площадка</th><th>Дата</th><th>Статус</th><th class="num">Сумма</th><th>Накладная</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ ВОЗВРАТЫ ОЗОН ============ -->
+      <section class="page" id="page-ozonreturns" hidden>
+        <div class="page__head"><h1>Возвраты Озон</h1><p>Отмены и возвраты покупателей: причина, товары, куда направлен возврат и по какому адресу.</p></div>
+        <div class="panel">
+          <div class="inline-form" style="align-items:center">
+            <input id="ozReturnsSearch" type="text" placeholder="Поиск: номер, товар, причина, адрес..." style="flex:2 1 220px" />
+            <span id="ozReturnsInfo" style="font-size:12.5px;color:var(--text-muted)"></span>
+          </div>
+          <div class="table-wrap">
+            <table class="table" id="ozReturnsTable">
+              <thead>
+                <tr><th>Дата</th><th>Отправление</th><th>Товар</th><th class="num">Кол-во</th><th>Причина</th><th>Статус</th><th>Откуда</th><th>Куда направлен возврат</th></tr>
               </thead>
               <tbody></tbody>
             </table>
