@@ -32,7 +32,7 @@ export function extractJson(text: string): unknown {
 /** «4500 / 6000», «цена 4 500 старая 6 000» → { price, oldPrice }. */
 export function parsePrices(text: string): { price?: number; oldPrice?: number } {
   const t = text.replace(/(\d)[  ](?=\d{3}(?!\d))/g, '$1');
-  const nums = (t.match(/\d+(?:[.,]\d+)?/g) ?? []).map((n) => Number(n.replace(',', '.'))).filter((n) => Number.isFinite(n) && n > 0);
+  const nums = (t.match(/\d+(?:[.,]\d+)?/g) ?? []).map((n) => Number(n.replace(',', '.'))).filter((n) => Number.isFinite(n) && n > 0 && n < 1_000_000); // 7+ цифр — это артикул, не цена
   if (!nums.length) return {};
   const price = nums[0];
   const oldPrice = nums[1] !== undefined && nums[1] > price ? nums[1] : undefined;
