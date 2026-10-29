@@ -12,9 +12,23 @@ interface RangeFilter {
   marketplace?: MarketplaceName;
 }
 
+/**
+ * Статусы заказов, которые НЕ считаются продажей: отменённые, отклонённые и
+ * возвращённые (Kaspi, Ozon, WB, My Market). Такие заказы остаются в списке
+ * «Заказы» (зачёркнутыми), но не попадают в выручку, прибыль, графики и
+ * отчёты.
+ */
+export const NON_SALE_STATUSES = [
+  // Kaspi
+  'CANCELLED', 'CANCELLING', 'RETURNED', 'RETURN_ACCEPTED_BY_MERCHANT', 'KASPI_DELIVERY_RETURN_REQUESTED',
+  // Ozon
+  'cancelled', 'not_accepted', 'cancelled_from_split_pending',
+];
+
 function whereClause(filter: RangeFilter) {
   return {
     orderDate: { gte: filter.from, lte: filter.to },
+    status: { notIn: NON_SALE_STATUSES },
     ...(filter.marketplace ? { marketplace: filter.marketplace } : {}),
   };
 }

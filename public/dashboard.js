@@ -408,6 +408,11 @@ async function loadOrdersMeta() {
   }
 }
 
+// Те же статусы, что NON_SALE_STATUSES в src/services/analytics.service.ts.
+function isNonSaleOrderStatus(status) {
+  return /^(cancel|return|not_accepted|kaspi_delivery_return)/i.test(String(status || ''));
+}
+
 async function loadOrders() {
   const filters = new FormData(document.getElementById('ordersFilters'));
   const statusGroup = document.querySelector('#statusTabs button.is-active')?.dataset.status || '';
@@ -422,17 +427,21 @@ async function loadOrders() {
     updateOrdersSelectedCount();
     return;
   }
-  tbody.innerHTML = res.orders.map((o) => `
+  tbody.innerHTML = res.orders.map((o) => {
+    // Отменённые/отклонённые/возвращённые — зачёркнуты и не входят в суммы аналитики.
+    const dead = isNonSaleOrderStatus(o.status);
+    const strike = dead ? ' style="text-decoration:line-through;opacity:.55"' : '';
+    return `
     <tr>
       <td><input type="checkbox" data-order-id="${o.id}" ${selectedOrderIds.has(o.id) ? 'checked' : ''} /></td>
-      <td>${o.externalId}</td>
+      <td${strike}>${o.externalId}</td>
       <td><span class="mp-tag"><i class="dot dot--${o.marketplace.toLowerCase()}"></i>${mpLabel(o.marketplace)}</span></td>
-      <td>${fmtOrderDateTime(o.orderDate)}</td>
-      <td>${o.status}</td>
-      <td class="num">${fmtMoney(o.totalRevenue)}</td>
+      <td${strike}>${fmtOrderDateTime(o.orderDate)}</td>
+      <td${strike}>${o.status}${dead ? ' <span style="text-decoration:none;display:inline-block;color:var(--danger,#d33)">· отклонён</span>' : ''}</td>
+      <td class="num"${strike}>${fmtMoney(o.totalRevenue)}</td>
       <td>${orderActionCell(o)}</td>
-    </tr>
-  `).join('');
+    </tr>`;
+  }).join('');
 
   tbody.querySelectorAll('input[type="checkbox"][data-order-id]').forEach((cb) => {
     cb.addEventListener('change', () => {
