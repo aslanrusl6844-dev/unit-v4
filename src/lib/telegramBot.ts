@@ -41,6 +41,12 @@ export async function sendMessage(chatId: string, text: string, buttons?: Inline
   });
 }
 
+/** Присылает 1–10 картинок по URL (альбомом). */
+export async function sendPhotos(chatId: string, urls: string[]): Promise<void> {
+  if (urls.length === 1) return void (await call('sendPhoto', { chat_id: chatId, photo: urls[0] }));
+  await call('sendMediaGroup', { chat_id: chatId, media: urls.slice(0, 10).map((u) => ({ type: 'photo', media: u })) });
+}
+
 export async function answerCallback(id: string, text?: string): Promise<void> {
   await call('answerCallbackQuery', { callback_query_id: id, ...(text ? { text } : {}) }).catch(() => undefined);
 }

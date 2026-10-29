@@ -3,9 +3,14 @@ import { put } from '@vercel/blob';
 import { prisma } from '../db/prisma';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
-import { answerCallback, downloadFile, escapeHtml, isAllowedChat, sendMessage } from '../lib/telegramBot';
+import { answerCallback, downloadFile, escapeHtml, isAllowedChat, sendMessage, sendPhotos } from '../lib/telegramBot';
 import { DEFAULT_AGENT_MODEL, ProductDetails, parsePrices, runDetailsAgent } from './productAgent.service';
 import { maybeGenerateShopArticle } from './shopArticle';
+import { renderDetailSlides, SceneImage } from './detailSlides.service';
+import { generateScene } from './geminiImage.service';
+
+type DraftData = { mode?: 'attach'; result?: ProductDetails; slides?: string[] };
+const dataOf = (d: { data: unknown } | null | undefined): DraftData => ((d?.data as DraftData | null) ?? {});
 
 const MAX_REVISIONS = 6;
 const MAX_PHOTOS = 10;
@@ -103,20 +108,12 @@ async function startAttach(chatId: string, query: string): Promise<boolean> {
 }
 
 async function finishAttach(draftId: string) {
-  const draft = await prisma.productDraft.findUnique({ where: { id: draftId } });
-  if (!draft || draft.status !== 'collecting' || !draft.productId) return;
-  const claim = await prisma.productDraft.updateMany({ where: { id: draftId, status: 'collecting' }, data: { status: 'done' } });
+  const claim = await prisma.productDraft.updateMany({ where: { id: draftId, status: 'collecting' }, data: { status: 'details_working' } });
   if (claim.count === 0) return;
-  const product = await prisma.product.findUnique({ where: { id: draft.productId }, select: { name: true, details: true } });
-  if (!product) return void (await sendMessage(draft.chatId, 'Товар не найден (удалён?).'));
-  const current = Array.isArray(product.details) ? (product.details as string[]) : [];
-  const merged = [...current, ...draft.photos.filter((u: string) => !current.includes(u))].slice(0, MAX_DETAILS);
-  const skipped = current.length + draft.photos.length - merged.length;
-  await prisma.product.update({ where: { id: draft.productId }, data: { details: merged } });
-  await sendMessage(
-    draft.chatId,
-    `Готово: в «Детали» товара <b>${escapeHtml(product.name)}</b> теперь ${merged.length} фото (добавлено ${merged.length - current.length}${skipped > 0 ? `, не поместилось ${skipped}: максимум ${MAX_DETAILS}` : ''}). Откройте товар в приложении и проверьте.`,
-  );
+  const draft = await prisma.productDraft.findUnique({ where: { id: draftId } });
+  if (!draft) return;
+  await sendMessage(draft.chatId, `Читаю ${draft.photos.length} фото и рисую слайды «Детали»… (до минуты)`);
+  waitUntil(runDetails(draftId, null));
 }
 
 async function activeDraft(chatId: string) {
@@ -141,25 +138,62 @@ async function runDetails(draftId: string, feedback: string | null) {
       oldPrice: draft.oldPrice,
       taxonomy: await taxonomyText(),
       feedback,
-      previous: feedback ? (draft.data as ProductDetails | null) : null,
+      previous: feedback ? (dataOf(draft).result ?? null) : null,
     });
-    await prisma.productDraft.update({ where: { id: draftId }, data: { data: result as any, status: 'details_review' } });
+    const loaded = (await Promise.all(draft.photos.slice(0, 4).map((u: string) =>
+      fetch(u).then(async (r) => (r.ok ? { data: Buffer.from(await r.arrayBuffer()), mime: r.headers.get('content-type') || 'image/jpeg' } : null)).catch(() => null),
+    ))).filter(Boolean) as Array<{ data: Buffer; mime: string }>;
+    // Красивые сцены от нейросети — параллельно, неудачные просто пропускаем (останется шаблон).
+    const geminiKey = process.env.GEMINI_API_KEY;
+    const sceneErrors: string[] = [];
+    let scenes: SceneImage[] = [];
+    if (geminiKey && loaded.length && result.scenes.length) {
+      const settled = await Promise.all(result.scenes.map((sc) =>
+        generateScene({ apiKey: geminiKey, model: process.env.GEMINI_IMAGE_MODEL, refs: loaded, scene: sc.prompt, timeoutMs: 38_000 })
+          .then((img) => ({ img, headline: sc.headline, caption: sc.caption } as SceneImage))
+          .catch((e) => { sceneErrors.push(String(e?.message ?? e).slice(0, 160)); return null; }),
+      ));
+      scenes = settled.filter(Boolean) as SceneImage[];
+    }
+    const pngs = await renderDetailSlides(result, loaded[0]?.data ?? null, loaded[0]?.mime ?? 'image/jpeg', { scenes, otherPhotos: loaded.slice(1) });
+    if (geminiKey && result.scenes.length && !scenes.length) {
+      await sendMessage(draft.chatId, `⚠️ Красивые фоны не получились (${escapeHtml(sceneErrors[0] ?? 'нет ответа')}), сделал простые слайды.`);
+    } else if (!geminiKey) {
+      await sendMessage(draft.chatId, '⚠️ Нет ключа GEMINI_API_KEY на сервере — сделал простые слайды без красивых фонов.');
+    }
+    const slides: string[] = [];
+    for (let n = 0; n < pngs.length; n++) {
+      const b = await put(`details/${draftId}/${Date.now()}-${n + 1}.png`, pngs[n], { access: 'public', contentType: 'image/png', token: env.blobToken });
+      slides.push(b.url);
+    }
+    await prisma.productDraft.update({ where: { id: draftId }, data: { data: { ...dataOf(draft), result, slides } as any, status: 'details_review' } });
+    await sendPhotos(draft.chatId, slides);
     await sendMessage(draft.chatId, formatDraft(result, draft.price, draft.oldPrice, draft.revisions), reviewButtons(draftId));
   } catch (err: any) {
     logger.error({ err: String(err?.message ?? err) }, '[ProductAgent] ошибка агента «Детали»');
-    await prisma.productDraft.update({ where: { id: draftId }, data: { status: draft.data ? 'details_review' : 'collecting' } });
-    await sendMessage(draft.chatId, `Не получилось: ${escapeHtml(String(err?.message ?? err)).slice(0, 300)}\nНапишите «готово» ещё раз${draft.data ? ' или опишите правку заново' : ''}.`);
+    await prisma.productDraft.update({ where: { id: draftId }, data: { status: dataOf(draft).result ? 'details_review' : 'collecting' } });
+    await sendMessage(draft.chatId, `Не получилось: ${escapeHtml(String(err?.message ?? err)).slice(0, 300)}\nНапишите «готово» ещё раз${dataOf(draft).result ? ' или опишите правку заново' : ''}.`);
   }
 }
 
 async function approveDetails(draftId: string) {
   const draft = await prisma.productDraft.findUnique({ where: { id: draftId } });
-  if (!draft || draft.status !== 'details_review' || !draft.data) return;
-  const d = draft.data as unknown as ProductDetails;
+  if (!draft || draft.status !== 'details_review' || !dataOf(draft).result) return;
+  const d = dataOf(draft).result as ProductDetails;
+  const slides = dataOf(draft).slides ?? [];
   // Атомарно «забираем» черновик — повторный клик не создаст второй товар.
   const claim = await prisma.productDraft.updateMany({ where: { id: draftId, status: 'details_review' }, data: { status: 'done' } });
   if (claim.count === 0) return;
   try {
+    if (isAttach(draft) && draft.productId) {
+      const target = await prisma.product.findUnique({ where: { id: draft.productId }, select: { name: true, details: true } });
+      if (!target) throw new Error('товар не найден');
+      const current = Array.isArray(target.details) ? (target.details as string[]) : [];
+      const merged = [...current, ...slides].slice(0, MAX_DETAILS);
+      await prisma.product.update({ where: { id: draft.productId }, data: { details: merged } });
+      await sendMessage(draft.chatId, `Готово: в «Детали» товара <b>${escapeHtml(target.name)}</b> теперь ${merged.length} из ${MAX_DETAILS}${current.length + slides.length > MAX_DETAILS ? ' (часть слайдов не влезла)' : ''}. Откройте товар в приложении и проверьте.`);
+      return;
+    }
     const article = draft.price != null
       ? await maybeGenerateShopArticle({ currentShopArticle: null, effectivePrice: draft.price, effectiveActive: false })
       : undefined;
@@ -174,6 +208,7 @@ async function approveDetails(draftId: string) {
         composition: d.composition ?? null,
         characteristics: d.characteristics.length ? JSON.stringify(d.characteristics) : null,
         images: JSON.stringify(draft.photos),
+        details: slides,
         shopPrice: draft.price ?? null,
         shopOldPrice: draft.oldPrice ?? null,
         shopActive: false, // в продажу включает владелец сам
