@@ -10,7 +10,7 @@ import { renderDetailSlides, SceneImage } from './detailSlides.service';
 import { generateSceneAuto, sniffImageMime } from './geminiImage.service';
 import { Grid, parseGrid, splitSheet } from './sheetSplit.service';
 
-type DraftData = { mode?: 'attach' | 'slice'; grid?: Grid; slices?: string[]; raw?: boolean; result?: ProductDetails; slides?: string[] };
+type DraftData = { mode?: 'attach' | 'slice' | 'ask'; grid?: Grid; slices?: string[]; raw?: boolean; result?: ProductDetails; slides?: string[] };
 const dataOf = (d: { data: unknown } | null | undefined): DraftData => ((d?.data as DraftData | null) ?? {});
 
 const MAX_REVISIONS = 6;
@@ -19,7 +19,7 @@ const MAX_DETAILS = 10;
 
 const HELP =
   'Новый товар: пришлите 1–5 фото товара по очереди. Цену напишите текстом, например <b>4500 / 6000</b> (цена / старая цена). ' +
-  'Когда всё отправили — напишите <b>готово</b>. Отмена — <b>отмена</b>.\n\nКрасивые «Детали» делает бот: <b>детали 1234567</b> (артикул или название), затем фото и «готово». Один лист с 10 слайдами нарезать и положить в «Детали»: <b>нарезать 1234567</b>, затем лист файлом. Свои готовые картинки (например из ChatGPT) положить в «Детали» как есть: <b>картинки 1234567</b>, затем картинки и «готово».';
+  'Когда всё отправили — напишите <b>готово</b>. Отмена — <b>отмена</b>.\n\nКрасивые «Детали» делает бот: <b>детали 1234567</b> (артикул или название), затем фото и «готово». Проще всего: отправьте артикул (7 цифр), потом картинки файлом — бот спросит, что с ними сделать. Или командами: один лист с 10 слайдами нарезать и положить в «Детали»: <b>нарезать 1234567</b>, затем лист файлом. Свои готовые картинки (например из ChatGPT) положить в «Детали» как есть: <b>картинки 1234567</b>, затем картинки и «готово».';
 
 export type TgUpdate = {
   update_id?: number;
@@ -94,7 +94,7 @@ export function parseRawCommand(text: string): string | null {
   return m ? m[1].trim().slice(0, 100) : null;
 }
 
-async function startAttach(chatId: string, query: string, raw = false, slice?: { grid?: Grid }): Promise<boolean> {
+async function startAttach(chatId: string, query: string, raw = false, slice?: { grid?: Grid }, ask = false): Promise<boolean> {
   const exact = await prisma.product.findFirst({
     where: { OR: [{ shopArticle: query }, { sku: query }] },
     select: { id: true, name: true, details: true },
@@ -117,9 +117,10 @@ async function startAttach(chatId: string, query: string, raw = false, slice?: {
     target = found[0];
   }
   const have = Array.isArray(target.details) ? target.details.length : 0;
-  await prisma.productDraft.create({ data: { chatId, productId: target.id, data: slice ? { mode: 'slice', ...(slice.grid ? { grid: slice.grid } : {}) } : raw ? { mode: 'attach', raw: true } : { mode: 'attach' } } });
+  await prisma.productDraft.create({ data: { chatId, productId: target.id, data: ask ? { mode: 'ask' } : slice ? { mode: 'slice', ...(slice.grid ? { grid: slice.grid } : {}) } : raw ? { mode: 'attach', raw: true } : { mode: 'attach' } } });
   await sendMessage(
     chatId,
+    ask ? `Товар: <b>${escapeHtml(target.name)}</b> (в «Деталях» сейчас ${have} из ${MAX_DETAILS}). Пришлите картинку или картинки <b>файлом</b>, и я спрошу, что с ними сделать.` :
     slice ? `Режу лист для «Деталей» товара <b>${escapeHtml(target.name)}</b> (сейчас там ${have} из ${MAX_DETAILS}). Пришлите лист с картинками <b>файлом</b> (скрепка → Файл), чтобы Telegram не сжал качество. Если знаете сетку, напишите её: <b>2x5</b> (строк × столбцов).` :
     raw ? `Готовые картинки пойдут в «Детали» товара <b>${escapeHtml(target.name)}</b> как есть, без обработки (сейчас там ${have} из ${MAX_DETAILS}). Присылайте картинки по очереди <b>как фото или файлом</b>, в конце напишите <b>готово</b>.` :
     `Загружаю в «Детали» товара <b>${escapeHtml(target.name)}</b> (сейчас там ${have} из ${MAX_DETAILS}). Присылайте фото по очереди, в конце напишите <b>готово</b>.`,
@@ -147,6 +148,18 @@ async function finishAttach(draftId: string) {
   if (!draft) return;
   await sendMessage(draft.chatId, `Читаю ${draft.photos.length} фото и рисую слайды «Детали»… (до минуты)`);
   waitUntil(runDetails(draftId, null));
+}
+
+/** Новая команда отменяет застрявший прошлый черновик (кроме того, что прямо сейчас рисуется). true — можно продолжать. */
+async function supersede(chatId: string, draft: { id: string; status: string } | null): Promise<boolean> {
+  if (!draft) return true;
+  if (draft.status === 'details_working' || draft.status === 'details_rendering') {
+    await sendMessage(chatId, 'Ещё идёт работа над предыдущим товаром. Подождите минуту или напишите «отмена».');
+    return false;
+  }
+  await prisma.productDraft.update({ where: { id: draft.id }, data: { status: 'cancelled' } });
+  await sendMessage(chatId, 'Прошлый незавершённый черновик отменил, начинаю новый.');
+  return true;
 }
 
 async function activeDraft(chatId: string) {
@@ -392,9 +405,14 @@ async function addPhoto(chatId: string, fileId: string, caption: string | undefi
   let draft = await activeDraft(chatId);
   const sliceCap = caption ? parseSliceCommand(caption) : null;
   const rawCap = caption ? parseRawCommand(caption) : null;
-  const cmd = sliceCap?.query ?? rawCap ?? (caption ? parseAttachCommand(caption) : null);
+  const articleCap = caption && /^\s*\d{7}\s*$/.test(caption) ? caption.trim() : null;
+  const cmd = sliceCap?.query ?? rawCap ?? articleCap ?? (caption ? parseAttachCommand(caption) : null);
+  if (cmd && draft) {
+    if (!(await supersede(chatId, draft))) return;
+    draft = null;
+  }
   if (cmd && !draft) {
-    if (!(await startAttach(chatId, cmd, !!rawCap, sliceCap ? { grid: sliceCap.grid } : undefined))) return;
+    if (!(await startAttach(chatId, cmd, !!rawCap, sliceCap ? { grid: sliceCap.grid } : undefined, !!articleCap))) return;
     draft = await activeDraft(chatId);
     caption = undefined;
   }
@@ -414,6 +432,19 @@ async function addPhoto(chatId: string, fileId: string, caption: string | undefi
     }
   }
   if (dataOf(draft).mode === 'slice') return processSheet(draft.id, fileId);
+  if (dataOf(draft).mode === 'ask') {
+    const f = await downloadFile(fileId);
+    const b = await put(`tg/${draft.id}/${Date.now()}.jpg`, f.buffer, { access: 'public', contentType: sniffImageMime(f.buffer), token: env.blobToken });
+    const upd = await prisma.productDraft.update({ where: { id: draft.id }, data: { photos: { push: b.url } } });
+    if (upd.photos.length === 1) {
+      await sendMessage(chatId, 'Получил. Что сделать с картинками?', [
+        [{ text: '✂️ Нарезать лист на слайды', callback_data: `d:m:${draft.id}:slice` }],
+        [{ text: '📥 Загрузить как есть', callback_data: `d:m:${draft.id}:raw` }],
+        [{ text: '🤖 Сделать красивые Детали (ИИ)', callback_data: `d:m:${draft.id}:ai` }],
+      ]);
+    }
+    return;
+  }
   if (draft.photos.length >= MAX_PHOTOS) {
     await sendMessage(chatId, `Максимум ${MAX_PHOTOS} фото на товар. Напишите «готово».`);
     return;
@@ -443,21 +474,26 @@ async function handleText(chatId: string, text: string) {
     if (draft) await prisma.productDraft.update({ where: { id: draft.id }, data: { status: 'cancelled' } });
     return sendMessage(chatId, draft ? 'Отменил. Можно начинать новый товар.' : 'Нечего отменять.');
   }
+  if (/^\d{7}$/.test(t)) {
+    if (!(await supersede(chatId, draft))) return;
+    await startAttach(chatId, t, false, undefined, true);
+    return;
+  }
   const sliceCmd = parseSliceCommand(t);
   if (sliceCmd) {
-    if (draft) return sendMessage(chatId, 'Сначала завершите текущее: «готово» или «отмена».');
+    if (!(await supersede(chatId, draft))) return;
     await startAttach(chatId, sliceCmd.query, false, { grid: sliceCmd.grid });
     return;
   }
   const rawCmd = parseRawCommand(t);
   if (rawCmd) {
-    if (draft) return sendMessage(chatId, 'Сначала завершите текущее: «готово» или «отмена».');
+    if (!(await supersede(chatId, draft))) return;
     await startAttach(chatId, rawCmd, true);
     return;
   }
   const cmd = parseAttachCommand(t);
   if (cmd) {
-    if (draft) return sendMessage(chatId, 'Сначала завершите текущее: «готово» или «отмена».');
+    if (!(await supersede(chatId, draft))) return;
     await startAttach(chatId, cmd);
     return;
   }
@@ -537,12 +573,31 @@ async function handleText(chatId: string, text: string) {
 async function handleCallback(cb: NonNullable<TgUpdate['callback_query']>) {
   const chatId = cb.message?.chat.id;
   if (!chatId || !isAllowedChat(chatId)) return;
-  const [, action, id] = (cb.data ?? '').split(':');
+  const [, action, id, choice] = (cb.data ?? '').split(':');
   await answerCallback(cb.id);
   if (!id) return;
   if (action === 'ok') {
     const cur = await prisma.productDraft.findUnique({ where: { id }, select: { status: true } });
     return cur?.status === 'slice_review' ? approveSlices(id) : approveDetails(id);
+  }
+  if (action === 'm') {
+    const d = await prisma.productDraft.findUnique({ where: { id } });
+    if (!d || d.status !== 'collecting' || dataOf(d).mode !== 'ask' || !d.photos.length) return;
+    if (choice === 'slice') {
+      await prisma.productDraft.update({ where: { id }, data: { data: { mode: 'slice' } as any } });
+      const buf = Buffer.from(await (await fetch(d.photos[0])).arrayBuffer());
+      await sendMessage(String(chatId), 'Режу лист…');
+      return reviewSlices(id, buf, undefined);
+    }
+    if (choice === 'raw') {
+      await prisma.productDraft.update({ where: { id }, data: { data: { mode: 'attach', raw: true } as any } });
+      return finishRaw(id);
+    }
+    if (choice === 'ai') {
+      await prisma.productDraft.update({ where: { id }, data: { data: { mode: 'attach' } as any } });
+      return finishAttach(id);
+    }
+    return;
   }
   if (action === 'x') {
     await prisma.productDraft.updateMany({ where: { id, status: { in: ['collecting', 'details_review', 'slice_review'] } }, data: { status: 'cancelled' } });
