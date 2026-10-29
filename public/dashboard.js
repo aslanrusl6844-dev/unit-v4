@@ -2216,6 +2216,7 @@ function wireMyMarketTabsOnce() {
   });
   document.getElementById('mmCourierAppBulkArchiveBtn').addEventListener('click', () => runMyMarketCourierAppBulkArchive(true));
   document.getElementById('mmCourierAppBulkRestoreBtn').addEventListener('click', () => runMyMarketCourierAppBulkArchive(false));
+  document.getElementById('mmCourierAppBulkDeleteBtn').addEventListener('click', runMyMarketCourierAppBulkDelete);
 
   // Возвраты: подвкладки Ожидает/Одобренные/Отклонённые — фильтруют уже
   // загруженный список, без нового запроса к серверу.
@@ -2313,8 +2314,16 @@ function wireMyMarketTabsOnce() {
     if (!btn) return;
     document.querySelectorAll('#mymarketCouriersStatusTabs button').forEach((b) => b.classList.remove('is-active'));
     btn.classList.add('is-active');
+    myMarketSelectedCourierIds.clear(); // выбор не переезжает между «Активные»/«Заблокированные»
     renderMyMarketCouriersTable();
   });
+  document.getElementById('mmCouriersSelectAll').addEventListener('change', (e) => {
+    const rows = mmVisibleCourierRows();
+    if (e.target.checked) rows.forEach((c) => myMarketSelectedCourierIds.add(c.id));
+    else rows.forEach((c) => myMarketSelectedCourierIds.delete(c.id));
+    renderMyMarketCouriersTable();
+  });
+  document.getElementById('mmCouriersBulkDeleteBtn').addEventListener('click', runMyMarketCouriersBulkDelete);
 
   // Вкладки внутри карточки товара (Информация/Характеристики/Медиа/Превью)
   document.getElementById('mymarketCardTabs').addEventListener('click', (e) => {
@@ -4465,6 +4474,7 @@ async function loadMyMarketAnalyticsSeasonality() {
 // Курьеры — таблица + карточка с фото (только здесь, не в API курьера)
 // ---------------------------------------------------------------------
 let myMarketCouriersCache = [];
+let myMarketSelectedCourierIds = new Set();
 
 const MM_COURIER_APP_STATUS_LABELS = { pending: 'Ожидает', approved: 'Одобрена', rejected: 'Отказано' };
 let myMarketCourierAppsCache = [];
@@ -4656,6 +4666,9 @@ function updateMyMarketCourierAppBulkBar(visibleRows) {
   archiveBtn.hidden = archived;
   restoreBtn.hidden = !archived;
   archiveBtn.disabled = restoreBtn.disabled = n === 0;
+  const deleteBtn = document.getElementById('mmCourierAppBulkDeleteBtn');
+  deleteBtn.hidden = !archived; // «Удалить выбранные» — только в «Архиве»
+  deleteBtn.disabled = n === 0;
   const selectAll = document.getElementById('mmCourierAppSelectAll');
   selectAll.checked = visibleRows.length > 0 && n === visibleRows.length;
   selectAll.indeterminate = n > 0 && n < visibleRows.length;
@@ -4669,6 +4682,18 @@ async function runMyMarketCourierAppBulkArchive(archived) {
     await loadMyMarketCourierApplications();
   } catch (err) {
     alert(`Не удалось перенести заявки: ` + err.message);
+  }
+}
+
+async function runMyMarketCourierAppBulkDelete() {
+  const ids = [...myMarketSelectedCourierAppIds];
+  if (!ids.length) return;
+  if (!confirm(`Удалить ${ids.length} записей? Телефоны освободятся.`)) return;
+  try {
+    await api('/shop-admin/courier-applications/bulk-delete', { method: 'POST', body: JSON.stringify({ ids }) });
+    await loadMyMarketCourierApplications();
+  } catch (err) {
+    alert('Не удалось удалить заявки: ' + err.message);
   }
 }
 
@@ -4820,11 +4845,11 @@ async function loadMyMarketCouriers() {
 /** Фильтрует уже загруженный список по вкладке (active=true/false) и
  *  поисковой строке (имя, фамилия, телефон, ИИН) — без обращения к
  *  серверу заново, список уже есть в myMarketCouriersCache. */
-function renderMyMarketCouriersTable() {
+/** Строки, видимые сейчас в таблице курьеров (вкладка + поиск) — по ним работают «выбрать всех» и массовое удаление. */
+function mmVisibleCourierRows() {
   const statusTab = document.querySelector('#mymarketCouriersStatusTabs button.is-active')?.dataset.status || 'active';
   const wantActive = statusTab === 'active';
   const query = document.getElementById('mymarketCouriersSearch').value.trim().toLowerCase();
-
   let rows = myMarketCouriersCache.filter((c) => c.active === wantActive);
   if (query) {
     rows = rows.filter((c) =>
@@ -4833,14 +4858,51 @@ function renderMyMarketCouriersTable() {
       (c.iin ?? '').toLowerCase().includes(query),
     );
   }
+  return rows;
+}
+
+function updateMyMarketCouriersBulkBar(rows) {
+  const visibleIds = new Set(rows.map((c) => c.id));
+  for (const id of [...myMarketSelectedCourierIds]) if (!visibleIds.has(id)) myMarketSelectedCourierIds.delete(id);
+  const n = myMarketSelectedCourierIds.size;
+  document.getElementById('mmCouriersSelectedCount').textContent = `Выбрано: ${n}`;
+  document.getElementById('mmCouriersBulkDeleteBtn').disabled = n === 0;
+  const selectAll = document.getElementById('mmCouriersSelectAll');
+  selectAll.checked = rows.length > 0 && n === rows.length;
+  selectAll.indeterminate = n > 0 && n < rows.length;
+}
+
+async function runMyMarketCouriersBulkDelete() {
+  const ids = [...myMarketSelectedCourierIds];
+  if (!ids.length) return;
+  if (!confirm(`Удалить ${ids.length} записей? Телефоны освободятся.`)) return;
+  try {
+    const r = await api('/shop-admin/couriers/bulk-delete', { method: 'POST', body: JSON.stringify({ ids }) });
+    myMarketSelectedCourierIds.clear();
+    await loadMyMarketCouriers();
+    if (r.skipped && r.skipped.length) {
+      alert(`Удалено: ${r.deleted}. Не удалены (есть заказы или выплаты — история сохранена):\n` +
+        r.skipped.map((s) => `${s.name} ${s.phone}`).join('\n'));
+    }
+  } catch (err) {
+    alert('Не удалось удалить курьеров: ' + err.message);
+  }
+}
+
+function renderMyMarketCouriersTable() {
+  const statusTab = document.querySelector('#mymarketCouriersStatusTabs button.is-active')?.dataset.status || 'active';
+  const wantActive = statusTab === 'active';
+  const rows = mmVisibleCourierRows();
+  updateMyMarketCouriersBulkBar(rows);
 
   const tbody = document.querySelector('#mymarketCouriersTable tbody');
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="11" style="color:var(--text-faint)">${wantActive ? 'Активных курьеров нет' : 'Заблокированных курьеров нет'}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="12" style="color:var(--text-faint)">${wantActive ? 'Активных курьеров нет' : 'Заблокированных курьеров нет'}</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map((c) => `
     <tr data-id="${c.id}" style="cursor:pointer">
+      <td><input type="checkbox" data-courier-select="${c.id}" ${myMarketSelectedCourierIds.has(c.id) ? 'checked' : ''} /></td>
       <td>${c.facePhotoUrl ? `<img src="${c.facePhotoUrl}" alt="" style="width:36px;height:36px;object-fit:cover;border-radius:50%" />` : '<span style="color:var(--text-faint);font-size:11px">—</span>'}</td>
       <td class="name-cell">${c.name}</td>
       <td>${c.iin ?? '—'}</td>
@@ -4857,6 +4919,15 @@ function renderMyMarketCouriersTable() {
 
   tbody.querySelectorAll('tr[data-id]').forEach((tr) => {
     tr.addEventListener('click', () => openCourierCard(tr.dataset.id));
+  });
+  // Чекбокс не должен открывать карточку курьера (клик по строке).
+  tbody.querySelectorAll('input[data-courier-select]').forEach((box) => {
+    box.addEventListener('click', (e) => e.stopPropagation());
+    box.addEventListener('change', () => {
+      if (box.checked) myMarketSelectedCourierIds.add(box.dataset.courierSelect);
+      else myMarketSelectedCourierIds.delete(box.dataset.courierSelect);
+      updateMyMarketCouriersBulkBar(rows);
+    });
   });
 }
 

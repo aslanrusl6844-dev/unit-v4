@@ -987,6 +987,7 @@
                 <span id="mmCourierAppSelectedCount" style="font-size:12.5px;color:var(--text-muted)">Выбрано: 0</span>
                 <button class="btn btn--ghost" id="mmCourierAppBulkArchiveBtn" disabled>Убрать в архив</button>
                 <button class="btn btn--ghost" id="mmCourierAppBulkRestoreBtn" disabled hidden>Вернуть в заявки</button>
+                <button class="btn btn--ghost" id="mmCourierAppBulkDeleteBtn" disabled hidden style="color:var(--loss)">Удалить выбранные</button>
               </div>
               <div class="table-wrap">
                 <table class="table" id="mmCourierApplicationsTable">
@@ -1005,11 +1006,15 @@
               <button class="is-active" data-status="active">Активные</button>
               <button data-status="blocked">Заблокированные</button>
             </div>
+            <div class="inline-form" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:8px">
+              <span id="mmCouriersSelectedCount" style="font-size:12.5px;color:var(--text-muted)">Выбрано: 0</span>
+              <button class="btn btn--ghost" id="mmCouriersBulkDeleteBtn" disabled style="color:var(--loss)">Удалить выбранных</button>
+            </div>
             <div class="table-wrap">
               <table class="table" id="mymarketCouriersTable">
                 <thead>
                   <tr>
-                    <th>Фото</th><th>ФИО</th><th>ИИН</th><th>Телефон</th><th>Адрес</th>
+                    <th style="width:28px"><input type="checkbox" id="mmCouriersSelectAll" title="Выбрать всех в текущем списке" /></th><th>Фото</th><th>ФИО</th><th>ИИН</th><th>Телефон</th><th>Адрес</th>
                     <th>Авто</th><th>Реквизиты</th><th>Согласие</th><th>Статус</th>
                     <th class="num">Заказов закрыл</th><th class="num">Заработал</th>
                   </tr>
