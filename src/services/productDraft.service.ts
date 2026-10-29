@@ -9,7 +9,7 @@ import { maybeGenerateShopArticle } from './shopArticle';
 import { renderDetailSlides, SceneImage } from './detailSlides.service';
 import { generateSceneAuto, sniffImageMime } from './geminiImage.service';
 
-type DraftData = { mode?: 'attach'; result?: ProductDetails; slides?: string[] };
+type DraftData = { mode?: 'attach'; raw?: boolean; result?: ProductDetails; slides?: string[] };
 const dataOf = (d: { data: unknown } | null | undefined): DraftData => ((d?.data as DraftData | null) ?? {});
 
 const MAX_REVISIONS = 6;
@@ -18,11 +18,11 @@ const MAX_DETAILS = 10;
 
 const HELP =
   'Новый товар: пришлите 1–5 фото товара по очереди. Цену напишите текстом, например <b>4500 / 6000</b> (цена / старая цена). ' +
-  'Когда всё отправили — напишите <b>готово</b>. Отмена — <b>отмена</b>.\n\nДобавить фото в «Детали» существующего товара: <b>детали 1234567</b> (артикул или название), затем фото и «готово».';
+  'Когда всё отправили — напишите <b>готово</b>. Отмена — <b>отмена</b>.\n\nКрасивые «Детали» делает бот: <b>детали 1234567</b> (артикул или название), затем фото и «готово». Свои готовые картинки (например из ChatGPT) положить в «Детали» как есть: <b>картинки 1234567</b>, затем картинки и «готово».';
 
 export type TgUpdate = {
   update_id?: number;
-  message?: { chat: { id: number }; from?: { id: number }; text?: string; caption?: string; photo?: Array<{ file_id: string }> };
+  message?: { chat: { id: number }; from?: { id: number }; text?: string; caption?: string; photo?: Array<{ file_id: string }>; document?: { file_id: string; mime_type?: string } };
   callback_query?: { id: string; data?: string; message?: { chat: { id: number } } };
 };
 
@@ -76,7 +76,13 @@ export function parseAttachCommand(text: string): string | null {
   return m ? m[1].trim().slice(0, 100) : null;
 }
 
-async function startAttach(chatId: string, query: string): Promise<boolean> {
+/** «картинки 1234567» — готовые картинки (например, из вашего ChatGPT) кладём в «Детали» как есть. */
+export function parseRawCommand(text: string): string | null {
+  const m = /^\s*(?:\/images|картинки|готовые)\s+(.+)$/i.exec(text.trim());
+  return m ? m[1].trim().slice(0, 100) : null;
+}
+
+async function startAttach(chatId: string, query: string, raw = false): Promise<boolean> {
   const exact = await prisma.product.findFirst({
     where: { OR: [{ shopArticle: query }, { sku: query }] },
     select: { id: true, name: true, details: true },
@@ -99,12 +105,26 @@ async function startAttach(chatId: string, query: string): Promise<boolean> {
     target = found[0];
   }
   const have = Array.isArray(target.details) ? target.details.length : 0;
-  await prisma.productDraft.create({ data: { chatId, productId: target.id, data: { mode: 'attach' } } });
+  await prisma.productDraft.create({ data: { chatId, productId: target.id, data: raw ? { mode: 'attach', raw: true } : { mode: 'attach' } } });
   await sendMessage(
     chatId,
+    raw ? `Готовые картинки пойдут в «Детали» товара <b>${escapeHtml(target.name)}</b> как есть, без обработки (сейчас там ${have} из ${MAX_DETAILS}). Присылайте картинки по очереди <b>как фото или файлом</b>, в конце напишите <b>готово</b>.` :
     `Загружаю в «Детали» товара <b>${escapeHtml(target.name)}</b> (сейчас там ${have} из ${MAX_DETAILS}). Присылайте фото по очереди, в конце напишите <b>готово</b>.`,
   );
   return true;
+}
+
+async function finishRaw(draftId: string) {
+  const claim = await prisma.productDraft.updateMany({ where: { id: draftId, status: 'collecting' }, data: { status: 'done' } });
+  if (claim.count === 0) return;
+  const draft = await prisma.productDraft.findUnique({ where: { id: draftId } });
+  if (!draft?.productId) return;
+  const product = await prisma.product.findUnique({ where: { id: draft.productId }, select: { name: true, details: true } });
+  if (!product) return void (await sendMessage(draft.chatId, 'Товар не найден (удалён?).'));
+  const current = Array.isArray(product.details) ? (product.details as string[]) : [];
+  const merged = [...current, ...draft.photos.filter((u: string) => !current.includes(u))].slice(0, MAX_DETAILS);
+  await prisma.product.update({ where: { id: draft.productId }, data: { details: merged } });
+  await sendMessage(draft.chatId, `Готово: в «Детали» товара <b>${escapeHtml(product.name)}</b> теперь ${merged.length} из ${MAX_DETAILS}${current.length + draft.photos.length > MAX_DETAILS ? ' (часть не влезла)' : ''}. Проверьте в приложении.`);
 }
 
 async function finishAttach(draftId: string) {
@@ -312,9 +332,10 @@ async function approveDetails(draftId: string) {
 
 async function addPhoto(chatId: string, fileId: string, caption: string | undefined) {
   let draft = await activeDraft(chatId);
-  const cmd = caption ? parseAttachCommand(caption) : null;
+  const rawCap = caption ? parseRawCommand(caption) : null;
+  const cmd = rawCap ?? (caption ? parseAttachCommand(caption) : null);
   if (cmd && !draft) {
-    if (!(await startAttach(chatId, cmd))) return;
+    if (!(await startAttach(chatId, cmd, !!rawCap))) return;
     draft = await activeDraft(chatId);
     caption = undefined;
   }
@@ -362,6 +383,12 @@ async function handleText(chatId: string, text: string) {
     if (draft) await prisma.productDraft.update({ where: { id: draft.id }, data: { status: 'cancelled' } });
     return sendMessage(chatId, draft ? 'Отменил. Можно начинать новый товар.' : 'Нечего отменять.');
   }
+  const rawCmd = parseRawCommand(t);
+  if (rawCmd) {
+    if (draft) return sendMessage(chatId, 'Сначала завершите текущее: «готово» или «отмена».');
+    await startAttach(chatId, rawCmd, true);
+    return;
+  }
   const cmd = parseAttachCommand(t);
   if (cmd) {
     if (draft) return sendMessage(chatId, 'Сначала завершите текущее: «готово» или «отмена».');
@@ -373,7 +400,7 @@ async function handleText(chatId: string, text: string) {
   if (draft.status === 'collecting' && isAttach(draft)) {
     if (['готово', '/done', 'done', 'все', 'всё'].includes(low)) {
       if (!draft.photos.length) return sendMessage(chatId, 'Фото ещё нет. Пришлите хотя бы одно.');
-      return finishAttach(draft.id);
+      return dataOf(draft).raw ? finishRaw(draft.id) : finishAttach(draft.id);
     }
     return sendMessage(chatId, 'Жду фото для «Деталей». Когда всё отправили — «готово», отмена — «отмена».');
   }
@@ -448,6 +475,7 @@ export async function handleUpdate(update: TgUpdate): Promise<void> {
     if (!m || !isAllowedChat(m.chat.id)) return;
     const chatId = String(m.chat.id);
     if (m.photo?.length) return await addPhoto(chatId, m.photo[m.photo.length - 1].file_id, m.caption);
+    if (m.document?.mime_type?.startsWith('image/')) return await addPhoto(chatId, m.document.file_id, m.caption);
     if (m.text) return await handleText(chatId, m.text);
   } catch (err: any) {
     logger.error({ err: String(err?.message ?? err) }, '[ProductAgent] ошибка обработки апдейта');

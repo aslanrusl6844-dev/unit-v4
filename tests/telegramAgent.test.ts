@@ -70,3 +70,11 @@ test('sniffImageMime', async () => {
   assert.equal(sniffImageMime(Buffer.from('RIFF\0\0\0\0WEBPVP8 ')), 'image/webp');
   assert.equal(sniffImageMime(Buffer.from('xxxxxxxx')), 'image/jpeg');
 });
+
+test('parseRawCommand', async () => {
+  const { parseRawCommand, parseAttachCommand } = await import('../src/services/productDraft.service');
+  assert.equal(parseRawCommand('картинки 1234567'), '1234567');
+  assert.equal(parseRawCommand('Готовые крем'), 'крем');
+  assert.equal(parseRawCommand('детали 1234567'), null);
+  assert.equal(parseAttachCommand('картинки 1234567'), null);
+});
