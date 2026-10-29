@@ -1104,6 +1104,84 @@ shopAdminRouter.post('/couriers/:id/block', async (req, res) => {
   }
 });
 
+const bulkDeleteSchema = z.object({ ids: z.array(z.string().min(1)).min(1).max(500) });
+
+/**
+ * Массовая очистка «Архива» заявок: удаляет выбранные ShopCourierApplication и связанные
+ * ShopCourierInvite по их телефонам — телефон освобождается под новую вакансию. Только то, что
+ * выбрано (ids): остальные заявки, в том числе свежие «Ожидает», не затрагиваются. Строки Courier
+ * здесь не трогаем — они удаляются отдельно из списка курьеров.
+ */
+shopAdminRouter.post('/courier-applications/bulk-delete', async (req, res) => {
+  const parsed = bulkDeleteSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  try {
+    const apps: Array<{ id: string; phone: string }> = await prisma.shopCourierApplication.findMany({ where: { id: { in: parsed.data.ids } } });
+    if (!apps.length) return res.json({ ok: true, deleted: 0, invitesDeleted: 0 });
+    const [removedApps, removedInvites] = await prisma.$transaction([
+      prisma.shopCourierApplication.deleteMany({ where: { id: { in: apps.map((a) => a.id) } } }),
+      prisma.shopCourierInvite.deleteMany({ where: { phone: { in: apps.map((a) => a.phone) } } }),
+    ]);
+    res.json({ ok: true, deleted: removedApps.count, invitesDeleted: removedInvites.count });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] POST /courier-applications/bulk-delete упал');
+    res.status(500).json({ error: 'Не удалось удалить заявки', details: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * Массовое удаление из списка курьеров (активные и заблокированные): запись Courier + заявка +
+ * вакансия по тому же телефону. ids — id курьеров, либо «app:<id заявки>» для одобренных, но ещё не
+ * зарегистрировавшихся (у них строки Courier нет — чистим заявку и вакансию). Курьер с заказами или
+ * выплатами НЕ удаляется (на них держится история и деньги) — возвращается в skipped с причиной,
+ * остальные выбранные удаляются.
+ */
+shopAdminRouter.post('/couriers/bulk-delete', async (req, res) => {
+  const parsed = bulkDeleteSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  try {
+    const appIds = parsed.data.ids.filter((id) => id.startsWith('app:')).map((id) => id.slice(4));
+    const courierIds = parsed.data.ids.filter((id) => !id.startsWith('app:'));
+
+    const couriers: Array<{ id: string; name: string; phone: string }> = courierIds.length
+      ? await prisma.courier.findMany({ where: { id: { in: courierIds } } })
+      : [];
+    const withOrders: Array<{ courierId: string | null }> = couriers.length
+      ? await prisma.shopOrder.groupBy({ by: ['courierId'], where: { courierId: { in: couriers.map((c) => c.id) } }, _count: { id: true } })
+      : [];
+    const withPayouts: Array<{ courierId: string }> = couriers.length
+      ? await prisma.courierPayout.groupBy({ by: ['courierId'], where: { courierId: { in: couriers.map((c) => c.id) } }, _count: { id: true } })
+      : [];
+    const busy = new Set<string>([
+      ...withOrders.map((g) => g.courierId).filter((x): x is string => !!x),
+      ...withPayouts.map((g) => g.courierId),
+    ]);
+    const deletable = couriers.filter((c) => !busy.has(c.id));
+    const skipped = couriers
+      .filter((c) => busy.has(c.id))
+      .map((c) => ({ id: c.id, name: c.name, phone: c.phone, reason: 'есть заказы или выплаты — история сохранена' }));
+
+    const pendingApps: Array<{ id: string; phone: string }> = appIds.length
+      ? await prisma.shopCourierApplication.findMany({ where: { id: { in: appIds } } })
+      : [];
+
+    const phones = [...new Set([...deletable.map((c) => c.phone), ...pendingApps.map((a) => a.phone)])];
+    let deleted = 0;
+    if (phones.length) {
+      const [removedCouriers] = await prisma.$transaction([
+        prisma.courier.deleteMany({ where: { id: { in: deletable.map((c) => c.id) } } }),
+        prisma.shopCourierApplication.deleteMany({ where: { phone: { in: phones } } }),
+        prisma.shopCourierInvite.deleteMany({ where: { phone: { in: phones } } }),
+      ]);
+      deleted = removedCouriers.count + pendingApps.length;
+    }
+    res.json({ ok: true, deleted, skipped });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] POST /couriers/bulk-delete упал');
+    res.status(500).json({ error: 'Не удалось удалить курьеров', details: String(err?.message ?? err) });
+  }
+});
+
 // =====================================================================
 // Аналитика витрины My Market — период 7/30 дней, только канал APP.
 // Три подвкладки: поиск, конверсия по SKU, сезонность + города.
