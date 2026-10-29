@@ -44,3 +44,21 @@ test('generateScene: разбор ответа Gemini и ошибки', async ()
   const empty = (async () => new Response(JSON.stringify({ candidates: [{ finishReason: 'SAFETY', content: { parts: [{ text: 'no' }] } }] }), { status: 200 })) as any;
   await assert.rejects(generateScene({ apiKey: 'K', refs: [], scene: 's', fetchImpl: empty }), /не вернул картинку \(SAFETY\)/);
 });
+
+test('generateSceneAuto: порядок провайдеров и запасной', async () => {
+  const { generateSceneAuto } = await import('../src/services/geminiImage.service');
+  const png = Buffer.from('89504e47', 'hex');
+  const calls: string[] = [];
+  const f = (async (url: string) => {
+    calls.push(url.includes('openai') ? 'openai' : 'gemini');
+    if (url.includes('generativelanguage')) return new Response('{}', { status: 500 });
+    return new Response(JSON.stringify({ data: [{ b64_json: png.toString('base64') }] }), { status: 200 });
+  }) as any;
+  const r = await generateSceneAuto({ refs: [{ data: png, mime: 'image/jpeg' }], scene: 's', fetchImpl: f, env: { GEMINI_API_KEY: 'g', OPENAI_API_KEY: 'o' } as any });
+  assert.deepEqual(calls, ['gemini', 'openai']);
+  assert.deepEqual(r.data, png);
+  calls.length = 0;
+  await generateSceneAuto({ refs: [], scene: 's', fetchImpl: f, env: { GEMINI_API_KEY: 'g', OPENAI_API_KEY: 'o', IMAGE_PROVIDER: 'openai' } as any });
+  assert.deepEqual(calls, ['openai']);
+  await assert.rejects(generateSceneAuto({ refs: [], scene: 's', env: {} as any }), /нет ключей/);
+});

@@ -7,7 +7,7 @@ import { answerCallback, downloadFile, escapeHtml, isAllowedChat, sendMessage, s
 import { DEFAULT_AGENT_MODEL, ProductDetails, parsePrices, runDetailsAgent } from './productAgent.service';
 import { maybeGenerateShopArticle } from './shopArticle';
 import { renderDetailSlides, SceneImage } from './detailSlides.service';
-import { generateScene } from './geminiImage.service';
+import { generateSceneAuto } from './geminiImage.service';
 
 type DraftData = { mode?: 'attach'; result?: ProductDetails; slides?: string[] };
 const dataOf = (d: { data: unknown } | null | undefined): DraftData => ((d?.data as DraftData | null) ?? {});
@@ -166,9 +166,9 @@ async function runDetails(draftId: string, feedback: string | null) {
     plan.splice(MAX_SCENES);
     await prisma.productDraft.update({ where: { id: draftId }, data: { data: { ...dataOf(draft), result, plan, runId: Date.now() } as any, status: 'details_working' } });
 
-    const geminiKey = process.env.GEMINI_API_KEY;
-    if (!geminiKey || !selfBaseUrl) {
-      await sendMessage(draft.chatId, !geminiKey ? '⚠️ Нет ключа GEMINI_API_KEY на сервере — делаю простые слайды без красивых фонов.' : '⚠️ Не знаю адрес сервера — делаю простые слайды без красивых фонов.');
+    const hasImageKey = !!(process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY);
+    if (!hasImageKey || !selfBaseUrl) {
+      await sendMessage(draft.chatId, !hasImageKey ? '⚠️ Нет ключа GEMINI_API_KEY / OPENAI_API_KEY на сервере — делаю простые слайды без красивых фонов.' : '⚠️ Не знаю адрес сервера — делаю простые слайды без красивых фонов.');
       return await finalizeSlides(draftId, true);
     }
     await sendMessage(draft.chatId, `Карточка готова, рисую ${plan.length} картинок-сцен (около минуты)…`);
@@ -202,11 +202,9 @@ export async function handleSceneJob(draftId: string, index: number): Promise<vo
   if (!scene) return;
   const dir = sceneDir(draft);
   try {
-    const key = process.env.GEMINI_API_KEY;
-    if (!key) throw new Error('нет GEMINI_API_KEY');
     const refs = await loadPhotos(draft.photos, 3);
     if (!refs.length) throw new Error('не удалось загрузить фото');
-    const img = await generateScene({ apiKey: key, model: process.env.GEMINI_IMAGE_MODEL, refs, scene: scene.prompt, timeoutMs: 50_000 });
+    const img = await generateSceneAuto({ refs, scene: scene.prompt });
     await put(`${dir}${index}.${img.mime.includes('jpeg') ? 'jpg' : 'png'}`, img.data, { access: 'public', contentType: img.mime, addRandomSuffix: false, token: env.blobToken });
   } catch (err: any) {
     const msg = String(err?.message ?? err).slice(0, 300);

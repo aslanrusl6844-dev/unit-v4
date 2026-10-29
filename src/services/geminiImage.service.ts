@@ -45,3 +45,55 @@ export async function generateScene(opts: {
   const d = img.inlineData ?? img.inline_data;
   return { data: Buffer.from(d.data, 'base64'), mime: d.mimeType ?? d.mime_type ?? 'image/png' };
 }
+
+export const DEFAULT_OPENAI_MODEL = 'gpt-image-1';
+
+/** Рисует сцену через OpenAI Images (edits с референсными фото товара). */
+export async function generateSceneOpenAI(opts: {
+  apiKey: string;
+  model?: string;
+  refs: RefImage[];
+  scene: string;
+  timeoutMs?: number;
+  fetchImpl?: typeof fetch;
+}): Promise<RefImage> {
+  const f = opts.fetchImpl ?? fetch;
+  const form = new FormData();
+  form.append('model', opts.model || DEFAULT_OPENAI_MODEL);
+  form.append('prompt', buildScenePrompt(opts.scene));
+  form.append('size', '1024x1536');
+  form.append('quality', 'medium');
+  form.append('n', '1');
+  opts.refs.slice(0, 3).forEach((r, i) => {
+    const ext = r.mime.includes('png') ? 'png' : r.mime.includes('webp') ? 'webp' : 'jpg';
+    form.append('image[]', new Blob([new Uint8Array(r.data)], { type: r.mime }), `ref${i}.${ext}`);
+  });
+  const res = await f('https://api.openai.com/v1/images/edits', {
+    method: 'POST',
+    headers: { authorization: `Bearer ${opts.apiKey}` },
+    body: form,
+    signal: AbortSignal.timeout(opts.timeoutMs ?? 50_000),
+  });
+  if (!res.ok) throw new Error(`OpenAI ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`);
+  const body: any = await res.json();
+  const b64 = body?.data?.[0]?.b64_json;
+  if (!b64) throw new Error('OpenAI не вернул картинку');
+  return { data: Buffer.from(b64, 'base64'), mime: 'image/png' };
+}
+
+/**
+ * Выбор сервиса: IMAGE_PROVIDER=openai|gemini (по умолчанию — Gemini, если есть ключ, иначе OpenAI).
+ * Если основной сервис ответил ошибкой и есть ключ второго — пробуем второй.
+ */
+export async function generateSceneAuto(opts: { refs: RefImage[]; scene: string; env?: NodeJS.ProcessEnv; fetchImpl?: typeof fetch }): Promise<RefImage> {
+  const e = opts.env ?? process.env;
+  const gem = e.GEMINI_API_KEY ? () => generateScene({ apiKey: e.GEMINI_API_KEY!, model: e.GEMINI_IMAGE_MODEL, refs: opts.refs, scene: opts.scene, timeoutMs: 45_000, fetchImpl: opts.fetchImpl }) : null;
+  const oai = e.OPENAI_API_KEY ? () => generateSceneOpenAI({ apiKey: e.OPENAI_API_KEY!, model: e.OPENAI_IMAGE_MODEL, refs: opts.refs, scene: opts.scene, timeoutMs: 50_000, fetchImpl: opts.fetchImpl }) : null;
+  const order = (e.IMAGE_PROVIDER === 'openai' ? [oai, gem] : [gem, oai]).filter(Boolean) as Array<() => Promise<RefImage>>;
+  if (!order.length) throw new Error('нет ключей GEMINI_API_KEY / OPENAI_API_KEY');
+  let last: any;
+  for (const run of order) {
+    try { return await run(); } catch (err) { last = err; }
+  }
+  throw last;
+}
