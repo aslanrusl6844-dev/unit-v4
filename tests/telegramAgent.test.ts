@@ -107,3 +107,15 @@ test('нарезка листа: команда, сетка, разрезани�
   const rm = await sharp(raw.slices[0]).metadata();
   assert.ok(Math.abs((rm.width ?? 0) - cw) <= 3 && Math.abs((rm.height ?? 0) - ch) <= 3, `размер ${rm.width}x${rm.height}`);
 });
+
+test('inferIntent: обычная речь', async () => {
+  const { inferIntent } = await import('../src/services/productDraft.service');
+  const a = inferIntent('Из этой картинки все фотки разъединены на формат один к одному и загрузи этот товар по артикулу 2728897 в детали');
+  assert.equal(a?.article, '2728897');
+  assert.equal(a?.mode, 'slice');
+  assert.equal(inferIntent('артикул 2728897 загрузи как есть')?.mode, 'raw');
+  assert.equal(inferIntent('2728897')?.mode, 'ask');
+  assert.equal(inferIntent('нарезать на 2x5 артикул 2728897')?.grid?.cols, 5);
+  assert.equal(inferIntent('цена 4500 / 6000'), null);
+  assert.equal(parsePrices('артикул 2728897 цена 4500').price, 4500);
+});

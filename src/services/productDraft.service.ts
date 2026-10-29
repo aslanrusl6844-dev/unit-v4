@@ -77,6 +77,21 @@ export function parseAttachCommand(text: string): string | null {
   return m ? m[1].trim().slice(0, 100) : null;
 }
 
+/**
+ * Понимает обычную речь: «из этой картинки разъедини все фото на формат 1:1 и загрузи в детали по артикулу 2728897».
+ * Артикул — отдельное 7-значное число. Режим: нарезка / как есть / спросить кнопками.
+ */
+export function inferIntent(text: string): { article: string; mode: 'slice' | 'raw' | 'ask'; grid?: Grid } | null {
+  const a = /(?<!\d)(\d{7})(?!\d)/.exec(text);
+  const article = a?.[1];
+  if (!article) return null;
+  const gm = /(\d{1,2})\s*(?:x|х|×)\s*(\d{1,2})/i.exec(text);
+  const grid = gm ? parseGrid(`${gm[1]}x${gm[2]}`) ?? undefined : undefined;
+  const slice = /нареж|разъедин|разрез|вырез|раздел|по одному|отдельн|слайд|1\s*[:x×]\s*1|один к одному/i.test(text);
+  const raw = /как есть|без обработки|не обрабатыва/i.test(text);
+  return { article, mode: slice ? 'slice' : raw ? 'raw' : 'ask', grid };
+}
+
 /** «нарезать 1234567 [2x5]» — один лист с несколькими слайдами режем на отдельные картинки. */
 export function parseSliceCommand(text: string): { query: string; grid?: Grid } | null {
   const m = /^\s*(?:нарезать|\/slice|лист)\s+(.+)$/i.exec(text.trim());
@@ -406,13 +421,15 @@ async function addPhoto(chatId: string, fileId: string, caption: string | undefi
   const sliceCap = caption ? parseSliceCommand(caption) : null;
   const rawCap = caption ? parseRawCommand(caption) : null;
   const articleCap = caption && /^\s*\d{7}\s*$/.test(caption) ? caption.trim() : null;
-  const cmd = sliceCap?.query ?? rawCap ?? articleCap ?? (caption ? parseAttachCommand(caption) : null);
+  const attachCap = caption ? parseAttachCommand(caption) : null;
+  const inf = !sliceCap && !rawCap && !articleCap && !attachCap && caption ? inferIntent(caption) : null;
+  const cmd = sliceCap?.query ?? rawCap ?? articleCap ?? attachCap ?? inf?.article ?? null;
   if (cmd && draft) {
     if (!(await supersede(chatId, draft))) return;
     draft = null;
   }
   if (cmd && !draft) {
-    if (!(await startAttach(chatId, cmd, !!rawCap, sliceCap ? { grid: sliceCap.grid } : undefined, !!articleCap))) return;
+    if (!(await startAttach(chatId, cmd, !!rawCap || inf?.mode === 'raw', sliceCap ? { grid: sliceCap.grid } : inf?.mode === 'slice' ? { grid: inf.grid } : undefined, !!articleCap || inf?.mode === 'ask'))) return;
     draft = await activeDraft(chatId);
     caption = undefined;
   }
@@ -496,6 +513,20 @@ async function handleText(chatId: string, text: string) {
     if (!(await supersede(chatId, draft))) return;
     await startAttach(chatId, cmd);
     return;
+  }
+  const inf = inferIntent(t);
+  if (inf && dataOf(draft).mode !== 'slice' && draft?.status !== 'slice_review') {
+    if (draft && dataOf(draft).mode === 'ask' && draft.photos.length && inf.mode === 'slice') {
+      await prisma.productDraft.update({ where: { id: draft.id }, data: { data: { mode: 'slice', ...(inf.grid ? { grid: inf.grid } : {}) } as any } });
+      const buf = Buffer.from(await (await fetch(draft.photos[0])).arrayBuffer());
+      await sendMessage(chatId, 'Режу лист…');
+      return reviewSlices(draft.id, buf, inf.grid);
+    }
+    if (!draft || draft.status === 'collecting' && !dataOf(draft).mode) {
+      if (!(await supersede(chatId, draft))) return;
+      await startAttach(chatId, inf.article, inf.mode === 'raw', inf.mode === 'slice' ? { grid: inf.grid } : undefined, inf.mode === 'ask');
+      return;
+    }
   }
   if (!draft) return sendMessage(chatId, HELP);
 
