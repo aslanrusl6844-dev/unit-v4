@@ -11,6 +11,10 @@ import {
   yardShopRadius,
   yardParseBuyerRadius,
   YARD_PHONE_VISIBLE_STATUSES,
+  YARD_SELLER_DETAIL_STATUSES,
+  YARD_PAID_OR_LATER,
+  yardAppStatus,
+  yardOrderDistance,
   yardDistanceMeters,
   yardShopIsLive,
   generateYardPublicId,
@@ -365,9 +369,22 @@ const createOrderSchema = z.object({
   lng: z.number(),
   buyerPhone: z.string().min(1),
   buyerName: z.string().min(1),
-  address: z.string().optional(),
+  address: z.string().trim().max(300).optional(),
+  // Адрес доставки: подъезд, этаж, квартира, домофон (необязательные; приложение может прислать их
+  // следом через POST /yard/order-address).
+  entrance: z.string().trim().max(100).optional(),
+  floor: z.string().trim().max(100).optional(),
+  apartment: z.string().trim().max(100).optional(),
+  intercom: z.string().trim().max(100).optional(),
   items: z.array(z.object({ itemId: z.string().min(1), qty: z.number().int().positive() })).min(1),
 });
+
+/** Пустая строка -> null, undefined -> не трогать. */
+function cleanAddressPart(v: string | null | undefined): string | null | undefined {
+  if (v === undefined) return undefined;
+  const t = (v ?? '').trim();
+  return t === '' ? null : t;
+}
 
 /**
  * Создание заказа — остаток НЕ списываем (только при подтверждении оплаты).
@@ -408,7 +425,11 @@ yardRouter.post('/yard/orders', async (req, res) => {
         shopId: shop.id,
         buyerPhone: normalizedPhone,
         buyerName: parsed.data.buyerName,
-        address: parsed.data.address,
+        address: cleanAddressPart(parsed.data.address) ?? null,
+        entrance: cleanAddressPart(parsed.data.entrance) ?? null,
+        floor: cleanAddressPart(parsed.data.floor) ?? null,
+        apartment: cleanAddressPart(parsed.data.apartment) ?? null,
+        intercom: cleanAddressPart(parsed.data.intercom) ?? null,
         lat: parsed.data.lat,
         lng: parsed.data.lng,
         total,
@@ -463,6 +484,103 @@ yardRouter.get('/yard/orders', async (req, res) => {
   } catch (err: any) {
     logger.error({ err }, '[Yard] GET /yard/orders упал');
     res.status(500).json({ error: 'Не удалось получить заказы', details: String(err?.message ?? err) });
+  }
+});
+
+const orderAddressSchema = z.object({
+  orderId: z.string().min(1),
+  phone: z.string().min(1),
+  address: z.string().trim().max(300).optional(),
+  entrance: z.string().trim().max(100).optional(),
+  floor: z.string().trim().max(100).optional(),
+  apartment: z.string().trim().max(100).optional(),
+  intercom: z.string().trim().max(100).optional(),
+});
+
+/**
+ * Адрес доставки к заказу — присылает покупатель следом за заказом (улица и дом, подъезд,
+ * этаж, квартира, домофон). Только покупатель этого заказа и только пока заказ не закрыт.
+ * Меняются лишь присланные поля; пустая строка очищает поле.
+ */
+yardRouter.post('/yard/order-address', async (req, res) => {
+  const parsed = orderAddressSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+  const phone = normalizePhone(parsed.data.phone);
+  if (!phone) return res.status(400).json({ error: 'Некорректный номер телефона' });
+  try {
+    const order = await prisma.yardOrder.findUnique({ where: { id: parsed.data.orderId } });
+    if (!order) return res.status(404).json({ error: 'Заказ не найден' });
+    if (order.buyerPhone !== phone) return res.status(403).json({ error: 'Адрес может добавить только покупатель этого заказа' });
+    if (['done', 'no_payment', 'not_picked', 'out_of_stock'].includes(order.status)) {
+      return res.status(409).json({ error: 'Заказ уже закрыт' });
+    }
+    const data: Record<string, string | null> = {};
+    for (const key of ['address', 'entrance', 'floor', 'apartment', 'intercom'] as const) {
+      const v = cleanAddressPart(parsed.data[key]);
+      if (v !== undefined) data[key] = v;
+    }
+    if (Object.keys(data).length === 0) return res.status(400).json({ error: 'Нет полей адреса' });
+    await prisma.yardOrder.update({ where: { id: order.id }, data });
+    res.json({ ok: true });
+  } catch (err: any) {
+    logger.error({ err }, '[Yard] POST /yard/order-address упал');
+    res.status(500).json({ error: 'Не удалось сохранить адрес', details: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * Заказ целиком — для покупателя и для продавца (по телефону). Накладная для продавца:
+ * номер и имя покупателя, адрес (улица, подъезд, этаж, квартира, домофон), расстояние от
+ * магазина и радиус магазина — адрес и расстояние только с «Оплачено». Телефон магазина
+ * покупателю — только с «Принял», как и в списке заказов.
+ */
+function toOrderDetailDto(order: any, role: 'buyer' | 'seller') {
+  const showAddress = role === 'buyer' || YARD_SELLER_DETAIL_STATUSES.includes(order.status);
+  return {
+    id: order.id,
+    publicId: order.publicId,
+    status: yardAppStatus(order.status),
+    serverStatus: order.status,
+    total: order.total,
+    createdAt: order.createdAt,
+    shopId: order.shopId,
+    shopName: order.shop.name,
+    shop: {
+      id: order.shop.id,
+      name: order.shop.name,
+      phone: role === 'seller' || YARD_PHONE_VISIBLE_STATUSES.includes(order.status) ? order.shop.phone : null,
+    },
+    buyerName: order.buyerName,
+    buyerPhone: order.buyerPhone,
+    address: showAddress ? order.address ?? null : null,
+    entrance: showAddress ? order.entrance ?? null : null,
+    floor: showAddress ? order.floor ?? null : null,
+    apartment: showAddress ? order.apartment ?? null : null,
+    intercom: showAddress ? order.intercom ?? null : null,
+    distanceMeters: showAddress ? yardOrderDistance(order, order.shop) : null,
+    shopRadiusMeters: yardShopRadius(order.shop),
+    items: (order.items ?? []).map((i: any) => ({ id: i.id, itemId: i.itemId, name: i.name, price: i.price, qty: i.qty })),
+    messages: (order.messages ?? []).map((m: any) => ({
+      id: m.id, from: m.from, text: m.text, imageUrl: m.imageUrl, createdAt: m.createdAt,
+    })),
+  };
+}
+
+yardRouter.get('/yard/orders/:id', async (req, res) => {
+  const phone = normalizePhone(String(req.query.phone ?? ''));
+  if (!phone) return res.status(400).json({ error: 'Некорректный номер телефона' });
+  try {
+    const order = await prisma.yardOrder.findUnique({
+      where: { id: req.params.id },
+      include: { items: true, shop: true, messages: { orderBy: { createdAt: 'asc' } } },
+    });
+    if (!order) return res.status(404).json({ error: 'Заказ не найден' });
+    const isSeller = phone === order.shop.phone;
+    if (!isSeller && phone !== order.buyerPhone) return res.status(403).json({ error: 'Этот номер не участвует в заказе' });
+    res.json(toOrderDetailDto(order, isSeller ? 'seller' : 'buyer'));
+  } catch (err: any) {
+    logger.error({ err }, '[Yard] GET /yard/orders/:id упал');
+    res.status(500).json({ error: 'Не удалось получить заказ', details: String(err?.message ?? err) });
   }
 });
 
@@ -652,17 +770,29 @@ yardRouter.get('/yard/mine', async (req, res) => {
     res.json({
       shop,
       items,
-      orders: orders.map((o: any) => ({
-        id: o.id,
-        publicId: o.publicId,
-        status: o.status,
-        total: o.total,
-        createdAt: o.createdAt,
-        items: o.items,
-        buyerName: o.buyerName,
-        buyerPhone: YARD_PHONE_VISIBLE_STATUSES.includes(o.status) ? o.buyerPhone : null,
-        address: YARD_PHONE_VISIBLE_STATUSES.includes(o.status) ? o.address : null,
-      })),
+      orders: orders.map((o: any) => {
+        // Накладная: адрес, подъезд, этаж, квартира, домофон и расстояние — сразу после «Оплачено».
+        // Номер покупателя — с самого начала (он и так виден продавцу в чате), по нему приложение
+        // находит заказ для «Подтвердить оплату».
+        const details = YARD_SELLER_DETAIL_STATUSES.includes(o.status);
+        return {
+          id: o.id,
+          publicId: o.publicId,
+          status: o.status,
+          total: o.total,
+          createdAt: o.createdAt,
+          items: o.items,
+          buyerName: o.buyerName,
+          buyerPhone: o.buyerPhone,
+          address: details ? o.address ?? null : null,
+          entrance: details ? o.entrance ?? null : null,
+          floor: details ? o.floor ?? null : null,
+          apartment: details ? o.apartment ?? null : null,
+          intercom: details ? o.intercom ?? null : null,
+          distanceMeters: details ? yardOrderDistance(o, shop) : null,
+          shopRadiusMeters: yardShopRadius(shop),
+        };
+      }),
     });
   } catch (err: any) {
     logger.error({ err }, '[Yard] GET /yard/mine упал');
@@ -813,6 +943,58 @@ yardRouter.post('/yard/orders/:id/payment', async (req, res) => {
 });
 
 const phoneOnlySchema = z.object({ phone: z.string().min(1) });
+
+/**
+ * «Оплачено» — кнопка продавца в чате и в заказе (приложение зовёт именно этот путь; /payment
+ * остаётся для прежнего вызова с ok). Повторное нажатие — не ошибка. Покупателю уходит
+ * «✅ Оплачено» в чат магазина и пуш: зелёный блок «Оплачено, ожидайте 15–25 минут» строится по нему.
+ */
+yardRouter.post('/yard/orders/:id/paid', async (req, res) => {
+  const parsed = z.object({ phone: z.string().min(1) }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+  try {
+    const check = await requireYardShopOwner(req.params.id, parsed.data.phone);
+    if ('error' in check) return res.status(check.status).json({ error: check.error });
+    const current = check.order;
+    if (YARD_PAID_OR_LATER.includes(current.status)) return res.json({ id: current.id, status: current.status });
+    const order = await yardApplyPayment(req.params.id, true);
+    try {
+      await prisma.yardShopMessage.create({
+        data: { shopId: current.shopId, buyerPhone: current.buyerPhone, from: 'shop', text: '✅ Оплачено' },
+      });
+    } catch (err) {
+      logger.warn({ err }, '[Yard] «✅ Оплачено» в чат не записалось');
+    }
+    const recipient = normalizePhone(current.buyerPhone) || current.buyerPhone;
+    sendPush(recipient, {
+      title: current.shop?.name || 'Магазин',
+      body: 'Оплата подтверждена. Ожидайте 15–25 минут',
+      data: { shopId: current.shopId, type: 'chat' },
+    }).catch((err) => logger.error({ err, recipient }, '[Yard] Пуш об оплате не ушёл'));
+    res.json(order);
+  } catch (err: any) {
+    if (err instanceof YardTransitionError) return res.status(err.status).json({ error: err.message });
+    logger.error({ err }, '[Yard] POST /yard/orders/:id/paid упал');
+    res.status(500).json({ error: 'Не удалось отметить оплату', details: String(err?.message ?? err) });
+  }
+});
+
+/** «Оплаты нет» — гасит заказ, остаток полки не трогает. Повтор — не ошибка. */
+yardRouter.post('/yard/orders/:id/reject', async (req, res) => {
+  const parsed = z.object({ phone: z.string().min(1) }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+  try {
+    const check = await requireYardShopOwner(req.params.id, parsed.data.phone);
+    if ('error' in check) return res.status(check.status).json({ error: check.error });
+    if (check.order.status === 'no_payment') return res.json({ id: check.order.id, status: check.order.status });
+    const order = await yardApplyPayment(req.params.id, false);
+    res.json(order);
+  } catch (err: any) {
+    if (err instanceof YardTransitionError) return res.status(err.status).json({ error: err.message });
+    logger.error({ err }, '[Yard] POST /yard/orders/:id/reject упал');
+    res.status(500).json({ error: 'Не удалось отметить «оплаты нет»', details: String(err?.message ?? err) });
+  }
+});
 
 /** «Принял» — только продавец, только из paid. Дальше телефон покупателя виден. */
 yardRouter.post('/yard/orders/:id/accept', async (req, res) => {

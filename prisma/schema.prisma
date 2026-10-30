@@ -731,6 +731,12 @@ model YardOrder {
   buyerPhone String   // нормализованный
   buyerName  String
   address    String?
+  // Адрес доставки покупателя: подъезд, этаж, квартира, домофон. Приходят из
+  // приложения вместе с заказом или следом (POST /yard/order-address).
+  entrance   String?
+  floor      String?
+  apartment  String?
+  intercom   String?
   lat        Float?
   lng        Float?
   total      Float
