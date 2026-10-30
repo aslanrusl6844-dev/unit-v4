@@ -12,6 +12,8 @@ process.env.DATABASE_URL = 'postgresql://stub:stub@127.0.0.1:1/none';
 process.env.SHOP_APP_KEY = APP_KEY;
 process.env.ADMIN_USER = 'admin-test';
 process.env.ADMIN_PASSWORD = randomBytes(12).toString('hex');
+process.env.SMS_API_KEY = 'test-sms-key';
+process.env.SMS_PROVIDER = 'smsc';
 
 type Row = Record<string, any>;
 let devices: Row[] = [];
@@ -49,6 +51,8 @@ const app = require('../src/expressApp').default;
 
 let expoCalls: Row[][] = [];
 let expoOk = true;
+let smsCalls: Row[] = [];
+let smsOk = true;
 const realFetch = globalThis.fetch;
 globalThis.fetch = (async (url: any, init?: any) => {
   if (String(url).startsWith('https://exp.host/')) {
@@ -56,6 +60,10 @@ globalThis.fetch = (async (url: any, init?: any) => {
     expoCalls.push(msgs);
     const data = msgs.map(() => (expoOk ? { status: 'ok', id: 'x' } : { status: 'error', message: 'gone', details: { error: 'DeviceNotRegistered' } }));
     return new Response(JSON.stringify({ data }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }
+  if (String(url) === 'https://smsc.kz/sys/send.php') {
+    smsCalls.push({ phone: new URLSearchParams(String(init.body)).get('phones'), text: new URLSearchParams(String(init.body)).get('mes') });
+    return new Response(smsOk ? 'OK - 1 SMS' : JSON.stringify({ error: 'bad', error_code: 7 }), { status: 200 });
   }
   return realFetch(url, init);
 }) as typeof fetch;
@@ -87,47 +95,70 @@ before(async () => {
   port = (server.address() as any).port;
 });
 after(() => new Promise<void>((r) => server.close(() => r())));
-beforeEach(() => { devices = [{ phone: '77001112233', token: 'ExponentPushToken[known]' }]; codes = []; expoCalls = []; expoOk = true; });
+beforeEach(() => { devices = [{ phone: '77001112233', token: 'ExponentPushToken[known]' }]; codes = []; expoCalls = []; expoOk = true; smsCalls = []; smsOk = true; });
 
 describe('POST /auth/request-code', () => {
-  test('известный номер: код уходит пушем на его устройство, в ответе кода нет', async () => {
+  test('известный номер: код уходит SMS на этот номер и пушем на его устройство, в ответе кода нет', async () => {
     const r = await call('/api/shop/auth/request-code', { phone: '+7 700 111 22 33' });
     assert.equal(r.status, 200, JSON.stringify(r.json));
-    assert.equal(expoCalls.length, 1);
+    assert.deepEqual([r.json.sms, r.json.push], [true, true]);
     assert.equal(expoCalls[0][0].to, 'ExponentPushToken[known]');
-    assert.match(String(expoCalls[0][0].data.code), /^\d{4}$/);
+    assert.equal(smsCalls[0].phone, '77001112233');
     assert.match(expoCalls[0][0].body, /Код входа: \d{4}/);
+    assert.match(String(smsCalls[0].text), new RegExp(sentCode()));
     assert.ok(!JSON.stringify(r.json).includes(sentCode()), 'код нельзя возвращать в ответе');
     assert.ok(!codes[0].codeHash.includes(sentCode()), 'в базе только хэш');
   });
 
-  test('выдуманный (неизвестный) номер: 404, пуш никому не уходит', async () => {
+  test('новый номер (устройства нет): код уходит только SMS на этот номер — никому другому', async () => {
     const r = await call('/api/shop/auth/request-code', { phone: '+77009998877' });
-    assert.equal(r.status, 404);
-    assert.equal(r.json.reason, 'unknown_number');
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.deepEqual([r.json.sms, r.json.push], [true, false]);
+    assert.equal(smsCalls.length, 1);
+    assert.equal(smsCalls[0].phone, '77009998877');
+    assert.equal(expoCalls.length, 0, 'чужим устройствам пуш с этим кодом не уходит');
+  });
+
+  test('код чужого номера не уходит на устройство другого номера', async () => {
+    await call('/api/shop/auth/request-code', { phone: '+77009998877' });
     assert.equal(expoCalls.length, 0);
+    assert.equal(smsCalls[0].phone, '77009998877');
+  });
+
+  test('SMS не ушло, но пуш принят: вход возможен (push=true)', async () => {
+    smsOk = false;
+    const r = await call('/api/shop/auth/request-code', { phone: '+77001112233' });
+    assert.equal(r.status, 200);
+    assert.deepEqual([r.json.sms, r.json.push], [false, true]);
+  });
+
+  test('новый номер и SMS не ушло: 502, код стёрт', async () => {
+    smsOk = false;
+    const r = await call('/api/shop/auth/request-code', { phone: '+77009998877' });
+    assert.equal(r.status, 502);
+    assert.equal(r.json.reason, 'delivery_failed');
     assert.equal(codes.length, 0);
   });
 
-  test('некорректный номер: 400', async () => {
-    const r = await call('/api/shop/auth/request-code', { phone: '123' });
-    assert.equal(r.status, 400);
-    assert.equal(expoCalls.length, 0);
+  test('и SMS, и пуш не приняты: 502, код стёрт', async () => {
+    smsOk = false; expoOk = false;
+    const r = await call('/api/shop/auth/request-code', { phone: '+77001112233' });
+    assert.equal(r.status, 502);
+    assert.equal(codes.length, 0);
   });
 
-  test('повтор раньше чем через 30 секунд: 429, второй пуш не уходит', async () => {
+  test('некорректный номер: 400, ничего не отправляется', async () => {
+    const r = await call('/api/shop/auth/request-code', { phone: '123' });
+    assert.equal(r.status, 400);
+    assert.equal(expoCalls.length + smsCalls.length, 0);
+  });
+
+  test('повтор раньше чем через 30 секунд: 429, ни SMS, ни пуш второй раз не уходят', async () => {
     await call('/api/shop/auth/request-code', { phone: '+77001112233' });
     const r = await call('/api/shop/auth/request-code', { phone: '+77001112233' });
     assert.equal(r.status, 429);
     assert.equal(expoCalls.length, 1);
-  });
-
-  test('устройство не приняло пуш: 502, код не остаётся в базе', async () => {
-    expoOk = false;
-    const r = await call('/api/shop/auth/request-code', { phone: '+77001112233' });
-    assert.equal(r.status, 502);
-    assert.equal(r.json.reason, 'push_failed');
-    assert.equal(codes.length, 0);
+    assert.equal(smsCalls.length, 1);
   });
 
   test('без x-app-key нельзя', async () => {

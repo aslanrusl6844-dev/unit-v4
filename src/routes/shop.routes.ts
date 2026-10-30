@@ -1737,10 +1737,12 @@ const loginCodeRequestSchema = z.object({ phone: z.string().min(1) });
 const loginCodeVerifySchema = z.object({ phone: z.string().min(1), code: z.string().regex(/^\d{4}$/) });
 
 /**
- * Запрос кода входа. Код создаёт СЕРВЕР и шлёт пушем только на устройство, где этот номер уже входил
- * (токен ShopCustomerPushToken по номеру). Неизвестному номеру код не уходит вообще — раньше приложение само
- * придумывало код и показывало его на том же телефоне, поэтому он «приходил» при любом выдуманном номере.
- * Код в ответе НИКОГДА не возвращается. Повтор — не чаще раза в 30 с.
+ * Запрос кода входа. Код создаёт СЕРВЕР и доставляет его владельцу введённого номера:
+ *  - SMS на сам номер (SMSC.kz) — доходит и до тех, кто входит впервые или с нового телефона;
+ *  - плюс пуш на устройство, где этот номер уже входил (ShopCustomerPushToken), если оно известно.
+ * Раньше приложение само придумывало код и показывало его на том же телефоне, поэтому он «приходил» при
+ * любом, даже выдуманном номере. Код в ответе НИКОГДА не возвращается. Повтор — не чаще раза в 30 с.
+ * Не ушло ни SMS, ни пуш — 502, код стирается.
  */
 shopRouter.post('/auth/request-code', async (req, res) => {
   const parsed = loginCodeRequestSchema.safeParse(req.body);
@@ -1749,33 +1751,32 @@ shopRouter.post('/auth/request-code', async (req, res) => {
   if (!phone) return res.status(400).json({ error: 'Некорректный номер телефона', reason: 'invalid_phone' });
 
   try {
-    const device = await prisma.shopCustomerPushToken.findUnique({ where: { phone } });
-    if (!device?.token) {
-      logger.info({ phone: phone.slice(-4) }, '[LoginCode] номер неизвестен — код не отправлен');
-      return res.status(404).json({ error: 'Этот номер ещё не входил в приложение, код отправить некуда', reason: 'unknown_number' });
-    }
     const existing = await prisma.shopLoginCode.findUnique({ where: { phone } });
     if (existing && Date.now() - existing.sentAt.getTime() < LOGIN_CODE_RESEND_MS) {
       const wait = Math.ceil((LOGIN_CODE_RESEND_MS - (Date.now() - existing.sentAt.getTime())) / 1000);
       return res.status(429).json({ error: `Код уже отправлен. Повторить можно через ${wait} с`, reason: 'too_soon', retryAfter: wait });
     }
+    const device = await prisma.shopCustomerPushToken.findUnique({ where: { phone } });
     const code = String(randomInt(1000, 10000));
     const data = { codeHash: loginCodeHash(phone, code), expiresAt: new Date(Date.now() + LOGIN_CODE_TTL_MS), attempts: 0, sentAt: new Date() };
     await prisma.shopLoginCode.upsert({ where: { phone }, update: data, create: { phone, ...data } });
 
-    const r = await sendBroadcast({
-      title: 'My Market',
-      body: `Код входа: ${code}. Никому его не сообщайте`,
-      tokens: [device.token],
-      data: { type: 'login_code', code },
-    });
-    if (r.sent < 1) {
+    const text = `My Market: код входа ${code}. Никому его не сообщайте`;
+    const [smsOk, pushOk] = await Promise.all([
+      sendSms(phone, text),
+      device?.token
+        ? sendBroadcast({ title: 'My Market', body: `Код входа: ${code}. Никому его не сообщайте`, tokens: [device.token], data: { type: 'login_code', code } })
+            .then((r) => r.sent > 0)
+            .catch(() => false)
+        : Promise.resolve(false),
+    ]);
+    if (!smsOk && !pushOk) {
       await prisma.shopLoginCode.deleteMany({ where: { phone } });
-      logger.error({ phone: phone.slice(-4), failed: r.failed, notRegistered: r.notRegistered, fcmError: r.fcmError }, '[LoginCode] пуш с кодом не принят');
-      return res.status(502).json({ error: 'Не удалось отправить код на устройство этого номера', reason: 'push_failed' });
+      logger.error({ phone: phone.slice(-4), hadDevice: !!device?.token }, '[LoginCode] код не удалось доставить ни SMS, ни пушем');
+      return res.status(502).json({ error: 'Не удалось отправить код на этот номер. Проверьте номер и попробуйте ещё раз', reason: 'delivery_failed' });
     }
-    logger.info({ phone: phone.slice(-4) }, '[LoginCode] код отправлен пушем');
-    res.json({ ok: true, expiresIn: Math.round(LOGIN_CODE_TTL_MS / 1000) });
+    logger.info({ phone: phone.slice(-4), sms: smsOk, push: pushOk }, '[LoginCode] код отправлен');
+    res.json({ ok: true, expiresIn: Math.round(LOGIN_CODE_TTL_MS / 1000), sms: smsOk, push: pushOk });
   } catch (err: any) {
     logger.error({ err }, '[LoginCode] POST /auth/request-code упал');
     res.status(500).json({ error: 'Не удалось отправить код', details: String(err?.message ?? err) });
