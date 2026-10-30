@@ -393,22 +393,30 @@ function cleanAddressPart(v: string | null | undefined): string | null | undefin
  * эндпоинта на отмену заказа в этом файле намеренно нет.
  */
 yardRouter.post('/yard/orders', async (req, res) => {
+  // Каждая попытка оформить заказ оставляет след в логах: раньше сбой был тихим и «заказа нет» нельзя было объяснить.
+  const reject = (status: number, reason: string, extra: Record<string, unknown> = {}) => {
+    logger.warn({ status, reason, ...extra }, '[Yard] POST /yard/orders отклонён');
+    return status;
+  };
   const parsed = createOrderSchema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+  if (!parsed.success) {
+    return res.status(reject(400, 'неверные данные', { fields: Object.keys(parsed.error.flatten().fieldErrors) })).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+  }
 
   const normalizedPhone = normalizePhone(parsed.data.buyerPhone);
-  if (!normalizedPhone) return res.status(400).json({ error: 'Некорректный номер телефона' });
+  if (!normalizedPhone) return res.status(reject(400, 'некорректный телефон')).json({ error: 'Некорректный номер телефона' });
+  logger.info({ shopId: parsed.data.shopId, buyer: normalizedPhone.slice(-4), lines: parsed.data.items.length, pointKnown: !(parsed.data.lat === 0 && parsed.data.lng === 0) }, '[Yard] POST /yard/orders получен');
 
   try {
     const shop = await prisma.yardShop.findUnique({ where: { id: parsed.data.shopId } });
-    if (!shop || !yardShopIsLive(shop)) return res.status(404).json({ error: 'Двор не найден' });
+    if (!shop || !yardShopIsLive(shop)) return res.status(reject(404, 'двор не найден или не активен', { shopId: parsed.data.shopId })).json({ error: 'Двор не найден' });
     // Точка покупателя 0,0 — приложение не знает местоположение (геолокация выключена): заказ не
     // отклоняем и расстояние не считаем. Реальная точка вне радиуса магазина по-прежнему отклоняется.
     const pointUnknown = parsed.data.lat === 0 && parsed.data.lng === 0;
     const shopRadius = yardShopRadius(shop);
     if (!pointUnknown) {
       const distance = yardDistanceMeters(parsed.data.lat, parsed.data.lng, shop.lat, shop.lng);
-      if (distance > shopRadius) return res.status(403).json({ error: `Вы вне радиуса ${shopRadius} м от этого двора` });
+      if (distance > shopRadius) return res.status(reject(403, 'вне радиуса', { distance: Math.round(distance), shopRadius })).json({ error: `Вы вне радиуса ${shopRadius} м от этого двора` });
     }
 
     const itemIds = parsed.data.items.map((i) => i.itemId);
@@ -418,8 +426,8 @@ yardRouter.post('/yard/orders', async (req, res) => {
     const orderItemsData: Array<{ itemId: string; name: string; price: number; qty: number }> = [];
     for (const line of parsed.data.items) {
       const shelfItem = shelfById.get(line.itemId) as { id: string; name: string; price: number; stock: number } | undefined;
-      if (!shelfItem) return res.status(400).json({ error: `Товар ${line.itemId} не найден на этой полке` });
-      if (shelfItem.stock < line.qty) return res.status(400).json({ error: `На полке недостаточно «${shelfItem.name}»` });
+      if (!shelfItem) return res.status(reject(400, 'товар не найден на полке', { itemId: line.itemId })).json({ error: `Товар ${line.itemId} не найден на этой полке` });
+      if (shelfItem.stock < line.qty) return res.status(reject(400, 'не хватает на полке', { itemId: line.itemId, stock: shelfItem.stock, qty: line.qty })).json({ error: `На полке недостаточно «${shelfItem.name}»` });
       orderItemsData.push({ itemId: shelfItem.id, name: shelfItem.name, price: shelfItem.price, qty: line.qty });
     }
     const total = orderItemsData.reduce((sum, i) => sum + i.price * i.qty, 0);
@@ -444,6 +452,7 @@ yardRouter.post('/yard/orders', async (req, res) => {
       },
       include: { items: true },
     });
+    logger.info({ orderId: order.id, publicId: order.publicId, total: order.total }, '[Yard] Заказ создан');
     res.status(201).json({
       id: order.id,
       publicId: order.publicId,
