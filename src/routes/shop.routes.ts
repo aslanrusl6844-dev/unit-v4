@@ -1725,9 +1725,8 @@ shopRouter.post('/profile/push-token', async (req, res) => {
 
 /**
  * Курьер запрашивает код выдачи — генерируется ЗДЕСЬ, впервые (не при
- * оплате). Только для своего заказа в picked/in_transit. Код отдаётся в
- * ответе — дальше это забота приложения показать его покупателю; SMS и
- * Expo push уходят покупателю сразу же, ниже.
+ * оплате). Только для своего заказа в picked/in_transit. Код уходит ТОЛЬКО покупателю
+ * (SMS и пуш, ниже); в ответе курьеру его нет — курьер вводит код, который назвал покупатель.
  */
 shopRouter.post('/courier/request-code', async (req, res) => {
   const parsed = courierOrderRefSchema.safeParse(req.body);
@@ -1765,7 +1764,9 @@ shopRouter.post('/courier/request-code', async (req, res) => {
       logger.warn({ orderNumber: order.number, phone: order.phone }, '[Shop API] Не удалось нормализовать телефон покупателя для SMS');
     }
 
-    res.json({ ok: true, pickupCode });
+    // Код курьеру НЕ возвращаем: он уходит только покупателю (SMS и пуш выше). Иначе курьер мог бы прочитать код
+    // из ответа сервера и закрыть заказ без покупателя. Курьер вводит код, который назвал покупатель у двери.
+    res.json({ ok: true });
   } catch (err: any) {
     logger.error({ err }, '[Shop API] Ошибка запроса кода выдачи');
     res.status(500).json({ error: 'Не удалось получить код выдачи', details: String(err?.message ?? err) });
