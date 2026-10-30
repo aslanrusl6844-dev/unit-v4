@@ -206,14 +206,16 @@ describe('GET /yard/nearby — radius покупателя и радиус ма�
     }
   });
 
-  test('формат ответа прежний (id, name, photo, meters, items), без телефона и новых полей; выключенные/без подписки скрыты', async () => {
+  test('формат ответа: id, name, photo, meters, items + lat/lng для точки на карте; без телефона; выключенные/без подписки скрыты', async () => {
     const s = seedShop({ bannerUrl: 'https://b/x.png', tickerText: 'акция' });
     seedItem(s.id);
     seedShop({ active: false });
     seedShop({ paidUntil: new Date(Date.now() - 1000) });
     const r = await call('GET', `/api/shop/yard/nearby?${q(100)}`);
     assert.equal(r.json.length, 1);
-    assert.deepEqual(Object.keys(r.json[0]).sort(), ['id', 'items', 'meters', 'name', 'photo']);
+    assert.deepEqual(Object.keys(r.json[0]).sort(), ['id', 'items', 'lat', 'lng', 'meters', 'name', 'photo']);
+    assert.equal(r.json[0].lat, s.lat);
+    assert.equal(r.json[0].lng, s.lng);
     assert.equal(JSON.stringify(r.json).includes('phone'), false);
   });
 
@@ -241,13 +243,16 @@ describe('GET /yard/shop/:id — полка, баннер, видео, стро�
     assert.equal(JSON.stringify(r.json).includes('phone'), false);
   });
 
-  test('дальше радиуса магазина — 403, внутри — 200 (радиус 200 / 1000)', async () => {
+  test('полка открывается по id с любого расстояния: радиус режет список nearby и заказ, а не открытие полки', async () => {
+    // С 17.10 (76c97ec) проверку расстояния с полки убрали намеренно: покупатель уже выбрал
+    // магазин из списка «рядом» (там радиус работает), полка не должна закрываться из-за GPS.
     const s200 = seedShop({ radiusMeters: 200 });
     const s1000 = seedShop({ radiusMeters: 1000 });
-    assert.equal((await call('GET', `/api/shop/yard/shop/${s200.id}?${q(250)}`)).status, 403);
+    assert.equal((await call('GET', `/api/shop/yard/shop/${s200.id}?${q(250)}`)).status, 200);
     assert.equal((await call('GET', `/api/shop/yard/shop/${s200.id}?${q(150)}`)).status, 200);
-    assert.equal((await call('GET', `/api/shop/yard/shop/${s1000.id}?${q(900)}`)).status, 200);
-    assert.equal((await call('GET', `/api/shop/yard/shop/${s1000.id}?${q(1100)}`)).status, 403);
+    assert.equal((await call('GET', `/api/shop/yard/shop/${s1000.id}?${q(1100)}`)).status, 200);
+    // а в списке «рядом» радиус магазина по-прежнему отсекает: на 250 м магазин 200 м не виден
+    assert.deepEqual(ids(await call('GET', `/api/shop/yard/nearby?${q(250, '&radius=2000')}`)), [s1000.id]);
   });
 
   test('скрытый, выключенный и неизвестный магазин → 404; без координат → 400', async () => {
