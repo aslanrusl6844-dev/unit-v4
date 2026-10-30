@@ -31,6 +31,36 @@ export function yardParseBuyerRadius(raw: unknown): number | null {
 /** Номер магазина и покупателя виден только после «Принял». */
 export const YARD_PHONE_VISIBLE_STATUSES = ['accepted', 'at_door', 'done', 'not_picked', 'out_of_stock'];
 
+/**
+ * Кому продавец видит адрес доставки (подъезд, этаж, квартира, домофон) и расстояние:
+ * сразу после «Оплачено» — до оплаты адрес не показываем. Номер покупателя продавец
+ * видит с самого начала: он и так есть в чате (GET /yard/shops/:id/messages), а по нему
+ * приложение находит заказ для кнопки «Подтвердить оплату».
+ */
+export const YARD_SELLER_DETAIL_STATUSES = ['paid', 'accepted', 'at_door', 'done', 'not_picked', 'out_of_stock'];
+
+/** Статусы заказа, после которых «Оплачено» повторять не нужно (повторное нажатие — не ошибка). */
+export const YARD_PAID_OR_LATER = ['paid', 'accepted', 'at_door', 'done'];
+
+/** Статус для приложения: оно знает new / paid / accepted / rejected. Реальный статус отдаём в serverStatus. */
+export function yardAppStatus(status: string): string {
+  if (status === 'waiting_payment') return 'waiting_payment';
+  if (status === 'paid') return 'paid';
+  if (status === 'accepted' || status === 'at_door' || status === 'done') return 'accepted';
+  if (status === 'no_payment' || status === 'not_picked' || status === 'out_of_stock') return 'rejected';
+  return status;
+}
+
+/** Расстояние от точки заказа до магазина, м. Нет координат (или 0,0) — null. */
+export function yardOrderDistance(
+  order: { lat?: number | null; lng?: number | null },
+  shop: { lat: number; lng: number },
+): number | null {
+  if (typeof order.lat !== 'number' || typeof order.lng !== 'number') return null;
+  if (order.lat === 0 && order.lng === 0) return null;
+  return Math.round(yardDistanceMeters(order.lat, order.lng, shop.lat, shop.lng));
+}
+
 export class YardTransitionError extends Error {
   status: number;
   constructor(message: string, status = 409) {
