@@ -221,7 +221,7 @@ function scTickerHtml(c) {
       <label>Текст (пусто — строки нет) <input type="text" id="scTickerText" maxlength="200" placeholder="CELL29 — КОРЕЙСКАЯ КОСМЕТИКА" value="${scEsc(c.tickerText)}" /></label>
       ${colorRow('scTickerBg', 'Цвет полосы', bg)}
       ${colorRow('scTickerColor', 'Цвет букв', fg)}
-      <div id="scTickerPreview" style="overflow:hidden;white-space:nowrap;padding:10px 0;font-weight:700;letter-spacing:.04em;text-transform:uppercase"></div>
+      <div id="scTickerPreview" style="overflow:hidden;white-space:pre;padding:10px 0;font-weight:700;letter-spacing:.04em;text-transform:uppercase"></div>
       <p class="panel__hint" style="margin:0">Строка показывается на странице бренда между видео и карточками. Изменения применяются кнопкой «Сохранить».</p>
     </div>`;
 }
@@ -232,7 +232,7 @@ function scTickerPreview() {
   const text = document.getElementById('scTickerText').value.trim();
   box.style.background = document.getElementById('scTickerBg').value;
   box.style.color = document.getElementById('scTickerColor').value;
-  box.textContent = text ? Array(6).fill(text).join('   •   ') : 'Предпросмотр: введите текст';
+  box.textContent = text ? Array(6).fill(text).join('        ') : 'Предпросмотр: введите текст';
   box.style.opacity = text ? '1' : '.5';
 }
 
