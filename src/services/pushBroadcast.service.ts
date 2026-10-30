@@ -21,6 +21,7 @@ export interface BroadcastInput {
   imageUrl?: string | null;
   tokens: string[];
   data?: Record<string, string>; // доп. поля data (type и т.п.); по умолчанию type=broadcast
+  fullText?: boolean; // Firebase: слать data-пуш, приложение показывает весь текст (нужна свежая версия приложения)
 }
 export interface BroadcastResult {
   total: number; // токенов получено
@@ -94,7 +95,7 @@ export async function sendBroadcast(input: BroadcastInput): Promise<BroadcastRes
     for (const p of parts) { result.sent += p.sent; result.failed += p.failed; result.notRegistered += p.notRegistered; }
   }
   if (fcm.length) {
-    const f = await sendFcmBroadcast(fcm, input.title, input.body, input.imageUrl, undefined, input.data);
+    const f = await sendFcmBroadcast(fcm, input.title, input.body, input.imageUrl, undefined, input.data, !!input.fullText);
     result.sent += f.sent; result.failed += f.failed; result.notRegistered += f.notRegistered;
     if (f.error) result.fcmError = f.error;
   }

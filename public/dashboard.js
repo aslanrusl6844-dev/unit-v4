@@ -5795,7 +5795,7 @@ async function broadcastSend(audience) {
   try {
     const r = await api('/push-admin/send', {
       method: 'POST',
-      body: JSON.stringify({ title, body, imageUrl: broadcastImage || null, audience, testPhone: audience === 'test' ? testPhone : null }),
+      body: JSON.stringify({ title, body, imageUrl: broadcastImage || null, audience, testPhone: audience === 'test' ? testPhone : null, fullText: !!document.getElementById('bcFullText')?.checked }),
     });
     status.style.color = r.failed ? 'var(--warn)' : 'var(--profit, inherit)';
     status.textContent = `Принято: ${r.sent}, ошибок: ${r.failed}` + (r.notRegistered ? ` (устройство не зарегистрировано: ${r.notRegistered})` : '')

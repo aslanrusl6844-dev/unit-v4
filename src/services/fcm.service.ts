@@ -68,7 +68,19 @@ async function getAccessToken(sa: ServiceAccount): Promise<string> {
 }
 
 /** Сообщение FCM v1. Без картинки полей image нет вовсе. */
-export function buildFcmMessage(token: string, title: string, body: string, imageUrl?: string | null, data?: Record<string, string>) {
+export function buildFcmMessage(token: string, title: string, body: string, imageUrl?: string | null, data?: Record<string, string>, fullText = false) {
+  if (fullText) {
+    // «Весь текст»: Android показывает уведомление с картинкой урезанным, а систему не настроить.
+    // Поэтому Android получает только data (title/body/image) и приложение само рисует баннер
+    // с полным текстом; iOS получает обычный alert.
+    const msg: Record<string, any> = {
+      token,
+      data: { type: 'broadcast', ...(data ?? {}), title, body, ...(imageUrl ? { image: imageUrl } : {}) },
+      android: { priority: 'HIGH' },
+      apns: { payload: { aps: { alert: { title, body }, sound: 'default', ...(imageUrl ? { 'mutable-content': 1 } : {}) } }, ...(imageUrl ? { fcm_options: { image: imageUrl } } : {}) },
+    };
+    return msg;
+  }
   const notification: Record<string, string> = { title, body };
   const message: Record<string, any> = { token, notification, data: { type: 'broadcast', ...(data ?? {}) } };
   if (imageUrl) {
@@ -82,7 +94,7 @@ export function buildFcmMessage(token: string, title: string, body: string, imag
 
 export interface FcmResult { sent: number; failed: number; notRegistered: number; error?: string }
 
-export async function sendFcmBroadcast(tokens: string[], title: string, body: string, imageUrl?: string | null, rawKey = process.env.FIREBASE_KEY, extraData?: Record<string, string>): Promise<FcmResult> {
+export async function sendFcmBroadcast(tokens: string[], title: string, body: string, imageUrl?: string | null, rawKey = process.env.FIREBASE_KEY, extraData?: Record<string, string>, fullText = false): Promise<FcmResult> {
   const result: FcmResult = { sent: 0, failed: 0, notRegistered: 0 };
   if (!tokens.length) return result;
   let sa: ServiceAccount;
@@ -101,7 +113,7 @@ export async function sendFcmBroadcast(tokens: string[], title: string, body: st
       const res = await fetchWithTimeout(url, {
         method: 'POST',
         headers: { Authorization: `Bearer ${access}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: buildFcmMessage(token, title, body, imageUrl, extraData) }),
+        body: JSON.stringify({ message: buildFcmMessage(token, title, body, imageUrl, extraData, fullText) }),
       });
       if (res.ok) { result.sent++; return; }
       const data: any = await res.json().catch(() => ({}));

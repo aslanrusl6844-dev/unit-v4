@@ -236,6 +236,29 @@ describe('Firebase (FCM HTTP v1) напрямую для FCM-токенов', ()
     assert.ok(!('image' in m.data) && !('android' in m) && !('apns' in m));
   });
 
+  test('fullText: Firebase получает data-пуш с полным текстом (без notification), Expo не меняется', async () => {
+    const long = 'Жұма мүбәрак болсын! '.repeat(20).trim().slice(0, 480);
+    tokens = [{ phone: '1', token: fcmTok('a') }, { phone: '2', token: 'ExponentPushToken[abc]' }];
+    const r = await call('POST', '/api/push-admin/send', { title: 'Жұма', body: long, imageUrl: 'https://blob.example/a.jpg', audience: 'all', fullText: true });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    const m = fcmCalls[0].message;
+    assert.ok(!('notification' in m), 'для Android — только data, баннер рисует приложение');
+    assert.equal(m.data.type, 'broadcast');
+    assert.equal(m.data.title, 'Жұма');
+    assert.equal(m.data.body, long);
+    assert.equal(m.data.image, 'https://blob.example/a.jpg');
+    assert.equal(m.android.priority, 'HIGH');
+    assert.deepEqual(m.apns.payload.aps.alert, { title: 'Жұма', body: long });
+    assert.equal(expoCalls[0][0].body, long);
+    assert.ok('notification' in fcmCalls[0].message === false);
+  });
+
+  test('без fullText (как раньше): notification остаётся, ничего не меняется', async () => {
+    tokens = [{ phone: '1', token: fcmTok('a') }];
+    await call('POST', '/api/push-admin/send', { title: 'T', body: 'B', audience: 'all', fullText: false });
+    assert.deepEqual(fcmCalls[0].message.notification, { title: 'T', body: 'B' });
+  });
+
   test('JWT для Google подписан ключом сервисного аккаунта (RS256), scope firebase.messaging', async () => {
     tokens = [{ phone: '1', token: fcmTok('a') }];
     await call('POST', '/api/push-admin/send', { title: 'T', body: 'B', audience: 'all' });
