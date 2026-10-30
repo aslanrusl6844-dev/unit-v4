@@ -38,13 +38,15 @@ showcasesRouter.use((req, res, next) => {
 });
 
 /** Витрина для списка/шапки — только публичные поля. */
-/** Бегущая строка витрины: цвета по умолчанию — чёрная полоса, белые буквы. */
+/** Бегущая строка витрины: по умолчанию чёрная полоса, белые буквы, шрифт 20. */
+export const TICKER_DEFAULT_SIZE = 20;
 export function tickerOf(s: any) {
   const text = typeof s.tickerText === 'string' ? s.tickerText.trim() : '';
   const hex = (v: unknown, fallback: string) => (typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v) ? v.toUpperCase() : fallback);
+  const size = Number.isInteger(s.tickerSize) && s.tickerSize >= 8 && s.tickerSize <= 60 ? s.tickerSize : TICKER_DEFAULT_SIZE;
   return text
-    ? { tickerText: text, tickerBg: hex(s.tickerBg, '#000000'), tickerColor: hex(s.tickerColor, '#FFFFFF') }
-    : { tickerText: null, tickerBg: null, tickerColor: null };
+    ? { tickerText: text, tickerBg: hex(s.tickerBg, '#000000'), tickerColor: hex(s.tickerColor, '#FFFFFF'), tickerSize: size }
+    : { tickerText: null, tickerBg: null, tickerColor: null, tickerSize: null };
 }
 
 function publicShowcase(s: any) {

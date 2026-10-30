@@ -896,7 +896,7 @@ describe('контракт для Android и сквозной сценарий',
     assert.deepEqual(list, [{ id: s.id, type: 'shop', title: 'Nike', description: 'D', logoUrl: 'https://b.example/l.png', bannerUrl: 'https://b.example/b.png', bannerTitle: 'BT', bannerText: 'BX' }]);
 
     const detail = (await pub(`/${s.id}`)).json;
-    assert.deepEqual(keys(detail), ['bannerText', 'bannerTitle', 'bannerUrl', 'banners', 'bigBannerItems', 'bigBanners', 'collections', 'description', 'id', 'logoUrl', 'products', 'smallBanners', 'tickerBg', 'tickerColor', 'tickerText', 'title', 'type', 'videoUrl', 'videos']);
+    assert.deepEqual(keys(detail), ['bannerText', 'bannerTitle', 'bannerUrl', 'banners', 'bigBannerItems', 'bigBanners', 'collections', 'description', 'id', 'logoUrl', 'products', 'smallBanners', 'tickerBg', 'tickerColor', 'tickerSize', 'tickerText', 'title', 'type', 'videoUrl', 'videos']);
     assert.deepEqual(keys(detail.collections[0]), ['id', 'products', 'title']);
     assert.equal(detail.collections[0].id, col.id);
     assert.equal(detail.collections[0].title, 'Новинки');
@@ -1705,12 +1705,13 @@ describe('бегущая строка витрины', () => {
     assert.equal(page.tickerText, null);
     assert.equal(page.tickerBg, null);
     assert.equal(page.tickerColor, null);
+    assert.equal(page.tickerSize, null);
   });
 
   test('текст и цвета сохраняются и отдаются; цвета по умолчанию — чёрная полоса, белые буквы', async () => {
     const s = await newShowcase({ published: true, tickerText: '  CELL29 — КОРЕЙСКАЯ КОСМЕТИКА  ' });
     let page = (await pub(`/${s.id}`)).json;
-    assert.deepEqual([page.tickerText, page.tickerBg, page.tickerColor], ['CELL29 — КОРЕЙСКАЯ КОСМЕТИКА', '#000000', '#FFFFFF']);
+    assert.deepEqual([page.tickerText, page.tickerBg, page.tickerColor, page.tickerSize], ['CELL29 — КОРЕЙСКАЯ КОСМЕТИКА', '#000000', '#FFFFFF', 20]);
     const r = await adm('PATCH', `/${s.id}`, { tickerBg: '#ffffff', tickerColor: '#111111' });
     assert.equal(r.status, 200);
     page = (await pub(`/${s.id}`)).json;
@@ -1725,5 +1726,18 @@ describe('бегущая строка витрины', () => {
     const off = await adm('PATCH', `/${s.id}`, { tickerText: '' });
     assert.equal(off.status, 200);
     assert.equal((await pub(`/${s.id}`)).json.tickerText, null);
+  });
+});
+
+describe('размер шрифта бегущей строки', () => {
+  test('по умолчанию 20; меняется с сервера; вне 8–60 — 400 и прежнее значение остаётся', async () => {
+    const s = await newShowcase({ published: true, tickerText: 'АКЦИЯ' });
+    assert.equal((await pub(`/${s.id}`)).json.tickerSize, 20);
+    assert.equal((await adm('PATCH', `/${s.id}`, { tickerSize: 34 })).status, 200);
+    assert.equal((await pub(`/${s.id}`)).json.tickerSize, 34);
+    for (const bad of [7, 61, 20.5]) assert.equal((await adm('PATCH', `/${s.id}`, { tickerSize: bad })).status, 400, String(bad));
+    assert.equal((await pub(`/${s.id}`)).json.tickerSize, 34);
+    assert.equal((await adm('PATCH', `/${s.id}`, { tickerSize: null })).status, 200);
+    assert.equal((await pub(`/${s.id}`)).json.tickerSize, 20);
   });
 });

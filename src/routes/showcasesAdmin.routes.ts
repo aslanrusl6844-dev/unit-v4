@@ -51,6 +51,10 @@ function uniqueUrls(list: string[]): string[] {
 }
 /** Цвет строки: '#RRGGBB' (пусто/null — значение по умолчанию на стороне приложения). */
 const hexColor = z.string().trim().regex(/^#[0-9a-fA-F]{6}$/, 'Цвет — в виде #RRGGBB').nullable().optional().or(z.literal(''));
+/** Размер шрифта бегущей строки, sp. */
+export const TICKER_SIZE_MIN = 8;
+export const TICKER_SIZE_MAX = 60;
+const tickerSizeSchema = z.number().int().min(TICKER_SIZE_MIN, 'Размер — от 8 до 60').max(TICKER_SIZE_MAX, 'Размер — от 8 до 60').nullable().optional();
 const optText = (max: number) => z.string().trim().max(max).nullable().optional();
 const title = z.string().trim().min(1, 'Название обязательно').max(120);
 const productIdSchema = z.string().trim().min(1).max(100);
@@ -199,6 +203,7 @@ const createShowcase = z.object({
   tickerText: optText(200),
   tickerBg: hexColor,
   tickerColor: hexColor,
+  tickerSize: tickerSizeSchema,
   published: z.boolean().optional(),
 });
 
@@ -224,6 +229,7 @@ showcasesAdminRouter.post('/', async (req, res) => {
         tickerText: blankToNull(d.tickerText) ?? null,
         tickerBg: blankToNull(d.tickerBg)?.toUpperCase() ?? null,
         tickerColor: blankToNull(d.tickerColor)?.toUpperCase() ?? null,
+        tickerSize: d.tickerSize ?? null,
         // Новая витрина по умолчанию скрыта: наполняем, потом публикуем.
         published: d.published ?? false,
         sortOrder: (last?.sortOrder ?? 0) + 1,
@@ -298,6 +304,7 @@ const patchShowcase = z.object({
   tickerText: optText(200),
   tickerBg: hexColor,
   tickerColor: hexColor,
+  tickerSize: tickerSizeSchema,
   published: z.boolean().optional(),
   sortOrder: z.number().int().min(0).max(1_000_000).optional(),
 });
@@ -322,6 +329,7 @@ showcasesAdminRouter.patch('/:id', async (req, res) => {
     for (const k of ['tickerBg', 'tickerColor'] as const) {
       if (d[k] !== undefined) data[k] = blankToNull(d[k])?.toUpperCase() ?? null;
     }
+    if (d.tickerSize !== undefined) data.tickerSize = d.tickerSize;
     if (d.banners !== undefined) data.banners = uniqueUrls(d.banners);
     Object.assign(data, resolveBigBannerWrite({ items: d.bigBannerItems, urls: d.bigBanners }, existing) ?? {});
     if (d.videos !== undefined) data.videos = d.videos;
