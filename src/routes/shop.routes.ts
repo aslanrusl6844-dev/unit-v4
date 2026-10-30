@@ -1733,6 +1733,19 @@ const LOGIN_CODE_MAX_ATTEMPTS = 5;
 const loginCodeHash = (phone: string, code: string) =>
   createHmac('sha256', env.shopAppKey || 'no-key').update(`${phone}:${code}`).digest('hex');
 
+/**
+ * ТЕСТОВЫЕ НОМЕРА (временно, пока не подключено платное SMS): env LOGIN_TEST_CODES="77001112233:4821,77005556677:1234".
+ * Для перечисленных номеров код входа заранее известен владельцу, SMS и пуш не отправляются. Любого другого номера
+ * это не касается. Отключается удалением переменной в Vercel (+ Redeploy).
+ */
+const loginTestCode = (phone: string): string | null => {
+  for (const entry of (process.env.LOGIN_TEST_CODES ?? '').split(',')) {
+    const [p, c] = entry.split(':').map((x) => x.trim());
+    if (p && c && /^\d{4}$/.test(c) && normalizePhone(p) === phone) return c;
+  }
+  return null;
+};
+
 const loginCodeRequestSchema = z.object({ phone: z.string().min(1) });
 const loginCodeVerifySchema = z.object({ phone: z.string().min(1), code: z.string().regex(/^\d{4}$/) });
 
@@ -1755,6 +1768,13 @@ shopRouter.post('/auth/request-code', async (req, res) => {
     if (existing && Date.now() - existing.sentAt.getTime() < LOGIN_CODE_RESEND_MS) {
       const wait = Math.ceil((LOGIN_CODE_RESEND_MS - (Date.now() - existing.sentAt.getTime())) / 1000);
       return res.status(429).json({ error: `Код уже отправлен. Повторить можно через ${wait} с`, reason: 'too_soon', retryAfter: wait });
+    }
+    const testCode = loginTestCode(phone);
+    if (testCode) {
+      const tdata = { codeHash: loginCodeHash(phone, testCode), expiresAt: new Date(Date.now() + LOGIN_CODE_TTL_MS), attempts: 0, sentAt: new Date() };
+      await prisma.shopLoginCode.upsert({ where: { phone }, update: tdata, create: { phone, ...tdata } });
+      logger.warn({ phone: phone.slice(-4) }, '[LoginCode] тестовый номер: код заранее известен, SMS/пуш не отправляются');
+      return res.json({ ok: true, expiresIn: Math.round(LOGIN_CODE_TTL_MS / 1000), sms: false, push: false, test: true });
     }
     const device = await prisma.shopCustomerPushToken.findUnique({ where: { phone } });
     const code = String(randomInt(1000, 10000));

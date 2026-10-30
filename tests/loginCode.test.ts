@@ -14,6 +14,7 @@ process.env.ADMIN_USER = 'admin-test';
 process.env.ADMIN_PASSWORD = randomBytes(12).toString('hex');
 process.env.SMS_API_KEY = 'test-sms-key';
 process.env.SMS_PROVIDER = 'smsc';
+process.env.LOGIN_TEST_CODES = '77005550000:4821, 77005550001:0007';
 
 type Row = Record<string, any>;
 let devices: Row[] = [];
@@ -213,5 +214,28 @@ describe('POST /auth/verify-code', () => {
   test('код не запрашивали: 400', async () => {
     const r = await call('/api/shop/auth/verify-code', { phone: '+77001112233', code: '1234' });
     assert.equal(r.status, 400);
+  });
+});
+
+describe('тестовые номера (LOGIN_TEST_CODES)', () => {
+  test('тестовый номер: известный код, SMS и пуш не уходят, вход проходит', async () => {
+    const r = await call('/api/shop/auth/request-code', { phone: '+7 700 555 00 00' });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.equal(r.json.test, true);
+    assert.equal(smsCalls.length + expoCalls.length, 0);
+    assert.ok(!JSON.stringify(r.json).includes('4821'), 'код в ответе не возвращается');
+    assert.equal((await call('/api/shop/auth/verify-code', { phone: '+77005550000', code: '1111' })).status, 400);
+    assert.equal((await call('/api/shop/auth/verify-code', { phone: '+77005550000', code: '4821' })).status, 200);
+  });
+  test('второй тестовый номер с кодом 0007 тоже работает', async () => {
+    await call('/api/shop/auth/request-code', { phone: '77005550001' });
+    assert.equal((await call('/api/shop/auth/verify-code', { phone: '77005550001', code: '0007' })).status, 200);
+  });
+  test('обычный номер тестовый код не принимает', async () => {
+    await call('/api/shop/auth/request-code', { phone: '+77009998877' });
+    assert.equal(smsCalls.length, 1);
+    const real = /(\d{4})/.exec(String(smsCalls[0].text))![1];
+    const other = real === '4821' ? '4822' : '4821';
+    assert.equal((await call('/api/shop/auth/verify-code', { phone: '+77009998877', code: other })).status, 400);
   });
 });
