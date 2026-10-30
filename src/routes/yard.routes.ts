@@ -368,7 +368,8 @@ const createOrderSchema = z.object({
   lat: z.number(),
   lng: z.number(),
   buyerPhone: z.string().min(1),
-  buyerName: z.string().min(1),
+  // Имя в профиле может быть пустым: заказ всё равно должен создаться (имя — «Покупатель»).
+  buyerName: z.string().trim().optional(),
   address: z.string().trim().max(300).optional(),
   // Адрес доставки: подъезд, этаж, квартира, домофон (необязательные; приложение может прислать их
   // следом через POST /yard/order-address).
@@ -401,9 +402,14 @@ yardRouter.post('/yard/orders', async (req, res) => {
   try {
     const shop = await prisma.yardShop.findUnique({ where: { id: parsed.data.shopId } });
     if (!shop || !yardShopIsLive(shop)) return res.status(404).json({ error: 'Двор не найден' });
-    const distance = yardDistanceMeters(parsed.data.lat, parsed.data.lng, shop.lat, shop.lng);
+    // Точка покупателя 0,0 — приложение не знает местоположение (геолокация выключена): заказ не
+    // отклоняем и расстояние не считаем. Реальная точка вне радиуса магазина по-прежнему отклоняется.
+    const pointUnknown = parsed.data.lat === 0 && parsed.data.lng === 0;
     const shopRadius = yardShopRadius(shop);
-    if (distance > shopRadius) return res.status(403).json({ error: `Вы вне радиуса ${shopRadius} м от этого двора` });
+    if (!pointUnknown) {
+      const distance = yardDistanceMeters(parsed.data.lat, parsed.data.lng, shop.lat, shop.lng);
+      if (distance > shopRadius) return res.status(403).json({ error: `Вы вне радиуса ${shopRadius} м от этого двора` });
+    }
 
     const itemIds = parsed.data.items.map((i) => i.itemId);
     const shelfItems = await prisma.yardItem.findMany({ where: { id: { in: itemIds }, shopId: shop.id, active: true, archived: false } });
@@ -424,14 +430,14 @@ yardRouter.post('/yard/orders', async (req, res) => {
         publicId,
         shopId: shop.id,
         buyerPhone: normalizedPhone,
-        buyerName: parsed.data.buyerName,
+        buyerName: parsed.data.buyerName || 'Покупатель',
         address: cleanAddressPart(parsed.data.address) ?? null,
         entrance: cleanAddressPart(parsed.data.entrance) ?? null,
         floor: cleanAddressPart(parsed.data.floor) ?? null,
         apartment: cleanAddressPart(parsed.data.apartment) ?? null,
         intercom: cleanAddressPart(parsed.data.intercom) ?? null,
-        lat: parsed.data.lat,
-        lng: parsed.data.lng,
+        lat: pointUnknown ? null : parsed.data.lat,
+        lng: pointUnknown ? null : parsed.data.lng,
         total,
         status: 'waiting_payment',
         items: { create: orderItemsData },

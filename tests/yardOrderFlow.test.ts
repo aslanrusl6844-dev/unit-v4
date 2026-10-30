@@ -193,6 +193,51 @@ describe('адрес заказа', () => {
   });
 });
 
+describe('создание заказа не должно молча срываться', () => {
+  test('пустое имя покупателя: заказ создаётся, имя — «Покупатель»', async () => {
+    const { shop, item } = seed();
+    const p = at(250);
+    const r = await call('POST', '/api/shop/yard/orders', { shopId: shop.id, lat: p.lat, lng: p.lng, buyerPhone: BUYER, buyerName: '', items: [{ itemId: item.id, qty: 1 }] });
+    assert.equal(r.status, 201, JSON.stringify(r.json));
+    assert.equal(tables.order[0].buyerName, 'Покупатель');
+  });
+  test('нет имени вовсе: тоже создаётся', async () => {
+    const { shop, item } = seed();
+    const p = at(250);
+    const r = await call('POST', '/api/shop/yard/orders', { shopId: shop.id, lat: p.lat, lng: p.lng, buyerPhone: BUYER, items: [{ itemId: item.id, qty: 1 }] });
+    assert.equal(r.status, 201, JSON.stringify(r.json));
+  });
+  test('точка 0,0 (местоположение неизвестно): заказ создаётся, координаты не пишутся, расстояния нет', async () => {
+    const { shop, item } = seed();
+    const r = await call('POST', '/api/shop/yard/orders', { shopId: shop.id, lat: 0, lng: 0, buyerPhone: BUYER, buyerName: 'Мария', items: [{ itemId: item.id, qty: 1 }] });
+    assert.equal(r.status, 201, JSON.stringify(r.json));
+    assert.equal(tables.order[0].lat, null);
+    await call('POST', `/api/shop/yard/orders/${tables.order[0].id}/paid`, { phone: SELLER });
+    const o = (await call('GET', `/api/shop/yard/mine?phone=${SELLER}`)).json.orders[0];
+    assert.equal(o.distanceMeters, null);
+  });
+  test('настоящая точка вне радиуса магазина по-прежнему отклоняется (403)', async () => {
+    const { shop, item } = seed();
+    const p = at(900);
+    const r = await call('POST', '/api/shop/yard/orders', { shopId: shop.id, lat: p.lat, lng: p.lng, buyerPhone: BUYER, buyerName: 'М', items: [{ itemId: item.id, qty: 1 }] });
+    assert.equal(r.status, 403);
+    assert.equal(tables.order.length, 0);
+  });
+  test('сумма и состав считает сервер по корзине: цена с полки, количество из запроса; клиентская цена игнорируется', async () => {
+    const { shop, item } = seed();
+    const item2 = { id: newId(), shopId: shop.id, name: 'Молоко', price: 450, stock: 5, active: true, archived: false };
+    tables.item.push(item2);
+    const p = at(100);
+    const r = await call('POST', '/api/shop/yard/orders', { shopId: shop.id, lat: p.lat, lng: p.lng, buyerPhone: BUYER, buyerName: 'М', items: [{ itemId: item.id, qty: 3, price: 1 }, { itemId: item2.id, qty: 2 }] });
+    assert.equal(r.status, 201, JSON.stringify(r.json));
+    const row = tables.order[0];
+    assert.equal(row.total, 3 * 200 + 2 * 450);
+    assert.deepEqual(row.items.map((i: Row) => [i.name, i.qty]), [['Хлеб', 3], ['Молоко', 2]]);
+    await call('POST', `/api/shop/yard/orders/${row.id}/paid`, { phone: SELLER });
+    assert.deepEqual([tables.item[0].stock, tables.item[1].stock], [7, 3]); // списаны именно товары корзины
+  });
+});
+
 describe('«Оплачено» и накладная продавца', () => {
   test('до оплаты адрес и расстояние продавцу не отдаются, номер и имя — да', async () => {
     const { shop, item } = seed();
