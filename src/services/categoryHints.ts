@@ -1,3 +1,4 @@
+import { SHOP_CATALOG_CANON, canonTypesOf } from '../config/shopCatalogCanon';
 /**
  * Подсказка category / type My Market по НАЗВАНИЮ товара. Это подсказка, а не
  * публикация: сам по себе результат ничего не включает в продажу и никогда не
@@ -136,7 +137,9 @@ export const STARTER_CATALOG: CatalogCategory[] = [
 ];
 
 export function starterCatalogPairs(): CategoryVariant[] {
-  return STARTER_CATALOG.flatMap((c) => c.types.map((type) => ({ category: c.category, type })));
+  // Типы из приложения (shopCatalogCanon) — первыми: их написание в списке главное.
+  const canon = Object.keys(SHOP_CATALOG_CANON).flatMap((category) => canonTypesOf(category).map((type) => ({ category, type })));
+  return [...canon, ...STARTER_CATALOG.flatMap((c) => c.types.map((type) => ({ category: c.category, type })))];
 }
 
 /** Все пары category/type, которые знает справочник правил. */
