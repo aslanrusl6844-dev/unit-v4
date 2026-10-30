@@ -3055,7 +3055,7 @@ function renderMyMarketDetailsList() {
   const el = document.getElementById('mmDetailsList');
   if (!el) return;
   el.innerHTML = myMarketCardDetails.length
-    ? myMarketCardDetails.map((url, i) => `<div class="mm-detail-row" data-i="${i}" style="display:flex;gap:8px;align-items:center;margin:4px 0">
+    ? myMarketCardDetails.map((url, i) => `<div class="mm-detail-row" data-i="${i}" draggable="true" style="display:flex;gap:8px;align-items:center;margin:4px 0;cursor:grab">
         ${mmxIsVideo(url) ? '<span>🎬</span>' : `<img src="${mmxEsc(url)}" alt="" style="width:44px;height:44px;object-fit:cover;border-radius:6px" />`}
         <b>${mmxIsVideo(url) ? 'Видео' : 'Фото'}</b>
         <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px">${mmxEsc(url)}</span>
@@ -3076,7 +3076,37 @@ function renderMyMarketDetailsList() {
     myMarketCardDetails.splice(Number(b.dataset.detRemove), 1);
     renderMyMarketDetailsList();
   }));
+  // Перетаскивание строк мышью — меняет порядок (как миниатюры в «Медиа»).
+  el.querySelectorAll('.mm-detail-row').forEach((row) => {
+    row.addEventListener('dragstart', (e) => {
+      mmDetailsDragFrom = Number(row.dataset.i);
+      row.style.opacity = '0.5';
+      if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', 'mm-detail-row'); } catch { /* не критично */ } }
+    });
+    row.addEventListener('dragend', () => { row.style.opacity = ''; mmDetailsDragFrom = null; });
+    row.addEventListener('dragover', (e) => {
+      if (mmDetailsDragFrom === null) return; // тащат файл с компьютера — это обработает зона ниже
+      e.preventDefault();
+      e.stopPropagation();
+      row.style.outline = '2px dashed var(--accent)';
+    });
+    row.addEventListener('dragleave', () => { row.style.outline = ''; });
+    row.addEventListener('drop', (e) => {
+      if (mmDetailsDragFrom === null) return;
+      e.preventDefault();
+      e.stopPropagation();
+      row.style.outline = '';
+      const to = Number(row.dataset.i);
+      const from = mmDetailsDragFrom;
+      mmDetailsDragFrom = null;
+      if (from === to) return;
+      const [m] = myMarketCardDetails.splice(from, 1);
+      myMarketCardDetails.splice(to, 0, m);
+      renderMyMarketDetailsList();
+    });
+  });
 }
+var mmDetailsDragFrom = null;
 
 function addMyMarketDetail(url) {
   const status = document.getElementById('mmDetailsStatus');
@@ -3090,25 +3120,101 @@ function addMyMarketDetail(url) {
   return true;
 }
 
-async function handleMyMarketDetailFiles(files) {
-  const status = document.getElementById('mmDetailsStatus');
-  const list = Array.from(files);
-  if (myMarketCardDetails.length + list.length > MM_DETAILS_MAX) {
-    status.textContent = `Можно не больше ${MM_DETAILS_MAX} файлов (сейчас ${myMarketCardDetails.length}, добавляешь ещё ${list.length}).`;
-    status.style.color = 'var(--loss)';
-    return;
+const MM_DETAILS_TARGET_BYTES = 2.3 * 1024 * 1024; // до base64 вырастет на треть — должно влезть в лимит Vercel (~4.5 МБ)
+const MM_DETAILS_EXT_MIME = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp' };
+
+function mmDetailsIsZip(file) {
+  return /\.zip$/i.test(file.name || '') || /zip/i.test(file.type || '');
+}
+
+function mmDetailsNaturalCompare(x, y) {
+  return String(x).localeCompare(String(y), 'ru', { numeric: true, sensitivity: 'base' });
+}
+
+/** Достаёт картинки из ZIP в браузере: без служебных файлов, по порядку имён (1, 2, … 10). */
+async function mmDetailsExtractZip(file) {
+  if (typeof JSZip === 'undefined') throw new Error('Не загрузился модуль распаковки ZIP — обнови страницу (Ctrl+F5)');
+  let zip;
+  try { zip = await JSZip.loadAsync(file); } catch { throw new Error(`Не удалось открыть ZIP «${file.name}» — возможно, он повреждён`); }
+  const entries = Object.values(zip.files).filter((f) => {
+    if (f.dir) return false;
+    const base = f.name.split('/').pop();
+    if (!base || base.startsWith('.') || f.name.startsWith('__MACOSX/')) return false;
+    return !!MM_DETAILS_EXT_MIME[(base.split('.').pop() || '').toLowerCase()];
+  });
+  entries.sort((p, q) => mmDetailsNaturalCompare(p.name, q.name));
+  const out = [];
+  for (const entry of entries) {
+    const base = entry.name.split('/').pop();
+    const mime = MM_DETAILS_EXT_MIME[base.split('.').pop().toLowerCase()];
+    const blob = await entry.async('blob');
+    out.push(new File([blob], base, { type: mime }));
   }
-  for (const file of list) {
-    status.textContent = `Загружаю ${file.name}…`;
-    status.style.color = 'var(--text-faint)';
-    try {
-      const url = await uploadMyMarketFile(file);
-      if (addMyMarketDetail(url)) status.textContent = '';
-    } catch (err) {
-      status.textContent = err.message;
-      status.style.color = 'var(--loss)';
+  return out;
+}
+
+/** Слишком тяжёлое фото сжимаем в браузере (JPEG), чтобы оно прошло лимит загрузки. */
+async function mmDetailsFitImage(file) {
+  if (MM_IMAGE_TYPES.includes(file.type) && file.size <= MM_DETAILS_TARGET_BYTES) return file;
+  if (typeof createImageBitmap !== 'function') return file;
+  const bmp = await createImageBitmap(file);
+  const baseName = file.name.replace(/\.\w+$/, '') + '.jpg';
+  for (const maxSide of [Infinity, 2400, 2000, 1600, 1280]) {
+    const scale = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(bmp.width * scale));
+    canvas.height = Math.max(1, Math.round(bmp.height * scale));
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    for (const q of [0.92, 0.85, 0.78]) {
+      const blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', q));
+      if (blob && blob.size <= MM_DETAILS_TARGET_BYTES) return new File([blob], baseName, { type: 'image/jpeg' });
     }
   }
+  throw new Error(`Не удалось сжать «${file.name}» до допустимого размера`);
+}
+
+async function handleMyMarketDetailFiles(files) {
+  const status = document.getElementById('mmDetailsStatus');
+  const setStatus = (msg, color) => { status.textContent = msg; status.style.color = color || 'var(--text-faint)'; };
+  // 1) Разворачиваем: ZIP → картинки внутри, обычные файлы как есть.
+  let list = [];
+  const problems = [];
+  for (const file of Array.from(files)) {
+    if (mmDetailsIsZip(file)) {
+      setStatus(`Распаковываю ${file.name}…`);
+      try {
+        const inner = await mmDetailsExtractZip(file);
+        if (!inner.length) problems.push(`В ZIP «${file.name}» нет фото JPEG/PNG/WEBP`);
+        list = list.concat(inner);
+      } catch (err) { problems.push(err.message); }
+    } else if (/^image\//.test(file.type) || MM_DETAILS_EXT_MIME[(file.name.split('.').pop() || '').toLowerCase()]) {
+      list.push(file);
+    } else {
+      problems.push(`«${file.name}» — не фото и не ZIP, пропущен`);
+    }
+  }
+  // 2) Лимит 10 на всё: лишнее не загружаем, но остальное берём.
+  const room = Math.max(0, MM_DETAILS_MAX - myMarketCardDetails.length);
+  let skipped = 0;
+  if (list.length > room) { skipped = list.length - room; list = list.slice(0, room); }
+  if (skipped) problems.push(`Лимит ${MM_DETAILS_MAX} файлов: ${skipped} шт. не добавлено`);
+  // 3) Сжимаем при необходимости и загружаем по очереди.
+  let added = 0;
+  for (let i = 0; i < list.length; i += 1) {
+    const file = list[i];
+    setStatus(`Загружаю ${i + 1} из ${list.length}: ${file.name}…`);
+    try {
+      const url = await uploadMyMarketFile(await mmDetailsFitImage(file));
+      if (addMyMarketDetail(url)) added += 1;
+    } catch (err) {
+      problems.push(`${file.name}: ${err.message}`);
+    }
+  }
+  if (problems.length) setStatus((added ? `Добавлено: ${added}. ` : '') + problems.join(' · '), 'var(--loss)');
+  else setStatus(added ? `Добавлено: ${added}` : '', 'var(--text-faint)');
 }
 
 function initMyMarketQtyDetails() {
@@ -3127,6 +3233,22 @@ function initMyMarketQtyDetails() {
   document.getElementById('mmDetailsFileInput').addEventListener('change', (e) => {
     if (e.target.files.length) handleMyMarketDetailFiles(e.target.files);
     e.target.value = '';
+  });
+  // Перетаскивание файлов (фото по одному/несколько, ZIP) прямо в зону «Детали».
+  const detailsDrop = document.getElementById('mmDetailsDropzone');
+  const detailsList = document.getElementById('mmDetailsList');
+  [detailsDrop, detailsList].forEach((zone) => {
+    zone.addEventListener('dragover', (e) => {
+      if (mmDetailsDragFrom !== null) return;
+      if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) { e.preventDefault(); detailsDrop.classList.add('is-dragover'); }
+    });
+    zone.addEventListener('dragleave', () => detailsDrop.classList.remove('is-dragover'));
+    zone.addEventListener('drop', (e) => {
+      if (mmDetailsDragFrom !== null) return;
+      e.preventDefault();
+      detailsDrop.classList.remove('is-dragover');
+      if (e.dataTransfer.files.length) handleMyMarketDetailFiles(e.dataTransfer.files);
+    });
   });
   document.getElementById('mmDetailsAddUrlBtn').addEventListener('click', () => {
     const input = document.getElementById('mmDetailsAddUrl');
