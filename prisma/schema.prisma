@@ -889,6 +889,9 @@ model Showcase {
   bigBannerSizes String[] @default([]) // размеры строк текста, % через запятую: '30,15' (тот же порядок, что bigBanners; пусто → 20 на строку)
   bigBanners  String[] @default([]) // большая карусель сверху (до 10 URL, порядок важен); пусто → показывается bannerUrl
   videoUrl    String?  // ссылка на видео витрины
+  tickerText  String?  // бегущая строка между видео и карточками (пусто — строки нет)
+  tickerBg    String?  // цвет полосы строки, '#RRGGBB' (пусто → чёрный)
+  tickerColor String?  // цвет букв строки, '#RRGGBB' (пусто → белый)
   published   Boolean  @default(false) // опубликована ли в приложении
   sortOrder   Int      @default(0)
   createdAt   DateTime @default(now())

@@ -49,6 +49,8 @@ const videoUrlSchema = z
 function uniqueUrls(list: string[]): string[] {
   return Array.from(new Set(list));
 }
+/** Цвет строки: '#RRGGBB' (пусто/null — значение по умолчанию на стороне приложения). */
+const hexColor = z.string().trim().regex(/^#[0-9a-fA-F]{6}$/, 'Цвет — в виде #RRGGBB').nullable().optional().or(z.literal(''));
 const optText = (max: number) => z.string().trim().max(max).nullable().optional();
 const title = z.string().trim().min(1, 'Название обязательно').max(120);
 const productIdSchema = z.string().trim().min(1).max(100);
@@ -194,6 +196,9 @@ const createShowcase = z.object({
   bigBannerItems: bigBannerItemsSchema.optional(), // {url, text, sizes, textColor} — имеет приоритет над bigBanners
   videos: showcaseVideosSchema.optional(), // до 20
   videoUrl: videoUrlSchema,
+  tickerText: optText(200),
+  tickerBg: hexColor,
+  tickerColor: hexColor,
   published: z.boolean().optional(),
 });
 
@@ -216,6 +221,9 @@ showcasesAdminRouter.post('/', async (req, res) => {
         ...(resolveBigBannerWrite({ items: d.bigBannerItems, urls: d.bigBanners ?? [] }) as object),
         videos: d.videos ?? [],
         videoUrl: blankToNull(d.videoUrl) ?? null,
+        tickerText: blankToNull(d.tickerText) ?? null,
+        tickerBg: blankToNull(d.tickerBg)?.toUpperCase() ?? null,
+        tickerColor: blankToNull(d.tickerColor)?.toUpperCase() ?? null,
         // Новая витрина по умолчанию скрыта: наполняем, потом публикуем.
         published: d.published ?? false,
         sortOrder: (last?.sortOrder ?? 0) + 1,
@@ -287,6 +295,9 @@ const patchShowcase = z.object({
   bigBannerItems: bigBannerItemsSchema.optional(), // {url, text, sizes, textColor} — имеет приоритет над bigBanners
   videos: showcaseVideosSchema.optional(), // до 20
   videoUrl: videoUrlSchema,
+  tickerText: optText(200),
+  tickerBg: hexColor,
+  tickerColor: hexColor,
   published: z.boolean().optional(),
   sortOrder: z.number().int().min(0).max(1_000_000).optional(),
 });
@@ -306,6 +317,10 @@ showcasesAdminRouter.patch('/:id', async (req, res) => {
     if (d.sortOrder !== undefined) data.sortOrder = d.sortOrder;
     for (const k of ['description', 'logoUrl', 'bannerUrl', 'bannerTitle', 'bannerText', 'videoUrl'] as const) {
       if (d[k] !== undefined) data[k] = blankToNull(d[k]);
+    }
+    if (d.tickerText !== undefined) data.tickerText = blankToNull(d.tickerText);
+    for (const k of ['tickerBg', 'tickerColor'] as const) {
+      if (d[k] !== undefined) data[k] = blankToNull(d[k])?.toUpperCase() ?? null;
     }
     if (d.banners !== undefined) data.banners = uniqueUrls(d.banners);
     Object.assign(data, resolveBigBannerWrite({ items: d.bigBannerItems, urls: d.bigBanners }, existing) ?? {});

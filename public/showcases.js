@@ -55,6 +55,7 @@ function scRender() {
   if (!root) return;
   const hadSearchFocus = document.activeElement && document.activeElement.id === 'scSearch';
   root.innerHTML = scState.current || scState.editingNew ? scEditorHtml() : scListHtml();
+  scTickerPreview();
   if (hadSearchFocus) {
     const el = document.getElementById('scSearch');
     if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
@@ -202,6 +203,39 @@ function scVideosRefresh() {
   if (addUrl) addUrl.disabled = full;
 }
 
+/** Бегущая строка между видео и карточками. Пусто — строки в приложении нет. */
+function scHexOr(v, fallback) { return /^#[0-9a-fA-F]{6}$/.test(String(v || '')) ? String(v).toLowerCase() : fallback; }
+
+function scTickerHtml(c) {
+  const bg = scHexOr(c.tickerBg, '#000000');
+  const fg = scHexOr(c.tickerColor, '#ffffff');
+  const colorRow = (key, label, val) => `
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <span style="min-width:110px">${label}</span>
+      <input type="color" id="${key}" value="${val}" />
+      <button type="button" class="btn btn--ghost" data-tk="${key}" data-color="#000000">Чёрный</button>
+      <button type="button" class="btn btn--ghost" data-tk="${key}" data-color="#ffffff">Белый</button>
+    </div>`;
+  return `<div style="border:1px solid var(--border);border-radius:8px;padding:10px;display:grid;gap:8px">
+      <strong>Бегущая строка</strong>
+      <label>Текст (пусто — строки нет) <input type="text" id="scTickerText" maxlength="200" placeholder="CELL29 — КОРЕЙСКАЯ КОСМЕТИКА" value="${scEsc(c.tickerText)}" /></label>
+      ${colorRow('scTickerBg', 'Цвет полосы', bg)}
+      ${colorRow('scTickerColor', 'Цвет букв', fg)}
+      <div id="scTickerPreview" style="overflow:hidden;white-space:pre;padding:10px 0;font-weight:700;letter-spacing:.04em;text-transform:uppercase"></div>
+      <p class="panel__hint" style="margin:0">Строка показывается на странице бренда между видео и карточками. Изменения применяются кнопкой «Сохранить».</p>
+    </div>`;
+}
+
+function scTickerPreview() {
+  const box = document.getElementById('scTickerPreview');
+  if (!box) return;
+  const text = document.getElementById('scTickerText').value.trim();
+  box.style.background = document.getElementById('scTickerBg').value;
+  box.style.color = document.getElementById('scTickerColor').value;
+  box.textContent = text ? Array(6).fill(text).join('        ') : 'Предпросмотр: введите текст';
+  box.style.opacity = text ? '1' : '.5';
+}
+
 function scEditorHtml() {
   const c = scState.current || { type: 'brand', title: '', description: '', logoUrl: '', bannerUrl: '', bannerTitle: '', bannerText: '', published: false, products: [], collections: [] };
   const isNew = !scState.current;
@@ -237,6 +271,7 @@ function scEditorHtml() {
       <label>Ссылка на видео <input type="text" id="scVideoUrl" maxlength="2000" placeholder="https://…" value="${scEsc(c.videoUrl)}" /></label>
       <label>Заголовок баннера <input type="text" id="scBannerTitle" maxlength="120" value="${scEsc(c.bannerTitle)}" /></label>
       <label>Рекламный текст <textarea id="scBannerText" rows="3" maxlength="1000">${scEsc(c.bannerText)}</textarea></label>
+      ${scTickerHtml(c)}
       <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="scPublished" ${c.published ? 'checked' : ''} /> Опубликована (видна в приложении)</label>
       <div><button type="submit" class="btn btn--accent" id="scSave">${isNew ? 'Создать' : 'Сохранить'}</button></div>
     </form>
@@ -459,6 +494,9 @@ function scFormData() {
     })(),
     videos: (scState.videos || []).slice(),
     videoUrl: v('scVideoUrl').trim() || null,
+    tickerText: v('scTickerText').trim() || null,
+    tickerBg: v('scTickerBg'),
+    tickerColor: v('scTickerColor'),
     published: document.getElementById('scPublished').checked,
   };
 }
@@ -788,6 +826,13 @@ function scWireOnce() {
   const root = scRoot();
   if (!root) return;
   scState.wired = true;
+  root.addEventListener('click', (e) => {
+    // Кнопки «Чёрный/Белый» у цветов бегущей строки — без блокировки «занято».
+    const t = e.target.closest && e.target.closest('[data-tk]');
+    if (!t) return;
+    const inp = document.getElementById(t.dataset.tk);
+    if (inp) { inp.value = t.dataset.color; scTickerPreview(); }
+  });
   root.addEventListener('click', scHandleClick);
   root.addEventListener('submit', (e) => {
     if (e.target.id === 'scForm') { e.preventDefault(); scSave(); }
@@ -829,6 +874,7 @@ function scWireOnce() {
     if (f) scImportFile(f);
   });
   root.addEventListener('input', (e) => {
+    if (e.target.id === 'scTickerText' || e.target.id === 'scTickerBg' || e.target.id === 'scTickerColor') { scTickerPreview(); return; }
     if (bbEdit(e)) return;
     if (e.target.id !== 'scSearch') return;
     scState.q = e.target.value.trim();
