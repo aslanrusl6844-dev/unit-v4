@@ -1738,8 +1738,8 @@ const loginCodeVerifySchema = z.object({ phone: z.string().min(1), code: z.strin
 
 /**
  * Запрос кода входа. Код создаёт СЕРВЕР и доставляет его владельцу введённого номера:
- *  - SMS на сам номер (SMSC.kz) — доходит и до тех, кто входит впервые или с нового телефона;
- *  - плюс пуш на устройство, где этот номер уже входил (ShopCustomerPushToken), если оно известно.
+ *  - пуш на устройство, где этот номер уже входил (ShopCustomerPushToken) — бесплатно;
+ *  - SMS на сам номер (SMSC.kz) — только если пуша нет или он не принят (первый вход, новый телефон).
  * Раньше приложение само придумывало код и показывало его на том же телефоне, поэтому он «приходил» при
  * любом, даже выдуманном номере. Код в ответе НИКОГДА не возвращается. Повтор — не чаще раза в 30 с.
  * Не ушло ни SMS, ни пуш — 502, код стирается.
@@ -1761,15 +1761,14 @@ shopRouter.post('/auth/request-code', async (req, res) => {
     const data = { codeHash: loginCodeHash(phone, code), expiresAt: new Date(Date.now() + LOGIN_CODE_TTL_MS), attempts: 0, sentAt: new Date() };
     await prisma.shopLoginCode.upsert({ where: { phone }, update: data, create: { phone, ...data } });
 
-    const text = `My Market: код входа ${code}. Никому его не сообщайте`;
-    const [smsOk, pushOk] = await Promise.all([
-      sendSms(phone, text),
-      device?.token
-        ? sendBroadcast({ title: 'My Market', body: `Код входа: ${code}. Никому его не сообщайте`, tokens: [device.token], data: { type: 'login_code', code } })
-            .then((r) => r.sent > 0)
-            .catch(() => false)
-        : Promise.resolve(false),
-    ]);
+    // Пуш бесплатный — сначала он. SMS (платное) уходит только когда пуша нет: номер входит впервые,
+    // сменил телефон или устройство не приняло пуш.
+    const pushOk = device?.token
+      ? await sendBroadcast({ title: 'My Market', body: `Код входа: ${code}. Никому его не сообщайте`, tokens: [device.token], data: { type: 'login_code', code } })
+          .then((r) => r.sent > 0)
+          .catch(() => false)
+      : false;
+    const smsOk = pushOk ? false : await sendSms(phone, `My Market: код входа ${code}. Никому его не сообщайте`);
     if (!smsOk && !pushOk) {
       await prisma.shopLoginCode.deleteMany({ where: { phone } });
       logger.error({ phone: phone.slice(-4), hadDevice: !!device?.token }, '[LoginCode] код не удалось доставить ни SMS, ни пушем');

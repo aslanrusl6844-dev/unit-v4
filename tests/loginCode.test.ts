@@ -98,14 +98,13 @@ after(() => new Promise<void>((r) => server.close(() => r())));
 beforeEach(() => { devices = [{ phone: '77001112233', token: 'ExponentPushToken[known]' }]; codes = []; expoCalls = []; expoOk = true; smsCalls = []; smsOk = true; });
 
 describe('POST /auth/request-code', () => {
-  test('известный номер: код уходит SMS на этот номер и пушем на его устройство, в ответе кода нет', async () => {
+  test('известный номер: код уходит пушем на его устройство, платное SMS не тратится, в ответе кода нет', async () => {
     const r = await call('/api/shop/auth/request-code', { phone: '+7 700 111 22 33' });
     assert.equal(r.status, 200, JSON.stringify(r.json));
-    assert.deepEqual([r.json.sms, r.json.push], [true, true]);
+    assert.deepEqual([r.json.sms, r.json.push], [false, true]);
     assert.equal(expoCalls[0][0].to, 'ExponentPushToken[known]');
-    assert.equal(smsCalls[0].phone, '77001112233');
+    assert.equal(smsCalls.length, 0);
     assert.match(expoCalls[0][0].body, /Код входа: \d{4}/);
-    assert.match(String(smsCalls[0].text), new RegExp(sentCode()));
     assert.ok(!JSON.stringify(r.json).includes(sentCode()), 'код нельзя возвращать в ответе');
     assert.ok(!codes[0].codeHash.includes(sentCode()), 'в базе только хэш');
   });
@@ -125,11 +124,12 @@ describe('POST /auth/request-code', () => {
     assert.equal(smsCalls[0].phone, '77009998877');
   });
 
-  test('SMS не ушло, но пуш принят: вход возможен (push=true)', async () => {
-    smsOk = false;
+  test('устройство не приняло пуш (старый токен): код уходит SMS на номер', async () => {
+    expoOk = false;
     const r = await call('/api/shop/auth/request-code', { phone: '+77001112233' });
-    assert.equal(r.status, 200);
-    assert.deepEqual([r.json.sms, r.json.push], [false, true]);
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.deepEqual([r.json.sms, r.json.push], [true, false]);
+    assert.equal(smsCalls[0].phone, '77001112233');
   });
 
   test('новый номер и SMS не ушло: 502, код стёрт', async () => {
@@ -158,7 +158,7 @@ describe('POST /auth/request-code', () => {
     const r = await call('/api/shop/auth/request-code', { phone: '+77001112233' });
     assert.equal(r.status, 429);
     assert.equal(expoCalls.length, 1);
-    assert.equal(smsCalls.length, 1);
+    assert.equal(smsCalls.length, 0);
   });
 
   test('без x-app-key нельзя', async () => {
