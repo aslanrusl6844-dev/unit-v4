@@ -120,6 +120,7 @@ export async function sendFcmBroadcast(tokens: string[], title: string, body: st
       result.failed++;
       const code = String(data?.error?.status ?? '');
       const detail = JSON.stringify(data?.error?.details ?? '');
+      logger.warn({ httpStatus: res.status, fcmStatus: code, fcmMessage: data?.error?.message }, '[FCM] Сообщение не принято');
       if (code === 'NOT_FOUND' || detail.includes('UNREGISTERED')) result.notRegistered++;
       else if (res.status === 401 || res.status === 403) result.error = result.error ?? `Firebase отказал в доступе (${res.status}): проверь права сервисного аккаунта`;
     } catch (err: any) {
