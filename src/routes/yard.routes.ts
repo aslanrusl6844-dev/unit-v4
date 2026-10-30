@@ -778,7 +778,8 @@ yardRouter.get('/yard/mine', async (req, res) => {
         return {
           id: o.id,
           publicId: o.publicId,
-          status: o.status,
+          status: yardAppStatus(o.status),
+          serverStatus: o.status,
           total: o.total,
           createdAt: o.createdAt,
           items: o.items,
