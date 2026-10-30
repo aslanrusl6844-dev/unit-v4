@@ -38,6 +38,15 @@ showcasesRouter.use((req, res, next) => {
 });
 
 /** Витрина для списка/шапки — только публичные поля. */
+/** Бегущая строка витрины: цвета по умолчанию — чёрная полоса, белые буквы. */
+export function tickerOf(s: any) {
+  const text = typeof s.tickerText === 'string' ? s.tickerText.trim() : '';
+  const hex = (v: unknown, fallback: string) => (typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v) ? v.toUpperCase() : fallback);
+  return text
+    ? { tickerText: text, tickerBg: hex(s.tickerBg, '#000000'), tickerColor: hex(s.tickerColor, '#FFFFFF') }
+    : { tickerText: null, tickerBg: null, tickerColor: null };
+}
+
 function publicShowcase(s: any) {
   return {
     id: s.id,
@@ -135,6 +144,8 @@ showcasesRouter.get('/:id', async (req, res) => {
       videos: parseVideos(showcase.videos, MAX_SHOWCASE_VIDEOS),
       banners: smallBanners,
       videoUrl: showcase.videoUrl ?? null,
+      // Бегущая строка: текст и цвета (текст пуст → null и цвета null; строки в приложении нет).
+      ...tickerOf(showcase),
       // Товары именно этой витрины в порядке админки (видимые покупателю); нет товаров — [].
       products: links
         .map((l: any) => map.get(l.productId))

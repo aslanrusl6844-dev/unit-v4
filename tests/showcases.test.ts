@@ -896,7 +896,7 @@ describe('контракт для Android и сквозной сценарий',
     assert.deepEqual(list, [{ id: s.id, type: 'shop', title: 'Nike', description: 'D', logoUrl: 'https://b.example/l.png', bannerUrl: 'https://b.example/b.png', bannerTitle: 'BT', bannerText: 'BX' }]);
 
     const detail = (await pub(`/${s.id}`)).json;
-    assert.deepEqual(keys(detail), ['bannerText', 'bannerTitle', 'bannerUrl', 'banners', 'bigBannerItems', 'bigBanners', 'collections', 'description', 'id', 'logoUrl', 'products', 'smallBanners', 'title', 'type', 'videoUrl', 'videos']);
+    assert.deepEqual(keys(detail), ['bannerText', 'bannerTitle', 'bannerUrl', 'banners', 'bigBannerItems', 'bigBanners', 'collections', 'description', 'id', 'logoUrl', 'products', 'smallBanners', 'tickerBg', 'tickerColor', 'tickerText', 'title', 'type', 'videoUrl', 'videos']);
     assert.deepEqual(keys(detail.collections[0]), ['id', 'products', 'title']);
     assert.equal(detail.collections[0].id, col.id);
     assert.equal(detail.collections[0].title, 'Новинки');
@@ -1694,5 +1694,36 @@ describe('импорт товаров витрины из Excel (/products/impor
     const b = await adm('POST', `/${s.id}/products/bulk`, { codes: 'BULK-1\nNEW-9' });
     assert.deepEqual(b.json.added.map((x: Row) => x.code), ['BULK-1']);
     assert.deepEqual(b.json.alreadyIn, ['NEW-9']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe('бегущая строка витрины', () => {
+  test('нет текста — в ответе null, цвета null (строки в приложении нет)', async () => {
+    const s = await newShowcase({ published: true });
+    const page = (await pub(`/${s.id}`)).json;
+    assert.equal(page.tickerText, null);
+    assert.equal(page.tickerBg, null);
+    assert.equal(page.tickerColor, null);
+  });
+
+  test('текст и цвета сохраняются и отдаются; цвета по умолчанию — чёрная полоса, белые буквы', async () => {
+    const s = await newShowcase({ published: true, tickerText: '  CELL29 — КОРЕЙСКАЯ КОСМЕТИКА  ' });
+    let page = (await pub(`/${s.id}`)).json;
+    assert.deepEqual([page.tickerText, page.tickerBg, page.tickerColor], ['CELL29 — КОРЕЙСКАЯ КОСМЕТИКА', '#000000', '#FFFFFF']);
+    const r = await adm('PATCH', `/${s.id}`, { tickerBg: '#ffffff', tickerColor: '#111111' });
+    assert.equal(r.status, 200);
+    page = (await pub(`/${s.id}`)).json;
+    assert.deepEqual([page.tickerBg, page.tickerColor], ['#FFFFFF', '#111111']);
+  });
+
+  test('пустой текст убирает строку; плохой цвет — 400 и ничего не меняется', async () => {
+    const s = await newShowcase({ published: true, tickerText: 'АКЦИЯ', tickerBg: '#112233' });
+    const bad = await adm('PATCH', `/${s.id}`, { tickerBg: 'red' });
+    assert.equal(bad.status, 400);
+    assert.equal((await pub(`/${s.id}`)).json.tickerBg, '#112233');
+    const off = await adm('PATCH', `/${s.id}`, { tickerText: '' });
+    assert.equal(off.status, 200);
+    assert.equal((await pub(`/${s.id}`)).json.tickerText, null);
   });
 });
