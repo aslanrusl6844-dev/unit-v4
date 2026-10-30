@@ -555,6 +555,16 @@ model ShopCustomerPushToken {
   updatedAt DateTime @updatedAt
 }
 
+// Код входа покупателя: создаёт сервер и шлёт пушем на устройство, где этот номер уже входил.
+// Хранится только хэш; одна строка на номер — новый запрос заменяет прежний код.
+model ShopLoginCode {
+  phone     String   @id
+  codeHash  String
+  expiresAt DateTime
+  attempts  Int      @default(0)
+  sentAt    DateTime @default(now())
+}
+
 // Заявка на регистрацию курьера My Market — курьер больше не регистрируется
 // сам: сначала заявка (телефон/имя/город), админ одобряет или отказывает, и
 // только после одобрения POST /courier/register пропускает этот телефон.

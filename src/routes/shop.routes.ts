@@ -16,6 +16,8 @@ import { maybeGenerateShopArticle } from '../services/shopArticle';
 import { SHOP_CATEGORIES, normalizeShopCategory } from '../config/shopCategories';
 import { sendOrderNotify, editOrderNotify, sendTelegramTestMessage } from '../lib/telegram';
 import { sendPickupCodePush } from '../lib/expoPush';
+import { sendBroadcast } from '../services/pushBroadcast.service';
+import { createHmac, randomInt, timingSafeEqual } from 'node:crypto';
 
 export const shopRouter = Router();
 
@@ -1720,6 +1722,92 @@ shopRouter.post('/profile/push-token', async (req, res) => {
   } catch (err: any) {
     logger.error({ err }, '[Shop API] Не удалось сохранить push-токен');
     res.status(500).json({ error: 'Не удалось сохранить push-токен', details: String(err?.message ?? err) });
+  }
+});
+
+// --- Код входа покупателя -------------------------------------------------------------------------
+const LOGIN_CODE_TTL_MS = 5 * 60_000;
+const LOGIN_CODE_RESEND_MS = 30_000;
+const LOGIN_CODE_MAX_ATTEMPTS = 5;
+
+const loginCodeHash = (phone: string, code: string) =>
+  createHmac('sha256', env.shopAppKey || 'no-key').update(`${phone}:${code}`).digest('hex');
+
+const loginCodeRequestSchema = z.object({ phone: z.string().min(1) });
+const loginCodeVerifySchema = z.object({ phone: z.string().min(1), code: z.string().regex(/^\d{4}$/) });
+
+/**
+ * Запрос кода входа. Код создаёт СЕРВЕР и шлёт пушем только на устройство, где этот номер уже входил
+ * (токен ShopCustomerPushToken по номеру). Неизвестному номеру код не уходит вообще — раньше приложение само
+ * придумывало код и показывало его на том же телефоне, поэтому он «приходил» при любом выдуманном номере.
+ * Код в ответе НИКОГДА не возвращается. Повтор — не чаще раза в 30 с.
+ */
+shopRouter.post('/auth/request-code', async (req, res) => {
+  const parsed = loginCodeRequestSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные' });
+  const phone = normalizePhone(parsed.data.phone);
+  if (!phone) return res.status(400).json({ error: 'Некорректный номер телефона', reason: 'invalid_phone' });
+
+  try {
+    const device = await prisma.shopCustomerPushToken.findUnique({ where: { phone } });
+    if (!device?.token) {
+      logger.info({ phone: phone.slice(-4) }, '[LoginCode] номер неизвестен — код не отправлен');
+      return res.status(404).json({ error: 'Этот номер ещё не входил в приложение, код отправить некуда', reason: 'unknown_number' });
+    }
+    const existing = await prisma.shopLoginCode.findUnique({ where: { phone } });
+    if (existing && Date.now() - existing.sentAt.getTime() < LOGIN_CODE_RESEND_MS) {
+      const wait = Math.ceil((LOGIN_CODE_RESEND_MS - (Date.now() - existing.sentAt.getTime())) / 1000);
+      return res.status(429).json({ error: `Код уже отправлен. Повторить можно через ${wait} с`, reason: 'too_soon', retryAfter: wait });
+    }
+    const code = String(randomInt(1000, 10000));
+    const data = { codeHash: loginCodeHash(phone, code), expiresAt: new Date(Date.now() + LOGIN_CODE_TTL_MS), attempts: 0, sentAt: new Date() };
+    await prisma.shopLoginCode.upsert({ where: { phone }, update: data, create: { phone, ...data } });
+
+    const r = await sendBroadcast({
+      title: 'My Market',
+      body: `Код входа: ${code}. Никому его не сообщайте`,
+      tokens: [device.token],
+      data: { type: 'login_code', code },
+    });
+    if (r.sent < 1) {
+      await prisma.shopLoginCode.deleteMany({ where: { phone } });
+      logger.error({ phone: phone.slice(-4), failed: r.failed, notRegistered: r.notRegistered, fcmError: r.fcmError }, '[LoginCode] пуш с кодом не принят');
+      return res.status(502).json({ error: 'Не удалось отправить код на устройство этого номера', reason: 'push_failed' });
+    }
+    logger.info({ phone: phone.slice(-4) }, '[LoginCode] код отправлен пушем');
+    res.json({ ok: true, expiresIn: Math.round(LOGIN_CODE_TTL_MS / 1000) });
+  } catch (err: any) {
+    logger.error({ err }, '[LoginCode] POST /auth/request-code упал');
+    res.status(500).json({ error: 'Не удалось отправить код', details: String(err?.message ?? err) });
+  }
+});
+
+/** Проверка кода входа: 5 попыток на код, срок 5 минут, после успеха код сгорает. */
+shopRouter.post('/auth/verify-code', async (req, res) => {
+  const parsed = loginCodeVerifySchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', reason: 'wrong_code' });
+  const phone = normalizePhone(parsed.data.phone);
+  if (!phone) return res.status(400).json({ error: 'Некорректный номер телефона', reason: 'invalid_phone' });
+
+  try {
+    const row = await prisma.shopLoginCode.findUnique({ where: { phone } });
+    if (!row || row.expiresAt.getTime() < Date.now()) {
+      return res.status(400).json({ error: 'Код истёк или не запрашивался. Запросите новый', reason: 'expired' });
+    }
+    if (row.attempts >= LOGIN_CODE_MAX_ATTEMPTS) {
+      return res.status(429).json({ error: 'Слишком много попыток. Запросите новый код', reason: 'too_many' });
+    }
+    const given = Buffer.from(loginCodeHash(phone, parsed.data.code));
+    const stored = Buffer.from(row.codeHash);
+    if (given.length !== stored.length || !timingSafeEqual(given, stored)) {
+      await prisma.shopLoginCode.update({ where: { phone }, data: { attempts: row.attempts + 1 } });
+      return res.status(400).json({ error: 'Неверный код', reason: 'wrong_code' });
+    }
+    await prisma.shopLoginCode.deleteMany({ where: { phone } });
+    res.json({ ok: true });
+  } catch (err: any) {
+    logger.error({ err }, '[LoginCode] POST /auth/verify-code упал');
+    res.status(500).json({ error: 'Не удалось проверить код', details: String(err?.message ?? err) });
   }
 });
 
