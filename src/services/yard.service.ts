@@ -124,7 +124,7 @@ export async function yardApplyPayment(orderId: string, ok: boolean) {
       }
       await tx.yardItem.update({ where: { id: line.itemId }, data: { stock: { decrement: line.qty } } });
     }
-    return tx.yardOrder.update({ where: { id: orderId }, data: { status: 'paid' }, include: { items: true } });
+    return tx.yardOrder.update({ where: { id: orderId }, data: { status: 'paid', paidAt: new Date() }, include: { items: true } });
   });
 }
 

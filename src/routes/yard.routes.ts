@@ -475,6 +475,7 @@ function toBuyerOrderDto(order: any) {
     status: order.status,
     total: order.total,
     createdAt: order.createdAt,
+    paidAt: order.paidAt ?? null,
     items: order.items,
     shop: {
       id: order.shop.id,
@@ -558,6 +559,7 @@ function toOrderDetailDto(order: any, role: 'buyer' | 'seller') {
     serverStatus: order.status,
     total: order.total,
     createdAt: order.createdAt,
+    paidAt: order.paidAt ?? null,
     shopId: order.shopId,
     shopName: order.shop.name,
     shop: {
@@ -797,6 +799,7 @@ yardRouter.get('/yard/mine', async (req, res) => {
           serverStatus: o.status,
           total: o.total,
           createdAt: o.createdAt,
+          paidAt: o.paidAt ?? null,
           items: o.items,
           buyerName: o.buyerName,
           buyerPhone: o.buyerPhone,

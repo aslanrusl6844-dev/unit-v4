@@ -260,6 +260,8 @@ describe('«Оплачено» и накладная продавца', () => {
     const r = await call('POST', `/api/shop/yard/orders/${id}/paid`, { phone: SELLER });
     assert.equal(r.status, 200, JSON.stringify(r.json));
     assert.equal(tables.order[0].status, 'paid');
+    assert.ok(tables.order[0].paidAt instanceof Date, 'время подтверждения оплаты записано (по нему приложение держит «Оплачено» 30 минут)');
+    assert.ok(Math.abs(Date.now() - tables.order[0].paidAt.getTime()) < 5000);
     assert.equal(tables.item[0].stock, 8);
     assert.equal(tables.shopMsg.length, 1);
     assert.equal(tables.shopMsg[0].text, '✅ Оплачено');
