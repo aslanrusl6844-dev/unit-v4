@@ -756,6 +756,8 @@ model YardOrder {
   // Кода выдачи курьера тут нет — несут сами, до двери за 10 минут.
   status     String   @default("waiting_payment")
   createdAt  DateTime @default(now())
+  // Когда продавец подтвердил оплату (waiting_payment -> paid). По нему приложение держит зелёное «Оплачено» 30 минут.
+  paidAt     DateTime?
   // Архив — только прячет заказ из общего списка админки, на статус/остаток/деньги не влияет.
   archived   Boolean  @default(false)
 
