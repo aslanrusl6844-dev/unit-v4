@@ -28,6 +28,7 @@ export async function sendSms(phone: string, text: string): Promise<boolean> {
       phones: phone,
       mes: text,
       charset: 'utf-8',
+      fmt: '3', // ответ в JSON: {"id","cnt"} или {"error","error_code"} — иначе SMSC отвечает простым текстом
     });
     const res = await fetch('https://smsc.kz/sys/send.php', {
       method: 'POST',
@@ -54,7 +55,12 @@ export async function sendSms(phone: string, text: string): Promise<boolean> {
       logger.error({ smscError: parsed.error, errorCode: parsed.error_code, phone }, '[SMS] Шлюз SMSC вернул ошибку');
       return false;
     }
-
+    // Текстовый ответ об ошибке («ERROR = 2 (...)») раньше считался успехом — SMS «отправлено», а до телефона не дошло.
+    if (!parsed && /^\s*ERROR\b/i.test(bodyText)) {
+      logger.error({ smscError: bodyText.slice(0, 200), phone }, '[SMS] Шлюз SMSC вернул ошибку (текст)');
+      return false;
+    }
+    logger.info({ phone: phone.slice(-4), smsc: bodyText.slice(0, 120) }, '[SMS] Шлюз SMSC принял сообщение');
     return true;
   } catch (err: any) {
     logger.error({ err, phone }, '[SMS] Не удалось отправить SMS — сбой сети или шлюза');
