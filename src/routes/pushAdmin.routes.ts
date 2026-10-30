@@ -21,6 +21,8 @@ const sendSchema = z.object({
   // 'test' — один номер (testPhone обязателен); 'all' — всем, только явно.
   audience: z.enum(['test', 'all']),
   testPhone: z.string().optional().nullable(),
+  // Показать на телефоне весь текст (data-пуш: приложение рисует баннер само). Без флага — как раньше.
+  fullText: z.boolean().optional(),
 });
 
 /** Сколько получателей у рассылки «всем». */
@@ -56,7 +58,7 @@ pushAdminRouter.post('/send', async (req, res) => {
     if (!tokens.length) return res.status(404).json({ error: 'Нет получателей с зарегистрированным токеном' });
 
     const imageWarning = imageUrl ? await checkPushImage(imageUrl) : null;
-    const result = await sendBroadcast({ title, body, imageUrl, tokens });
+    const result = await sendBroadcast({ title, body, imageUrl, tokens, fullText: parsed.data.fullText === true });
     logger.info({ audience, ...result }, '[PushAdmin] Рассылка отправлена');
     res.json({ ok: true, audience, ...result, ...(imageWarning ? { imageWarning } : {}) });
   } catch (err: any) {
