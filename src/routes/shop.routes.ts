@@ -1763,11 +1763,20 @@ shopRouter.post('/auth/request-code', async (req, res) => {
 
     // Пуш бесплатный — сначала он. SMS (платное) уходит только когда пуша нет: номер входит впервые,
     // сменил телефон или устройство не приняло пуш.
-    const pushOk = device?.token
-      ? await sendBroadcast({ title: 'My Market', body: `Код входа: ${code}. Никому его не сообщайте`, tokens: [device.token], data: { type: 'login_code', code } })
-          .then((r) => r.sent > 0)
-          .catch(() => false)
-      : false;
+    let pushOk = false;
+    if (device?.token) {
+      try {
+        const r = await sendBroadcast({ title: 'My Market', body: `Код входа: ${code}. Никому его не сообщайте`, tokens: [device.token], data: { type: 'login_code', code } });
+        pushOk = r.sent > 0;
+        if (!pushOk) {
+          logger.warn({ phone: phone.slice(-4), expo: r.expoTokens, fcm: r.fcmTokens, failed: r.failed, notRegistered: r.notRegistered, fcmError: r.fcmError }, '[LoginCode] пуш не принят');
+        }
+      } catch (err: any) {
+        logger.error({ phone: phone.slice(-4), err: String(err?.message ?? err) }, '[LoginCode] пуш упал');
+      }
+    } else {
+      logger.info({ phone: phone.slice(-4) }, '[LoginCode] для номера нет устройства — пуш невозможен');
+    }
     const smsOk = pushOk ? false : await sendSms(phone, `My Market: код входа ${code}. Никому его не сообщайте`);
     if (!smsOk && !pushOk) {
       await prisma.shopLoginCode.deleteMany({ where: { phone } });
