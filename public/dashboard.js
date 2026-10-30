@@ -2364,13 +2364,21 @@ function wireMyMarketTabsOnce() {
       const prevType = form.elements.type.value;
       const allowed = myMarketCatalog.find((c) => c.category === category)?.types ?? [];
       // Тип подтягивается только из выбранной категории; прежний остаётся, лишь если он оттуда же.
-      fillMyMarketTypeSelect(category, allowed.includes(prevType) ? prevType : '');
+      const prevSub = form.elements.subcategory.value;
+      const keepType = mmCanonTypes(category).concat(allowed).includes(prevType) ? prevType : '';
+      fillMyMarketSubcategorySelect(category, mmCanonShelves(category).includes(prevSub) ? prevSub : '');
+      fillMyMarketTypeSelect(category, keepType);
+      mmSyncSubcategoryForType(category, keepType);
     });
     form.elements.type.addEventListener('change', () => {
       myMarketCardCategoryTouched = true;
       const isCustom = form.elements.type.value === MM_CUSTOM_TYPE_OPTION;
       mmShowCustomTypeField(isCustom);
       if (isCustom) form.elements.typeCustom.focus();
+      else {
+        mmSyncSubcategoryForType(form.elements.category.value, form.elements.type.value);
+        mmUpdateTypeCanonNote(form.elements.category.value, form.elements.type.value);
+      }
     });
     let hintTimer = null;
     form.elements.name.addEventListener('input', () => {
@@ -3405,7 +3413,8 @@ async function runMyMarketSaveVariants(transferIds) {
 // показывается только из выбранной категории. Подсказки по названию — под
 // полями: клик по варианту подставляет оба поля.
 // ---------------------------------------------------------------------
-let myMarketCatalog = [];              // [{ category, types: [] }] — каталог для списков
+let myMarketCatalog = [];              // [{ category, types: [] }] — все известные пары категория/тип
+let myMarketCanon = {};                // { категория: { shelves: [{title, types}], types: [] } } — справочник приложения
 let myMarketCardCategoryTouched = false; // пользователь сам выбирал категорию/тип в этой карточке
 let myMarketHintsSeq = 0;               // отбрасываем устаревшие ответы подсказок
 
@@ -3413,10 +3422,13 @@ function mmEsc(v) {
   return String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-async function loadMyMarketCatalog() {
+// Имя именно «Card…»: просто loadMyMarketCatalog объявлено ниже ещё раз (вкладка
+// «Каталог»), и вторая функция перекрывала эту — списки карточки не грузились.
+async function loadMyMarketCardCatalog() {
   try {
     const r = await api('/shop-admin/category-catalog');
     myMarketCatalog = Array.isArray(r?.categories) ? r.categories : [];
+    myMarketCanon = r?.canon && typeof r.canon === 'object' ? r.canon : {};
   } catch {
     // Каталог не загрузился — списки остаются рабочими на текущих значениях.
   }
@@ -3456,17 +3468,90 @@ function mmShowCustomTypeField(show) {
   if (!show) form.elements.typeCustom.value = '';
 }
 
-/** Список типов = только типы выбранной категории, плюс «+ Свой тип…» внизу.
- *  Если текущий type не входит в список категории (вписан руками либо каталог
- *  ещё не знает о нём) — список встаёт на «+ Свой тип…», значение уходит в
- *  соседнее текстовое поле, а не теряется. */
+/** Типы приложения для категории (по порядку приложения). */
+function mmCanonTypes(category) {
+  const sec = myMarketCanon[category];
+  if (!sec) return [];
+  const seen = new Set();
+  const out = [];
+  [...(sec.shelves || []).flatMap((x) => x.types), ...(sec.types || [])].forEach((t) => {
+    const k = String(t).toLowerCase();
+    if (!seen.has(k)) { seen.add(k); out.push(t); }
+  });
+  return out;
+}
+
+/** Полки приложения для категории — это значения «Подкатегории». */
+function mmCanonShelves(category) {
+  return (myMarketCanon[category]?.shelves || []).map((x) => x.title);
+}
+
+/** Список типов: сначала типы из приложения для выбранной категории, ниже —
+ *  «Прочие» (были заведены раньше, в приложении плитки нет — товар виден только
+ *  в «Все товары»), и «+ Свой тип…». Если текущий type вне списка — остаётся в
+ *  поле «Свой тип», а не теряется. */
 function fillMyMarketTypeSelect(category, type) {
   const form = document.getElementById('mymarketProductCardForm');
-  const types = [...(myMarketCatalog.find((c) => c.category === category)?.types ?? [])];
-  const isKnown = !type || types.includes(type);
-  mmSetSelectOptions(form.elements.type, types, type, true);
+  const canon = mmCanonTypes(category);
+  const canonKeys = new Set(canon.map((t) => t.toLowerCase()));
+  const others = (myMarketCatalog.find((c) => c.category === category)?.types ?? []).filter((t) => !canonKeys.has(t.toLowerCase()));
+  const all = [...canon, ...others];
+  const isKnown = !type || all.includes(type);
+  mmSetSelectOptions(form.elements.type, canon, type, true);
+  if (others.length) {
+    const sel = form.elements.type;
+    const custom = Array.from(sel.options).find((o) => o.value === MM_CUSTOM_TYPE_OPTION);
+    const grp = document.createElement('optgroup');
+    grp.label = 'Прочие (нет в приложении)';
+    others.forEach((v) => { const o = document.createElement('option'); o.value = v; o.textContent = v; grp.appendChild(o); });
+    sel.insertBefore(grp, custom || null);
+    sel.value = type && all.includes(type) ? type : (type ? MM_CUSTOM_TYPE_OPTION : '');
+  }
   mmShowCustomTypeField(!isKnown);
   if (!isKnown) form.elements.typeCustom.value = type;
+  mmUpdateTypeCanonNote(category, type);
+}
+
+/** Пометка под списками: тип вне справочника приложения. */
+function mmUpdateTypeCanonNote(category, type) {
+  const el = document.getElementById('mmCardTypeCanonNote');
+  if (!el) return;
+  const canon = mmCanonTypes(category);
+  el.textContent = category && type && canon.length && !canon.some((t) => t.toLowerCase() === type.toLowerCase())
+    ? 'Такого типа нет в приложении: товар будет виден только в «Все товары» раздела. Выберите тип из списка.'
+    : '';
+}
+
+/** Подкатегория = полка приложения. У разделов без полок список пустой. Прежнее
+ *  значение, которого нет среди полок, остаётся выбранным (помечено), не стирается. */
+function fillMyMarketSubcategorySelect(category, sub) {
+  const form = document.getElementById('mymarketProductCardForm');
+  const sel = form.elements.subcategory;
+  const shelves = mmCanonShelves(category);
+  sel.innerHTML = '';
+  const ph = document.createElement('option');
+  ph.value = '';
+  ph.textContent = shelves.length ? '— выберите —' : '— у раздела нет подкатегорий —';
+  sel.appendChild(ph);
+  shelves.forEach((v) => { const o = document.createElement('option'); o.value = v; o.textContent = v; sel.appendChild(o); });
+  if (sub && !shelves.includes(sub)) {
+    const o = document.createElement('option');
+    o.value = sub;
+    o.textContent = `${sub} (прежнее, нет в приложении)`;
+    sel.appendChild(o);
+  }
+  sel.value = sub || '';
+}
+
+/** Выбран тип → подкатегория подставляется по полке, где он лежит в приложении
+ *  (если полок несколько — остаётся уже выбранная, если она подходит). */
+function mmSyncSubcategoryForType(category, type) {
+  const form = document.getElementById('mymarketProductCardForm');
+  const shelves = myMarketCanon[category]?.shelves || [];
+  if (!shelves.length || !type) return;
+  const hit = shelves.filter((x) => x.types.some((t) => t.toLowerCase() === type.toLowerCase())).map((x) => x.title);
+  if (!hit.length) return;
+  if (!hit.includes(form.elements.subcategory.value)) fillMyMarketSubcategorySelect(category, hit[0]);
 }
 
 /**
@@ -3488,13 +3573,17 @@ const MM_SHOP_CATEGORIES = [
  * автоматически: список остаётся на «— выберите —», а рядом показывается,
  * что реально сохранено в базе. Продавец должен явно переизбрать раздел.
  */
-function fillMyMarketCategorySelect(category, type) {
+function fillMyMarketCategorySelect(category, type, sub) {
   const form = document.getElementById('mymarketProductCardForm');
+  // sub не передали (клик по подсказке, перезаполнение) — остаётся то, что выбрано сейчас.
+  const wantSub = sub === undefined ? form.elements.subcategory.value : sub;
   mmSetSelectOptions(form.elements.category, MM_SHOP_CATEGORIES, category, false);
   const inList = !!category && MM_SHOP_CATEGORIES.includes(category);
   document.getElementById('mmCardCategoryOutOfListWarn').textContent =
     category && !inList ? `сейчас в базе: «${category}» (вне списка, выберите раздел)` : '';
   fillMyMarketTypeSelect(inList ? category : '', type);
+  fillMyMarketSubcategorySelect(inList ? category : '', wantSub);
+  if (inList && sub === undefined) mmSyncSubcategoryForType(category, type);
 }
 
 /** Блок под полями: «По названию: …» и «Ещё: …» — по одному варианту в строке. */
@@ -3518,22 +3607,23 @@ async function refreshMyMarketCardHints() {
     btn.addEventListener('click', () => {
       const v = variants[Number(btn.dataset.hintIndex)];
       myMarketCardCategoryTouched = true; // выбрано пользователем — источник «с названия» снимается
-      fillMyMarketCategorySelect(v.category, v.type);
+      const cf = document.getElementById('mymarketProductCardForm');
+      fillMyMarketCategorySelect(v.category, v.type, v.category === cf.elements.category.value ? undefined : '');
     });
   });
 }
 
 /** Открывает списки и подсказки в карточке; каталог догружается в фоне. */
-function initMyMarketCardCategoryFields(category, type) {
+function initMyMarketCardCategoryFields(category, type, sub) {
   myMarketCardCategoryTouched = false;
-  fillMyMarketCategorySelect(category, type);
+  fillMyMarketCategorySelect(category, type, sub || '');
   // Каталог мог быть ещё не загружен (myMarketCatalog=[]) — тогда list из типов
   // пуст, и тип уходит в «+ Свой тип…», даже если он на самом деле известный.
   // Перезаполняем список тем же (исходным!) значением после загрузки каталога —
   // читать form.elements.type.value здесь нельзя: он уже мог стать '__custom__'.
-  loadMyMarketCatalog().then(() => {
+  loadMyMarketCardCatalog().then(() => {
     if (myMarketCardCategoryTouched) return; // пользователь уже сам что-то выбрал — не перебиваем
-    fillMyMarketCategorySelect(category, type);
+    fillMyMarketCategorySelect(category, type, sub || '');
   });
   refreshMyMarketCardHints();
 }
@@ -3637,8 +3727,7 @@ function openMyMarketProductCard(id) {
   form.elements.shopCost.value = p.shopCost ?? '';
   form.elements.shopStock.value = p.shopStock ?? 0;
   form.elements.shopDelivery.value = p.shopDelivery ?? '';
-  form.elements.subcategory.value = p.subcategory ?? '';
-  initMyMarketCardCategoryFields(p.category ?? '', p.type ?? '');
+  initMyMarketCardCategoryFields(p.category ?? '', p.type ?? '', p.subcategory ?? '');
   form.elements.description.value = p.description ?? '';
   form.elements.composition.value = p.composition ?? '';
   form.elements.videoUrl.value = p.videoUrl ?? '';
@@ -3975,7 +4064,7 @@ async function saveMyMarketProductCard(e) {
     if (!known.some((t) => t.toLowerCase() === type.toLowerCase())) {
       try {
         await api('/shop-admin/category-types', { method: 'POST', body: JSON.stringify({ category, type }) });
-        await loadMyMarketCatalog();
+        await loadMyMarketCardCatalog();
       } catch (err) {
         console.warn('Не удалось добавить тип в справочник (товар всё равно сохранится):', err.message);
       }

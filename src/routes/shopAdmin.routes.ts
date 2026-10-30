@@ -13,6 +13,7 @@ import { KZ_CITY_WHITELIST, normalizeKzCity } from '../services/shopAnalytics.se
 import { maybeGenerateShopArticle } from '../services/shopArticle';
 import { isValidShopCategory, normalizeShopCategory, SHOP_CATEGORIES } from '../config/shopCategories';
 import { ozonTypeKey } from '../services/sync.service';
+import { SHOP_CATALOG_CANON } from '../config/shopCatalogCanon';
 import { hintCategoryByName, hintRuleCatalogPairs, starterCatalogPairs, buildCatalog } from '../services/categoryHints';
 import { editOrderNotify } from '../lib/telegram';
 import { sendSms } from '../services/sms.service';
@@ -1415,7 +1416,8 @@ shopAdminRouter.get('/category-catalog', async (_req, res) => {
       ...(mapped as Array<{ category: string; type: string }>),
       ...(used as Array<{ category: string | null; type: string | null }>),
     ]);
-    res.json({ categories });
+    // canon — справочник приложения (полки и типы): по нему строятся списки «Подкатегория» и «Тип».
+    res.json({ categories, canon: SHOP_CATALOG_CANON });
   } catch (err: any) {
     logger.error({ err }, '[Shop Admin] GET /category-catalog упал');
     res.status(500).json({ error: 'Не удалось получить каталог категорий', details: String(err?.message ?? err) });
