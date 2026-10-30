@@ -892,6 +892,7 @@ model Showcase {
   tickerText  String?  // бегущая строка между видео и карточками (пусто — строки нет)
   tickerBg    String?  // цвет полосы строки, '#RRGGBB' (пусто → чёрный)
   tickerColor String?  // цвет букв строки, '#RRGGBB' (пусто → белый)
+  tickerSize  Int?     // размер шрифта строки, sp (8–60; пусто → 20)
   published   Boolean  @default(false) // опубликована ли в приложении
   sortOrder   Int      @default(0)
   createdAt   DateTime @default(now())

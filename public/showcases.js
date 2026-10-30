@@ -206,6 +206,8 @@ function scVideosRefresh() {
 /** Бегущая строка между видео и карточками. Пусто — строки в приложении нет. */
 function scHexOr(v, fallback) { return /^#[0-9a-fA-F]{6}$/.test(String(v || '')) ? String(v).toLowerCase() : fallback; }
 
+function scTickerSizeOf(v) { const n = Math.round(Number(v)); return Number.isFinite(n) && n >= 8 && n <= 60 ? n : 20; }
+
 function scTickerHtml(c) {
   const bg = scHexOr(c.tickerBg, '#000000');
   const fg = scHexOr(c.tickerColor, '#ffffff');
@@ -221,6 +223,13 @@ function scTickerHtml(c) {
       <label>Текст (пусто — строки нет) <input type="text" id="scTickerText" maxlength="200" placeholder="CELL29 — КОРЕЙСКАЯ КОСМЕТИКА" value="${scEsc(c.tickerText)}" /></label>
       ${colorRow('scTickerBg', 'Цвет полосы', bg)}
       ${colorRow('scTickerColor', 'Цвет букв', fg)}
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <span style="min-width:110px">Размер шрифта</span>
+        <button type="button" class="btn btn--ghost" data-tks="-1" title="Меньше">−</button>
+        <input type="number" id="scTickerSize" min="8" max="60" step="1" value="${scTickerSizeOf(c.tickerSize)}" style="width:72px" />
+        <button type="button" class="btn btn--ghost" data-tks="1" title="Больше">+</button>
+        <span class="panel__hint" style="margin:0">от 8 до 60, по умолчанию 20</span>
+      </div>
       <div id="scTickerPreview" style="overflow:hidden;white-space:pre;padding:10px 0;font-weight:700;letter-spacing:.04em;text-transform:uppercase"></div>
       <p class="panel__hint" style="margin:0">Строка показывается на странице бренда между видео и карточками. Изменения применяются кнопкой «Сохранить».</p>
     </div>`;
@@ -232,6 +241,7 @@ function scTickerPreview() {
   const text = document.getElementById('scTickerText').value.trim();
   box.style.background = document.getElementById('scTickerBg').value;
   box.style.color = document.getElementById('scTickerColor').value;
+  box.style.fontSize = scTickerSizeOf(document.getElementById('scTickerSize').value) + 'px';
   box.textContent = text ? Array(6).fill(text).join('        ') : 'Предпросмотр: введите текст';
   box.style.opacity = text ? '1' : '.5';
 }
@@ -497,6 +507,7 @@ function scFormData() {
     tickerText: v('scTickerText').trim() || null,
     tickerBg: v('scTickerBg'),
     tickerColor: v('scTickerColor'),
+    tickerSize: scTickerSizeOf(v('scTickerSize')),
     published: document.getElementById('scPublished').checked,
   };
 }
@@ -828,6 +839,13 @@ function scWireOnce() {
   scState.wired = true;
   root.addEventListener('click', (e) => {
     // Кнопки «Чёрный/Белый» у цветов бегущей строки — без блокировки «занято».
+    const st = e.target.closest && e.target.closest('[data-tks]');
+    if (st) {
+      const el = document.getElementById('scTickerSize');
+      el.value = Math.min(60, Math.max(8, scTickerSizeOf(el.value) + Number(st.dataset.tks)));
+      scTickerPreview();
+      return;
+    }
     const t = e.target.closest && e.target.closest('[data-tk]');
     if (!t) return;
     const inp = document.getElementById(t.dataset.tk);
@@ -874,7 +892,7 @@ function scWireOnce() {
     if (f) scImportFile(f);
   });
   root.addEventListener('input', (e) => {
-    if (e.target.id === 'scTickerText' || e.target.id === 'scTickerBg' || e.target.id === 'scTickerColor') { scTickerPreview(); return; }
+    if (e.target.id === 'scTickerText' || e.target.id === 'scTickerBg' || e.target.id === 'scTickerColor' || e.target.id === 'scTickerSize') { scTickerPreview(); return; }
     if (bbEdit(e)) return;
     if (e.target.id !== 'scSearch') return;
     scState.q = e.target.value.trim();
