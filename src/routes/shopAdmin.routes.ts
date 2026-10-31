@@ -20,7 +20,8 @@ import { hintCategoryByName, hintRuleCatalogPairs, starterCatalogPairs, buildCat
 import { editOrderNotify } from '../lib/telegram';
 import { sendSms } from '../services/sms.service';
 import { sendCourierApprovedPush, sendDeliveryProgressPush } from '../lib/expoPush';
-import { resolveCity } from '../config/cities';
+import { resolveCity, CITY_IMAGE_CITIES } from '../config/cities';
+import { fetchCityStreets, saveCityStreets } from '../services/streets.service';
 import { HUB_CITY } from '../config/delivery';
 import { parseImageZip, parseBulkText, normalizeKey, cleanName, capitalizeFirst, ImportError } from '../services/catalogTypeImport';
 
@@ -163,6 +164,31 @@ shopAdminRouter.put('/under-showcase-banner', async (req, res) => {
     res.json(banner);
   } catch (err: any) {
     res.status(500).json({ error: 'Не удалось сохранить рекламу под витринами', details: String(err?.message ?? err) });
+  }
+});
+
+/** Улицы по городам: сколько загружено из OpenStreetMap. */
+shopAdminRouter.get('/streets/stats', async (_req, res) => {
+  try {
+    const grouped = await prisma.shopStreet.groupBy({ by: ['city'], _count: { _all: true } });
+    const byCity = new Map(grouped.map((g) => [g.city, g._count._all]));
+    res.json({ cities: CITY_IMAGE_CITIES.map((city) => ({ city, count: byCity.get(city) ?? 0 })) });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Не удалось получить число улиц', details: String(err?.message ?? err) });
+  }
+});
+
+/** Загрузка улиц одного города из OpenStreetMap (по одному городу за запрос — укладываемся во время функции). */
+shopAdminRouter.post('/streets/import', async (req, res) => {
+  const city = resolveCity(req.body?.city);
+  if (!city) return res.status(400).json({ error: 'Неизвестный город' });
+  try {
+    const names = await fetchCityStreets(city);
+    const count = await saveCityStreets(city, names);
+    res.json({ city, count });
+  } catch (err: any) {
+    logger.error({ err, city }, 'streets import failed');
+    res.status(502).json({ error: `Не удалось загрузить улицы: ${String(err?.message ?? err)}` });
   }
 });
 

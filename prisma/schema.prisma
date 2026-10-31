@@ -1019,3 +1019,15 @@ model ProductDraft {
 
   @@index([chatId, status])
 }
+
+// Улицы и микрорайоны городов из OpenStreetMap — для подсказок в поле «Улица» на оформлении заказа.
+// Грузятся с сервера кнопкой в админке; без внешних ключей и платы за запросы.
+model ShopStreet {
+  id   String @id @default(cuid())
+  city String
+  name String
+  key  String // название без «улица/проспект…», нижний регистр — для поиска
+
+  @@unique([city, name])
+  @@index([city, key])
+}

@@ -4188,6 +4188,7 @@ async function loadMyMarketPrices() {
 
   await renderMyMarketBannerSlots();
   await renderMyMarketUnderShowcase();
+  await renderMyMarketStreets();
 }
 
 // Логистика APP пока фиксированная — 2000 ₸ с единицы (позже можно брать
@@ -4315,6 +4316,58 @@ async function renderMyMarketBannerSlots() {
 }
 
 /** Реклама под витринами — одна полоса (слот 4): фото 1080×250, необязательная ссылка, вкл/выкл. */
+/** Подсказки улиц: сколько улиц загружено по городам и кнопки загрузки из OpenStreetMap. */
+async function renderMyMarketStreets() {
+  const box = document.getElementById('mymarketStreets');
+  if (!box) return;
+  const statusEl = document.getElementById('mmStreetsStatus');
+  const allBtn = document.getElementById('mmStreetsAllBtn');
+  let stats;
+  try {
+    stats = await api('/shop-admin/streets/stats');
+  } catch (e) {
+    box.textContent = 'Не удалось получить список: ' + e.message;
+    return;
+  }
+  box.innerHTML = stats.cities.map((c) => `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;border:1px solid var(--border,#ddd);border-radius:6px;padding:6px 10px">
+      <span style="font-size:13px">${c.city}<br><span class="mm-st-count" data-city="${c.city}" style="font-size:11px;color:var(--text-faint)">${c.count ? c.count + ' улиц' : 'не загружено'}</span></span>
+      <button class="btn btn--ghost mm-st-load" data-city="${c.city}" style="font-size:12px">Загрузить</button>
+    </div>`).join('');
+
+  async function loadCity(city, btn) {
+    const cnt = box.querySelector(`.mm-st-count[data-city="${city}"]`);
+    btn.disabled = true;
+    cnt.style.color = 'var(--text-faint)';
+    cnt.textContent = 'загружаю…';
+    try {
+      const r = await api('/shop-admin/streets/import', { method: 'POST', body: JSON.stringify({ city }) });
+      cnt.textContent = r.count + ' улиц';
+      return true;
+    } catch (e) {
+      cnt.style.color = '#c0392b';
+      cnt.textContent = 'ошибка: ' + (e.body?.error || e.message).slice(0, 120);
+      return false;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+  box.querySelectorAll('.mm-st-load').forEach((btn) => {
+    btn.addEventListener('click', () => loadCity(btn.dataset.city, btn));
+  });
+  allBtn.onclick = async () => {
+    allBtn.disabled = true;
+    const btns = [...box.querySelectorAll('.mm-st-load')];
+    let ok = 0;
+    for (let i = 0; i < btns.length; i++) {
+      statusEl.textContent = `Город ${i + 1} из ${btns.length}…`;
+      if (await loadCity(btns[i].dataset.city, btns[i])) ok += 1;
+    }
+    statusEl.textContent = `Готово: загружено ${ok} из ${btns.length}`;
+    allBtn.disabled = false;
+  };
+}
+
 async function renderMyMarketUnderShowcase() {
   const container = document.getElementById('mymarketUnderShowcase');
   if (!container) return;
