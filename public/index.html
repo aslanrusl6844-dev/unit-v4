@@ -809,6 +809,12 @@
             <div id="mymarketUnderShowcase" style="max-width:520px"></div>
           </div>
           <div class="panel">
+            <div class="panel__head"><h2>Подсказки улиц в приложении</h2></div>
+            <p class="panel__hint">Когда клиент вводит улицу на оформлении заказа, приложение подсказывает названия из этой базы. Улицы берутся из бесплатной карты OpenStreetMap и хранятся у нас — платных ключей нет. Нажмите «Загрузить» напротив города (или «Загрузить все города» — займёт 1–2 минуты). Номера домов не подсказываются. © OpenStreetMap contributors.</p>
+            <div style="margin-bottom:10px"><button class="btn btn--ghost" id="mmStreetsAllBtn" style="font-size:12px">Загрузить все города</button> <span id="mmStreetsStatus" style="font-size:11px;color:var(--text-faint)"></span></div>
+            <div id="mymarketStreets" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px"></div>
+          </div>
+          <div class="panel">
             <div class="panel__head"><h2>Быстрое редактирование цен — только товары «В продаже»</h2></div>
             <p class="panel__hint">Показаны только товары с включённым «В продаже» (shopActive) — не весь каталог Kaspi/Ozon/WB. Сохранение — при уходе с поля (blur). Прибыль/шт и маржа считаются сразу при вводе: цена − себестоимость − налог 4% − логистика 2000 ₸/шт (пока фикс). Пока себестоимость не заполнена — «нет закупа», не 0.</p>
             <div id="mymarketPricesEmpty" hidden></div>

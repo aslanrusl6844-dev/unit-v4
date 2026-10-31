@@ -18,6 +18,7 @@ import { SHOP_CATEGORIES, normalizeShopCategory } from '../config/shopCategories
 import { sendOrderNotify, editOrderNotify, sendTelegramTestMessage } from '../lib/telegram';
 import { sendPickupCodePush } from '../lib/expoPush';
 import { buildDelivery } from '../services/deliveryProgress';
+import { searchStreets } from '../services/streets.service';
 import { sendBroadcast } from '../services/pushBroadcast.service';
 import { createHmac, randomInt, timingSafeEqual } from 'node:crypto';
 import { deliveryFeeFor, deliveryFeeOfOrder } from '../config/shopDelivery';
@@ -325,6 +326,19 @@ async function cityImageUrls(raw: unknown): Promise<string[]> {
   });
   return rows.map((r) => r.imageUrl);
 }
+
+/** Подсказки улиц: GET /streets?city=Алматы&q=аб → ["улица Абая", ...]. Пусто, если улицы города ещё не загружены. */
+shopRouter.get('/streets', async (req, res) => {
+  try {
+    const city = resolveCity(req.query.city);
+    const q = String(req.query.q ?? '');
+    if (!city || q.trim().length < 2) return res.json({ streets: [] });
+    res.json({ streets: await searchStreets(city, q) });
+  } catch (err: any) {
+    logger.warn({ err }, 'streets search failed');
+    res.json({ streets: [] }); // подсказки не обязательны — ввод вручную работает всегда
+  }
+});
 
 shopRouter.get('/city-images', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
