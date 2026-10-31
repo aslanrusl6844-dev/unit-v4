@@ -910,7 +910,7 @@
         <!-- ---- Курьеры ---- -->
         <!-- ---- Аналитика ---- -->
         <div id="mymarketAnalyticsTab" hidden>
-          <div class="panel">
+          <div class="panel" id="mmAnalyticsPeriodPanel">
             <div class="seg" id="mmAnalyticsPeriodTabs">
               <button class="is-active" data-days="7">7 дней</button>
               <button data-days="30">30 дней</button>
@@ -922,6 +922,7 @@
             <button class="is-active" data-subtab="search">Поисковые запросы</button>
             <button data-subtab="conversion">Конверсия</button>
             <button data-subtab="seasonality">Сезонность + города</button>
+            <button data-subtab="map">🗺 Карта Казахстана</button>
           </div>
 
           <!-- А) Поисковые запросы -->
@@ -967,6 +968,50 @@
                   <tbody></tbody>
                 </table>
               </div>
+            </div>
+          </div>
+
+          <!-- Г) Карта Казахстана -->
+          <div id="mmAnalyticsMapTab" hidden>
+            <div class="gm-toolbar">
+              <div class="seg" id="gmPeriod">
+                <button data-days="7">7 дней</button>
+                <button class="is-active" data-days="30">30 дней</button>
+                <button data-days="90">90 дней</button>
+                <button data-days="0">Всё время</button>
+              </div>
+              <div class="seg" id="gmMode">
+                <button class="is-active" data-mode="orders">Заказы</button>
+                <button data-mode="search">Поисковые запросы</button>
+              </div>
+              <span class="panel__hint" id="gmStatus"></span>
+            </div>
+            <div class="gm-layout">
+              <div class="panel gm-mapbox" id="gmMapBox">
+                <div class="gm-ctl">
+                  <button type="button" id="gmZoomIn" title="Приблизить">+</button>
+                  <button type="button" id="gmZoomOut" title="Отдалить">−</button>
+                  <button type="button" id="gmReset" title="Вся карта">⌂</button>
+                  <button type="button" id="gmFull" title="На весь экран">⛶</button>
+                </div>
+                <svg id="gmSvg" class="gm-svg" role="img" aria-label="Карта Казахстана: заказы по городам"></svg>
+                <div class="gm-tip" id="gmTip" hidden></div>
+                <div class="gm-legend"><span class="gm-legend__hub"></span> хаб (Алматы) <span class="gm-legend__dot"></span> город с заказами <span class="gm-legend__truck">🚚</span> машина в пути · <span class="gm-attr">колесо мыши или щипок — масштаб, перетаскивание — сдвиг · границы: geoBoundaries</span></div>
+              </div>
+              <div class="panel gm-side">
+                <div class="panel__head"><h2 id="gmSideTitle">Заказы по городам</h2></div>
+                <div id="gmList" class="gm-list"></div>
+              </div>
+            </div>
+            <div class="panel">
+              <div class="panel__head"><h2>Доставки по городам</h2></div>
+              <div class="table-wrap">
+                <table class="table">
+                  <thead><tr><th>Город</th><th>В пути</th><th class="num">Ждут отправки</th><th>Доставлено</th></tr></thead>
+                  <tbody id="gmShipBody"></tbody>
+                </table>
+              </div>
+              <p class="panel__hint">«Машина» — это заказы города, которые курьер забрал или отправил (статусы «забран» и «в пути»). Точка на пунктире и срок прибытия — оценка по расстоянию от Алматы (~600 км в сутки) и времени отправки, а не GPS. Статус «доставлено» ставится, когда курьер вводит код выдачи.</p>
             </div>
           </div>
 
@@ -1665,7 +1710,9 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="/kz-map-data.js"></script>
 <script src="/dashboard.js"></script>
+<script src="/geomap.js"></script>
 <script src="/showcases.js"></script>
 </body>
 </html>

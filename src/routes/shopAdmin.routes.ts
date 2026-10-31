@@ -8,6 +8,7 @@ import { prisma } from '../db/prisma';
 import { logger } from '../utils/logger';
 import { markShopOrderAsPaid, normalizePhone } from './shop.routes';
 import { getSearchAnalytics, getConversionAnalytics, getSeasonalityAnalytics } from '../services/shopAnalytics.service';
+import { getGeoAnalytics } from '../services/shopGeo.service';
 import { generateWaybillPdf, WaybillOrderItem } from '../services/waybill.service';
 import { KZ_CITY_WHITELIST, normalizeKzCity } from '../services/shopAnalytics.service';
 import { maybeGenerateShopArticle } from '../services/shopArticle';
@@ -1228,6 +1229,17 @@ shopAdminRouter.get('/analytics/seasonality', async (req, res) => {
   } catch (err: any) {
     logger.error({ err }, '[Shop Admin] GET /analytics/seasonality упал');
     res.status(500).json({ error: 'Не удалось получить аналитику сезонности', details: String(err?.message ?? err) });
+  }
+});
+
+shopAdminRouter.get('/analytics/geo', async (req, res) => {
+  try {
+    const raw = Number(req.query.days);
+    const days = [7, 30, 90, 0].includes(raw) ? raw : 30; // 0 — за всё время
+    res.json(await getGeoAnalytics(days));
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] GET /analytics/geo упал');
+    res.status(500).json({ error: 'Не удалось получить карту доставок', details: String(err?.message ?? err) });
   }
 });
 
