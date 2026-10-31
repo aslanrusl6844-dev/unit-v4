@@ -1,4 +1,4 @@
-export type MarketplaceName = 'KASPI' | 'OZON' | 'WB' | 'APP';
+export type MarketplaceName = 'KASPI' | 'OZON' | 'WB' | 'APP' | 'TEEZ';
 
 // Единый нормализованный формат заказа, к которому мы приводим данные
 // из Kaspi и Ozon перед сохранением в БД. Это позволяет считать юнит-экономику

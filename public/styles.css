@@ -18,6 +18,7 @@
   --kaspi: #E2231A;
   --ozon: #005BFF;
   --wb: #CB11AB;
+  --teez: #FF6B00;
 
   --font-display: 'Space Grotesk', sans-serif;
   --font-body: 'Inter', sans-serif;
@@ -125,6 +126,7 @@ body {
 .dot--kaspi { background: var(--kaspi); }
 .dot--ozon { background: var(--ozon); }
 .dot--wb { background: var(--wb); }
+.dot--teez { background: var(--teez); }
 
 .topbar__actions { display: flex; gap: 8px; margin-left: auto; }
 
