@@ -5848,6 +5848,7 @@ async function loadNichesPage() {
 // =====================================================================
 let searchStatsWired = false;
 let searchStatsCharts = [];
+let ssRunId = 0; // номер запуска: ответы от прошлого нажатия «Показать» не должны попасть на новый экран
 
 const SS_MP_COLORS = { KASPI: '#E2231A', OZON: '#005BFF', WB: '#CB11AB', TEEZ: '#FF6B00', APP: '#16A34A' };
 const SS_MP_NAMES = { KASPI: 'Kaspi', OZON: 'Ozon', WB: 'WB', TEEZ: 'Tez Market', APP: 'My Market' };
@@ -5883,6 +5884,7 @@ function ssDestroyCharts() {
 }
 
 async function runSearchStats(q, geo, months) {
+  const runId = ++ssRunId;
   const out = document.getElementById('searchStatsResult');
   ssDestroyCharts();
   const geoSelect = document.getElementById('searchStatsGeo');
@@ -5902,15 +5904,28 @@ async function runSearchStats(q, geo, months) {
   const from = new Date(to.getFullYear(), to.getMonth() - months + 1, 1);
   const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
-  const [sales, trends, wordstat] = await Promise.allSettled([
-    api(`/search-analytics/my-sales?${new URLSearchParams({ q, from: iso(from), to: iso(to) })}`),
-    api(`/search-analytics/google-trends?${new URLSearchParams({ q, geo, months: String(months) })}`),
-    api(`/search-analytics/wordstat?${new URLSearchParams({ q, geo })}`),
-  ]);
+  // Каждый блок рисуется сам по готовности и сам ловит свои ошибки: если один
+  // упадёт (например, не построился график), остальные всё равно покажутся.
+  const settle = (p) => p.then((value) => ({ status: 'fulfilled', value }), (reason) => ({ status: 'rejected', reason }));
+  const guarded = (boxId, label, promise, render) => settle(promise).then((res) => {
+    if (runId !== ssRunId) return;
+    try {
+      render(res);
+    } catch (err) {
+      console.error(`Аналитика запросов: ошибка блока «${label}»`, err);
+      const box = document.getElementById(boxId);
+      const hint = box && box.querySelector('.panel__hint');
+      const msg = `Не удалось показать блок «${label}»: ${ssEsc(err && err.message)}`;
+      if (hint) hint.innerHTML = msg;
+      else if (box) box.insertAdjacentHTML('beforeend', `<p class="panel__hint">${msg}</p>`);
+    }
+  });
 
-  renderSearchStatsSales(q, sales);
-  renderSearchStatsTrends(trends);
-  renderSearchStatsWordstat(wordstat);
+  await Promise.all([
+    guarded('ssSales', 'Мои продажи', api(`/search-analytics/my-sales?${new URLSearchParams({ q, from: iso(from), to: iso(to) })}`), (r) => renderSearchStatsSales(q, r)),
+    guarded('ssTrends', 'Google Trends', api(`/search-analytics/google-trends?${new URLSearchParams({ q, geo, months: String(months) })}`), renderSearchStatsTrends),
+    guarded('ssWordstat', 'Яндекс Wordstat', api(`/search-analytics/wordstat?${new URLSearchParams({ q, geo })}`), renderSearchStatsWordstat),
+  ]);
 }
 
 function renderSearchStatsWordstat(settled) {
