@@ -5895,20 +5895,47 @@ async function runSearchStats(q, geo, months) {
     <div class="panel" id="ssSales"><div class="panel__head"><h2>Мои продажи по слову «${ssEsc(q)}»</h2></div><p class="panel__hint">Считаю…</p></div>
     <div class="panel" id="ssTrends"><div class="panel__head"><h2>Google Trends · ${ssEsc(geoLabel)}</h2><a class="btn btn--ghost" href="${trendsUrl}" target="_blank" rel="noopener">Открыть в Google Trends ↗</a></div><p class="panel__hint">Запрашиваю у Google…</p></div>
     <div class="panel" id="ssWordstat"><div class="panel__head"><h2>Яндекс Wordstat</h2><a class="btn btn--ghost" href="${wordstatUrl}" target="_blank" rel="noopener">Открыть в Wordstat ↗</a></div>
-      <p class="panel__hint">Число запросов в Яндексе по слову, динамика и топ запросов. Регион (Казахстан, Алматы, Астана) выбирается в самом Wordstat. Автоматический вывод сюда включится после подключения Yandex Cloud.</p></div>
+      <p class="panel__hint">Запрашиваю у Яндекса…</p></div>
   `;
 
   const to = new Date();
   const from = new Date(to.getFullYear(), to.getMonth() - months + 1, 1);
   const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
-  const [sales, trends] = await Promise.allSettled([
+  const [sales, trends, wordstat] = await Promise.allSettled([
     api(`/search-analytics/my-sales?${new URLSearchParams({ q, from: iso(from), to: iso(to) })}`),
     api(`/search-analytics/google-trends?${new URLSearchParams({ q, geo, months: String(months) })}`),
+    api(`/search-analytics/wordstat?${new URLSearchParams({ q, geo })}`),
   ]);
 
   renderSearchStatsSales(q, sales);
   renderSearchStatsTrends(trends);
+  renderSearchStatsWordstat(wordstat);
+}
+
+function renderSearchStatsWordstat(settled) {
+  const box = document.getElementById('ssWordstat');
+  const hint = box.querySelector('.panel__hint');
+  if (settled.status !== 'fulfilled') {
+    hint.innerHTML = 'Wordstat не ответил: ' + ssEsc(settled.reason.message) + '<br>Можно открыть кнопкой «Открыть в Wordstat» справа сверху.';
+    return;
+  }
+  const d = settled.value;
+  if (!d.top.length && !d.associations.length) {
+    hint.textContent = 'По этому слову Wordstat ничего не вернул для региона «' + d.regionLabel + '». Попробуй более общее слово или весь Казахстан.';
+    return;
+  }
+  const table = (items) => items.length
+    ? `<div class="table-wrap"><table class="table"><thead><tr><th>Запрос</th><th class="num">Запросов в месяц</th></tr></thead><tbody>${items.map((i) => `<tr><td class="name-cell">${ssEsc(i.phrase)}</td><td class="num">${fmt.format(i.count)}</td></tr>`).join('')}</tbody></table></div>`
+    : '<p class="panel__hint">Нет данных.</p>';
+  const rest = document.createElement('div');
+  rest.innerHTML = `
+    <p class="panel__hint" style="margin-bottom:8px">Регион: <strong>${ssEsc(d.regionLabel)}</strong>, только поиск Яндекса${d.total != null ? `, всего по слову: <strong>${fmt.format(d.total)}</strong>` : ''}.</p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px">
+      <div><h3 style="font-size:13px;margin:0 0 6px">Что искали со словом (топ ${d.top.length})</h3>${table(d.top)}</div>
+      <div><h3 style="font-size:13px;margin:0 0 6px">Похожие запросы</h3>${table(d.associations)}</div>
+    </div>`;
+  hint.replaceWith(rest);
 }
 
 function renderSearchStatsSales(q, settled) {

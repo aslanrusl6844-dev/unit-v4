@@ -2,6 +2,7 @@ import { Router } from 'express';
 import dayjs from 'dayjs';
 import { z } from 'zod';
 import { getGoogleTrends, getMySalesByKeyword, TRENDS_REGIONS } from '../services/searchAnalytics.service';
+import { getWordstatTop, WORDSTAT_REGIONS } from '../services/wordstat.service';
 import { logger } from '../utils/logger';
 
 export const searchAnalyticsRouter = Router();
@@ -40,5 +41,19 @@ searchAnalyticsRouter.get('/google-trends', async (req, res) => {
   } catch (err: any) {
     logger.warn({ err }, '[Аналитика запросов] Google Trends недоступен');
     res.status(502).json({ error: 'Google Trends не ответил', details: String(err?.message ?? err) });
+  }
+});
+
+/** Яндекс Wordstat: ?q=куртка&geo=KZ-ALA — топ запросов со словом (Yandex Search API). */
+searchAnalyticsRouter.get('/wordstat', async (req, res) => {
+  const q = keywordSchema.safeParse(req.query.q);
+  if (!q.success) return res.status(400).json({ error: q.error.issues[0].message });
+  const geo = String(req.query.geo || 'KZ');
+  if (!(geo in WORDSTAT_REGIONS)) return res.status(400).json({ error: 'Для Wordstat этот регион пока не подключён' });
+  try {
+    res.json(await getWordstatTop(q.data, geo));
+  } catch (err: any) {
+    logger.warn({ err }, '[Аналитика запросов] Wordstat недоступен');
+    res.status(502).json({ error: 'Wordstat не ответил', details: String(err?.message ?? err) });
   }
 });
