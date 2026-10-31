@@ -3,7 +3,9 @@
  * сначала Gemini (GEMINI_API_KEY, хорошо понимает русский и казахский), если не вышло — OpenAI (OPENAI_API_KEY).
  * STT_PROVIDER=openai|gemini переставляет порядок.
  */
-export const DEFAULT_GEMINI_STT_MODEL = 'gemini-2.5-flash';
+export const DEFAULT_GEMINI_STT_MODEL = 'gemini-3.8-flash';
+// Старые модели Google отключает для новых проектов (404) — при 404 пробуем следующую по списку.
+export const GEMINI_STT_FALLBACK_MODELS = ['gemini-flash-latest', 'gemini-2.5-flash-lite', 'gemini-2.5-flash'];
 export const DEFAULT_OPENAI_STT_MODEL = 'gpt-4o-mini-transcribe';
 export const MAX_AUDIO_BYTES = 4 * 1024 * 1024; // у Vercel лимит тела запроса ~4,5 МБ
 
@@ -19,10 +21,9 @@ export function audioMime(contentType: string | undefined): string {
   return m.startsWith('audio/') || m === 'video/mp4' ? m : 'audio/mp4';
 }
 
-async function geminiStt(opts: { apiKey: string; audio: Buffer; mime: string; model?: string; fetchImpl?: typeof fetch }): Promise<string> {
+async function geminiSttOne(opts: { apiKey: string; audio: Buffer; mime: string; model: string; fetchImpl?: typeof fetch }): Promise<string> {
   const f = opts.fetchImpl ?? fetch;
-  const model = opts.model || DEFAULT_GEMINI_STT_MODEL;
-  const res = await f(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+  const res = await f(`https://generativelanguage.googleapis.com/v1beta/models/${opts.model}:generateContent`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-goog-api-key': opts.apiKey },
     body: JSON.stringify({
@@ -31,10 +32,24 @@ async function geminiStt(opts: { apiKey: string; audio: Buffer; mime: string; mo
     }),
     signal: AbortSignal.timeout(25_000),
   });
-  if (!res.ok) throw new Error(`Gemini ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`);
+  if (!res.ok) throw Object.assign(new Error(`Gemini ${opts.model} ${res.status}: ${(await res.text().catch(() => '')).slice(0, 200)}`), { status: res.status });
   const body: any = await res.json();
   const parts: any[] = body?.candidates?.[0]?.content?.parts ?? [];
   return cleanTranscript(parts.map((p) => p?.text ?? '').join(' '));
+}
+
+async function geminiStt(opts: { apiKey: string; audio: Buffer; mime: string; model?: string; fetchImpl?: typeof fetch }): Promise<string> {
+  const models = [...new Set([opts.model || DEFAULT_GEMINI_STT_MODEL, ...GEMINI_STT_FALLBACK_MODELS])];
+  const errors: string[] = [];
+  for (const model of models) {
+    try {
+      return await geminiSttOne({ ...opts, model });
+    } catch (e: any) {
+      errors.push(String(e?.message ?? e));
+      if (e?.status !== 404) break; // не «модель не найдена» — другая модель не поможет
+    }
+  }
+  throw new Error(errors.join(' ; '));
 }
 
 async function openaiStt(opts: { apiKey: string; audio: Buffer; mime: string; model?: string; fetchImpl?: typeof fetch }): Promise<string> {
