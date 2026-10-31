@@ -5,7 +5,7 @@
  */
 export const DEFAULT_GEMINI_STT_MODEL = 'gemini-3.8-flash';
 // Старые модели Google отключает для новых проектов (404) — при 404 пробуем следующую по списку.
-export const GEMINI_STT_FALLBACK_MODELS = ['gemini-flash-latest', 'gemini-2.5-flash-lite', 'gemini-2.5-flash'];
+export const GEMINI_STT_FALLBACK_MODELS = ['gemini-3.5-flash-lite', 'gemini-flash-latest'];
 export const DEFAULT_OPENAI_STT_MODEL = 'gpt-4o-mini-transcribe';
 export const MAX_AUDIO_BYTES = 4 * 1024 * 1024; // у Vercel лимит тела запроса ~4,5 МБ
 
@@ -41,12 +41,12 @@ async function geminiSttOne(opts: { apiKey: string; audio: Buffer; mime: string;
 async function geminiStt(opts: { apiKey: string; audio: Buffer; mime: string; model?: string; fetchImpl?: typeof fetch }): Promise<string> {
   const models = [...new Set([opts.model || DEFAULT_GEMINI_STT_MODEL, ...GEMINI_STT_FALLBACK_MODELS])];
   const errors: string[] = [];
-  for (const model of models) {
+  for (const [i, model] of models.entries()) {
     try {
       try {
         return await geminiSttOne({ ...opts, model });
       } catch (e: any) {
-        if (Number(e?.status) !== 503) throw e;
+        if (i > 0 || Number(e?.status) !== 503) throw e; // повтор — только у первой модели, чтобы уложиться во время функции
         await new Promise((r) => setTimeout(r, 800)); // «высокий спрос» часто проходит за секунду — один повтор
         return await geminiSttOne({ ...opts, model });
       }

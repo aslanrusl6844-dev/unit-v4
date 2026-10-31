@@ -146,7 +146,7 @@ test('transcribeAudio: если модель Gemini отключена (404) —
   };
   assert.equal(await transcribeAudio({ audio, mime: 'audio/mp4', env: { GEMINI_API_KEY: 'g' } as any, fetchImpl: f }), 'привет');
   assert.equal(urls.length, 2);
-  assert.match(urls[1], /gemini-flash-latest/);
+  assert.match(urls[1], /gemini-3.5-flash-lite/);
 });
 
 test('transcribeAudio: при перегрузке (503) повторяет и переходит на запасную модель', async () => {
@@ -160,5 +160,5 @@ test('transcribeAudio: при перегрузке (503) повторяет и �
   };
   assert.equal(await transcribeAudio({ audio, mime: 'audio/mp4', env: { GEMINI_API_KEY: 'g' } as any, fetchImpl: f }), 'здравствуйте');
   assert.equal(urls.length, 3); // 3.8 два раза, потом запасная
-  assert.match(urls[2], /gemini-flash-latest/);
+  assert.match(urls[2], /gemini-3.5-flash-lite/);
 });
