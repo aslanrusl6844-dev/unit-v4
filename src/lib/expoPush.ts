@@ -53,3 +53,26 @@ export async function sendCourierApprovedPush(phone: string): Promise<void> {
     logger.error({ err: String(err?.message ?? err) }, '[CourierApprovedPush] sendCourierApprovedPush упал');
   }
 }
+
+/**
+ * Пуш покупателю о ходе доставки («Машина выехала», «Машина прибыла в город»). Токен — по нормализованному
+ * телефону заказа. Нет токена или отправка не удалась — только в лог: отметка в админке от этого не страдает.
+ */
+export async function sendDeliveryProgressPush(phone: string, body: string, orderNumber: string, event: 'shipped' | 'arrived'): Promise<void> {
+  try {
+    const record = await prisma.shopCustomerPushToken.findUnique({ where: { phone } });
+    if (!record?.token) {
+      logger.info({ phone }, '[DeliveryPush] Токен покупателя не зарегистрирован — пуш не отправлен');
+      return;
+    }
+    const r = await sendBroadcast({
+      title: 'My Market',
+      body,
+      tokens: [record.token],
+      data: { type: 'delivery_' + event, orderNumber: String(orderNumber) },
+    });
+    if (r.sent < 1) logger.error({ failed: r.failed, notRegistered: r.notRegistered, fcmError: r.fcmError }, '[DeliveryPush] Пуш не принят');
+  } catch (err: any) {
+    logger.error({ err: String(err?.message ?? err) }, '[DeliveryPush] sendDeliveryProgressPush упал');
+  }
+}

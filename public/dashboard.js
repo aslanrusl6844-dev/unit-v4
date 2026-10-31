@@ -2324,6 +2324,8 @@ function wireMyMarketTabsOnce() {
   });
   document.getElementById('mmOrdersBulkArchiveBtn').addEventListener('click', runMyMarketOrdersBulkArchive);
   document.getElementById('mmOrdersBulkDeleteBtn').addEventListener('click', runMyMarketOrdersBulkDelete);
+  document.getElementById('mmOrdersDispatchBtn').addEventListener('click', () => runMyMarketOrdersDelivery('dispatch'));
+  document.getElementById('mmOrdersArriveBtn').addEventListener('click', () => runMyMarketOrdersDelivery('arrive'));
 
   // Кнопка больше не качает сразу — открывает список городов (14, как в
   // адресе профиля). Собственно скачивание — по клику на конкретный город.
@@ -4616,6 +4618,8 @@ function renderMyMarketOrdersTable() {
         : o.status === 'pending_payment'
           ? `${statusLabel}<br><button class="link-btn" data-action="mark-paid" data-id="${o.id}" style="font-size:11px;margin-top:2px">Отметить оплаченным</button>`
           : statusLabel;
+    const truckNote = o.arrivedAt ? `<div style="font-size:11px;color:var(--text-muted)">📍 машина прибыла ${fmtOrderDateTime(o.arrivedAt)}</div>`
+      : o.shippedAt ? `<div style="font-size:11px;color:var(--text-muted)">🚚 выехала ${fmtOrderDateTime(o.shippedAt)}</div>` : '';
     // Курьер + сумма к выплате — только у доставленных заказов (courier/
     // payout приходят из include на бэкенде, у остальных статусов null).
     const courierCell = o.courier
@@ -4644,7 +4648,7 @@ function renderMyMarketOrdersTable() {
       <td class="name-cell" style="font-size:11px">${address}</td>
       <td class="num">${fmtMoney(o.total)}</td>
       <td class="num">${totalQty}</td>
-      <td>${statusCell}</td>
+      <td>${statusCell}${truckNote}</td>
       <td>${o.pickupCode}</td>
       <td>${courierCell}</td>
       <td>${waybillCell}</td>
@@ -4694,6 +4698,7 @@ function updateMyMarketOrdersBulkBar(visibleRows) {
   const archiveBtn = document.getElementById('mmOrdersBulkArchiveBtn');
   const deleteBtn = document.getElementById('mmOrdersBulkDeleteBtn');
   archiveBtn.disabled = deleteBtn.disabled = n === 0;
+  document.getElementById('mmOrdersDispatchBtn').disabled = document.getElementById('mmOrdersArriveBtn').disabled = n === 0;
   const selectAll = document.getElementById('mmOrdersSelectAll');
   selectAll.checked = visibleRows.length > 0 && n === visibleRows.length;
   selectAll.indeterminate = n > 0 && n < visibleRows.length;
@@ -4707,6 +4712,21 @@ async function runMyMarketOrdersBulkArchive() {
     await loadMyMarketOrders();
   } catch (err) {
     alert('Не удалось перенести заказы в архив: ' + err.message);
+  }
+}
+
+/** «Машина выехала» / «Машина прибыла» для выбранных заказов (только оплаченные заказы в другие города). */
+async function runMyMarketOrdersDelivery(kind) {
+  const ids = [...myMarketSelectedOrderIds];
+  if (!ids.length) return;
+  const label = kind === 'dispatch' ? 'Машина выехала' : 'Машина прибыла';
+  if (!confirm(`«${label}» для ${ids.length} заказ(ов)? Клиентам уйдёт уведомление. Заказы в Алматы и неоплаченные пропускаются.`)) return;
+  try {
+    const r = await api('/shop-admin/orders/' + kind, { method: 'POST', body: JSON.stringify({ ids }) });
+    alert(`Готово: отмечено ${r.updated}, пропущено ${r.skipped}` + (r.skipped ? ' (Алматы, не оплачены или уже отмечены).' : '.'));
+    await loadMyMarketOrders();
+  } catch (err) {
+    alert(`Не удалось отметить «${label}»: ` + err.message);
   }
 }
 

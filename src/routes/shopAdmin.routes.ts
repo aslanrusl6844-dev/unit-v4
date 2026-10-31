@@ -18,7 +18,9 @@ import { SHOP_CATALOG_CANON } from '../config/shopCatalogCanon';
 import { hintCategoryByName, hintRuleCatalogPairs, starterCatalogPairs, buildCatalog } from '../services/categoryHints';
 import { editOrderNotify } from '../lib/telegram';
 import { sendSms } from '../services/sms.service';
-import { sendCourierApprovedPush } from '../lib/expoPush';
+import { sendCourierApprovedPush, sendDeliveryProgressPush } from '../lib/expoPush';
+import { resolveCity } from '../config/cities';
+import { HUB_CITY } from '../config/delivery';
 import { parseImageZip, parseBulkText, normalizeKey, cleanName, capitalizeFirst, ImportError } from '../services/catalogTypeImport';
 
 export const shopAdminRouter = Router();
@@ -194,6 +196,61 @@ shopAdminRouter.get('/orders', async (req, res) => {
 });
 
 const orderIdsSchema = z.object({ ids: z.array(z.string()).min(1) });
+
+/**
+ * «Машина выехала» (пачкой): оплаченные заказы в ДРУГИЕ города получают shippedAt — в приложении у клиента
+ * запускается «День 1 из N». Заказы в Алматы (доставка на следующий день) и уже выехавшие пропускаем.
+ * Клиенту уходит пуш.
+ */
+shopAdminRouter.post('/orders/dispatch', async (req, res) => {
+  const parsed = orderIdsSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  try {
+    const orders = await prisma.shopOrder.findMany({ where: { id: { in: parsed.data.ids } } });
+    const now = new Date();
+    let updated = 0, skipped = 0;
+    for (const o of orders) {
+      const isAlmaty = (resolveCity(o.city) ?? '') === HUB_CITY;
+      if (isAlmaty || o.status !== 'paid' || o.shippedAt) { skipped++; continue; }
+      await prisma.shopOrder.update({ where: { id: o.id }, data: { shippedAt: now } });
+      updated++;
+      const phone = normalizePhone(o.phone);
+      const city = resolveCity(o.city) ?? String(o.city ?? '');
+      if (phone) await sendDeliveryProgressPush(phone, `Заказ ${o.number} выехал из Алматы в ${city}. Следите за ходом доставки в разделе «Заказы».`, o.number, 'shipped');
+    }
+    res.json({ ok: true, updated, skipped });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] POST /orders/dispatch упал');
+    res.status(500).json({ error: 'Не удалось отметить «Машина выехала»', details: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * «Машина прибыла» (пачкой): arrivedAt — заказ в городе, дальше его берёт местный курьер. Если «выехала»
+ * не нажимали — shippedAt тоже ставим. Клиенту уходит пуш «Заказ приехал в город».
+ */
+shopAdminRouter.post('/orders/arrive', async (req, res) => {
+  const parsed = orderIdsSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  try {
+    const orders = await prisma.shopOrder.findMany({ where: { id: { in: parsed.data.ids } } });
+    const now = new Date();
+    let updated = 0, skipped = 0;
+    for (const o of orders) {
+      const isAlmaty = (resolveCity(o.city) ?? '') === HUB_CITY;
+      if (isAlmaty || o.status !== 'paid' || o.arrivedAt) { skipped++; continue; }
+      await prisma.shopOrder.update({ where: { id: o.id }, data: { arrivedAt: now, shippedAt: o.shippedAt ?? now } });
+      updated++;
+      const phone = normalizePhone(o.phone);
+      const city = resolveCity(o.city) ?? String(o.city ?? '');
+      if (phone) await sendDeliveryProgressPush(phone, `Заказ ${o.number} приехал в ${city}. Курьер скоро привезёт его вам.`, o.number, 'arrived');
+    }
+    res.json({ ok: true, updated, skipped });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Admin] POST /orders/arrive упал');
+    res.status(500).json({ error: 'Не удалось отметить «Машина прибыла»', details: String(err?.message ?? err) });
+  }
+});
 
 /**
  * «В архив» (пачкой) — ТОЛЬКО archived:true, status заказа не трогаем,
