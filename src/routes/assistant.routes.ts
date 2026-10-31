@@ -1,7 +1,8 @@
-import { Router } from 'express';
+import express, { Router } from 'express';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
 import { SHOP_CATEGORIES } from '../config/shopCategories';
+import { MAX_AUDIO_BYTES, audioMime, transcribeAudio } from '../services/speechToText.service';
 import {
   ChatMessage, DEFAULT_MODEL, buildSystemPrompt, diverseSample, extractSkus, loadCatalog, matchShowcases, rankProducts, runAssistant,
 } from '../services/assistant.service';
@@ -34,6 +35,23 @@ export function sanitizeMessages(raw: unknown): ChatMessage[] {
   while (out.length && out[0].role !== 'user') out.shift();
   return out;
 }
+
+/**
+ * Голосовое сообщение (как в WhatsApp): тело запроса — сам файл (audio/mp4, до ~4 МБ), в ответ {text}.
+ * Дальше приложение отправляет этот текст Баурсаку обычным запросом.
+ */
+assistantRouter.post('/transcribe', express.raw({ type: () => true, limit: MAX_AUDIO_BYTES }), async (req, res) => {
+  if (limited(req.ip || 'x')) return res.status(429).json({ error: 'Слишком часто, подождите минуту' });
+  const audio = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+  if (audio.length < 800) return res.status(400).json({ error: 'Пустая запись' });
+  try {
+    const text = await transcribeAudio({ audio, mime: audioMime(req.header('content-type')) });
+    res.json({ text });
+  } catch (e: any) {
+    logger.error({ err: e }, 'assistant transcribe error');
+    res.status(502).json({ error: 'Не удалось распознать голос, попробуйте ещё раз' });
+  }
+});
 
 assistantRouter.post('/', async (req, res) => {
   const apiKey = process.env.ANTHROPIC_API_KEY;
