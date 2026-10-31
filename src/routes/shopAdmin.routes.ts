@@ -1,3 +1,4 @@
+import { UNDER_SHOWCASE_SLOT } from '../config/banners';
 import express, { Router } from 'express';
 import { put } from '@vercel/blob';
 import { env } from '../config/env';
@@ -130,6 +131,38 @@ shopAdminRouter.put('/banners/:slot', async (req, res) => {
     res.json(banner);
   } catch (err: any) {
     res.status(500).json({ error: 'Не удалось сохранить баннер', details: String(err?.message ?? err) });
+  }
+});
+
+/** Реклама под витринами (слот 4): одна полоса. GET отдаёт запись или пустую заготовку. */
+shopAdminRouter.get('/under-showcase-banner', async (_req, res) => {
+  try {
+    const b = await prisma.shopBanner.findUnique({ where: { slot: UNDER_SHOWCASE_SLOT } });
+    res.json(b ?? { slot: UNDER_SHOWCASE_SLOT, imageUrl: null, linkType: null, linkValue: null, active: false });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Не удалось получить рекламу под витринами', details: String(err?.message ?? err) });
+  }
+});
+
+const underShowcaseSchema = z.object({
+  imageUrl: z.string().optional().nullable(),
+  linkType: z.enum(['sku', 'category']).optional().nullable(),
+  linkValue: z.string().optional().nullable(),
+  active: z.boolean().optional(),
+});
+
+shopAdminRouter.put('/under-showcase-banner', async (req, res) => {
+  const parsed = underShowcaseSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  try {
+    const banner = await prisma.shopBanner.upsert({
+      where: { slot: UNDER_SHOWCASE_SLOT },
+      update: parsed.data,
+      create: { slot: UNDER_SHOWCASE_SLOT, ...parsed.data },
+    });
+    res.json(banner);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Не удалось сохранить рекламу под витринами', details: String(err?.message ?? err) });
   }
 });
 

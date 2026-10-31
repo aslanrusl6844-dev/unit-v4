@@ -4187,6 +4187,7 @@ async function loadMyMarketPrices() {
   }
 
   await renderMyMarketBannerSlots();
+  await renderMyMarketUnderShowcase();
 }
 
 // Логистика APP пока фиксированная — 2000 ₸ с единицы (позже можно брать
@@ -4310,6 +4311,72 @@ async function renderMyMarketBannerSlots() {
         alert('Не удалось сохранить баннер: ' + err.message);
       }
     });
+  });
+}
+
+/** Реклама под витринами — одна полоса (слот 4): фото 1080×250, необязательная ссылка, вкл/выкл. */
+async function renderMyMarketUnderShowcase() {
+  const container = document.getElementById('mymarketUnderShowcase');
+  if (!container) return;
+  const b = await api('/shop-admin/under-showcase-banner');
+  container.innerHTML = `
+    <div class="banner-slot" style="display:flex;flex-direction:column;gap:8px">
+      ${b.imageUrl ? `<img src="${b.imageUrl}" alt="" style="width:100%;aspect-ratio:1080/250;object-fit:cover;border-radius:6px" onerror="this.style.display='none'" />`
+        : `<div style="width:100%;aspect-ratio:1080/250;background:var(--bg);border-radius:6px;display:flex;align-items:center;justify-content:center;color:var(--text-faint);font-size:11px">нет фото</div>`}
+      <input type="text" placeholder="URL фото полосы (1080×250)" class="cost-input mm-us-image" value="${b.imageUrl ?? ''}" />
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+        <button type="button" class="btn btn--ghost mm-us-upload-btn" style="font-size:12px">Загрузить с компьютера</button>
+        <input type="file" class="mm-us-file" accept="image/jpeg,image/png,image/webp,image/gif" hidden />
+        <span class="mm-us-upload-status" style="font-size:11px;color:var(--text-faint)"></span>
+      </div>
+      <div style="display:flex;gap:6px">
+        <select class="cost-input mm-us-linktype" style="flex:1">
+          <option value="sku" ${b.linkType === 'sku' || !b.linkType ? 'selected' : ''}>Товар (SKU)</option>
+          <option value="category" ${b.linkType === 'category' ? 'selected' : ''}>Категория</option>
+        </select>
+        <input type="text" placeholder="sku или категория (можно пусто)" class="cost-input mm-us-linkvalue" value="${b.linkValue ?? ''}" style="flex:1" />
+      </div>
+      <label style="display:flex;align-items:center;gap:6px;flex-direction:row;font-size:12px;color:var(--text-muted)">
+        <input type="checkbox" class="mm-us-active" style="width:auto" ${b.active ? 'checked' : ''} /> Включена (видна в приложении)
+      </label>
+      <button class="btn btn--ghost mm-us-save" style="font-size:12px">Сохранить</button>
+    </div>`;
+  const fileInput = container.querySelector('.mm-us-file');
+  const uploadBtn = container.querySelector('.mm-us-upload-btn');
+  const status = container.querySelector('.mm-us-upload-status');
+  uploadBtn.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', async () => {
+    const file = fileInput.files[0];
+    fileInput.value = '';
+    if (!file) return;
+    uploadBtn.disabled = true;
+    status.style.color = 'var(--text-faint)';
+    status.textContent = 'Загружаю…';
+    try {
+      const url = await uploadMyMarketFile(file, { banner: true });
+      container.querySelector('.mm-us-image').value = url;
+      status.textContent = 'Загружено — нажмите «Сохранить»';
+    } catch (err) {
+      status.style.color = 'var(--loss)';
+      status.textContent = 'Не удалось загрузить: ' + err.message;
+    } finally {
+      uploadBtn.disabled = false;
+    }
+  });
+  container.querySelector('.mm-us-save').addEventListener('click', async () => {
+    const value = container.querySelector('.mm-us-linkvalue').value.trim();
+    const payload = {
+      imageUrl: container.querySelector('.mm-us-image').value.trim() || null,
+      linkType: value ? container.querySelector('.mm-us-linktype').value : null,
+      linkValue: value || null,
+      active: container.querySelector('.mm-us-active').checked,
+    };
+    try {
+      await api('/shop-admin/under-showcase-banner', { method: 'PUT', body: JSON.stringify(payload) });
+      await renderMyMarketUnderShowcase();
+    } catch (err) {
+      alert('Не удалось сохранить рекламу под витринами: ' + err.message);
+    }
   });
 }
 

@@ -1,3 +1,4 @@
+import { CAROUSEL_LAST_SLOT, UNDER_SHOWCASE_SLOT } from '../config/banners';
 import { Router } from 'express';
 import { z } from 'zod';
 import multer from 'multer';
@@ -433,7 +434,8 @@ shopRouter.get('/banners', async (_req, res) => {
     // Отдаём только включённые (active=true) и хотя бы с картинкой —
     // пустой "выключенный" слот приложению не нужен.
     const banners = await prisma.shopBanner.findMany({
-      where: { active: true, imageUrl: { not: null } },
+      // Слот 4 («под витринами») в карусель не попадает — у него свой маршрут.
+      where: { active: true, imageUrl: { not: null }, slot: { lte: CAROUSEL_LAST_SLOT } },
       orderBy: { slot: 'asc' },
     });
     // Диагностика — сколько слайдов реально ушло в ответ. Формат ответа —
@@ -449,6 +451,18 @@ shopRouter.get('/banners', async (_req, res) => {
     })));
   } catch (err: any) {
     res.status(500).json({ error: 'Не удалось получить баннеры', details: String(err?.message ?? err) });
+  }
+});
+
+/** Реклама под витринами: одна широкая полоса. Нет/выключена/без картинки — null (приложение полосу не рисует). */
+shopRouter.get('/banners/under-showcase', async (_req, res) => {
+  try {
+    const b = await prisma.shopBanner.findUnique({ where: { slot: UNDER_SHOWCASE_SLOT } });
+    res.setHeader('Cache-Control', 'no-store');
+    if (!b || !b.active || !b.imageUrl) return res.json(null);
+    res.json({ imageUrl: b.imageUrl, linkType: b.linkType, linkValue: b.linkValue });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Не удалось получить рекламу под витринами', details: String(err?.message ?? err) });
   }
 });
 
