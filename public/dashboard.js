@@ -2503,6 +2503,9 @@ function wireMyMarketTabsOnce() {
     document.getElementById('mmAnalyticsSearchTab').hidden = subtab !== 'search';
     document.getElementById('mmAnalyticsConversionTab').hidden = subtab !== 'conversion';
     document.getElementById('mmAnalyticsSeasonalityTab').hidden = subtab !== 'seasonality';
+    document.getElementById('mmAnalyticsMapTab').hidden = subtab !== 'map';
+    // у карты свой выбор периода — общий переключатель 7/30 дней ей не нужен
+    document.getElementById('mmAnalyticsPeriodPanel').hidden = subtab === 'map';
     loadMyMarketAnalytics();
   });
   // Фильтр запросов — по мере ввода, без нового запроса к серверу (список
@@ -4731,6 +4734,7 @@ async function loadMyMarketAnalytics() {
   if (subtab === 'search') return loadMyMarketAnalyticsSearch();
   if (subtab === 'conversion') return loadMyMarketAnalyticsConversion();
   if (subtab === 'seasonality') return loadMyMarketAnalyticsSeasonality();
+  if (subtab === 'map') return window.loadMyMarketGeoMap();
 }
 
 let myMarketSearchAnalyticsCache = [];

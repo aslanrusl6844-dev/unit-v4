@@ -426,3 +426,64 @@ body {
 @media (max-width: 420px) {
   .kpi-grid { grid-template-columns: 1fr; }
 }
+
+/* ---- Карта Казахстана (My Market → Аналитика → Карта) ---- */
+#mmAnalyticsPeriodPanel[hidden], #mmAnalyticsMapTab[hidden] { display: none !important; }
+.gm-toolbar { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; margin: 4px 0 12px; }
+.gm-layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 14px; align-items: start; margin-bottom: 14px; }
+.gm-mapbox { position: relative; padding: 0; overflow: hidden; background: #EEF3FB; }
+.gm-mapbox.gm-full, .gm-mapbox:fullscreen { position: fixed; inset: 0; z-index: 1000; border-radius: 0; display: flex; flex-direction: column; justify-content: center; }
+.gm-svg { display: block; width: 100%; height: auto; touch-action: none; cursor: grab; user-select: none; }
+.gm-mapbox:fullscreen .gm-svg, .gm-mapbox.gm-full .gm-svg { height: 100%; }
+.gm-svg:active { cursor: grabbing; }
+.gm-region { fill: #D5DAE3; stroke: #FFFFFF; stroke-width: 1.2; vector-effect: non-scaling-stroke; transition: fill-opacity .2s; }
+.gm-region--hot { fill: #1D4ED8; }
+.gm-route { fill: none; stroke: #8A94A6; stroke-width: 1.4; stroke-dasharray: 5 5; vector-effect: non-scaling-stroke; opacity: .75; }
+.gm-route--active { stroke: #EA580C; stroke-width: 2.2; opacity: 1; animation: gm-dash 1.2s linear infinite; }
+@keyframes gm-dash { to { stroke-dashoffset: -20; } }
+.gm-city { cursor: pointer; }
+.gm-dot { fill: #1D4ED8; stroke: #FFFFFF; stroke-width: 2; }
+.gm-city.is-empty .gm-dot { fill: #9AA1AC; }
+.gm-city.is-selected .gm-dot { stroke: #14171F; stroke-width: 2.5; }
+.gm-hub { fill: #16A34A; stroke: #FFFFFF; stroke-width: 3; }
+.gm-hub__pulse { fill: #16A34A; opacity: .25; animation: gm-pulse 2s ease-out infinite; transform-box: fill-box; transform-origin: center; }
+@keyframes gm-pulse { 0% { transform: scale(.6); opacity: .45; } 100% { transform: scale(1.5); opacity: 0; } }
+.gm-num { fill: #FFFFFF; font: 700 11px var(--font-body); pointer-events: none; }
+.gm-label { fill: #14171F; font: 600 12px var(--font-body); paint-order: stroke; stroke: #FFFFFF; stroke-width: 3px; stroke-linejoin: round; pointer-events: none; }
+.gm-label--hub { fill: #15803D; font-weight: 700; }
+.gm-check { fill: #16A34A; font: 800 13px var(--font-body); paint-order: stroke; stroke: #FFFFFF; stroke-width: 3px; pointer-events: none; }
+.gm-truck { pointer-events: auto; }
+.gm-truck__bg { fill: #FFF7ED; stroke: #EA580C; stroke-width: 2; }
+.gm-truck__ico { font-size: 15px; }
+.gm-ctl { position: absolute; top: 10px; right: 10px; z-index: 2; display: flex; flex-direction: column; gap: 6px; }
+.gm-ctl button { width: 34px; height: 34px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); font-size: 18px; line-height: 1; cursor: pointer; color: var(--text); }
+.gm-ctl button:hover { background: var(--bg); }
+.gm-tip { position: absolute; left: 12px; bottom: 48px; z-index: 2; max-width: min(360px, calc(100% - 24px)); background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 30px 10px 12px; font-size: 13px; line-height: 1.5; box-shadow: 0 6px 20px rgba(20, 23, 31, .15); }
+.gm-tip[hidden] { display: none; }
+.gm-tip__x { position: absolute; top: 4px; right: 6px; border: 0; background: transparent; font-size: 20px; cursor: pointer; color: var(--text-muted); }
+.gm-legend { padding: 8px 12px; font-size: 11.5px; color: var(--text-muted); display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; background: var(--surface); border-top: 1px solid var(--border); }
+.gm-legend__hub, .gm-legend__dot { display: inline-block; width: 11px; height: 11px; border-radius: 50%; }
+.gm-legend__hub { background: #16A34A; }
+.gm-legend__dot { background: #1D4ED8; margin-left: 6px; }
+.gm-legend__truck { margin-left: 6px; }
+.gm-attr { opacity: .8; }
+.gm-side { max-height: 640px; display: flex; flex-direction: column; }
+.gm-list { overflow-y: auto; }
+.gm-row { display: flex; gap: 10px; width: 100%; text-align: left; background: transparent; border: 0; border-bottom: 1px solid var(--border); padding: 10px 6px; cursor: pointer; color: inherit; font: inherit; }
+.gm-row:hover, .gm-row.is-selected { background: var(--bg); }
+.gm-row__rank { width: 18px; color: var(--text-faint); font-size: 13px; padding-top: 1px; }
+.gm-row__main { flex: 1; min-width: 0; display: block; }
+.gm-row__top { display: flex; justify-content: space-between; gap: 8px; }
+.gm-row__val { font-weight: 700; white-space: nowrap; }
+.gm-row__val small { font-weight: 400; color: var(--text-muted); }
+.gm-row__bar { display: block; height: 7px; background: #E5EAF4; border-radius: 4px; margin: 6px 0 4px; overflow: hidden; }
+.gm-row__bar i { display: block; height: 100%; background: #1D4ED8; border-radius: 4px; }
+.gm-row__sub { display: block; font-size: 12px; color: var(--text-muted); }
+.gm-ship { cursor: pointer; }
+.gm-ship:hover { background: var(--bg); }
+.gm-ok { color: #15803D; font-weight: 700; }
+@media (max-width: 860px) {
+  .gm-layout { grid-template-columns: minmax(0, 1fr); }
+  .gm-side { max-height: none; }
+  .gm-tip { position: static; margin: 8px 10px; max-width: none; }
+}
