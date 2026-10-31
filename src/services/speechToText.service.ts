@@ -43,10 +43,19 @@ async function geminiStt(opts: { apiKey: string; audio: Buffer; mime: string; mo
   const errors: string[] = [];
   for (const model of models) {
     try {
-      return await geminiSttOne({ ...opts, model });
+      try {
+        return await geminiSttOne({ ...opts, model });
+      } catch (e: any) {
+        if (Number(e?.status) !== 503) throw e;
+        await new Promise((r) => setTimeout(r, 800)); // «высокий спрос» часто проходит за секунду — один повтор
+        return await geminiSttOne({ ...opts, model });
+      }
     } catch (e: any) {
       errors.push(String(e?.message ?? e));
-      if (e?.status !== 404) break; // не «модель не найдена» — другая модель не поможет
+      // 404 (модель отключена), 429 (лимит) и 5xx (перегрузка) — у каждой модели своя очередь, пробуем следующую.
+      // 400/401/403 — проблема в запросе или ключе, другая модель не поможет.
+      const st = Number(e?.status);
+      if (!(st === 404 || st === 429 || st >= 500 || Number.isNaN(st))) break;
     }
   }
   throw new Error(errors.join(' ; '));

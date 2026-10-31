@@ -131,7 +131,7 @@ test('transcribeAudio: Gemini разбирает ответ; при сбое —
     return url.includes('googleapis') ? new Response('boom', { status: 500 }) : new Response(JSON.stringify({ text: 'привет' }), { status: 200 });
   };
   assert.equal(await transcribeAudio({ audio, mime: 'audio/mp4', env: { GEMINI_API_KEY: 'g', OPENAI_API_KEY: 'o' } as any, fetchImpl: mixed }), 'привет');
-  assert.equal(calls.length, 2);
+  assert.ok(calls[0].includes('googleapis') && calls[calls.length - 1].includes('openai'));
   await assert.rejects(transcribeAudio({ audio, mime: 'audio/mp4', env: {} as any }), /Нет ключей/);
 });
 
@@ -147,4 +147,18 @@ test('transcribeAudio: если модель Gemini отключена (404) —
   assert.equal(await transcribeAudio({ audio, mime: 'audio/mp4', env: { GEMINI_API_KEY: 'g' } as any, fetchImpl: f }), 'привет');
   assert.equal(urls.length, 2);
   assert.match(urls[1], /gemini-flash-latest/);
+});
+
+test('transcribeAudio: при перегрузке (503) повторяет и переходит на запасную модель', async () => {
+  const audio = Buffer.alloc(2000, 1);
+  const urls: string[] = [];
+  const f: any = async (url: string) => {
+    urls.push(url);
+    return url.includes('gemini-3.8-flash')
+      ? new Response('{"error":{"code":503}}', { status: 503 })
+      : new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: 'здравствуйте' }] } }] }), { status: 200 });
+  };
+  assert.equal(await transcribeAudio({ audio, mime: 'audio/mp4', env: { GEMINI_API_KEY: 'g' } as any, fetchImpl: f }), 'здравствуйте');
+  assert.equal(urls.length, 3); // 3.8 два раза, потом запасная
+  assert.match(urls[2], /gemini-flash-latest/);
 });
