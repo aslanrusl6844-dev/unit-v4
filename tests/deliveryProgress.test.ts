@@ -88,3 +88,46 @@ test('город не из списка и алиас', () => {
   assert.equal(buildDelivery(order({ city: 'Нур-Султан' }))!.subtitle.includes('Астана'), true);
   assert.equal(buildDelivery(order({ city: 'алма-ата' }))!.kind, 'express');
 });
+
+test('авто: через 8 часов после оплаты машина выезжает сама, без кнопки в админке', () => {
+  // оплата 30 окт 14:12 по Алматы → выезд 22:12
+  const before = buildDelivery(order({}), d('2026-10-30T16:00:00Z'))!; // 21:00 Алматы
+  assert.equal(before.title, 'Готовим к отправке');
+  const after = buildDelivery(order({}), d('2026-10-30T17:30:00Z'))!; // 22:30 Алматы
+  assert.equal(after.title, 'День 1 из 3 · в пути');
+  assert.equal(after.note, null);
+});
+
+test('авто: дни переключаются сами каждые сутки по календарю Алматы', () => {
+  assert.equal(buildDelivery(order({}), d('2026-10-31T10:00:00Z'))!.title, 'День 2 из 3 · в пути'); // 31 окт
+  assert.equal(buildDelivery(order({}), d('2026-11-01T05:00:00Z'))!.title, 'День 3 из 3 · в пути'); // 1 ноя утро
+});
+
+test('«Курьер задерживается»: последний день после 18:00 и дальше, пока заказ не выдан', () => {
+  const morning = buildDelivery(order({}), d('2026-11-01T05:00:00Z'))!;   // день 3, 10:00
+  assert.equal(morning.note, null);
+  const evening = buildDelivery(order({}), d('2026-11-01T14:00:00Z'))!;   // день 3, 19:00
+  assert.equal(evening.note, 'Курьер задерживается');
+  const nextDay = buildDelivery(order({}), d('2026-11-02T05:00:00Z'))!;   // день 4
+  assert.equal(nextDay.title, 'День 3 из 3 · в пути');
+  assert.equal(nextDay.note, 'Курьер задерживается');
+});
+
+test('подпись пропадает, когда курьер взял заказ или заказ выдан', () => {
+  const picked = buildDelivery(order({ status: 'in_transit' }), d('2026-11-02T05:00:00Z'))!;
+  assert.equal(picked.note, null);
+  const done = buildDelivery(order({ status: 'delivered', deliveredAt: d('2026-11-02T10:20:00Z') }), d('2026-11-03T05:00:00Z'))!;
+  assert.equal(done.note, null);
+});
+
+test('Алматы: после обещанного дня 18:00 — «Курьер задерживается»', () => {
+  const ok = buildDelivery(order({ city: 'Алматы' }), d('2026-10-31T05:00:00Z'))!;     // 31 окт 10:00 — доставка завтра сегодня
+  assert.equal(ok.note, null);
+  const late = buildDelivery(order({ city: 'Алматы' }), d('2026-10-31T14:00:00Z'))!;   // 31 окт 19:00
+  assert.equal(late.note, 'Курьер задерживается');
+});
+
+test('ручная кнопка «Машина выехала» главнее авто-выезда', () => {
+  const r = buildDelivery(order({ shippedAt: d('2026-10-31T01:00:00Z') }), d('2026-10-31T10:00:00Z'))!; // выехала 31 окт 06:00
+  assert.equal(r.title, 'День 1 из 3 · в пути');
+});
