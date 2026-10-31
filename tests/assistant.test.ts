@@ -140,13 +140,13 @@ test('transcribeAudio: если модель Gemini отключена (404) —
   const urls: string[] = [];
   const f: any = async (url: string) => {
     urls.push(url);
-    return url.includes('gemini-3.8-flash')
+    return url.includes('gemini-3.5-flash-lite')
       ? new Response('{"error":{"code":404}}', { status: 404 })
       : new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: 'привет' }] } }] }), { status: 200 });
   };
   assert.equal(await transcribeAudio({ audio, mime: 'audio/mp4', env: { GEMINI_API_KEY: 'g' } as any, fetchImpl: f }), 'привет');
   assert.equal(urls.length, 2);
-  assert.match(urls[1], /gemini-3.5-flash-lite/);
+  assert.match(urls[1], /gemini-3.8-flash/);
 });
 
 test('transcribeAudio: при перегрузке (503) повторяет и переходит на запасную модель', async () => {
@@ -154,11 +154,11 @@ test('transcribeAudio: при перегрузке (503) повторяет и �
   const urls: string[] = [];
   const f: any = async (url: string) => {
     urls.push(url);
-    return url.includes('gemini-3.8-flash')
+    return url.includes('gemini-3.5-flash-lite')
       ? new Response('{"error":{"code":503}}', { status: 503 })
       : new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: 'здравствуйте' }] } }] }), { status: 200 });
   };
   assert.equal(await transcribeAudio({ audio, mime: 'audio/mp4', env: { GEMINI_API_KEY: 'g' } as any, fetchImpl: f }), 'здравствуйте');
-  assert.equal(urls.length, 3); // 3.8 два раза, потом запасная
-  assert.match(urls[2], /gemini-3.5-flash-lite/);
+  assert.equal(urls.length, 3); // lite два раза, потом запасная
+  assert.match(urls[2], /gemini-3.8-flash/);
 });

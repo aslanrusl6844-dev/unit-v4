@@ -3,9 +3,9 @@
  * сначала Gemini (GEMINI_API_KEY, хорошо понимает русский и казахский), если не вышло — OpenAI (OPENAI_API_KEY).
  * STT_PROVIDER=openai|gemini переставляет порядок.
  */
-export const DEFAULT_GEMINI_STT_MODEL = 'gemini-3.8-flash';
+export const DEFAULT_GEMINI_STT_MODEL = 'gemini-3.5-flash-lite'; // лёгкая и быстрая: для расшифровки речи «думать» не нужно
 // Старые модели Google отключает для новых проектов (404) — при 404 пробуем следующую по списку.
-export const GEMINI_STT_FALLBACK_MODELS = ['gemini-3.5-flash-lite', 'gemini-flash-latest'];
+export const GEMINI_STT_FALLBACK_MODELS = ['gemini-3.8-flash', 'gemini-flash-latest'];
 export const DEFAULT_OPENAI_STT_MODEL = 'gpt-4o-mini-transcribe';
 export const MAX_AUDIO_BYTES = 4 * 1024 * 1024; // у Vercel лимит тела запроса ~4,5 МБ
 
