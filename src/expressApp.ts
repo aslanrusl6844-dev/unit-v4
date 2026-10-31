@@ -17,6 +17,7 @@ import { reviewsRouter } from './routes/reviews.routes';
 import { marginCalculatorRouter } from './routes/marginCalculator.routes';
 import { settingsRouter } from './routes/settings.routes';
 import { nichesRouter } from './routes/niches.routes';
+import { searchAnalyticsRouter } from './routes/searchAnalytics.routes';
 import { assistantRouter } from './routes/assistant.routes';
 import { telegramAgentRouter } from './routes/telegramAgent.routes';
 import { shopRouter } from './routes/shop.routes';
@@ -140,6 +141,7 @@ app.use('/api/reviews', reviewsRouter);
 app.use('/api/margin-calculator', marginCalculatorRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/niches', nichesRouter);
+app.use('/api/search-analytics', searchAnalyticsRouter);
 // ВАЖНО: /api/shop/admin ЗАРЕГИСТРИРОВАН РАНЬШЕ /api/shop — у /api/shop
 // есть общий x-app-key middleware на весь путь (см. shop.routes.ts), а
 // загрузка медиа — админский путь, ей x-app-key приложения не нужен и не

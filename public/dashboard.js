@@ -102,6 +102,7 @@ const PAGE_LOADERS = {
   mymarket: loadMyMarketPage,
   margin: loadMarginPage,
   niches: loadNichesPage,
+  searchstats: loadSearchStatsPage,
   demping: loadDempingPage,
   notifications: loadNotificationsPage,
   broadcast: loadBroadcastPage,
@@ -5839,6 +5840,147 @@ async function confirmMmUpload() {
 
 async function loadNichesPage() {
   wireNicheFormOnce();
+}
+
+// =====================================================================
+// АНАЛИТИКА ЗАПРОСОВ (Google Trends, Wordstat-ссылка, «Мои продажи»)
+// =====================================================================
+let searchStatsWired = false;
+let searchStatsCharts = [];
+
+const SS_MP_COLORS = { KASPI: '#E2231A', OZON: '#005BFF', WB: '#CB11AB', TEEZ: '#FF6B00', APP: '#16A34A' };
+const SS_MP_NAMES = { KASPI: 'Kaspi', OZON: 'Ozon', WB: 'WB', TEEZ: 'Tez Market', APP: 'My Market' };
+const ssEsc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+async function loadSearchStatsPage() {
+  if (searchStatsWired) return;
+  searchStatsWired = true;
+
+  try {
+    const regions = await api('/search-analytics/regions');
+    document.getElementById('searchStatsGeo').innerHTML = regions.map((r) => `<option value="${r.code}">${ssEsc(r.label)}</option>`).join('');
+  } catch (err) {
+    document.getElementById('searchStatsGeo').innerHTML = '<option value="KZ">Казахстан</option>';
+  }
+
+  document.getElementById('searchStatsForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const btn = e.target.querySelector('button[type="submit"]');
+    btn.disabled = true;
+    try {
+      await runSearchStats(String(fd.get('q')).trim(), String(fd.get('geo')), Number(fd.get('months')));
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
+function ssDestroyCharts() {
+  searchStatsCharts.forEach((c) => c.destroy());
+  searchStatsCharts = [];
+}
+
+async function runSearchStats(q, geo, months) {
+  const out = document.getElementById('searchStatsResult');
+  ssDestroyCharts();
+  const geoSelect = document.getElementById('searchStatsGeo');
+  const geoLabel = geoSelect.options[geoSelect.selectedIndex]?.textContent || 'Казахстан';
+  const enc = encodeURIComponent(q);
+  const wordstatUrl = `https://wordstat.yandex.ru/?words=${enc}`;
+  const trendsUrl = `https://trends.google.com/trends/explore?geo=${encodeURIComponent(geo)}&q=${enc}&hl=ru`;
+
+  out.innerHTML = `
+    <div class="panel" id="ssSales"><div class="panel__head"><h2>Мои продажи по слову «${ssEsc(q)}»</h2></div><p class="panel__hint">Считаю…</p></div>
+    <div class="panel" id="ssTrends"><div class="panel__head"><h2>Google Trends · ${ssEsc(geoLabel)}</h2><a class="btn btn--ghost" href="${trendsUrl}" target="_blank" rel="noopener">Открыть в Google Trends ↗</a></div><p class="panel__hint">Запрашиваю у Google…</p></div>
+    <div class="panel" id="ssWordstat"><div class="panel__head"><h2>Яндекс Wordstat</h2><a class="btn btn--ghost" href="${wordstatUrl}" target="_blank" rel="noopener">Открыть в Wordstat ↗</a></div>
+      <p class="panel__hint">Число запросов в Яндексе по слову, динамика и топ запросов. Регион (Казахстан, Алматы, Астана) выбирается в самом Wordstat. Автоматический вывод сюда включится после подключения Yandex Cloud.</p></div>
+  `;
+
+  const to = new Date();
+  const from = new Date(to.getFullYear(), to.getMonth() - months + 1, 1);
+  const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+  const [sales, trends] = await Promise.allSettled([
+    api(`/search-analytics/my-sales?${new URLSearchParams({ q, from: iso(from), to: iso(to) })}`),
+    api(`/search-analytics/google-trends?${new URLSearchParams({ q, geo, months: String(months) })}`),
+  ]);
+
+  renderSearchStatsSales(q, sales);
+  renderSearchStatsTrends(trends);
+}
+
+function renderSearchStatsSales(q, settled) {
+  const box = document.getElementById('ssSales');
+  if (settled.status !== 'fulfilled') {
+    box.querySelector('.panel__hint').textContent = 'Не удалось посчитать: ' + settled.reason.message;
+    return;
+  }
+  const d = settled.value;
+  if (!d.totals.all.quantity) {
+    box.querySelector('.panel__hint').textContent = 'За выбранный период в наших заказах нет продаж товаров с таким словом в названии. Проверь написание (например, «куртка», а не «куртки») или синхронизируй заказы.';
+    return;
+  }
+  const mps = Object.keys(SS_MP_NAMES).filter((m) => d.totals[m]);
+  const totalsRow = mps.map((m) => `<tr><td><span class="mp-tag"><i class="dot dot--${m.toLowerCase()}"></i>${SS_MP_NAMES[m]}</span></td><td class="num">${fmt.format(d.totals[m].quantity)}</td><td class="num">${fmtMoney(d.totals[m].revenue)}</td></tr>`).join('');
+  const topRows = d.topProducts.map((p) => `<tr><td>${ssEsc(p.name)}</td><td class="num">${fmt.format(p.quantity)}</td><td class="num">${fmtMoney(p.revenue)}</td></tr>`).join('');
+  box.innerHTML = `
+    <div class="panel__head"><h2>Мои продажи по слову «${ssEsc(q)}»</h2></div>
+    <div class="kpi-grid" style="margin-bottom:12px">
+      <div class="kpi-card"><div class="kpi-card__label">Продано, шт</div><div class="kpi-card__value">${fmt.format(d.totals.all.quantity)}</div></div>
+      <div class="kpi-card"><div class="kpi-card__label">Выручка</div><div class="kpi-card__value">${fmtMoney(d.totals.all.revenue)}</div></div>
+    </div>
+    <canvas id="ssSalesChart" height="80"></canvas>
+    <div class="table-wrap" style="margin-top:12px"><table class="table"><thead><tr><th>Площадка</th><th class="num">Продано, шт</th><th class="num">Выручка</th></tr></thead><tbody>${totalsRow}</tbody></table></div>
+    <div class="table-wrap" style="margin-top:12px"><table class="table"><thead><tr><th>Топ товаров по выручке</th><th class="num">Шт</th><th class="num">Выручка</th></tr></thead><tbody>${topRows}</tbody></table></div>
+    ${d.truncated ? '<p class="panel__hint">Показаны не все позиции: слишком много совпадений, сузьте слово.</p>' : ''}
+  `;
+  searchStatsCharts.push(new Chart(document.getElementById('ssSalesChart'), {
+    type: 'bar',
+    data: {
+      labels: d.months.map((m) => m.month),
+      datasets: mps.map((m) => ({
+        label: SS_MP_NAMES[m],
+        backgroundColor: SS_MP_COLORS[m],
+        data: d.months.map((x) => x.byMarketplace[m]?.quantity || 0),
+      })),
+    },
+    options: {
+      responsive: true,
+      scales: { x: { stacked: true }, y: { stacked: true, beginAtZero: true, title: { display: true, text: 'шт' } } },
+    },
+  }));
+}
+
+function renderSearchStatsTrends(settled) {
+  const box = document.getElementById('ssTrends');
+  const hint = box.querySelector('.panel__hint');
+  if (settled.status !== 'fulfilled') {
+    hint.innerHTML = 'Google Trends не ответил с нашего сервера: ' + ssEsc(settled.reason.message) + '<br>Открой кнопкой «Открыть в Google Trends» справа сверху — там те же данные.';
+    return;
+  }
+  const d = settled.value;
+  if (!d.timeline.length || d.timeline.every((p) => p.value === 0)) {
+    hint.textContent = 'По этому слову у Google слишком мало данных для региона. Попробуй более общее слово или весь Казахстан.';
+    return;
+  }
+  const list = (items, valueLabel) => items.length
+    ? `<table class="table"><tbody>${items.map((i) => `<tr><td>${ssEsc(i.query)}</td><td class="num">${ssEsc(i.value)}${valueLabel}</td></tr>`).join('')}</tbody></table>`
+    : '<p class="panel__hint">Нет данных.</p>';
+  const rest = document.createElement('div');
+  rest.innerHTML = `
+    <canvas id="ssTrendsChart" height="80"></canvas>
+    <p class="panel__hint" style="margin-top:6px">Шкала 0–100: 100 — пик интереса за период, остальное считается от него. Это не число запросов.</p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;margin-top:12px">
+      <div><h3 style="font-size:13px;margin:0 0 6px">Популярные запросы (топ)</h3>${list(d.relatedTop, '')}</div>
+      <div><h3 style="font-size:13px;margin:0 0 6px">Растущие запросы</h3>${list(d.relatedRising, '')}</div>
+    </div>`;
+  hint.replaceWith(rest);
+  searchStatsCharts.push(new Chart(document.getElementById('ssTrendsChart'), {
+    type: 'line',
+    data: { labels: d.timeline.map((p) => p.date), datasets: [{ label: 'Интерес', data: d.timeline.map((p) => p.value), borderColor: '#4285F4', tension: 0.3, pointRadius: 0 }] },
+    options: { responsive: true, scales: { y: { min: 0, max: 100 } }, plugins: { legend: { display: false } } },
+  }));
 }
 
 // =====================================================================
