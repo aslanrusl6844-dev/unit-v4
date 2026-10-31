@@ -191,7 +191,20 @@ class TeezClient {
         throw new Error('Teez отклонил Client ID или ключ — проверьте, что ключ создан в Настройки → Ключи API и скопирован целиком.');
       }
       if (status === 429) throw new Error('Teez временно ограничил запросы токена (не более 30 в минуту), подождите минуту.');
-      throw new Error(`Не удалось получить токен Teez: ${String(err?.response?.data?.message ?? err?.message ?? err)}`);
+      // Показываем, что именно ответил сервер Teez (статус и начало тела), иначе по «404» не понять причину.
+      let body = '';
+      try {
+        const raw = err?.response?.data;
+        body = raw == null ? '' : typeof raw === 'string' ? raw : JSON.stringify(raw);
+      } catch {
+        body = '';
+      }
+      const bodyPart = body ? ` — ответ Teez: ${body.slice(0, 300)}` : '';
+      const hint =
+        status === 404
+          ? ' Teez ответил «не найдено»: проверьте Client ID (колонка «ID клиента» в Настройки → Ключи API) и что ключ создан/не отключён.'
+          : '';
+      throw new Error(`Не удалось получить токен Teez (${status ?? 'нет ответа'}): ${String(err?.message ?? err)}${bodyPart}.${hint}`);
     }
   }
 
