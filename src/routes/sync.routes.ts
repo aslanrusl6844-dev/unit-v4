@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import dayjs from 'dayjs';
 import { prisma } from '../db/prisma';
+import { syncTeezOrders } from '../services/teezSync.service';
+import { teezClient } from '../integrations/teez.client';
 import { syncKaspiOrders, syncOzonOrders, syncWbOrders, syncOzonCatalog, syncWbCatalog, syncKaspiPhotos, syncOzonContent } from '../services/sync.service';
 import { kaspiClient } from '../integrations/kaspi.client';
 import { ozonClient } from '../integrations/ozon.client';
@@ -54,6 +56,17 @@ syncRouter.post('/wb', async (req, res) => {
     res.json({ ok: true, ...result });
   } catch (err: any) {
     logger.error({ err }, 'Ошибка ручной синхронизации Wildberries');
+    res.status(500).json({ ok: false, error: String(err?.message ?? err) });
+  }
+});
+
+syncRouter.post('/teez', async (req, res) => {
+  const { dateFrom, dateTo } = resolveRange(req.query);
+  try {
+    const result = await syncTeezOrders(dateFrom, dateTo);
+    res.json({ ok: true, ...result });
+  } catch (err: any) {
+    logger.error({ err }, 'Ошибка ручной синхронизации Teez');
     res.status(500).json({ ok: false, error: String(err?.message ?? err) });
   }
 });
@@ -127,6 +140,7 @@ syncRouter.get('/status', async (_req, res) => {
     kaspi: { configured: await kaspiClient.isConfigured() },
     ozon: { configured: await ozonClient.isConfigured() },
     wb: { configured: await wbClient.isConfigured() },
+    teez: { configured: await teezClient.isConfigured() },
     cron: env.sync.cron,
   });
 });

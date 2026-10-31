@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { getKaspiStore, saveKaspiStore, deleteKaspiStore } from '../handlers/kaspiStore';
 import { getOzonStore, saveOzonStore } from '../handlers/ozonStore';
 import { getWbStore, saveWbStore } from '../handlers/wbStore';
+import { getTeezStore, saveTeezStore } from '../handlers/teezStore';
 import { getTaxSettings, saveTaxSettings } from '../handlers/taxSettings';
 
 export const settingsRouter = Router();
@@ -36,6 +37,15 @@ settingsRouter.get('/wb-store', async (_req, res) => {
 
 settingsRouter.post('/wb-store', async (req, res) => {
   const result = await saveWbStore(req.body);
+  res.status(result.status).json(result.body);
+});
+
+settingsRouter.get('/teez-store', async (_req, res) => {
+  res.json(await getTeezStore());
+});
+
+settingsRouter.post('/teez-store', async (req, res) => {
+  const result = await saveTeezStore(req.body);
   res.status(result.status).json(result.body);
 });
 

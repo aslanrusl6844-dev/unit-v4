@@ -16,6 +16,7 @@ enum Marketplace {
   OZON
   WB
   APP
+  TEEZ
 }
 
 enum RepriceStrategy {
@@ -60,6 +61,18 @@ model WbStore {
   apiToken    String
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+}
+
+// Подключение к Teez (Freedom Market, teez.kz) — через форму в разделе
+// «Настройки». Seller API авторизуется парой clientId + clientSecret
+// (ключ API создаётся в кабинете Teez: Настройки → Ключи API), токен
+// живёт 1 час и берётся автоматически. Один магазин на сервер.
+model TeezStore {
+  id           String   @id @default(cuid())
+  clientId     String
+  clientSecret String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 }
 
 // Ставка налога ИП — настраивается в разделе «Настройки», по умолчанию 4%

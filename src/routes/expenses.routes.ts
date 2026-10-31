@@ -5,7 +5,7 @@ import { prisma } from '../db/prisma';
 export const expensesRouter = Router();
 
 const adSpendSchema = z.object({
-  marketplace: z.enum(['KASPI', 'OZON', 'WB']),
+  marketplace: z.enum(['KASPI', 'OZON', 'WB', 'TEEZ']),
   date: z.string(),
   amount: z.number().nonnegative(),
   note: z.string().optional(),
@@ -42,7 +42,7 @@ expensesRouter.delete('/ad-spend/:id', async (req, res) => {
 });
 
 const manualExpenseSchema = z.object({
-  marketplace: z.enum(['KASPI', 'OZON', 'WB']).optional().nullable(),
+  marketplace: z.enum(['KASPI', 'OZON', 'WB', 'TEEZ']).optional().nullable(),
   category: z.string().min(1),
   date: z.string(),
   amount: z.number().nonnegative(),

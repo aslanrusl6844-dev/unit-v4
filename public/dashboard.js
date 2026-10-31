@@ -11,7 +11,7 @@ const state = {
 const fmt = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 });
 const fmtMoney = (n) => fmt.format(Math.round(n || 0)) + ' ₸';
 const fmtPct = (n) => (n || 0).toFixed(1) + '%';
-const mpLabel = (mp) => (mp === 'KASPI' ? 'Kaspi' : mp === 'OZON' ? 'Ozon' : 'WB');
+const mpLabel = (mp) => (mp === 'KASPI' ? 'Kaspi' : mp === 'OZON' ? 'Ozon' : mp === 'TEEZ' ? 'Tez Market' : 'WB');
 
 /** Точная дата и время заказа — явно в часовом поясе Алматы (не в часовом
  *  поясе браузера пользователя), чтобы всегда совпадало с тем, что видно
@@ -6313,6 +6313,47 @@ async function loadWbStoreCurrent() {
   el.innerHTML = `Токен: <code>${store.apiTokenMasked}</code>`;
 }
 
+let teezStoreFormWired = false;
+
+function wireTeezStoreFormOnce() {
+  if (teezStoreFormWired) return;
+  teezStoreFormWired = true;
+
+  document.getElementById('teezStoreForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const payload = { clientId: fd.get('clientId'), clientSecret: fd.get('clientSecret') };
+    const btn = e.target.querySelector('button[type="submit"]');
+    const originalText = btn.textContent;
+    btn.textContent = '…'; btn.disabled = true;
+    try {
+      const saved = await api('/settings/teez-store', { method: 'POST', body: JSON.stringify(payload) });
+      const conn = saved && saved.connection;
+      const connText = conn
+        ? (conn.ok ? 'Проверка входа в Teez: успешно ✅' : 'Проверка входа в Teez не прошла: ' + (conn.error || 'неверный Client ID или ключ') + '\nДанные сохранены — проверь их и сохрани ещё раз.')
+        : '';
+      alert('Магазин Tez Market сохранён.' + (connText ? '\n' + connText : ''));
+      e.target.reset();
+      await loadTeezStoreCurrent();
+      await refreshSyncStatusMini();
+    } catch (err) {
+      alert('Не удалось сохранить магазин Tez Market: ' + err.message);
+    } finally {
+      btn.textContent = originalText; btn.disabled = false;
+    }
+  });
+}
+
+async function loadTeezStoreCurrent() {
+  const store = await api('/settings/teez-store');
+  const el = document.getElementById('teezStoreCurrent');
+  if (!store) {
+    el.textContent = 'Магазин ещё не добавлен — заполни форму ниже.';
+    return;
+  }
+  el.innerHTML = `Client ID: <strong style="color:var(--text)">${store.clientId}</strong> · Ключ: <code>${store.clientSecretMasked}</code>`;
+}
+
 let taxSettingsFormWired = false;
 
 function wireTaxSettingsFormOnce() {
@@ -6345,10 +6386,12 @@ async function loadSettingsPage() {
   wireKaspiStoreFormOnce();
   wireOzonStoreFormOnce();
   wireWbStoreFormOnce();
+  wireTeezStoreFormOnce();
   wireTaxSettingsFormOnce();
   await loadKaspiStoreCurrent();
   await loadOzonStoreCurrent();
   await loadWbStoreCurrent();
+  await loadTeezStoreCurrent();
   await loadTaxSettings();
 
   const status = await api('/sync/status');
@@ -6357,6 +6400,7 @@ async function loadSettingsPage() {
     <tr><td><span class="mp-tag"><i class="dot dot--kaspi"></i>Kaspi</span></td><td>${status.kaspi.configured ? '✅ Подключён' : '⚪ Не настроен'}</td></tr>
     <tr><td><span class="mp-tag"><i class="dot dot--ozon"></i>Ozon</span></td><td>${status.ozon.configured ? '✅ Подключён' : '⚪ Не настроен'}</td></tr>
     <tr><td><span class="mp-tag"><i class="dot dot--wb"></i>WB</span></td><td>${status.wb.configured ? '✅ Подключён' : '⚪ Не настроен'}</td></tr>
+    <tr><td><span class="mp-tag"><i class="dot dot--teez"></i>Tez Market</span></td><td>${status.teez && status.teez.configured ? '✅ Подключён' : '⚪ Не настроен'}</td></tr>
   `;
 
   document.getElementById('settingsPriceFeedUrl').textContent = `${window.location.origin}/api/kaspi/price-feed.xml?token=ВАШ_PRICE_FEED_SECRET`;
@@ -6450,6 +6494,7 @@ async function refreshSyncStatusMini() {
   if (status.kaspi.configured) parts.push('Kaspi ✓');
   if (status.ozon.configured) parts.push('Ozon ✓');
   if (status.wb.configured) parts.push('WB ✓');
+  if (status.teez && status.teez.configured) parts.push('Tez ✓');
   el.textContent = parts.length ? parts.join(' · ') : 'Площадки не настроены';
 }
 
@@ -6516,6 +6561,25 @@ document.getElementById('syncWbBtn').addEventListener('click', async () => {
     alert('Ошибка синхронизации WB: ' + err.message);
   } finally {
     btn.textContent = '↻ WB'; btn.disabled = false;
+  }
+});
+
+document.getElementById('syncTeezBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('syncTeezBtn');
+  btn.textContent = '…'; btn.disabled = true;
+  try {
+    const res = await api('/sync/teez?days=30', { method: 'POST' });
+    try {
+      await reloadCurrentPage();
+    } catch (renderErr) {
+      console.warn('Синхронизация Tez прошла успешно, но при обновлении страницы возникла ошибка:', renderErr);
+    }
+    const unmatched = res.unmatchedItems ? `\nПозиций без товара в «Товарах» (себестоимость 0): ${res.unmatchedItems}.` : '';
+    alert(`Синхронизация заказов Tez Market завершена. Обработано заказов: ${res.ordersProcessed ?? 0}.${unmatched}`);
+  } catch (err) {
+    alert('Ошибка синхронизации Tez Market: ' + err.message);
+  } finally {
+    btn.textContent = '↻ Tez'; btn.disabled = false;
   }
 });
 
