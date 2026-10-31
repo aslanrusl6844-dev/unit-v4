@@ -75,6 +75,17 @@ model TeezStore {
   updatedAt    DateTime @updatedAt
 }
 
+// Подключение к Yandex Cloud (Search API → Wordstat) — через форму в
+// «Настройках». Нужны Folder ID каталога и API-ключ сервисного аккаунта.
+// Один набор на сервер.
+model YandexCloudStore {
+  id        String   @id @default(cuid())
+  folderId  String
+  apiKey    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
 // Ставка налога ИП — настраивается в разделе «Настройки», по умолчанию 4%
 // (упрощённый режим: налог считается от ВЫРУЧКИ, а не от прибыли). Одна
 // запись на сервер.

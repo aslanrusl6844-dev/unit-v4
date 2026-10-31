@@ -103,6 +103,7 @@ const PAGE_LOADERS = {
   margin: loadMarginPage,
   niches: loadNichesPage,
   searchstats: loadSearchStatsPage,
+  ads: loadAdsPage,
   demping: loadDempingPage,
   notifications: loadNotificationsPage,
   broadcast: loadBroadcastPage,
@@ -5984,6 +5985,25 @@ function renderSearchStatsTrends(settled) {
 }
 
 // =====================================================================
+// РЕКЛАМА (каркас: статус подключений)
+// =====================================================================
+async function loadAdsPage() {
+  const body = document.getElementById('adsStatusBody');
+  let st = null;
+  try {
+    st = await api('/ads/status');
+  } catch (err) {
+    body.innerHTML = `<tr><td colspan="3">Не удалось получить статус: ${ssEsc(err.message)}</td></tr>`;
+    return;
+  }
+  const row = (name, ok, need) => `<tr><td>${name}</td><td>${ok ? '✅ Подключён' : '⚪ Не подключён'}</td><td class="name-cell">${ok ? '—' : need}</td></tr>`;
+  body.innerHTML =
+    row('Яндекс Wordstat (Yandex Cloud)', st.wordstat.configured, 'Folder ID и API-ключ в «Настройках»') +
+    row('Google Ads', st.googleAds.configured, 'Рекламный аккаунт, токен разработчика, доступ Google') +
+    row('Яндекс Директ', st.yandexDirect.configured, 'Аккаунт Директа, приложение OAuth, доступ к API');
+}
+
+// =====================================================================
 // ДЕМПИНГ
 // =====================================================================
 let runRepricerBtnWired = false;
@@ -6455,6 +6475,38 @@ async function loadWbStoreCurrent() {
   el.innerHTML = `Токен: <code>${store.apiTokenMasked}</code>`;
 }
 
+let yandexCloudFormWired = false;
+
+function wireYandexCloudFormOnce() {
+  if (yandexCloudFormWired) return;
+  yandexCloudFormWired = true;
+  document.getElementById('yandexCloudForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const payload = { folderId: fd.get('folderId'), apiKey: fd.get('apiKey') };
+    const btn = e.target.querySelector('button[type="submit"]');
+    const originalText = btn.textContent;
+    btn.textContent = '…'; btn.disabled = true;
+    try {
+      await api('/settings/yandex-cloud', { method: 'POST', body: JSON.stringify(payload) });
+      alert('Настройки Yandex Cloud сохранены.');
+      e.target.reset();
+      await loadYandexCloudCurrent();
+    } catch (err) {
+      alert('Не удалось сохранить настройки Yandex Cloud: ' + err.message);
+    } finally {
+      btn.textContent = originalText; btn.disabled = false;
+    }
+  });
+}
+
+async function loadYandexCloudCurrent() {
+  const store = await api('/settings/yandex-cloud');
+  const el = document.getElementById('yandexCloudCurrent');
+  if (!store) { el.textContent = 'Ещё не подключено — заполни форму ниже.'; return; }
+  el.innerHTML = `Folder ID: <strong style="color:var(--text)">${ssEsc(store.folderId)}</strong> · Ключ: <code>${ssEsc(store.apiKeyMasked)}</code>`;
+}
+
 let teezStoreFormWired = false;
 
 function wireTeezStoreFormOnce() {
@@ -6529,11 +6581,13 @@ async function loadSettingsPage() {
   wireOzonStoreFormOnce();
   wireWbStoreFormOnce();
   wireTeezStoreFormOnce();
+  wireYandexCloudFormOnce();
   wireTaxSettingsFormOnce();
   await loadKaspiStoreCurrent();
   await loadOzonStoreCurrent();
   await loadWbStoreCurrent();
   await loadTeezStoreCurrent();
+  await loadYandexCloudCurrent();
   await loadTaxSettings();
 
   const status = await api('/sync/status');

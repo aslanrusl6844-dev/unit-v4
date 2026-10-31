@@ -3,6 +3,7 @@ import { getKaspiStore, saveKaspiStore, deleteKaspiStore } from '../handlers/kas
 import { getOzonStore, saveOzonStore } from '../handlers/ozonStore';
 import { getWbStore, saveWbStore } from '../handlers/wbStore';
 import { getTeezStore, saveTeezStore } from '../handlers/teezStore';
+import { getYandexCloudStore, saveYandexCloudStore } from '../handlers/yandexCloudStore';
 import { getTaxSettings, saveTaxSettings } from '../handlers/taxSettings';
 
 export const settingsRouter = Router();
@@ -37,6 +38,15 @@ settingsRouter.get('/wb-store', async (_req, res) => {
 
 settingsRouter.post('/wb-store', async (req, res) => {
   const result = await saveWbStore(req.body);
+  res.status(result.status).json(result.body);
+});
+
+settingsRouter.get('/yandex-cloud', async (_req, res) => {
+  res.json(await getYandexCloudStore());
+});
+
+settingsRouter.post('/yandex-cloud', async (req, res) => {
+  const result = await saveYandexCloudStore(req.body);
   res.status(result.status).json(result.body);
 });
 
