@@ -199,13 +199,43 @@ class TeezClient {
       } catch {
         body = '';
       }
-      const bodyPart = body ? ` — ответ Teez: ${body.slice(0, 300)}` : '';
+      const bodyPart = body ? ` — ответ Teez: ${body.slice(0, 300)}` : ' — тело ответа пустое';
+      const probe = status === 404 ? await this.probeEndpoints() : '';
       const hint =
         status === 404
           ? ' Teez ответил «не найдено»: проверьте Client ID (колонка «ID клиента» в Настройки → Ключи API) и что ключ создан/не отключён.'
           : '';
-      throw new Error(`Не удалось получить токен Teez (${status ?? 'нет ответа'}): ${String(err?.message ?? err)}${bodyPart}.${hint}`);
+      throw new Error(`Не удалось получить токен Teez (${status ?? 'нет ответа'}): ${String(err?.message ?? err)}${bodyPart}.${hint}${probe}`);
     }
+  }
+
+  /**
+   * Диагностика при 404 на токене: три безопасных запроса БЕЗ настоящих ключей
+   * (тестовые значения) — по ним видно, доступен ли сервер Teez с нашего хостинга
+   * и существует ли путь. Возвращает короткую строку для сообщения об ошибке.
+   */
+  private async probeEndpoints(): Promise<string> {
+    const base = env.teez.baseUrl;
+    const one = async (label: string, run: () => Promise<any>): Promise<string> => {
+      try {
+        const res = await run();
+        return `${label}=${res.status}`;
+      } catch (err: any) {
+        const r = err?.response;
+        if (!r) return `${label}=нет ответа (${String(err?.code ?? err?.message ?? err).slice(0, 40)})`;
+        const server = r.headers?.server ? ` server:${String(r.headers.server).slice(0, 30)}` : '';
+        const raw = typeof r.data === 'string' ? r.data : r.data == null ? '' : JSON.stringify(r.data);
+        const snippet = raw ? ` «${raw.replace(/\s+/g, ' ').slice(0, 80)}»` : ' пусто';
+        return `${label}=${r.status}${server}${snippet}`;
+      }
+    };
+    const cfg = { timeout: 8000, headers: { 'Content-Type': 'application/json' } };
+    const parts = await Promise.all([
+      one('токен(тест-ключи)', () => axios.post(`${base}/api/v1/auth/token`, { clientId: 'probe', clientSecret: 'probe1234' }, cfg)),
+      one('корень', () => axios.get(`${base}/`, { timeout: 8000 })),
+      one('категории(без токена)', () => axios.get(`${base}/api/seller/v1/categories`, { timeout: 8000 })),
+    ]);
+    return ` Диагностика: ${parts.join('; ')}.`;
   }
 
   /** Проверка ключей: удалось ли получить токен. Не бросает исключение. */
