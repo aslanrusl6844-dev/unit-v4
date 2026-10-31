@@ -3,7 +3,7 @@ import { env } from '../config/env';
 import { logger } from '../utils/logger';
 import { SHOP_CATEGORIES } from '../config/shopCategories';
 import {
-  ChatMessage, DEFAULT_MODEL, buildSystemPrompt, diverseSample, extractSkus, loadCatalog, matchShowcases, rankProducts, streamClaude,
+  ChatMessage, DEFAULT_MODEL, buildSystemPrompt, diverseSample, extractSkus, loadCatalog, matchShowcases, rankProducts, runAssistant,
 } from '../services/assistant.service';
 
 export const assistantRouter = Router();
@@ -30,7 +30,7 @@ export function sanitizeMessages(raw: unknown): ChatMessage[] {
   const out = raw
     .filter((m: any) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim())
     .map((m: any) => ({ role: m.role as 'user' | 'assistant', content: String(m.content).slice(0, 2000) }))
-    .slice(-12);
+    .slice(-20);
   while (out.length && out[0].role !== 'user') out.shift();
   return out;
 }
@@ -57,8 +57,8 @@ assistantRouter.post('/', async (req, res) => {
     if (inNamed.length && found.length < 14) found = [...found, ...inNamed.filter((p) => !found.includes(p))].slice(0, 14);
     if (!found.length) found = diverseSample(catalog, 12);
     const system = buildSystemPrompt(found, [...SHOP_CATEGORIES], showcases);
-    const full = await streamClaude({
-      apiKey, model: process.env.ASSISTANT_MODEL || DEFAULT_MODEL, system, messages, signal: ac.signal,
+    const full = await runAssistant({
+      apiKey, model: process.env.ASSISTANT_MODEL || DEFAULT_MODEL, system, messages, catalog: { items: catalog, showcases }, signal: ac.signal,
       onDelta: (t) => send('delta', { text: t }),
     });
     const bySku = new Map(catalog.map((p) => [p.sku, p]));
