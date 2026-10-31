@@ -6,11 +6,20 @@ import { prisma } from '../db/prisma';
 export const yandexCloudSchema = z.object({
   folderId: z.string().trim().min(5, 'Folder ID обязателен (идентификатор каталога в Yandex Cloud)'),
   apiKey: z.string().trim().min(10, 'API-ключ обязателен (показывается один раз при создании)'),
+}).superRefine((v, ctx) => {
+  // Частая ошибка: в поле ключа вставлен ID каталога/облака (b1g…), потому что кнопка «Копировать» не сработала.
+  if (v.apiKey === v.folderId || /^b1g[0-9a-z]{15,}$/i.test(v.apiKey)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['apiKey'],
+      message: 'В поле «API-ключ» вставлен ID каталога (b1g…). Нужен секретный ключ из AI Studio — длинная строка, обычно начинается с AQVN',
+    });
+  }
 });
 
 function present(store: { folderId: string; apiKey: string } & Record<string, unknown>) {
   // Ключ целиком не отдаём — только последние 4 символа, для подтверждения сохранения.
-  return { ...store, apiKey: undefined, apiKeyMasked: `••••${store.apiKey.slice(-4)}` };
+  return { ...store, apiKey: undefined, apiKeyMasked: `${store.apiKey.slice(0, 4)}••••${store.apiKey.slice(-4)}` };
 }
 
 export async function getYandexCloudStore() {

@@ -18,3 +18,11 @@ test('значения принимаются и обрезаются по кр�
     assert.equal(r.data.apiKey, 'AQVNabcdefghij');
   }
 });
+
+test('ID каталога в поле ключа отклоняется', () => {
+  const same = yandexCloudSchema.safeParse({ folderId: 'b1gciogsa33dmnf17em9', apiKey: 'b1gciogsa33dmnf17em9' });
+  assert.equal(same.success, false);
+  const other = yandexCloudSchema.safeParse({ folderId: 'b1gciogsa33dmnf17em9', apiKey: 'b1gajuemtlkot03mrrjb' });
+  assert.equal(other.success, false);
+  assert.equal(yandexCloudSchema.safeParse({ folderId: 'b1gciogsa33dmnf17em9', apiKey: 'AQVNabcdefghijklmnopqrstuvwxyz0123456' }).success, true);
+});
