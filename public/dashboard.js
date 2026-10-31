@@ -6535,7 +6535,9 @@ function wireYandexCloudFormOnce() {
       e.target.reset();
       await loadYandexCloudCurrent();
     } catch (err) {
-      alert('Не удалось сохранить настройки Yandex Cloud: ' + err.message);
+      const fe = err.body && err.body.error && err.body.error.fieldErrors;
+      const text = fe ? Object.values(fe).flat().join('\n') : err.message;
+      alert('Не удалось сохранить настройки Yandex Cloud:\n' + text);
     } finally {
       btn.textContent = originalText; btn.disabled = false;
     }
