@@ -110,4 +110,26 @@ test('runAssistant: Claude вызывает get_showcase, получает 18 т
   assert.equal(toolResult.tool_use_id, 't1');
   assert.match(toolResult.content, /товаров всего: 18/);
   assert.equal(bodies[1].messages[1].content[0].name, 'get_showcase');
+
+const { transcribeAudio, cleanTranscript, audioMime } = require('../src/services/speechToText.service');
+
+test('cleanTranscript и audioMime', () => {
+  assert.equal(cleanTranscript('  «Привет,   мир» \n'), 'Привет, мир');
+  assert.equal(audioMime('audio/mp4; codecs=mp4a'), 'audio/mp4');
+  assert.equal(audioMime('application/json'), 'audio/mp4');
+});
+
+test('transcribeAudio: Gemini разбирает ответ; при сбое — запасной OpenAI', async () => {
+  const audio = Buffer.alloc(2000, 1);
+  const gem: any = async () => new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: 'Что есть в Цель-29' }] } }] }), { status: 200 });
+  assert.equal(await transcribeAudio({ audio, mime: 'audio/mp4', env: { GEMINI_API_KEY: 'g' } as any, fetchImpl: gem }), 'Что есть в Цель-29');
+
+  const calls: string[] = [];
+  const mixed: any = async (url: string) => {
+    calls.push(url);
+    return url.includes('googleapis') ? new Response('boom', { status: 500 }) : new Response(JSON.stringify({ text: 'привет' }), { status: 200 });
+  };
+  assert.equal(await transcribeAudio({ audio, mime: 'audio/mp4', env: { GEMINI_API_KEY: 'g', OPENAI_API_KEY: 'o' } as any, fetchImpl: mixed }), 'привет');
+  assert.equal(calls.length, 2);
+  await assert.rejects(transcribeAudio({ audio, mime: 'audio/mp4', env: {} as any }), /Нет ключей/);
 });
