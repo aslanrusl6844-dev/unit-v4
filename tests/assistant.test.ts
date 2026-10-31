@@ -110,6 +110,7 @@ test('runAssistant: Claude вызывает get_showcase, получает 18 т
   assert.equal(toolResult.tool_use_id, 't1');
   assert.match(toolResult.content, /товаров всего: 18/);
   assert.equal(bodies[1].messages[1].content[0].name, 'get_showcase');
+});
 
 const { transcribeAudio, cleanTranscript, audioMime } = require('../src/services/speechToText.service');
 
