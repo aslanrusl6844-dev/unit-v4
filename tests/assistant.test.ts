@@ -134,3 +134,17 @@ test('transcribeAudio: Gemini разбирает ответ; при сбое —
   assert.equal(calls.length, 2);
   await assert.rejects(transcribeAudio({ audio, mime: 'audio/mp4', env: {} as any }), /Нет ключей/);
 });
+
+test('transcribeAudio: если модель Gemini отключена (404) — пробует следующую', async () => {
+  const audio = Buffer.alloc(2000, 1);
+  const urls: string[] = [];
+  const f: any = async (url: string) => {
+    urls.push(url);
+    return url.includes('gemini-3.8-flash')
+      ? new Response('{"error":{"code":404}}', { status: 404 })
+      : new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: 'привет' }] } }] }), { status: 200 });
+  };
+  assert.equal(await transcribeAudio({ audio, mime: 'audio/mp4', env: { GEMINI_API_KEY: 'g' } as any, fetchImpl: f }), 'привет');
+  assert.equal(urls.length, 2);
+  assert.match(urls[1], /gemini-flash-latest/);
+});
