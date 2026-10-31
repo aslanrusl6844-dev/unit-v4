@@ -8564,3 +8564,21 @@ async function catUploadZip(file) {
     btn.disabled = false;
   }
 }
+
+// =====================================================================
+// Мобильное меню (на телефоне боковая панель выезжает по кнопке ☰)
+// =====================================================================
+(function wireMobileMenu() {
+  const toggle = document.getElementById('menuToggle');
+  const backdrop = document.getElementById('sidebarBackdrop');
+  if (!toggle || !backdrop) return;
+  const setOpen = (open) => {
+    document.body.classList.toggle('nav-open', open);
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  };
+  toggle.addEventListener('click', () => setOpen(!document.body.classList.contains('nav-open')));
+  backdrop.addEventListener('click', () => setOpen(false));
+  // После выбора раздела панель закрываем, чтобы сразу было видно страницу.
+  document.querySelectorAll('.sidebar .nav-item').forEach((btn) => btn.addEventListener('click', () => setOpen(false)));
+  window.addEventListener('resize', () => { if (window.innerWidth > 860) setOpen(false); });
+})();

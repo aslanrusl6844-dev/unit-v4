@@ -344,3 +344,85 @@ body {
 }
 .mm-tab-badge--green { color: #22C55E; }
 .mm-tab-badge--red { color: #F87171; }
+
+
+/* ================= Мобильная версия (телефон) =================
+   Только для узких экранов: на компьютере (шире 860px) ничего не меняется.
+   Меню становится выезжающей панелью по кнопке ☰, верхняя панель переносится
+   на несколько строк, таблицы и широкие блоки прокручиваются вбок внутри
+   своего блока, а не раздувают всю страницу. */
+.menu-toggle, .sidebar-backdrop { display: none; }
+
+@media (max-width: 860px) {
+  .menu-toggle {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 40px; height: 36px; flex-shrink: 0;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+    font-size: 18px; color: var(--text); cursor: pointer;
+  }
+
+  .sidebar {
+    position: fixed; left: 0; top: 0; bottom: 0; height: 100%;
+    width: min(82vw, 300px);
+    transform: translateX(-100%); transition: transform 0.2s ease;
+    z-index: 1500; box-shadow: none;
+  }
+  body.nav-open .sidebar { transform: translateX(0); box-shadow: 0 0 40px rgba(0,0,0,0.35); }
+  body.nav-open { overflow: hidden; }
+  .sidebar-backdrop {
+    display: block; position: fixed; inset: 0; background: rgba(0,0,0,0.45);
+    z-index: 1400; opacity: 0; pointer-events: none; transition: opacity 0.2s ease;
+  }
+  body.nav-open .sidebar-backdrop { opacity: 1; pointer-events: auto; }
+  .nav-item { padding: 12px 10px; font-size: 14.5px; }
+
+  .app { display: block; }
+  .main { width: 100%; }
+
+  /* Высокая панель фильтров на телефоне не прилипает — иначе занимает пол-экрана. */
+  .topbar { padding: 10px 12px; gap: 8px; position: static; }
+  .topbar__range { flex-wrap: wrap; flex: 1 1 100%; }
+  .topbar__range input[type="date"] { flex: 1 1 120px; min-width: 0; }
+  .preset-group { margin-left: 0; flex-wrap: wrap; }
+  .mp-filter { flex: 1 1 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .mp-filter__btn { white-space: nowrap; flex-shrink: 0; }
+  .topbar__actions { margin-left: 0; flex: 1 1 100%; flex-wrap: wrap; }
+  .topbar__actions .btn { flex: 1 1 auto; }
+  .topbar__actions select { flex: 1 1 100%; }
+
+  .pages { padding: 16px 12px 48px; }
+  .page__head h1 { font-size: 19px; }
+
+  .kpi-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  .kpi-card { padding: 12px; }
+  .kpi-card__value { font-size: 17px; }
+
+  .panel { padding: 14px 12px; overflow-x: auto; }
+  .two-col, .form-grid { grid-template-columns: 1fr; }
+  /* Таблицы не раздувают страницу: прокручиваются внутри блока. */
+  .table { min-width: 560px; }
+  .table-wrap { -webkit-overflow-scrolling: touch; }
+
+  .inline-form { flex-direction: column; align-items: stretch; }
+  /* !important — у многих полей ширина задана прямо в разметке (flex:2 1 320px), в колонке она превращалась бы в высоту. */
+  .inline-form > * { flex: 0 0 auto !important; width: 100%; }
+  .seg { max-width: 100%; overflow-x: auto; }
+  .seg button { white-space: nowrap; }
+
+  /* Поля ввода не меньше 16px — иначе iPhone приближает страницу при фокусе. */
+  input, select, textarea { font-size: 16px; }
+
+  .modal-overlay { padding: 8px; align-items: flex-start; }
+  .modal, .modal--wide { max-width: 100%; max-height: 96vh; padding: 16px 14px; }
+
+  /* Фиксированные колонки, заданные прямо в разметке, на телефоне складываем в одну. */
+  [style*="grid-template-columns:1fr 1fr"], [style*="grid-template-columns: 1fr 1fr"],
+  [style*="grid-template-columns:repeat(2"], [style*="grid-template-columns:repeat(3"],
+  [style*="grid-template-columns:2fr 1fr"], [style*="grid-template-columns:1fr 2fr"] {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+@media (max-width: 420px) {
+  .kpi-grid { grid-template-columns: 1fr; }
+}
