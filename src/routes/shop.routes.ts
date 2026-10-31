@@ -16,6 +16,7 @@ import { maybeGenerateShopArticle } from '../services/shopArticle';
 import { SHOP_CATEGORIES, normalizeShopCategory } from '../config/shopCategories';
 import { sendOrderNotify, editOrderNotify, sendTelegramTestMessage } from '../lib/telegram';
 import { sendPickupCodePush } from '../lib/expoPush';
+import { buildDelivery } from '../services/deliveryProgress';
 import { sendBroadcast } from '../services/pushBroadcast.service';
 import { createHmac, randomInt, timingSafeEqual } from 'node:crypto';
 import { deliveryFeeFor, deliveryFeeOfOrder } from '../config/shopDelivery';
@@ -1043,6 +1044,29 @@ shopRouter.post('/orders/:id/cancel', async (req, res) => {
 });
 
 /**
+ * «Удалить из списка» в приложении: убирает ПОЛУЧЕННЫЙ или ОТМЕНЁННЫЙ заказ из списка клиента.
+ * Только флаг видимости — статус, деньги, остатки и отчёты не трогаем. Активный заказ скрыть нельзя.
+ */
+shopRouter.post('/orders/:id/hide', async (req, res) => {
+  try {
+    const order = await prisma.shopOrder.findUnique({ where: { id: req.params.id } });
+    if (!order) return res.status(404).json({ error: 'Заказ не найден' });
+    const phone = String(req.body?.phone ?? '');
+    if (!phone || !phonesMatch(phone, order.phone)) {
+      return res.status(403).json({ error: 'Номер телефона не совпадает с заказом' });
+    }
+    if (order.status !== 'delivered' && order.status !== 'cancelled') {
+      return res.status(409).json({ error: 'Убрать из списка можно только полученный или отменённый заказ' });
+    }
+    await prisma.shopOrder.update({ where: { id: order.id }, data: { hiddenByCustomer: true } });
+    res.json({ ok: true });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop API] Ошибка скрытия заказа');
+    res.status(500).json({ error: 'Не удалось убрать заказ из списка', details: String(err?.message ?? err) });
+  }
+});
+
+/**
  * Служебная проверка настройки Telegram — под тем же x-app-key, что и весь
  * /api/shop/*. Тело не нужно. Токен в ответе никогда не отдаётся.
  */
@@ -1073,7 +1097,8 @@ shopRouter.get('/orders', async (req, res) => {
     const allOrders = await prisma.shopOrder.findMany({ orderBy: { createdAt: 'desc' } });
     // Сравнение строго через phonesMatch — чужой заказ никогда не пройдёт
     // этот фильтр, даже если телефон совпадает частично/по формату.
-    const myOrders = allOrders.filter((o: typeof allOrders[number]) => phonesMatch(phone, o.phone));
+    // Скрытые клиентом («Удалить из списка») в приложение не отдаём; в админке и учёте они остаются.
+    const myOrders = allOrders.filter((o: typeof allOrders[number]) => !o.hiddenByCustomer && phonesMatch(phone, o.phone));
 
     // В заказе хранится только sku/название/цена — картинки нет. Приложению
     // нужна обложка товара (в т.ч. витринных товаров, которых нет в общем
@@ -1117,6 +1142,7 @@ shopRouter.get('/orders', async (req, res) => {
         image: it?.image || covers.get(String(it?.sku ?? '')) || undefined,
       })),
       createdAt: o.createdAt,
+      delivery: buildDelivery(o),
       city: o.city,
       street: o.street,
       house: o.house,
