@@ -1,6 +1,7 @@
 import { resolveCity } from '../config/cities';
 import {
-  ALMATY_UTC_OFFSET_HOURS, COURIER_WORKS_ON_SUNDAY, DEFAULT_DELIVERY_DAYS, DELIVERY_DAYS, EXPRESS_CUTOFF_HOUR, HUB_CITY,
+  ALMATY_UTC_OFFSET_HOURS, AUTO_SHIP_DELAY_HOURS, COURIER_WORKS_ON_SUNDAY, DEFAULT_DELIVERY_DAYS, DELAY_NOTE, DELAY_NOTICE_HOUR,
+  DELIVERY_DAYS, EXPRESS_CUTOFF_HOUR, HUB_CITY,
 } from '../config/delivery';
 
 /**
@@ -25,6 +26,7 @@ export type DeliveryInfo = {
   icon: DeliveryIcon;   // иконка у заголовка шторки
   progress: { total: number; done: number; current: number }; // отрезки полоски; current = -1, если текущего нет
   steps: DeliveryStep[];
+  note: string | null;  // маленькая подпись под шторкой («Курьер задерживается»), обычно null
 };
 
 export type DeliveryOrderInput = {
@@ -77,10 +79,10 @@ function step(title: string, subtitle: string, state: DeliveryStepState, vehicle
   return { title, subtitle, state, icon: state === 'done' ? 'check' : state === 'now' ? vehicle : 'none' };
 }
 
-function finish(kind: DeliveryInfo['kind'], title: string, subtitle: string, vehicle: DeliveryIcon, steps: DeliveryStep[]): DeliveryInfo {
+function finish(kind: DeliveryInfo['kind'], title: string, subtitle: string, vehicle: DeliveryIcon, steps: DeliveryStep[], note: string | null = null): DeliveryInfo {
   const done = steps.filter((s) => s.state === 'done').length;
   const current = steps.findIndex((s) => s.state === 'now');
-  return { kind, title, subtitle, icon: vehicle, progress: { total: steps.length, done, current }, steps };
+  return { kind, title, subtitle, icon: vehicle, progress: { total: steps.length, done, current }, steps, note };
 }
 
 /**
@@ -89,7 +91,7 @@ function finish(kind: DeliveryInfo['kind'], title: string, subtitle: string, veh
  */
 export function buildDelivery(o: DeliveryOrderInput, now: Date = new Date()): DeliveryInfo | null {
   if (o.status === 'cancelled') {
-    return { kind: 'cancelled', title: 'Отменён', subtitle: `${ruDateTime(o.updatedAt)} · заказ отменён`, icon: 'none', progress: { total: 0, done: 0, current: -1 }, steps: [] };
+    return { kind: 'cancelled', title: 'Отменён', subtitle: `${ruDateTime(o.updatedAt)} · заказ отменён`, icon: 'none', progress: { total: 0, done: 0, current: -1 }, steps: [], note: null };
   }
   if (o.status === 'pending_payment' || o.status === 'awaiting_payment') return null;
 
@@ -119,20 +121,23 @@ function buildExpress(o: DeliveryOrderInput, paidAt: Date, delivered: boolean, c
       step('Заказ выдан', 'код подтверждён', 'done', vehicle),
     ]);
   }
+  const l = local(now);
+  const late = dayNumber(now) > dayNumber(promised) || (dayNumber(now) === dayNumber(promised) && l.h >= DELAY_NOTICE_HOUR);
+  const note = late ? DELAY_NOTE : null;
   if (courierStage) {
     return finish('express', `Доставим ${rel}`, `${HUB_CITY} · ${promisedLabel}`, vehicle, [
       paid,
       step('Собран на складе', '', 'done', vehicle),
       step('Курьер привезёт вам', `${rel}, ${promisedLabel}`, 'now', vehicle),
       step('Заказ выдан', 'код придёт уведомлением', 'todo', vehicle),
-    ]);
+    ], note);
   }
   return finish('express', `Доставим ${rel}`, `${HUB_CITY} · ${promisedLabel}`, vehicle, [
     paid,
     step('Собираем заказ', 'готовим к отправке', 'now', vehicle),
     step('Курьер привезёт вам', `${rel}, ${promisedLabel}`, 'todo', vehicle),
     step('Заказ выдан', 'код придёт уведомлением', 'todo', vehicle),
-  ]);
+  ], note);
 }
 
 function buildIntercity(o: DeliveryOrderInput, city: string, paidAt: Date, delivered: boolean, courierStage: boolean, now: Date): DeliveryInfo {
@@ -140,11 +145,13 @@ function buildIntercity(o: DeliveryOrderInput, city: string, paidAt: Date, deliv
   const vehicle: DeliveryIcon = 'truck';
   const route = `${HUB_CITY} → ${city || 'ваш город'}`;
   const paid = step('Оплачен', ruDateTime(paidAt), 'done', vehicle);
-  const packed = (state: DeliveryStepState) => step('Собран на складе', o.shippedAt && state === 'done' ? ruDateTime(o.shippedAt) : '', state, vehicle);
+  // Машина выезжает сама через AUTO_SHIP_DELAY_HOURS после оплаты; если админ нажал «Машина выехала» — берём его время.
+  const autoShip = new Date(paidAt.getTime() + AUTO_SHIP_DELAY_HOURS * 3600 * 1000);
+  const shippedAt = o.shippedAt ?? (now.getTime() >= autoShip.getTime() || delivered || courierStage ? autoShip : null);
+  const packed = (state: DeliveryStepState) => step('Собран на складе', shippedAt && state === 'done' ? ruDateTime(shippedAt) : '', state, vehicle);
 
   // Курьер уже взял заказ или заказ выдан, а «Машина прибыла» не нажали — считаем, что машина на месте.
   const arrivedAt = o.arrivedAt ?? (delivered || courierStage ? o.updatedAt : null);
-  const shippedAt = o.shippedAt ?? null;
 
   if (delivered) {
     const at = o.deliveredAt ?? o.updatedAt;
@@ -158,13 +165,14 @@ function buildIntercity(o: DeliveryOrderInput, city: string, paidAt: Date, deliv
   }
 
   if (arrivedAt) {
+    const lateArrived = !courierStage && dayNumber(now) > dayNumber(arrivedAt);
     return finish('intercity', `Заказ в городе: ${city}`, courierStage ? 'Курьер уже везёт вам' : 'Курьер скоро привезёт вам', vehicle, [
       paid, packed('done'),
       step(`В пути · ${D} дн.`, shippedAt ? `${ruDate(shippedAt)} — ${ruDate(arrivedAt)}` : '', 'done', vehicle),
       step(`Машина прибыла: ${city}`, ruDateTime(arrivedAt), 'done', vehicle),
       step('Курьер привезёт вам', courierStage ? 'курьер уже в пути к вам' : 'код придёт уведомлением', 'now', vehicle),
       step('Заказ выдан', 'код придёт уведомлением', 'todo', vehicle),
-    ]);
+    ], lateArrived ? DELAY_NOTE : null);
   }
 
   if (shippedAt) {
@@ -177,11 +185,13 @@ function buildIntercity(o: DeliveryOrderInput, city: string, paidAt: Date, deliv
       const title = d === 1 ? `День 1 · выехал из ${HUB_CITY}` : d === D ? `День ${D} · прибытие: ${city}` : `День ${d} · в пути`;
       days.push(step(title, state === 'todo' ? `~ ${ruDate(dayDate)}` : ruDate(dayDate), state, vehicle));
     }
+    // Последний день пути: после 18:00 (и в любые дни дальше), пока код не отправлен и заказ не выдан, — «Курьер задерживается».
+    const late = elapsed >= D || (elapsed === D - 1 && local(now).h >= DELAY_NOTICE_HOUR);
     return finish('intercity', `День ${day} из ${D} · в пути`, `${route} · прибытие ~ ${ruDate(addDays(shippedAt, D - 1))}`, vehicle, [
       paid, packed('done'), ...days,
       step('Курьер привезёт вам', 'код придёт уведомлением', 'todo', vehicle),
       step('Заказ выдан', 'код придёт уведомлением', 'todo', vehicle),
-    ]);
+    ], late ? DELAY_NOTE : null);
   }
 
   return finish('intercity', 'Готовим к отправке', `${route} · в пути ~ ${D} дн.`, vehicle, [
