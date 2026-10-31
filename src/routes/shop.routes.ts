@@ -18,6 +18,7 @@ import { sendOrderNotify, editOrderNotify, sendTelegramTestMessage } from '../li
 import { sendPickupCodePush } from '../lib/expoPush';
 import { sendBroadcast } from '../services/pushBroadcast.service';
 import { createHmac, randomInt, timingSafeEqual } from 'node:crypto';
+import { deliveryFeeFor, deliveryFeeOfOrder } from '../config/shopDelivery';
 
 export const shopRouter = Router();
 
@@ -793,7 +794,10 @@ shopRouter.post('/orders', async (req, res) => {
   if (!parsed.success) return res.status(400).json({ error: 'Неверные данные заказа', details: parsed.error.flatten() });
 
   try {
-    const total = parsed.data.items.reduce((sum, i) => sum + i.price * i.quantity, 0);
+    const itemsSubtotal = parsed.data.items.reduce((sum, i) => sum + i.price * i.quantity, 0);
+    // Доставка: до 10 000 ₸ — 1 000 ₸, от 10 000 ₸ — бесплатно (правило считает только сервер).
+    const deliveryFee = deliveryFeeFor(itemsSubtotal);
+    const total = itemsSubtotal + deliveryFee;
 
     // Гарантируем уникальность номера — крайне маловероятная коллизия, но
     // проверяем, а не полагаемся вслепую на рандом.
@@ -838,7 +842,7 @@ shopRouter.post('/orders', async (req, res) => {
       logger.error({ err }, '[Telegram] sendOrderNotify не должен был бросить исключение');
     }
 
-    res.status(201).json({ id: order.id, number: order.number, total: order.total, status: order.status });
+    res.status(201).json({ id: order.id, number: order.number, total: order.total, deliveryFee, status: order.status });
   } catch (err: any) {
     logger.error({ err }, '[Shop API] Ошибка создания заказа');
     res.status(500).json({ error: 'Не удалось создать заказ', details: String(err?.message ?? err) });
@@ -1107,6 +1111,7 @@ shopRouter.get('/orders', async (req, res) => {
       status: o.status,
       pickupCode: o.pickupCode,
       total: o.total,
+      deliveryFee: deliveryFeeOfOrder(o.total, parsedItems.get(o.id) ?? []),
       items: (parsedItems.get(o.id) ?? []).map((it: any) => ({
         ...it,
         image: it?.image || covers.get(String(it?.sku ?? '')) || undefined,
