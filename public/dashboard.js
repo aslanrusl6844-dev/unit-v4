@@ -4239,12 +4239,17 @@ function recalcMyMarketPriceRow(tr) {
  * (URL), заголовок, подзаголовок, ссылка на sku ИЛИ категорию, вкл/выкл.
  * 4 фиксированных слота, сервер всегда отдаёт ровно 4 записи.
  */
-async function renderMyMarketBannerSlots() {
+async function renderMyMarketBannerSlots(scrollToEnd = false) {
   const container = document.getElementById('mymarketBannerSlots');
   const banners = await api('/shop-admin/banners');
+  const titleEl = document.getElementById('mymarketBannersTitle');
+  if (titleEl) {
+    const on = banners.filter((b) => b.active && b.imageUrl).length;
+    titleEl.textContent = `Баннеры главной приложения (${banners.length}, включено ${on})`;
+  }
 
-  container.innerHTML = banners.map((b) => `
-    <div class="banner-slot" data-slot="${b.slot}">
+  container.innerHTML = banners.map((b, i) => `
+    <div class="banner-slot" data-slot="${b.slot}" data-num="${i + 1}" style="flex:0 0 270px;scroll-snap-align:start">
       ${b.imageUrl && mmIsVideoUrl(b.imageUrl) ? `<video src="${b.imageUrl}" autoplay loop muted playsinline></video>` : b.imageUrl ? `<img src="${b.imageUrl}" alt="" onerror="this.style.display='none'" />` : `<div style="width:100%;height:90px;background:var(--bg);border-radius:6px;display:flex;align-items:center;justify-content:center;color:var(--text-faint);font-size:11px">нет фото</div>`}
       <input type="text" placeholder="URL фото баннера" class="cost-input mm-banner-image" value="${b.imageUrl ?? ''}" />
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
@@ -4264,9 +4269,25 @@ async function renderMyMarketBannerSlots() {
       <label style="display:flex;align-items:center;gap:6px;flex-direction:row;font-size:12px;color:var(--text-muted)">
         <input type="checkbox" class="mm-banner-active" style="width:auto" ${b.active ? 'checked' : ''} /> Включён (виден в приложении)
       </label>
-      <button class="btn btn--ghost mm-banner-save" style="font-size:12px">Сохранить слот ${b.slot + 1}</button>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn--ghost mm-banner-save" style="font-size:12px;flex:1">Сохранить баннер ${i + 1}</button>
+        <button class="btn btn--ghost mm-banner-delete" style="font-size:12px;color:var(--loss)">Удалить</button>
+      </div>
     </div>
-  `).join('');
+  `).join('') + `
+    <div style="flex:0 0 200px;display:flex;align-items:center;justify-content:center;border:1px dashed var(--border,#ccc);border-radius:8px;min-height:200px">
+      <button class="btn btn--ghost" id="mmBannerAdd" style="font-size:13px">+ Добавить баннер</button>
+    </div>`;
+
+  document.getElementById('mmBannerAdd').addEventListener('click', async () => {
+    try {
+      await api('/shop-admin/banners', { method: 'POST' });
+      await renderMyMarketBannerSlots(true);
+    } catch (err) {
+      alert('Не удалось добавить баннер: ' + err.message);
+    }
+  });
+  if (scrollToEnd) container.scrollLeft = container.scrollWidth;
 
   container.querySelectorAll('.banner-slot').forEach((slotEl) => {
     // Загрузка фото с компьютера: файл → Blob (uploadMyMarketFile) → ссылка в поле «URL фото баннера» + превью.
@@ -4295,6 +4316,18 @@ async function renderMyMarketBannerSlots() {
       }
     });
 
+    slotEl.querySelector('.mm-banner-delete').addEventListener('click', async () => {
+      if (!confirm(`Удалить баннер ${slotEl.dataset.num}?`)) return;
+      try {
+        const left = container.scrollLeft;
+        await api(`/shop-admin/banners/${slotEl.dataset.slot}`, { method: 'DELETE' });
+        await renderMyMarketBannerSlots();
+        container.scrollLeft = left;
+      } catch (err) {
+        alert('Не удалось удалить баннер: ' + err.message);
+      }
+    });
+
     slotEl.querySelector('.mm-banner-save').addEventListener('click', async () => {
       const slot = slotEl.dataset.slot;
       const payload = {
@@ -4306,8 +4339,10 @@ async function renderMyMarketBannerSlots() {
         active: slotEl.querySelector('.mm-banner-active').checked,
       };
       try {
+        const left = container.scrollLeft;
         await api(`/shop-admin/banners/${slot}`, { method: 'PUT', body: JSON.stringify(payload) });
         await renderMyMarketBannerSlots();
+        container.scrollLeft = left;
       } catch (err) {
         alert('Не удалось сохранить баннер: ' + err.message);
       }
