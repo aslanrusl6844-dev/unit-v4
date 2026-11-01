@@ -4,7 +4,7 @@ import { logger } from '../utils/logger';
 import { SHOP_CATEGORIES } from '../config/shopCategories';
 import { MAX_AUDIO_BYTES, audioMime, transcribeAudio } from '../services/speechToText.service';
 import {
-  ChatMessage, DEFAULT_MODEL, buildSystemPrompt, diverseSample, extractSkus, loadCatalog, matchShowcases, rankProducts, runAssistant,
+  ChatMessage, DEFAULT_MODEL, buildRelated, buildSystemPrompt, diverseSample, extractSkus, loadCatalog, matchShowcases, rankProducts, runAssistant, skusFromToolResult,
 } from '../services/assistant.service';
 
 export const assistantRouter = Router();
@@ -26,11 +26,17 @@ function limited(ip: string): boolean {
   return arr.length > 20;
 }
 
+export function stripUiMarkers(text: string): string {
+  return text.replace(/\{\{\s*все:[^}]*\}\}/g, '').replace(/\[\[[^\]]*\]\]/g, '').trim();
+}
+
 export function sanitizeMessages(raw: unknown): ChatMessage[] {
   if (!Array.isArray(raw)) return [];
   const out = raw
     .filter((m: any) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim())
-    .map((m: any) => ({ role: m.role as 'user' | 'assistant', content: String(m.content).slice(0, 2000) }))
+    // Служебные маркеры приложения (подборка {{все:…}}, кнопки [[…]]) модели не нужны.
+    .map((m: any) => ({ role: m.role as 'user' | 'assistant', content: stripUiMarkers(String(m.content)).slice(0, 2000) }))
+    .filter((m) => m.content.trim())
     .slice(-20);
   while (out.length && out[0].role !== 'user') out.shift();
   return out;
@@ -76,15 +82,22 @@ assistantRouter.post('/', async (req, res) => {
     const inNamed = named.length ? catalog.filter((p) => p.showcases?.some((t) => named.includes(t))) : [];
     let found = rankProducts(inNamed.length ? inNamed : catalog, lastUsers, 14);
     if (inNamed.length && found.length < 14) found = [...found, ...inNamed.filter((p) => !found.includes(p))].slice(0, 14);
+    const rankedSkus = found.map((p) => p.sku);
     if (!found.length) found = diverseSample(catalog, 12);
     const system = buildSystemPrompt(found, [...SHOP_CATEGORIES], showcases);
+    const toolSkus: string[] = [];
     const full = await runAssistant({
       apiKey, model: process.env.ASSISTANT_MODEL || DEFAULT_MODEL, system, messages, catalog: { items: catalog, showcases }, signal: ac.signal,
       onDelta: (t) => send('delta', { text: t }),
+      onToolResult: (_name, result) => toolSkus.push(...skusFromToolResult(result)),
     });
     const bySku = new Map(catalog.map((p) => [p.sku, p]));
     const cards = extractSkus(full).map((s) => bySku.get(s)).filter(Boolean).slice(0, 4);
     send('products', { items: cards });
+    // «Смотреть все товары»: маркер в конце ответа — приложение рисует кнопку и шторку с подборкой.
+    const stock = new Map(catalog.map((p) => [p.sku, p.stock == null || p.stock > 0]));
+    const related = buildRelated({ toolSkus, rankedSkus, shown: extractSkus(full), inStock: (s) => stock.get(s) });
+    if (extractSkus(full).length && related.length >= 2) send('delta', { text: `\n{{все:${related.join(',')}}}` });
     send('done', {});
   } catch (e: any) {
     logger.error({ err: e }, 'assistant error');
