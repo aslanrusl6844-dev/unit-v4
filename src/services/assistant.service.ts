@@ -78,6 +78,24 @@ export function extractSkus(text: string): string[] {
   return out;
 }
 
+/** Артикулы из ответа инструмента (строки вида «- Название | артикул 123 | …»). */
+export function skusFromToolResult(result: string): string[] {
+  const out: string[] = [];
+  for (const m of result.matchAll(/\|\s*артикул\s+([^\s|]+)/g)) if (!out.includes(m[1])) out.push(m[1]);
+  return out;
+}
+
+/** Подборка для шторки «Смотреть все товары»: что нашли инструменты (или ранжирование), без уже показанных
+ *  карточек; сначала в наличии. Маркер {{все:…}} приложение превращает в кнопку и в историю не отправляет. */
+export function buildRelated(opts: {
+  toolSkus: string[]; rankedSkus: string[]; shown: string[]; inStock: (sku: string) => boolean | undefined; limit?: number;
+}): string[] {
+  const source = opts.toolSkus.length ? opts.toolSkus : opts.rankedSkus;
+  const uniq = [...new Set(source)].filter((s) => opts.inStock(s) !== undefined && !opts.shown.includes(s));
+  const sorted = [...uniq.filter((s) => opts.inStock(s)), ...uniq.filter((s) => !opts.inStock(s))];
+  return sorted.slice(0, opts.limit ?? 30);
+}
+
 /** Если по словам ничего не нашлось — разнообразная выборка: по одному-два товара из каждого раздела. */
 export function diverseSample(items: CatalogItem[], limit = 12): CatalogItem[] {
   const seen = new Map<string, number>();
@@ -322,6 +340,8 @@ async function streamRound(opts: {
 export async function runAssistant(opts: {
   apiKey: string; model: string; system: string; messages: ChatMessage[]; catalog: Catalog;
   onDelta: (t: string) => void; signal?: AbortSignal; fetchImpl?: typeof fetch; maxRounds?: number; maxTokens?: number;
+  /** Каждый ответ инструмента (для подборки «Смотреть все товары»). */
+  onToolResult?: (name: string, result: string) => void;
 }): Promise<string> {
   const maxRounds = opts.maxRounds ?? 4;
   const convo: ApiMessage[] = opts.messages.map((m) => ({ role: m.role, content: m.content }));
@@ -339,7 +359,11 @@ export async function runAssistant(opts: {
     convo.push({ role: 'assistant', content: blocks });
     convo.push({
       role: 'user',
-      content: r.toolUses.map((t) => ({ type: 'tool_result', tool_use_id: t.id, content: runTool(opts.catalog, t.name, t.input) })),
+      content: r.toolUses.map((t) => {
+        const result = runTool(opts.catalog, t.name, t.input);
+        opts.onToolResult?.(t.name, result);
+        return { type: 'tool_result', tool_use_id: t.id, content: result };
+      }),
     });
   }
 }

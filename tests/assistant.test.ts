@@ -162,3 +162,20 @@ test('transcribeAudio: при перегрузке (503) повторяет и �
   assert.equal(urls.length, 3); // lite два раза, потом запасная
   assert.match(urls[2], /gemini-3.8-flash/);
 });
+
+test('sttPrompt: все языки, подсказка языка интерфейса', () => {
+  const { sttPrompt } = require('../src/services/speechToText.service');
+  assert.match(sttPrompt(), /казахский, английский, китайский, корейский, узбекский, кыргызский, турецкий/);
+  assert.match(sttPrompt('kk'), /интерфейса приложения у клиента — казахский/);
+  assert.doesNotMatch(sttPrompt('xx'), /интерфейса/);
+});
+
+test('подборка «все товары» и служебные маркеры', () => {
+  const { skusFromToolResult, buildRelated } = require('../src/services/assistant.service');
+  const { stripUiMarkers } = require('../src/routes/assistant.routes');
+  assert.deepEqual(skusFromToolResult('- Крем | артикул 11 | Красота\n- Гель | артикул 22 | Красота'), ['11', '22']);
+  const st: Record<string, boolean> = { '11': true, '22': false, '33': true };
+  assert.deepEqual(buildRelated({ toolSkus: ['22', '11', '33', '99'], rankedSkus: ['44'], shown: ['33'], inStock: (s: string) => st[s] }), ['11', '22']);
+  assert.deepEqual(buildRelated({ toolSkus: [], rankedSkus: ['11', '33'], shown: [], inStock: (s: string) => st[s] }), ['11', '33']);
+  assert.equal(stripUiMarkers('Текст {{1}}\n{{все:1,2}}\n[[Крем | Гель]]'), 'Текст {{1}}');
+});
