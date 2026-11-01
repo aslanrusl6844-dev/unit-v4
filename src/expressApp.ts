@@ -101,7 +101,9 @@ app.use((req, res, next) => {
     || req.url.startsWith('/api/ozon-fbo')
     || req.url.startsWith('/api/ozon-returns')
     || req.url.startsWith('/api/shop/assistant')
-    || req.url.startsWith('/api/telegram-agent');
+    || req.url.startsWith('/api/telegram-agent')
+    // Загрузка улиц города из OpenStreetMap — внешний запрос на 10–40 секунд.
+    || req.url.startsWith('/api/shop-admin/streets/import');
   const timeoutMs = isSyncRoute ? 55000 : 8000;
   const timer = setTimeout(() => {
     if (!res.headersSent) {
