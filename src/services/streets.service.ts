@@ -38,37 +38,80 @@ export function parseOverpassNames(json: OverpassResponse): string[] {
   return [...seen].sort((a, b) => a.localeCompare(b, 'ru'));
 }
 
-const OVERPASS_MIRRORS = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter'];
+const OVERPASS_MIRRORS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+];
+
+/** Центр города и полуразмер прямоугольника (градусы широты/долготы). Прямоугольник — лёгкий запрос
+ *  для серверов карты (поиск по границам города они не успевали). Может захватить пригородные посёлки. */
+export const CITY_BBOX: Record<string, [lat: number, lon: number, dLat: number, dLon: number]> = {
+  'Алматы': [43.238, 76.889, 0.17, 0.25],
+  'Астана': [51.128, 71.430, 0.15, 0.25],
+  'Шымкент': [42.317, 69.596, 0.12, 0.18],
+  'Караганда': [49.806, 73.085, 0.10, 0.16],
+  'Актобе': [50.283, 57.167, 0.10, 0.15],
+  'Тараз': [42.900, 71.367, 0.08, 0.12],
+  'Павлодар': [52.287, 76.967, 0.08, 0.12],
+  'Усть-Каменогорск': [49.948, 82.628, 0.08, 0.13],
+  'Семей': [50.411, 80.227, 0.08, 0.12],
+  'Атырау': [47.107, 51.903, 0.08, 0.12],
+  'Костанай': [53.214, 63.632, 0.07, 0.11],
+  'Кызылорда': [44.853, 65.509, 0.07, 0.11],
+  'Уральск': [51.233, 51.367, 0.07, 0.11],
+  'Петропавловск': [54.872, 69.143, 0.06, 0.10],
+  'Актау': [43.651, 51.158, 0.07, 0.10],
+  'Туркестан': [43.297, 68.252, 0.06, 0.09],
+  'Кокшетау': [53.283, 69.383, 0.06, 0.09],
+  'Талдыкорган': [45.017, 78.383, 0.06, 0.09],
+  'Экибастуз': [51.723, 75.323, 0.05, 0.08],
+  'Жезказган': [47.783, 67.767, 0.05, 0.08],
+};
 
 export function buildOverpassQuery(city: string): string {
-  const c = city.replace(/[^\p{L}\p{N} -]/gu, '');
-  return `[out:json][timeout:25];
-area[boundary=administrative][~"^name(:ru)?$"~"^${c}$"]->.a;
+  const box = CITY_BBOX[city];
+  if (!box) throw new Error(`Нет координат для города ${city}`);
+  const [lat, lon, dLat, dLon] = box;
+  const f = (n: number) => n.toFixed(4);
+  return `[out:json][timeout:50][bbox:${f(lat - dLat)},${f(lon - dLon)},${f(lat + dLat)},${f(lon + dLon)}];
 (
-  way[highway][name][highway!~"^(footway|path|steps|cycleway|track|bridleway|corridor|elevator|proposed|construction|service)$"](area.a);
-  nwr[place~"^(suburb|neighbourhood|quarter)$"][name](area.a);
+  way[highway~"^(trunk|primary|secondary|tertiary|unclassified|residential|living_street|pedestrian)$"][name];
+  node[place~"^(suburb|neighbourhood|quarter)$"][name];
 );
 out tags;`;
 }
 
-/** Скачивает названия улиц города из OpenStreetMap (пробует зеркала Overpass по очереди). */
+/** Скачивает названия улиц города из OpenStreetMap: опрашивает все зеркала сразу, берёт первый удачный ответ. */
 export async function fetchCityStreets(city: string, fetchImpl: typeof fetch = fetch): Promise<string[]> {
+  const body = `data=${encodeURIComponent(buildOverpassQuery(city))}`;
+  const stop = new AbortController();
   const errors: string[] = [];
-  for (const url of OVERPASS_MIRRORS) {
+  const attempts = OVERPASS_MIRRORS.map(async (url) => {
     try {
       const res = await fetchImpl(url, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded', 'user-agent': 'my-market-unit/1.0' },
-        body: `data=${encodeURIComponent(buildOverpassQuery(city))}`,
-        signal: AbortSignal.timeout(26_000), // два зеркала × 26 с укладываются в лимит 55 с
+        body,
+        signal: AbortSignal.any([stop.signal, AbortSignal.timeout(52_000)]),
       });
-      if (!res.ok) { errors.push(`${url} ${res.status}`); continue; }
-      return parseOverpassNames((await res.json()) as OverpassResponse);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const names = parseOverpassNames((await res.json()) as OverpassResponse);
+      if (!names.length) throw new Error('пустой ответ');
+      return names;
     } catch (e: any) {
-      errors.push(`${url} ${String(e?.message ?? e).slice(0, 80)}`);
+      errors.push(`${new URL(url).host}: ${String(e?.message ?? e).slice(0, 60)}`);
+      throw e;
     }
+  });
+  try {
+    const names = await Promise.any(attempts);
+    stop.abort(); // остальные зеркала больше не ждём
+    return names;
+  } catch {
+    throw new Error(`Серверы карты не ответили: ${errors.join('; ')}`);
   }
-  throw new Error(`Overpass недоступен: ${errors.join('; ')}`);
 }
 
 /** Заменяет улицы города новым списком. Пустой список не записываем — чтобы сбой не стёр старые данные. */

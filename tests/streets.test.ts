@@ -28,7 +28,8 @@ test('rankStreets: начало названия выше, короткий за
 });
 
 test('запрос Overpass содержит город, а зеркало подхватывается при сбое', async () => {
-  assert.match(buildOverpassQuery('Усть-Каменогорск'), /\^Усть-Каменогорск\$/);
+  assert.match(buildOverpassQuery('Алматы'), /\[bbox:43\.0680,76\.6390,43\.4080,77\.1390\]/);
+  assert.throws(() => buildOverpassQuery('Москва'), /Нет координат/);
   const urls: string[] = [];
   const f: any = async (u: string) => {
     urls.push(u);
@@ -37,5 +38,5 @@ test('запрос Overpass содержит город, а зеркало по�
       : new Response(JSON.stringify({ elements: [{ tags: { name: 'улица Абая' } }] }), { status: 200 });
   };
   assert.deepEqual(await fetchCityStreets('Алматы', f), ['улица Абая']);
-  assert.equal(urls.length, 2);
+  assert.ok(urls.length >= 2);
 });
