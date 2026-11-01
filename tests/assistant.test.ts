@@ -162,3 +162,10 @@ test('transcribeAudio: при перегрузке (503) повторяет и �
   assert.equal(urls.length, 3); // lite два раза, потом запасная
   assert.match(urls[2], /gemini-3.8-flash/);
 });
+
+test('sttPrompt: все языки, подсказка языка интерфейса', () => {
+  const { sttPrompt } = require('../src/services/speechToText.service');
+  assert.match(sttPrompt(), /казахский, английский, китайский, корейский, узбекский, кыргызский, турецкий/);
+  assert.match(sttPrompt('kk'), /интерфейса приложения у клиента — казахский/);
+  assert.doesNotMatch(sttPrompt('xx'), /интерфейса/);
+});

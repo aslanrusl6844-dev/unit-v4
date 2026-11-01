@@ -46,7 +46,8 @@ assistantRouter.post('/transcribe', express.raw({ type: () => true, limit: MAX_A
   if (audio.length < 800) return res.status(400).json({ error: 'Пустая запись' });
   try {
     const t0 = Date.now();
-    const text = await transcribeAudio({ audio, mime: audioMime(req.header('content-type')) });
+    const lang = String(req.header('x-app-lang') ?? '').slice(0, 5).toLowerCase() || null;
+    const text = await transcribeAudio({ audio, mime: audioMime(req.header('content-type')), lang });
     logger.info({ ms: Date.now() - t0, bytes: audio.length, chars: text.length }, 'assistant transcribe ok');
     res.json({ text });
   } catch (e: any) {
