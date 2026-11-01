@@ -799,9 +799,9 @@
 
         <div id="mymarketPricesTab" hidden>
           <div class="panel">
-            <div class="panel__head"><h2>Баннеры главной приложения (4 слота)</h2></div>
-            <p class="panel__hint">Слайды карусели на главной приложения. Своя картинка (URL), заголовок, подзаголовок и ссылка — на конкретный товар (по SKU) или на категорию.</p>
-            <div id="mymarketBannerSlots" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px"></div>
+            <div class="panel__head"><h2 id="mymarketBannersTitle">Баннеры главной приложения</h2></div>
+            <p class="panel__hint">Слайды карусели на главной приложения, в том же порядке, что здесь (слева направо). Листайте ряд вбок. «+ Добавить баннер» — новый слайд в конце (до 30), «Удалить» — убрать слайд. Своя картинка (URL), заголовок, подзаголовок и ссылка — на конкретный товар (по SKU) или на категорию.</p>
+            <div id="mymarketBannerSlots" style="display:flex;gap:14px;overflow-x:auto;padding-bottom:10px;scroll-snap-type:x proximity"></div>
           </div>
           <div class="panel">
             <div class="panel__head"><h2>Реклама под витринами</h2></div>

@@ -1,4 +1,4 @@
-import { UNDER_SHOWCASE_SLOT } from '../config/banners';
+import { UNDER_SHOWCASE_SLOT, CAROUSEL_LAST_SLOT, MAX_CAROUSEL_BANNERS, isCarouselSlot, nextCarouselSlot } from '../config/banners';
 import express, { Router } from 'express';
 import { put } from '@vercel/blob';
 import { env } from '../config/env';
@@ -89,20 +89,46 @@ shopAdminRouter.get('/dashboard', async (_req, res) => {
 
 // Список заказов приложения — для вкладки «My Market» в админке.
 /**
- * Баннеры главной приложения — 4 фиксированных слота (0..3). GET всегда
- * возвращает ровно 4 записи (создаёт пустые "выключенные" слоты, если их
- * ещё нет в базе), чтобы фронтенду не нужно было думать о недостающих слотах.
+ * Баннеры карусели главной: сколько угодно слайдов (до MAX_CAROUSEL_BANNERS). Первые четыре (0..3)
+ * отдаются всегда — пустые «выключенные» заготовки, если их ещё нет; новые добавляются кнопкой.
  */
 shopAdminRouter.get('/banners', async (_req, res) => {
   try {
-    const existing = await prisma.shopBanner.findMany({ orderBy: { slot: 'asc' } });
+    const existing = (await prisma.shopBanner.findMany({ orderBy: { slot: 'asc' } })).filter((b) => isCarouselSlot(b.slot));
     const bySlot = new Map(existing.map((b) => [b.slot, b]));
-    const result = [0, 1, 2, 3].map((slot) => bySlot.get(slot) ?? {
+    const base = Array.from({ length: CAROUSEL_LAST_SLOT + 1 }, (_, slot) => bySlot.get(slot) ?? {
       slot, imageUrl: null, title: null, subtitle: null, linkType: null, linkValue: null, active: false,
     });
-    res.json(result);
+    res.json([...base, ...existing.filter((b) => b.slot > CAROUSEL_LAST_SLOT)]);
   } catch (err: any) {
     res.status(500).json({ error: 'Не удалось получить баннеры', details: String(err?.message ?? err) });
+  }
+});
+
+/** Новый пустой слайд в конец карусели. */
+shopAdminRouter.post('/banners', async (_req, res) => {
+  try {
+    const all = await prisma.shopBanner.findMany({ select: { slot: true } });
+    const used = all.map((b) => b.slot);
+    const count = new Set([...used.filter(isCarouselSlot), 0, 1, 2, 3]).size;
+    if (count >= MAX_CAROUSEL_BANNERS) return res.status(400).json({ error: `Не больше ${MAX_CAROUSEL_BANNERS} баннеров` });
+    const slot = nextCarouselSlot([...used, CAROUSEL_LAST_SLOT]);
+    const banner = await prisma.shopBanner.create({ data: { slot, active: false } });
+    res.json(banner);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Не удалось добавить баннер', details: String(err?.message ?? err) });
+  }
+});
+
+/** Удалить слайд. Первые четыре после удаления становятся пустыми заготовками. */
+shopAdminRouter.delete('/banners/:slot', async (req, res) => {
+  const slot = Number(req.params.slot);
+  if (!isCarouselSlot(slot)) return res.status(400).json({ error: 'Неверный номер баннера' });
+  try {
+    await prisma.shopBanner.deleteMany({ where: { slot } });
+    res.json({ ok: true });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Не удалось удалить баннер', details: String(err?.message ?? err) });
   }
 });
 
@@ -117,8 +143,8 @@ const bannerSchema = z.object({
 
 shopAdminRouter.put('/banners/:slot', async (req, res) => {
   const slot = Number(req.params.slot);
-  if (!Number.isInteger(slot) || slot < 0 || slot > 3) {
-    return res.status(400).json({ error: 'Слот должен быть числом от 0 до 3' });
+  if (!isCarouselSlot(slot)) {
+    return res.status(400).json({ error: 'Неверный номер баннера' });
   }
   const parsed = bannerSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });

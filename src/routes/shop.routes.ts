@@ -1,4 +1,4 @@
-import { CAROUSEL_LAST_SLOT, UNDER_SHOWCASE_SLOT } from '../config/banners';
+import { RESERVED_SLOTS, UNDER_SHOWCASE_SLOT } from '../config/banners';
 import { Router } from 'express';
 import { z } from 'zod';
 import multer from 'multer';
@@ -448,8 +448,8 @@ shopRouter.get('/banners', async (_req, res) => {
     // Отдаём только включённые (active=true) и хотя бы с картинкой —
     // пустой "выключенный" слот приложению не нужен.
     const banners = await prisma.shopBanner.findMany({
-      // Слот 4 («под витринами») в карусель не попадает — у него свой маршрут.
-      where: { active: true, imageUrl: { not: null }, slot: { lte: CAROUSEL_LAST_SLOT } },
+      // Слоты 4..9 («под витринами» и запас) в карусель не попадают — у них свои маршруты.
+      where: { active: true, imageUrl: { not: null }, slot: { notIn: RESERVED_SLOTS } },
       orderBy: { slot: 'asc' },
     });
     // Диагностика — сколько слайдов реально ушло в ответ. Формат ответа —
