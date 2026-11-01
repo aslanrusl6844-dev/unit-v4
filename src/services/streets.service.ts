@@ -42,7 +42,7 @@ const OVERPASS_MIRRORS = ['https://overpass-api.de/api/interpreter', 'https://ov
 
 export function buildOverpassQuery(city: string): string {
   const c = city.replace(/[^\p{L}\p{N} -]/gu, '');
-  return `[out:json][timeout:45];
+  return `[out:json][timeout:25];
 area[boundary=administrative][~"^name(:ru)?$"~"^${c}$"]->.a;
 (
   way[highway][name][highway!~"^(footway|path|steps|cycleway|track|bridleway|corridor|elevator|proposed|construction|service)$"](area.a);
@@ -60,7 +60,7 @@ export async function fetchCityStreets(city: string, fetchImpl: typeof fetch = f
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded', 'user-agent': 'my-market-unit/1.0' },
         body: `data=${encodeURIComponent(buildOverpassQuery(city))}`,
-        signal: AbortSignal.timeout(50_000),
+        signal: AbortSignal.timeout(26_000), // два зеркала × 26 с укладываются в лимит 55 с
       });
       if (!res.ok) { errors.push(`${url} ${res.status}`); continue; }
       return parseOverpassNames((await res.json()) as OverpassResponse);
