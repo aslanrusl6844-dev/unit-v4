@@ -85,17 +85,6 @@ export function skusFromToolResult(result: string): string[] {
   return out;
 }
 
-/** Подборка для шторки «Смотреть все товары»: что нашли инструменты (или ранжирование), без уже показанных
- *  карточек; сначала в наличии. Маркер {{все:…}} приложение превращает в кнопку и в историю не отправляет. */
-export function buildRelated(opts: {
-  toolSkus: string[]; rankedSkus: string[]; shown: string[]; inStock: (sku: string) => boolean | undefined; limit?: number;
-}): string[] {
-  const source = opts.toolSkus.length ? opts.toolSkus : opts.rankedSkus;
-  const uniq = [...new Set(source)].filter((s) => opts.inStock(s) !== undefined && !opts.shown.includes(s));
-  const sorted = [...uniq.filter((s) => opts.inStock(s)), ...uniq.filter((s) => !opts.inStock(s))];
-  return sorted.slice(0, opts.limit ?? 30);
-}
-
 /** Если по словам ничего не нашлось — разнообразная выборка: по одному-два товара из каждого раздела. */
 export function diverseSample(items: CatalogItem[], limit = 12): CatalogItem[] {
   const seen = new Map<string, number>();
@@ -228,7 +217,7 @@ export const ASSISTANT_TOOLS = [
   {
     name: 'search_products',
     description: 'Поиск товаров по всему каталогу по словам запроса (название, тип, раздел, бренд, описание).',
-    input_schema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer', description: 'Сколько товаров вернуть (до 20)' } }, required: ['query'] },
+    input_schema: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer', description: 'Сколько товаров вернуть (до 30)' } }, required: ['query'] },
   },
 ];
 
@@ -263,7 +252,7 @@ export function toolGetShowcase(catalog: Catalog, ref: string): string {
 }
 
 export function toolSearchProducts(catalog: Catalog, query: string, limit?: number): string {
-  const n = Math.min(Math.max(Math.round(Number(limit) || 10), 1), 20);
+  const n = Math.min(Math.max(Math.round(Number(limit) || 10), 1), 30);
   const found = rankProducts(catalog.items, String(query ?? ''), n);
   if (!found.length) return `По запросу «${query}» ничего не найдено.`;
   return `Найдено товаров: ${found.length}.\n${found.map(productLine).join('\n')}`;
