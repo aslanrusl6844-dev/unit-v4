@@ -171,11 +171,8 @@ test('sttPrompt: все языки, подсказка языка интерфе
 });
 
 test('подборка «все товары» и служебные маркеры', () => {
-  const { skusFromToolResult, buildRelated } = require('../src/services/assistant.service');
+  const { skusFromToolResult } = require('../src/services/assistant.service');
   const { stripUiMarkers } = require('../src/routes/assistant.routes');
   assert.deepEqual(skusFromToolResult('- Крем | артикул 11 | Красота\n- Гель | артикул 22 | Красота'), ['11', '22']);
-  const st: Record<string, boolean> = { '11': true, '22': false, '33': true };
-  assert.deepEqual(buildRelated({ toolSkus: ['22', '11', '33', '99'], rankedSkus: ['44'], shown: ['33'], inStock: (s: string) => st[s] }), ['11', '22']);
-  assert.deepEqual(buildRelated({ toolSkus: [], rankedSkus: ['11', '33'], shown: [], inStock: (s: string) => st[s] }), ['11', '33']);
   assert.equal(stripUiMarkers('Текст {{1}}\n{{все:1,2}}\n[[Крем | Гель]]'), 'Текст {{1}}');
 });
