@@ -64,7 +64,7 @@ after(() => { globalThis.fetch = realFetch; });
 
 const PHONE = '77011112233';
 const base = () => {
-  events = [{ id: 'e1', type: 'cart', sku: 'SKU-1', phone: '8 701 111 22 33', createdAt: ago(30) }];
+  events = [{ id: 'e1', type: 'cart', sku: 'SKU-1', phone: '8 701 111 22 33', createdAt: ago(54) }];
   products = [{ id: 'p1', sku: 'SKU-1', shopArticle: '1000001', name: 'Крем для лица', shopActive: true, shopArchived: false, shopPrice: 18900, shopOldPrice: 24900, shopStock: 5, images: JSON.stringify(['https://img.example/a.jpg', 'https://img.example/b.jpg']) }];
   tokens = [{ phone: PHONE, token: 'ExponentPushToken[abc]' }];
   orders = []; reminders = []; expoCalls = [];
@@ -82,18 +82,22 @@ describe('скидка и текст', () => {
   test('текст по шаблону; длинное название обрезается; без скидки — без «Скидка»', () => {
     assert.equal(reminderText('Крем', 24), 'Вы оставили Крем. Скидка 24% — успейте купить');
     assert.equal(reminderText('Крем', null), 'Вы оставили Крем. Успейте купить');
+    assert.equal(reminderText('Крем', 11, { kind: 'view', firstName: 'Аслан' }), 'Аслан, вы смотрели Крем. Скидка 11% — успейте купить');
+    assert.equal(reminderText('Крем', null, { stock: 2 }), 'Вы оставили Крем. Осталось 2 шт. — успейте купить');
+    assert.equal(reminderText('Крем', null, { stock: 50 }), 'Вы оставили Крем. Успейте купить');
     assert.ok(reminderText('А'.repeat(100), 10).length < 100);
   });
 });
 
 describe('runCartReminders', () => {
-  test('корзина старше 24 ч, заказа нет → пуш владельцу: текст, картинка, открытие товара', async () => {
+  test('корзина старше 2 суток, заказа нет → пуш владельцу: текст, картинка, открытие товара', async () => {
     const r = await runCartReminders(NOW);
     assert.deepEqual([r.candidates, r.sent, r.skipped, r.failed], [1, 1, 0, 0]);
     assert.equal(expoCalls.length, 1);
     const m = expoCalls[0];
     assert.equal(m.to, 'ExponentPushToken[abc]');
     assert.equal(m.body, 'Вы оставили Крем для лица. Скидка 24% — успейте купить');
+    assert.equal(m.title, 'Скидка 24% ↓ — My Market');
     assert.deepEqual(m.richContent, { image: 'https://img.example/a.jpg' });
     assert.equal(m.data.type, 'cart_reminder');
     assert.equal(m.data.screen, 'product');
@@ -110,14 +114,14 @@ describe('runCartReminders', () => {
     assert.equal(expoCalls.length, 1);
   });
 
-  test('корзина младше 24 ч → ждём', async () => {
-    events[0].createdAt = ago(10);
+  test('корзина младше 2 суток → ждём', async () => {
+    events[0].createdAt = ago(30);
     assert.equal((await runCartReminders(NOW)).candidates, 0);
     assert.equal(expoCalls.length, 0);
   });
 
-  test('корзина старше 48 ч → не трогаем (окно)', async () => {
-    events[0].createdAt = ago(60);
+  test('корзина старше 72 ч → не трогаем (окно)', async () => {
+    events[0].createdAt = ago(80);
     assert.equal((await runCartReminders(NOW)).candidates, 0);
   });
 
@@ -133,11 +137,11 @@ describe('runCartReminders', () => {
   });
 
   test('заказ ДО корзины не мешает', async () => {
-    orders = [{ id: 'o0', phone: PHONE, status: 'delivered', createdAt: ago(40) }];
+    orders = [{ id: 'o0', phone: PHONE, status: 'delivered', createdAt: ago(70) }];
     assert.equal((await runCartReminders(NOW)).sent, 1);
   });
 
-  test('есть более свежее событие корзины (<24 ч) → человек активен, не шлём', async () => {
+  test('есть более свежее событие корзины (<48 ч) → человек активен, не шлём', async () => {
     events.push({ id: 'e3', type: 'cart', sku: 'SKU-2', phone: PHONE, createdAt: ago(2) });
     const r = await runCartReminders(NOW);
     assert.equal(r.sent, 0);
@@ -146,10 +150,10 @@ describe('runCartReminders', () => {
 
   test('несколько товаров в корзине → один пуш на номер, про последний', async () => {
     products.push({ id: 'p2', sku: 'SKU-2', shopArticle: '1000002', name: 'Шампунь', shopActive: true, shopPrice: 1000, shopOldPrice: null, shopStock: 3, images: null });
-    events.push({ id: 'e4', type: 'cart', sku: 'SKU-2', phone: PHONE, createdAt: ago(26) });
+    events.push({ id: 'e4', type: 'cart', sku: 'SKU-2', phone: PHONE, createdAt: ago(50) });
     const r = await runCartReminders(NOW);
     assert.equal(r.sent, 1);
-    assert.equal(expoCalls[0].body, 'Вы оставили Шампунь. Успейте купить');
+    assert.equal(expoCalls[0].body, 'Вы оставили Шампунь. Осталось 3 шт. — успейте купить');
     assert.equal(expoCalls[0].richContent, undefined); // нет фото — пуш без картинки
   });
 
@@ -178,10 +182,46 @@ describe('runCartReminders', () => {
   });
 
   test('два разных покупателя → каждому свой пуш', async () => {
-    events.push({ id: 'e5', type: 'cart', sku: 'SKU-1', phone: '77025556677', createdAt: ago(28) });
+    events.push({ id: 'e5', type: 'cart', sku: 'SKU-1', phone: '77025556677', createdAt: ago(52) });
     tokens.push({ phone: '77025556677', token: 'ExponentPushToken[def]' });
     const r = await runCartReminders(NOW);
     assert.equal(r.sent, 2);
     assert.deepEqual(expoCalls.map((m) => m.to).sort(), ['ExponentPushToken[abc]', 'ExponentPushToken[def]']);
+  });
+});
+
+describe('просмотры (как в Coupang)', () => {
+  const viewBase = () => {
+    base();
+    events = [{ id: 'v1', type: 'view', sku: 'SKU-1', phone: PHONE, createdAt: ago(25) }];
+    orders = [{ id: 'old', phone: '87011112233', customerName: 'аслан Тушкеев', status: 'delivered', createdAt: ago(500) }];
+  };
+  test('смотрел сутки назад, не купил → пуш с именем: «Аслан, вы смотрели …»', async () => {
+    viewBase();
+    const r = await runCartReminders(NOW);
+    assert.equal(r.sent, 1);
+    assert.equal(expoCalls[0].body, 'Аслан, вы смотрели Крем для лица. Скидка 24% — успейте купить');
+    assert.equal(expoCalls[0].data.type, 'view_reminder');
+    assert.equal(reminders[0].kind, 'view');
+  });
+  test('после просмотра положил в корзину или купил → про просмотр не шлём', async () => {
+    viewBase(); events.push({ id: 'c1', type: 'cart', sku: 'SKU-1', phone: PHONE, createdAt: ago(20) });
+    assert.equal((await runCartReminders(NOW)).sent, 0);
+    viewBase(); events.push({ id: 'p1', type: 'paid', phone: PHONE, createdAt: ago(10) });
+    assert.equal((await runCartReminders(NOW)).sent, 0);
+  });
+  test('смотрел меньше суток назад → ждём', async () => {
+    viewBase(); events[0].createdAt = ago(5);
+    assert.equal((await runCartReminders(NOW)).sent, 0);
+  });
+  test('и корзина, и просмотр → один пуш в сутки (про корзину)', async () => {
+    viewBase();
+    events.push({ id: 'c2', type: 'cart', sku: 'SKU-1', phone: PHONE, createdAt: ago(55) });
+    // корзина старше просмотра — просмотр «после корзины» не мешает корзине
+    events[0].createdAt = ago(30);
+    const r = await runCartReminders(NOW);
+    assert.equal(r.sent, 1);
+    assert.equal(expoCalls[0].data.type, 'cart_reminder');
+    assert.match(expoCalls[0].body, /^Аслан, вы оставили/);
   });
 });

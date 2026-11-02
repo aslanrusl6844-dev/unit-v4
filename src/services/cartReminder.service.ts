@@ -3,19 +3,26 @@ import { logger } from '../utils/logger';
 import { sendBroadcast } from './pushBroadcast.service';
 
 /**
- * Напоминание о корзине (как в Coupang): товар лежал в корзине больше 24 часов, заказ не оформлен →
- * пуш владельцу корзины. Корзина живёт в приложении; на сервер приходят события аналитики
- * ShopEvent(type=cart, sku, phone) — по ним и работаем (удаление из корзины сервер не видит).
+ * Напоминания как в Coupang — сервер шлёт сам, раз в сутки (Vercel Cron):
+ *  - cart: товар лежит в корзине больше 2 суток (окно 48–72 ч), заказа нет → «Аслан, вы оставили …»;
+ *  - view: товар смотрели сутки назад (окно 24–48 ч), не положили в корзину и не купили → «Аслан, вы смотрели …».
+ * Корзина живёт в приложении; сервер видит события аналитики ShopEvent(type=cart|view, sku, phone).
  *
- * Правила:
- *  - берём события «в корзину» с телефоном за окно [now-48ч, now-24ч]; по каждому номеру — последнее;
- *    если последнее событие свежее 24 ч (человек сейчас активен) — ждём;
- *  - после этого события у номера был заказ (не отменённый) или оплата → не шлём;
- *  - номеру уже слали напоминание за последние 24 ч, или это событие уже напоминали → не шлём;
- *  - товар не найден / не в продаже / нет токена пуша → не шлём;
- *  - текст: «Вы оставили [название]. Скидка [X]% — успейте купить» (X из старой цены; нет скидки — без неё);
- *  - в пуше картинка товара; data: type=cart_reminder, screen=product, productId/sku/shopArticle для открытия товара.
+ * Правила (для обоих видов):
+ *  - по каждому номеру берём последнее событие вида; если оно свежее начала окна — человек активен, ждём;
+ *  - после события у номера был заказ (не отменённый) или оплата → не шлём; для view — ещё и «в корзину» после просмотра;
+ *  - номеру за последние 24 ч уже было любое напоминание → не шлём (не больше одного пуша в сутки);
+ *  - товар не найден / не в продаже / нет в наличии / нет токена пуша → не шлём;
+ *  - честно: скидка — только если есть старая цена; «осталось N шт.» — только если остаток реально ≤ 3;
+ *  - в пуше картинка товара; data: type=cart_reminder|view_reminder, screen=product, productId/sku/shopArticle.
  */
+export type ReminderKind = 'cart' | 'view';
+const KIND = {
+  cart: { from: 72, to: 48, dataType: 'cart_reminder' },
+  view: { from: 48, to: 24, dataType: 'view_reminder' },
+} as const;
+const LOW_STOCK = 3;
+
 const HOUR = 3600_000;
 const MAX_PER_RUN = 200;
 const PARALLEL = 10;
@@ -35,9 +42,30 @@ export function discountPercent(price: unknown, oldPrice: unknown): number | nul
   return pct >= 1 ? pct : null;
 }
 
-export function reminderText(name: string, pct: number | null): string {
+export function reminderText(name: string, pct: number | null, opts: { kind?: ReminderKind; firstName?: string | null; stock?: number | null } = {}): string {
   const n = name.trim().length > 60 ? `${name.trim().slice(0, 57)}…` : name.trim();
-  return pct ? `Вы оставили ${n}. Скидка ${pct}% — успейте купить` : `Вы оставили ${n}. Успейте купить`;
+  const who = opts.firstName ? `${opts.firstName}, вы` : 'Вы';
+  const verb = opts.kind === 'view' ? 'смотрели' : 'оставили';
+  const low = opts.stock != null && opts.stock > 0 && opts.stock <= LOW_STOCK;
+  const tail = low ? `Осталось ${opts.stock} шт. — успейте купить` : 'Успейте купить';
+  return pct ? `${who} ${verb} ${n}. Скидка ${pct}% — ${tail.charAt(0).toLowerCase()}${tail.slice(1)}` : `${who} ${verb} ${n}. ${tail}`;
+}
+
+/** Заголовок пуша: как у Coupang — сразу выгода. */
+export function reminderTitle(kind: ReminderKind, pct: number | null): string {
+  if (pct) return `Скидка ${pct}% ↓ — My Market`;
+  return kind === 'view' ? 'Вы смотрели — My Market' : 'Товар ждёт в корзине — My Market';
+}
+
+/** Имя из последнего заказа номера («Аслан Тушкеев» → «Аслан»); нет заказов — без имени. */
+export function firstNameOf(customerName: unknown): string | null {
+  const w = String(customerName ?? '').trim().split(/\s+/)[0] ?? '';
+  return /^[\p{L}-]{2,20}$/u.test(w) ? w.charAt(0).toUpperCase() + w.slice(1) : null;
+}
+
+function phoneVariants(ph: string): string[] {
+  const d = ph.slice(1);
+  return [ph, `+${ph}`, `8${d}`, d, `+7 ${d}`];
 }
 
 function firstImage(p: any): string | null {
@@ -52,13 +80,22 @@ function firstImage(p: any): string | null {
 
 export interface CartReminderResult { candidates: number; sent: number; skipped: number; failed: number }
 
+/** Оба вида за один запуск: сначала корзина, потом просмотры (один пуш в сутки на номер). */
 export async function runCartReminders(now = new Date()): Promise<CartReminderResult> {
+  const a = await runReminderKind('cart', now);
+  const b = await runReminderKind('view', now);
+  return { candidates: a.candidates + b.candidates, sent: a.sent + b.sent, skipped: a.skipped + b.skipped, failed: a.failed + b.failed };
+}
+
+export async function runReminderKind(kind: ReminderKind, now = new Date()): Promise<CartReminderResult> {
+  const cfg = KIND[kind];
   const res: CartReminderResult = { candidates: 0, sent: 0, skipped: 0, failed: 0 };
-  const windowStart = new Date(now.getTime() - 48 * HOUR);
-  const cutoff = new Date(now.getTime() - 24 * HOUR);
+  const windowStart = new Date(now.getTime() - cfg.from * HOUR);
+  const cutoff = new Date(now.getTime() - cfg.to * HOUR);
+  const dayAgo = new Date(now.getTime() - 24 * HOUR);
 
   const events: any[] = await prisma.shopEvent.findMany({
-    where: { type: 'cart', createdAt: { gte: windowStart }, phone: { not: null }, sku: { not: null } },
+    where: { type: kind, createdAt: { gte: windowStart }, phone: { not: null }, sku: { not: null } },
     orderBy: { createdAt: 'desc' },
   });
   // последнее событие по номеру
@@ -79,12 +116,14 @@ export async function runCartReminders(now = new Date()): Promise<CartReminderRe
     const ph = normPhone(o.phone);
     if (ph) orderTimes.set(ph, [...(orderTimes.get(ph) ?? []), new Date(o.createdAt).getTime()]);
   }
-  const doneEvents: any[] = await prisma.shopEvent.findMany({ where: { type: { in: ['order', 'paid'] }, createdAt: { gte: windowStart }, phone: { not: null } } });
+  // Для просмотров «дальше по воронке» — ещё и корзина: ей займётся напоминание о корзине.
+  const doneTypes = kind === 'view' ? ['order', 'paid', 'cart'] : ['order', 'paid'];
+  const doneEvents: any[] = await prisma.shopEvent.findMany({ where: { type: { in: doneTypes }, createdAt: { gte: windowStart }, phone: { not: null } } });
   for (const o of doneEvents) {
     const ph = normPhone(o.phone);
     if (ph) orderTimes.set(ph, [...(orderTimes.get(ph) ?? []), new Date(o.createdAt).getTime()]);
   }
-  const recent: any[] = await prisma.cartReminder.findMany({ where: { sentAt: { gte: cutoff } } });
+  const recent: any[] = await prisma.cartReminder.findMany({ where: { sentAt: { gte: dayAgo } } });
   const recentPhones = new Set(recent.map((r) => r.phone));
 
   const work = async ([phone, ev]: [string, any]) => {
@@ -98,16 +137,20 @@ export async function runCartReminders(now = new Date()): Promise<CartReminderRe
       if (!rec?.token) { res.skipped++; return; }
       // «Занимаем» событие до отправки: параллельный запуск не пришлёт второй раз.
       try {
-        await prisma.cartReminder.create({ data: { eventId: ev.id, phone, sku: String(ev.sku) } });
+        await prisma.cartReminder.create({ data: { eventId: ev.id, phone, sku: String(ev.sku), kind } });
+        recentPhones.add(phone);
       } catch {
         res.skipped++; return; // уже напоминали (уникальный eventId)
       }
+      const lastOrder: any[] = await prisma.shopOrder.findMany({ where: { phone: { in: phoneVariants(phone) } }, orderBy: { createdAt: 'desc' }, take: 1 });
+      const firstName = firstNameOf(lastOrder[0]?.customerName);
+      const pct = discountPercent(product.shopPrice, product.shopOldPrice);
       const r = await sendBroadcast({
-        title: 'My Market',
-        body: reminderText(product.name, discountPercent(product.shopPrice, product.shopOldPrice)),
+        title: reminderTitle(kind, pct),
+        body: reminderText(product.name, pct, { kind, firstName, stock: product.shopStock }),
         imageUrl: firstImage(product),
         tokens: [rec.token],
-        data: { type: 'cart_reminder', screen: 'product', productId: String(product.id), sku: String(product.sku), shopArticle: String(product.shopArticle ?? '') },
+        data: { type: cfg.dataType, screen: 'product', productId: String(product.id), sku: String(product.sku), shopArticle: String(product.shopArticle ?? '') },
       });
       if (r.sent > 0) res.sent++; else { res.failed++; logger.error({ phone, failed: r.failed, fcmError: r.fcmError }, '[CartReminder] Пуш не принят'); }
     } catch (err: any) {
@@ -116,6 +159,6 @@ export async function runCartReminders(now = new Date()): Promise<CartReminderRe
     }
   };
   for (let i = 0; i < eligible.length; i += PARALLEL) await Promise.all(eligible.slice(i, i + PARALLEL).map(work));
-  logger.info(res, '[CartReminder] Проверка завершена');
+  logger.info(res, `[CartReminder] Проверка завершена (${kind})`);
   return res;
 }

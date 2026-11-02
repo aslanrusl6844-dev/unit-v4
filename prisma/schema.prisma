@@ -997,6 +997,7 @@ model CartReminder {
   eventId String  @unique
   phone  String
   sku    String
+  kind   String   @default("cart") // cart — лежит в корзине; view — смотрел и не купил
   sentAt DateTime @default(now())
 
   @@index([phone, sentAt])
