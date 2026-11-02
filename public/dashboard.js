@@ -2614,7 +2614,7 @@ function switchMyMarketTab(tab) {
 // =====================================================================
 let mmProdView = 'shelves';
 let mmViewWired = false;
-const mmShelf = { wholesalers: [], products: [], todayShelf: {}, cities: [], open: new Set(), selected: new Set(), editing: null, adding: false, city: '', error: null, loading: false };
+const mmShelf = { wholesalers: [], products: [], todayShelf: {}, periodShelf: {}, cities: [], open: new Set(), selected: new Set(), editing: null, adding: false, city: '', error: null, loading: false };
 
 function mmWireViewTabs() {
   const apply = () => {
@@ -2653,6 +2653,7 @@ async function loadMmShelves() {
     mmShelf.wholesalers = ws.wholesalers.filter((w) => w.marketplace === 'APP');
     mmShelf.products = ov.products;
     mmShelf.todayShelf = ov.todayShelf || {};
+    mmShelf.periodShelf = ov.periodShelf || {};
     mmShelf.cities = ov.cities || [];
     mmShelf.error = null;
   } catch (err) {
@@ -2667,6 +2668,14 @@ function mmStatus(text, kind) {
   if (!el) return;
   el.style.color = kind === 'error' ? 'var(--loss)' : kind === 'warn' ? 'var(--warn)' : 'var(--text-muted)';
   el.textContent = text || '';
+}
+
+/** Квадратик с числом заказов полки за период сверху страницы (у каждого оптовика свой). */
+function mmCountBox(key) {
+  const p = mmShelf.periodShelf[key] || { orders: 0, qty: 0 };
+  return `<div title="Заказов за период сверху страницы: ${p.orders}, штук: ${p.qty}" style="min-width:74px;text-align:center;border:1px solid var(--border,#d9d9d9);border-radius:8px;padding:4px 8px;line-height:1.15">
+    <div style="font-size:17px;font-weight:700;${p.orders ? '' : 'color:var(--text-faint)'}">${fmt.format(p.orders)}</div>
+    <div style="font-size:10.5px;color:var(--text-faint)">${wsPlural(p.orders, 'заказ', 'заказа', 'заказов')}</div></div>`;
 }
 
 function mmShelfHtml(key, title, w, products) {
@@ -2701,8 +2710,8 @@ function mmShelfHtml(key, title, w, products) {
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
       ${w ? `<input type="checkbox" data-mm-select="${wsEsc(w.id)}" ${mmShelf.selected.has(w.id) ? 'checked' : ''} style="width:auto" />` : '<span style="width:13px"></span>'}
       ${head}
-      ${w && !editing ? `<button class="btn btn--ghost" data-mm-rename="${wsEsc(w.id)}">Переименовать</button>
-        <button class="btn btn--ghost" data-mm-zip="${wsEsc(w.id)}">📦 Накладные ZIP</button>` : ''}
+      ${!editing ? mmCountBox(key) : ''}
+      ${w && !editing ? `<button class="btn btn--ghost" data-mm-rename="${wsEsc(w.id)}">Переименовать</button>` : ''}
       <button class="btn btn--ghost" data-mm-toggle="${wsEsc(key)}">${open ? 'Скрыть товары' : 'Показать товары'}</button>
     </div>${rows}</div>`;
 }
@@ -2718,14 +2727,9 @@ function renderMmShelves() {
   const todayTotal = Object.values(mmShelf.todayShelf).reduce((a, t) => a + t.orders, 0);
   const sel = mmShelf.selected.size;
   root.innerHTML = `
-    <p class="panel__hint" style="margin-top:0">Товары витрины по оптовикам — чтобы сразу видеть, у кого какой заказ пришёл сегодня${todayTotal ? ` (сегодня заказов с товарами витрины: <b>${todayTotal}</b>)` : ''}. Накладные — за период сверху страницы, в ZIP разложены по папкам городов; можно выбрать один город.</p>
+    <p class="panel__hint" style="margin-top:0">Товары витрины по оптовикам — чтобы сразу видеть, у кого какие заказы. Число в квадратике — заказы за период сверху страницы, красным — сколько пришло сегодня${todayTotal ? ` (всего сегодня: <b>${todayTotal}</b>)` : ''}. Обновляется само каждые 5 минут, пока админка открыта.</p>
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
       <span style="font-size:12.5px;color:var(--text-muted)">Выбрано полок: ${sel}</span>
-      <select id="mmShelfCity" class="cost-input" style="max-width:240px">
-        <option value="">Все города</option>
-        ${mmShelf.cities.map((c) => `<option value="${wsEsc(c.city)}" ${mmShelf.city === c.city ? 'selected' : ''}>${wsEsc(c.city)} (${c.count})</option>`).join('')}
-      </select>
-      <button class="btn btn--ghost" id="mmShelfZipSelected" ${sel ? '' : 'disabled'}>📦 Накладные ZIP по выбранным</button>
       <button class="btn btn--ghost" id="mmShelfDeleteSelected" style="color:var(--loss)" ${sel ? '' : 'disabled'}>Удалить выбранных</button>
       <span id="mmShelfStatus" style="font-size:12px"></span>
     </div>
@@ -7233,9 +7237,64 @@ document.getElementById('syncTeezBtn').addEventListener('click', async () => {
 // =====================================================================
 // Инициализация
 // =====================================================================
+// ---------------------------------------------------------------------
+// Автообновление: пока админка открыта, каждые 5 минут тихо (без окон) подтягиваем свежие
+// заказы Kaspi / Ozon / WB / Tez за последние 2 дня — то же, что кнопки ↻ сверху, — и
+// перерисовываем текущую страницу. Если в этот момент вы что-то вводите — перерисовку
+// пропускаем до следующего раза, чтобы не стереть набранное.
+// ---------------------------------------------------------------------
+const AUTO_SYNC_MS = 5 * 60 * 1000;
+let autoSyncBusy = false;
+let autoSyncMissed = false;
+
+async function autoSyncTick() {
+  if (autoSyncBusy) return;
+  if (document.hidden) { autoSyncMissed = true; return; } // вкладка свёрнута — обновим, когда вернётесь
+  autoSyncBusy = true;
+  autoSyncMissed = false;
+  const mini = document.getElementById('syncStatusMini');
+  const errors = [];
+  try {
+    const status = await api('/sync/status').catch(() => null);
+    const on = (k) => !status || (status[k] && status[k].configured);
+    const to = new Date();
+    const from = new Date(to.getTime() - 2 * 24 * 3600 * 1000);
+    const jobs = [
+      ['Kaspi', on('kaspi'), () => api(`/sync/kaspi?${qs({ from: from.toISOString(), to: to.toISOString() })}`, { method: 'POST' })],
+      ['Ozon', on('ozon'), () => api('/sync/ozon?days=2', { method: 'POST' })],
+      ['WB', on('wb'), () => api('/sync/wb?days=2', { method: 'POST' })],
+      ['Tez', on('teez'), () => api('/sync/teez?days=2', { method: 'POST' })],
+    ];
+    for (const [name, enabled, run] of jobs) {
+      if (!enabled) continue;
+      if (mini) mini.textContent = `Автообновление: ${name}…`;
+      try { await run(); } catch (err) { errors.push(name); console.warn(`Автообновление ${name}:`, err); }
+    }
+    const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName);
+    if (!typing) {
+      try {
+        if (state.currentPage === 'mymarket') {
+          const shelves = document.getElementById('mmShelvesRoot');
+          if (shelves && !shelves.hidden && !document.getElementById('mymarketProductsTab')?.hidden) await loadMmShelves();
+        } else {
+          await reloadCurrentPage();
+        }
+      } catch (err) { console.warn('Автообновление: перерисовка', err); }
+    }
+  } finally {
+    autoSyncBusy = false;
+    const t = new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+    if (mini) mini.textContent = errors.length ? `Обновлено ${t} · не вышло: ${errors.join(', ')}` : `Обновлено автоматически в ${t}`;
+  }
+}
+
+setInterval(autoSyncTick, AUTO_SYNC_MS);
+document.addEventListener('visibilitychange', () => { if (!document.hidden && autoSyncMissed) autoSyncTick(); });
+
 (async function init() {
   initDateRange();
   refreshSyncStatusMini();
+  setTimeout(autoSyncTick, 20_000); // первое обновление — через 20 секунд после открытия
 
   const startPage = (window.location.hash || '').replace('#', '') || 'overview';
   showPage(PAGE_LOADERS[startPage] ? startPage : 'overview');

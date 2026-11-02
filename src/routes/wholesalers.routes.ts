@@ -208,11 +208,26 @@ wholesalersRouter.get('/app/overview', async (req, res) => {
     const shelfOf = new Map(links.map((l) => [l.productId, l.wholesalerId]));
     const todayQty: Record<string, number> = {};
     const todayShelf: Record<string, { orders: number; qty: number }> = {};
+    const periodShelf: Record<string, { orders: number; qty: number }> = {};
     const cities = new Map<string, number>();
     for (const o of orders) {
       if (!isShippableStatus(o.status)) continue;
       const created = new Date(o.createdAt);
-      if (created >= from && created <= to && o.city) cities.set(o.city, (cities.get(o.city) ?? 0) + 1);
+      const inPeriod = created >= from && created <= to;
+      if (inPeriod && o.city) cities.set(o.city, (cities.get(o.city) ?? 0) + 1);
+      if (inPeriod) {
+        // Заказы за период сверху страницы — по полкам (квадратик с числом у каждого оптовика).
+        const seen = new Set<string>();
+        for (const line of parseAppItems(o.items)) {
+          const p = index.get(line.sku);
+          if (!p) continue;
+          const shelf = shelfOf.get(p.id) ?? 'none';
+          const t = (periodShelf[shelf] ??= { orders: 0, qty: 0 });
+          t.qty += line.quantity;
+          seen.add(shelf);
+        }
+        for (const sh of seen) periodShelf[sh].orders += 1;
+      }
       if (created < todayStart) continue;
       const shelvesInOrder = new Set<string>();
       for (const line of parseAppItems(o.items)) {
@@ -235,6 +250,7 @@ wholesalersRouter.get('/app/overview', async (req, res) => {
         image: firstImage(p.images), wholesalerId: shelfOf.get(p.id) ?? null, todayQty: todayQty[p.id] ?? 0,
       })),
       todayShelf,
+      periodShelf,
       cities: [...cities.entries()].sort((a, b) => b[1] - a[1]).map(([city, count]) => ({ city, count })),
     });
   } catch (err: any) {
