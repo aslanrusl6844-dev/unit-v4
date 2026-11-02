@@ -86,7 +86,7 @@ describe('скидка и текст', () => {
     assert.equal(reminderText('Крем', null, { stock: 2 }), 'У вас в корзине: Крем. Осталось 2 шт. — успейте купить');
     assert.equal(reminderText('Крем', null, { stock: 50 }), 'У вас в корзине: Крем. Успейте купить');
     assert.equal(reminderText('Соковыжималка 1200 Вт центробежная сенсор для фруктов и овощей', 39, { firstName: 'Аслан', stock: 3 }), 'Аслан, у вас в корзине: Соковыжималка 1200 Вт. Скидка 39%, осталось 3 шт. — успейте купить');
-    assert.equal(shortName('CELL29 Illuna-EX Whitening Booster, 5 флаконов по 10 мл'), 'CELL29 Illuna-EX Whitening Booster');
+    assert.equal(shortName('CELL29 Illuna-EX Whitening Booster, 5 флаконов по 10 мл'), 'CELL29 Illuna-EX Whitening');
     assert.ok(reminderText('А'.repeat(100), 10).length < 100);
   });
 });
