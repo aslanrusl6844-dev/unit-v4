@@ -218,6 +218,18 @@ shopAdminRouter.post('/streets/import', async (req, res) => {
   }
 });
 
+/** Пример напоминания «вы смотрели / вы оставили» на один номер (кнопки в «Рассылке»). */
+shopAdminRouter.post('/reminders/test', async (req, res) => {
+  const kind = req.body?.kind === 'cart' ? 'cart' : 'view';
+  try {
+    const { sendTestReminder } = await import('../services/cartReminder.service');
+    const r = await sendTestReminder(kind, String(req.body?.phone ?? ''));
+    res.status(r.ok ? 200 : 400).json(r.ok ? r : { error: r.message });
+  } catch (err: any) {
+    res.status(500).json({ error: String(err?.message ?? err) });
+  }
+});
+
 // Число отзывов по списку sku разом — для колонки "Отзывы" в таблице
 // товаров My Market (без x-app-key, это админский путь).
 shopAdminRouter.get('/reviews-count', async (req, res) => {

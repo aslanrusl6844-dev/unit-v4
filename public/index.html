@@ -1395,6 +1395,16 @@
             <div id="bcResult" style="font-size:13px"></div>
           </form>
         </div>
+        <div class="panel">
+          <div class="panel__head"><h2>Пример напоминания (как в Coupang)</h2></div>
+          <p class="panel__hint">Сервер сам шлёт раз в сутки: «вы смотрели» — через сутки после просмотра, «вы оставили» — когда товар лежит в корзине больше 2 суток. Здесь можно сразу отправить пример на один номер — про последний просмотренный или положенный в корзину товар.</p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;max-width:560px">
+            <input type="text" id="rmTestPhone" placeholder="+7 700 000 00 00" autocomplete="off" style="max-width:200px" />
+            <button type="button" class="btn btn--ghost" id="rmTestView">Пуш «вы смотрели»</button>
+            <button type="button" class="btn btn--ghost" id="rmTestCart">Пуш «вы оставили в корзине»</button>
+          </div>
+          <div id="rmTestResult" style="font-size:13px;margin-top:8px"></div>
+        </div>
       </section>
 
       <section class="page" id="page-notifications" hidden>

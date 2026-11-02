@@ -6429,6 +6429,20 @@ async function loadBroadcastPage() {
       broadcastImage = url; input.value = ''; st.textContent = ''; renderBroadcastImage();
     });
     document.getElementById('bcSendTestBtn').addEventListener('click', () => broadcastSend('test'));
+    const rmSend = async (kind) => {
+      const out = document.getElementById('rmTestResult');
+      const phone = document.getElementById('rmTestPhone').value.trim() || document.getElementById('bcTestPhone').value.trim();
+      if (!phone) { out.style.color = 'var(--loss)'; out.textContent = 'Введите номер'; return; }
+      out.style.color = 'var(--text-faint)'; out.textContent = 'Отправляю…';
+      try {
+        const r = await api('/shop-admin/reminders/test', { method: 'POST', body: JSON.stringify({ phone, kind }) });
+        out.style.color = 'var(--accent)'; out.textContent = r.message;
+      } catch (e) {
+        out.style.color = 'var(--loss)'; out.textContent = e.body?.error || e.message;
+      }
+    };
+    document.getElementById('rmTestView').addEventListener('click', () => rmSend('view'));
+    document.getElementById('rmTestCart').addEventListener('click', () => rmSend('cart'));
     document.getElementById('bcSendAllBtn').addEventListener('click', () => broadcastSend('all'));
     renderBroadcastImage();
   }

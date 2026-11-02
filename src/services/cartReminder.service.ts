@@ -162,3 +162,38 @@ export async function runReminderKind(kind: ReminderKind, now = new Date()): Pro
   logger.info(res, `[CartReminder] Проверка завершена (${kind})`);
   return res;
 }
+
+
+/**
+ * Пробный пуш из админки (Рассылка → «Пример напоминания»): последний просмотренный / положенный в корзину
+ * товар номера, без окон по времени и без записи в журнал — чтобы увидеть, как выглядит настоящее напоминание.
+ */
+export async function sendTestReminder(kind: ReminderKind, rawPhone: string): Promise<{ ok: boolean; message: string }> {
+  const phone = normPhone(rawPhone);
+  if (!phone) return { ok: false, message: 'Неверный номер' };
+  const rec = await prisma.shopCustomerPushToken.findUnique({ where: { phone } });
+  if (!rec?.token) return { ok: false, message: 'У номера нет разрешения на пуши (приложение не входило с этим номером)' };
+  const events: any[] = await prisma.shopEvent.findMany({
+    where: { type: kind, phone: { in: phoneVariants(phone) }, sku: { not: null } },
+    orderBy: { createdAt: 'desc' },
+    take: 20,
+  });
+  for (const ev of events) {
+    const products: any[] = await prisma.product.findMany({ where: { OR: [{ sku: ev.sku }, { shopArticle: ev.sku }] }, take: 1 });
+    const product = products[0];
+    if (!product || !product.shopActive || product.shopArchived || product.shopPrice == null) continue;
+    const lastOrder: any[] = await prisma.shopOrder.findMany({ where: { phone: { in: phoneVariants(phone) } }, orderBy: { createdAt: 'desc' }, take: 1 });
+    const pct = discountPercent(product.shopPrice, product.shopOldPrice);
+    const r = await sendBroadcast({
+      title: reminderTitle(kind, pct),
+      body: reminderText(product.name, pct, { kind, firstName: firstNameOf(lastOrder[0]?.customerName), stock: product.shopStock }),
+      imageUrl: firstImage(product),
+      tokens: [rec.token],
+      data: { type: KIND[kind].dataType, screen: 'product', productId: String(product.id), sku: String(product.sku), shopArticle: String(product.shopArticle ?? '') },
+    });
+    return r.sent > 0
+      ? { ok: true, message: `Отправлено: ${product.name}` }
+      : { ok: false, message: `Пуш не принят: ${r.fcmError ?? 'ошибка доставки'}` };
+  }
+  return { ok: false, message: kind === 'view' ? 'Этот номер ещё не смотрел товары в продаже' : 'У этого номера нет товаров в корзине' };
+}
