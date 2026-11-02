@@ -276,6 +276,55 @@ wholesalersRouter.get('/app/overview', async (req, res) => {
   }
 });
 
+/**
+ * My Market: переместить много товаров разом — на полку оптовика или обратно на «Без оптовика».
+ * Остатки учитывают отключённые магазины так же, как одиночный перенос.
+ */
+wholesalersRouter.post('/app/move-many', async (req, res) => {
+  const parsed = z.object({ productIds: z.array(z.string().min(1)).min(1).max(5000), wholesalerId: z.string().min(1).nullable() }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+  try {
+    const { productIds, wholesalerId } = parsed.data;
+    let target: any = null;
+    if (wholesalerId) {
+      target = await prisma.wholesaler.findUnique({ where: { id: wholesalerId }, select: { id: true, marketplace: true, disabled: true } });
+      if (!target) return res.status(404).json({ error: 'Оптовик не найден' });
+      if (target.marketplace !== 'APP') return res.status(400).json({ error: 'Оптовик другой площадки' });
+    }
+    const [products, prevLinks] = await Promise.all([
+      prisma.product.findMany({ where: { id: { in: productIds } }, select: { id: true, shopStock: true } }) as Promise<any[]>,
+      prisma.wholesalerProduct.findMany({ where: { productId: { in: productIds }, marketplace: 'APP' } }) as Promise<any[]>,
+    ]);
+    const prevOf = new Map(prevLinks.map((l) => [l.productId, l]));
+    const ops: any[] = [];
+    for (const p of products) {
+      const prev = prevOf.get(p.id);
+      if (!target) {
+        if (prev) ops.push(prisma.wholesalerProduct.delete({ where: { productId_marketplace: { productId: p.id, marketplace: 'APP' } } }));
+        if (prev?.savedStock != null) ops.push(prisma.product.update({ where: { id: p.id }, data: { shopStock: prev.savedStock } }));
+        continue;
+      }
+      let savedStock: number | null = null;
+      if (target.disabled) {
+        savedStock = prev?.savedStock ?? p.shopStock ?? 0;
+        ops.push(prisma.product.update({ where: { id: p.id }, data: { shopStock: 0 } }));
+      } else if (prev?.savedStock != null) {
+        ops.push(prisma.product.update({ where: { id: p.id }, data: { shopStock: prev.savedStock } }));
+      }
+      ops.push(prisma.wholesalerProduct.upsert({
+        where: { productId_marketplace: { productId: p.id, marketplace: 'APP' } },
+        update: { wholesalerId: target.id, assignedAt: new Date(), savedStock },
+        create: { productId: p.id, marketplace: 'APP', wholesalerId: target.id, savedStock },
+      }));
+    }
+    for (let i = 0; i < ops.length; i += 300) await prisma.$transaction(ops.slice(i, i + 300));
+    res.json({ moved: products.length, wholesalerId });
+  } catch (err: any) {
+    logger.error({ err }, '[Wholesalers] POST /app/move-many упал');
+    res.status(500).json({ error: 'Не удалось переместить товары', details: String(err?.message ?? err) });
+  }
+});
+
 const stockSchema = z.object({
   productIds: z.array(z.string().min(1)).min(1).max(2000),
   stock: z.number().int().min(0).max(100000),

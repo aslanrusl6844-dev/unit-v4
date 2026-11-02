@@ -2703,6 +2703,13 @@ function mmShelfHtml(key, title, w, products) {
       <input type="number" min="0" step="1" data-mm-bulk-qty="${wsEsc(key)}" placeholder="например 7" style="width:110px" />
       <button class="btn btn--ghost" data-mm-bulk-apply="${wsEsc(key)}" ${pickedHere ? '' : 'disabled'}>Поставить выбранным</button>
       <button class="btn btn--ghost" data-mm-bulk-all="${wsEsc(key)}" ${products.length ? '' : 'disabled'}>Поставить всем на полке</button>
+      <span style="margin-left:10px">Переместить выбранных к:</span>
+      <select data-mm-bulk-target="${wsEsc(key)}" class="cost-input" style="max-width:240px">
+        <option value="">— выберите оптовика —</option>
+        ${key !== 'none' ? '<option value="__none__">Без оптовика</option>' : ''}
+        ${mmShelf.wholesalers.filter((x) => x.id !== key).map((x) => `<option value="${wsEsc(x.id)}">${wsEsc(wsDisplayName(x))}${x.disabled ? ' (отключён)' : ''}</option>`).join('')}
+      </select>
+      <button class="btn btn--accent" data-mm-bulk-move="${wsEsc(key)}" ${pickedHere ? '' : 'disabled'}>Переместить</button>
     </div>
     <div class="table-wrap" style="margin-top:8px"><table class="table"><thead><tr>
       <th style="width:28px"><input type="checkbox" data-mm-pick-all="${wsEsc(key)}" ${allPicked ? 'checked' : ''} style="width:auto" title="Выбрать все товары полки" /></th>
@@ -2828,6 +2835,25 @@ function mmWireShelves(root) {
       mmStatus(`Количество ${v} шт. поставлено: ${list.length}.`);
     } catch (err) { alert('Не удалось сохранить: ' + err.message); }
   };
+  root.querySelectorAll('[data-mm-bulk-move]').forEach((b) => b.addEventListener('click', async () => {
+    const key = b.dataset.mmBulkMove;
+    const target = root.querySelector(`[data-mm-bulk-target="${CSS.escape(key)}"]`)?.value;
+    if (!target) { alert('Выберите оптовика, к которому переместить'); return; }
+    const list = shelfProducts(key).filter((p) => mmShelf.picked.has(p.id));
+    if (!list.length) return;
+    const name = target === '__none__' ? 'Без оптовика' : wsDisplayName(mmShelf.wholesalers.find((w) => w.id === target) || {});
+    if (!confirm(`Переместить ${list.length} ${wsPlural(list.length, 'товар', 'товара', 'товаров')} → «${name}»?`)) return;
+    b.disabled = true;
+    try {
+      await api('/wholesalers/app/move-many', { method: 'POST', body: JSON.stringify({ productIds: list.map((p) => p.id), wholesalerId: target === '__none__' ? null : target }) });
+      list.forEach((p) => mmShelf.picked.delete(p.id));
+      await loadMmShelves();
+      mmStatus(`Перемещено: ${list.length} → «${name}».`);
+    } catch (err) {
+      b.disabled = false;
+      alert('Не удалось переместить: ' + err.message);
+    }
+  }));
   root.querySelectorAll('[data-mm-bulk-apply]').forEach((b) => b.addEventListener('click', () => bulk(b.dataset.mmBulkApply, true)));
   root.querySelectorAll('[data-mm-bulk-all]').forEach((b) => b.addEventListener('click', () => bulk(b.dataset.mmBulkAll, false)));
   root.querySelectorAll('[data-mm-enable]').forEach((b) => b.addEventListener('click', () => mmSetEnabled([b.dataset.mmEnable], b.dataset.on === '1')));
