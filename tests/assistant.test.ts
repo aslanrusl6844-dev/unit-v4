@@ -193,3 +193,12 @@ test('страховка: «Cell29» в ответе = «Cell 29» в катал
   const items = [{ sku: '9398161', name: 'Cell 29 Celinica Gel Cleanser', category: null, subcategory: null, type: null, price: 1, image: null }];
   assert.deepEqual(missingProductSkus('Cell29 Celinica Gel Cleanser — 9 900 ₸ Нежный гель', items), ['9398161']);
 });
+
+test('fallbackRelatedSkus: добирает подборку того же подраздела, если модель забыла {{все:}}', () => {
+  const { fallbackRelatedSkus } = require('../src/services/assistant.service');
+  const mk = (sku: string, sub: string) => ({ sku, name: 'Товар ' + sku, price: 1000, category: 'Красота', subcategory: sub } as any);
+  const items = [mk('1', 'Акне'), mk('2', 'Акне'), mk('3', 'Акне'), mk('4', 'Шампуни')];
+  assert.deepEqual(fallbackRelatedSkus('Вот: {{1}}', items, items), ['2', '3']);
+  assert.deepEqual(fallbackRelatedSkus('Вот: {{1}} {{все:2}}', items, items), []);
+  assert.deepEqual(fallbackRelatedSkus('Без товаров', items, items), []);
+});

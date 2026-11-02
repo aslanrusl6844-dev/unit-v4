@@ -4,7 +4,7 @@ import { logger } from '../utils/logger';
 import { SHOP_CATEGORIES } from '../config/shopCategories';
 import { MAX_AUDIO_BYTES, audioMime, transcribeAudio } from '../services/speechToText.service';
 import {
-  ChatMessage, DEFAULT_MODEL, buildSystemPrompt, missingProductSkus, diverseSample, extractSkus, loadCatalog, matchShowcases, rankProducts, runAssistant,
+  ChatMessage, DEFAULT_MODEL, buildSystemPrompt, fallbackRelatedSkus, skusFromToolResult, missingProductSkus, diverseSample, extractSkus, loadCatalog, matchShowcases, rankProducts, runAssistant,
 } from '../services/assistant.service';
 
 export const assistantRouter = Router();
@@ -84,14 +84,24 @@ assistantRouter.post('/', async (req, res) => {
     if (inNamed.length && found.length < 14) found = [...found, ...inNamed.filter((p) => !found.includes(p))].slice(0, 14);
     if (!found.length) found = diverseSample(catalog, 12);
     const system = buildSystemPrompt(found, [...SHOP_CATEGORIES], showcases);
-    const full = await runAssistant({
+    const toolSkus: string[] = [];
+    const raw = await runAssistant({
       apiKey, model: process.env.ASSISTANT_MODEL || DEFAULT_MODEL, system, messages, catalog: { items: catalog, showcases }, signal: ac.signal,
-      onDelta: (t) => send('delta', { text: t }),
+      // Звёздочки markdown приложение не рисует — убираем их на лету.
+      onDelta: (t) => { const c = t.replace(/\*/g, ''); if (c) send('delta', { text: c }); },
+      onToolResult: (name, result) => { if (name === 'search_products') toolSkus.push(...skusFromToolResult(result)); },
     });
+    let full = raw.replace(/\*/g, '');
     // Назвал товар без маркера — дописываем маркеры, чтобы у каждого была карточка с фото и корзиной.
     const realSkus = new Set(catalog.map((p) => p.sku));
     const missing = missingProductSkus(full, catalog, Math.max(0, 4 - extractSkus(full).filter((s) => realSkus.has(s)).length));
     if (missing.length) send('delta', { text: `\n${missing.map((s) => `{{${s}}}`).join(' ')}` });
+    if (missing.length) full += `\n${missing.map((s) => `{{${s}}}`).join(' ')}`;
+    // Модель забыла {{все:…}} — собираем подборку сами, чтобы была кнопка «Смотреть все товары».
+    const bySkuAll = new Map(catalog.map((p) => [p.sku, p]));
+    const candidates = [...toolSkus.map((s) => bySkuAll.get(s)).filter((p): p is (typeof catalog)[number] => !!p), ...rankProducts(catalog, lastUsers, 60), ...found];
+    const related = fallbackRelatedSkus(full, candidates, catalog);
+    if (related.length) send('delta', { text: `\n{{все:${related.join(',')}}}` });
     const bySku = new Map(catalog.map((p) => [p.sku, p]));
     const cards = extractSkus(full).map((s) => bySku.get(s)).filter(Boolean).slice(0, 4);
     send('products', { items: cards });

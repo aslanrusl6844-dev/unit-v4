@@ -109,6 +109,29 @@ export function missingProductSkus(text: string, items: CatalogItem[], limit = 4
   return out;
 }
 
+/**
+ * Страховка для кнопки «Смотреть все товары»: модель показала карточки, но забыла {{все:…}}.
+ * Берём кандидатов (сначала из её поисков, потом из найденных по вопросу) того же подраздела,
+ * что и показанные карточки, без уже показанных. Пусто — кнопки не будет.
+ */
+export function fallbackRelatedSkus(text: string, candidates: CatalogItem[], items: CatalogItem[], limit = 30): string[] {
+  if (/\{\{\s*все:/.test(text)) return [];
+  const bySku = new Map(items.map((p) => [p.sku, p]));
+  const shown = extractSkus(text).map((s) => bySku.get(s)).filter((p): p is CatalogItem => !!p);
+  if (!shown.length) return [];
+  const group = (p: CatalogItem) => norm(p.subcategory || p.category || '');
+  const groups = new Set(shown.map(group).filter(Boolean));
+  const shownSkus = new Set(shown.map((p) => p.sku));
+  const out: string[] = [];
+  for (const p of candidates) {
+    if (out.length >= limit) break;
+    if (shownSkus.has(p.sku) || out.includes(p.sku)) continue;
+    if (!groups.has(group(p))) continue;
+    out.push(p.sku);
+  }
+  return out;
+}
+
 /** Если по словам ничего не нашлось — разнообразная выборка: по одному-два товара из каждого раздела. */
 export function diverseSample(items: CatalogItem[], limit = 12): CatalogItem[] {
   const seen = new Map<string, number>();
