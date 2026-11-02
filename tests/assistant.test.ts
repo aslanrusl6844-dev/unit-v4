@@ -176,3 +176,14 @@ test('подборка «все товары» и служебные марке�
   assert.deepEqual(skusFromToolResult('- Крем | артикул 11 | Красота\n- Гель | артикул 22 | Красота'), ['11', '22']);
   assert.equal(stripUiMarkers('Текст {{1}}\n{{все:1,2}}\n[[Крем | Гель]]'), 'Текст {{1}}');
 });
+
+test('страховка: товары, названные без маркера, получают маркер', () => {
+  const { missingProductSkus } = require('../src/services/assistant.service');
+  const items = [
+    { sku: '11', name: 'BB-бальзам Cell29 Repressive Blemish Balm', category: null, subcategory: null, type: null, price: 1, image: null },
+    { sku: '22', name: 'Ампула Cell29 Exosome Ampoule', category: null, subcategory: null, type: null, price: 1, image: null },
+    { sku: '33', name: 'Тоник', category: null, subcategory: null, type: null, price: 1, image: null },
+  ];
+  const text = 'Восстановление: BB-бальзам Cell29 Repressive Blemish Balm — 17 900 ₸. Ампула Cell29 Exosome Ampoule {{22}}.';
+  assert.deepEqual(missingProductSkus(text, items), ['11']);
+});

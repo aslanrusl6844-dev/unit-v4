@@ -4,7 +4,7 @@ import { logger } from '../utils/logger';
 import { SHOP_CATEGORIES } from '../config/shopCategories';
 import { MAX_AUDIO_BYTES, audioMime, transcribeAudio } from '../services/speechToText.service';
 import {
-  ChatMessage, DEFAULT_MODEL, buildSystemPrompt, diverseSample, extractSkus, loadCatalog, matchShowcases, rankProducts, runAssistant,
+  ChatMessage, DEFAULT_MODEL, buildSystemPrompt, missingProductSkus, diverseSample, extractSkus, loadCatalog, matchShowcases, rankProducts, runAssistant,
 } from '../services/assistant.service';
 
 export const assistantRouter = Router();
@@ -88,6 +88,9 @@ assistantRouter.post('/', async (req, res) => {
       apiKey, model: process.env.ASSISTANT_MODEL || DEFAULT_MODEL, system, messages, catalog: { items: catalog, showcases }, signal: ac.signal,
       onDelta: (t) => send('delta', { text: t }),
     });
+    // Назвал товар без маркера — дописываем маркеры, чтобы у каждого была карточка с фото и корзиной.
+    const missing = missingProductSkus(full, catalog, Math.max(0, 4 - extractSkus(full).length));
+    if (missing.length) send('delta', { text: `\n${missing.map((s) => `{{${s}}}`).join(' ')}` });
     const bySku = new Map(catalog.map((p) => [p.sku, p]));
     const cards = extractSkus(full).map((s) => bySku.get(s)).filter(Boolean).slice(0, 4);
     send('products', { items: cards });

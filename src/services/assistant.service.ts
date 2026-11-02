@@ -85,6 +85,25 @@ export function skusFromToolResult(result: string): string[] {
   return out;
 }
 
+/**
+ * Страховка: модель назвала товар из каталога, но забыла маркер {{артикул}} — тогда клиент видит текст
+ * без фото. Ищем в ответе названия товаров (полностью или первые 3+ значимых слова) и возвращаем артикулы
+ * без маркеров (не больше limit), чтобы дописать маркеры в конец ответа — приложение покажет карточки.
+ */
+export function missingProductSkus(text: string, items: CatalogItem[], limit = 4): string[] {
+  const have = new Set(extractSkus(text));
+  const t = norm(text).replace(/[^\p{L}\p{N}]+/gu, ' ');
+  const out: string[] = [];
+  for (const p of items) {
+    if (have.has(p.sku) || out.length >= limit) continue;
+    const words = norm(p.name).replace(/[^\p{L}\p{N}]+/gu, ' ').split(' ').filter((w) => w.length >= 2);
+    if (words.length < 2) continue;
+    const head = words.slice(0, Math.min(words.length, 4)).join(' ');
+    if (head.length >= 10 && t.includes(head)) out.push(p.sku);
+  }
+  return out;
+}
+
 /** Если по словам ничего не нашлось — разнообразная выборка: по одному-два товара из каждого раздела. */
 export function diverseSample(items: CatalogItem[], limit = 12): CatalogItem[] {
   const seen = new Map<string, number>();
