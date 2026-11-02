@@ -187,3 +187,9 @@ test('страховка: товары, названные без маркера
   const text = 'Восстановление: BB-бальзам Cell29 Repressive Blemish Balm — 17 900 ₸. Ампула Cell29 Exosome Ampoule {{22}}.';
   assert.deepEqual(missingProductSkus(text, items), ['11']);
 });
+
+test('страховка: «Cell29» в ответе = «Cell 29» в каталоге', () => {
+  const { missingProductSkus } = require('../src/services/assistant.service');
+  const items = [{ sku: '9398161', name: 'Cell 29 Celinica Gel Cleanser', category: null, subcategory: null, type: null, price: 1, image: null }];
+  assert.deepEqual(missingProductSkus('Cell29 Celinica Gel Cleanser — 9 900 ₸ Нежный гель', items), ['9398161']);
+});

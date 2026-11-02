@@ -91,15 +91,20 @@ export function skusFromToolResult(result: string): string[] {
  * без маркеров (не больше limit), чтобы дописать маркеры в конец ответа — приложение покажет карточки.
  */
 export function missingProductSkus(text: string, items: CatalogItem[], limit = 4): string[] {
-  const have = new Set(extractSkus(text));
-  const t = norm(text).replace(/[^\p{L}\p{N}]+/gu, ' ');
+  // Маркер с выдуманным артикулом карточку не даёт — считаем только настоящие.
+  const known = new Set(items.map((p) => p.sku));
+  const have = new Set(extractSkus(text).filter((s) => known.has(s)));
+  // Сравниваем без пробелов и знаков: «Cell29 Celinica» в ответе = «Cell 29 Celinica» в каталоге.
+  const compact = (v: string) => norm(v).replace(/[^\p{L}\p{N}]+/gu, '');
+  const t = compact(text);
   const out: string[] = [];
   for (const p of items) {
     if (have.has(p.sku) || out.length >= limit) continue;
-    const words = norm(p.name).replace(/[^\p{L}\p{N}]+/gu, ' ').split(' ').filter((w) => w.length >= 2);
+    const words = norm(p.name).replace(/[^\p{L}\p{N}]+/gu, ' ').split(' ').filter(Boolean);
     if (words.length < 2) continue;
-    const head = words.slice(0, Math.min(words.length, 4)).join(' ');
-    if (head.length >= 10 && t.includes(head)) out.push(p.sku);
+    // Начало названия (3–4 слова) — модель часто пишет название короче, без хвоста «50 мл».
+    const heads = [words.slice(0, 4), words.slice(0, 3)].map((w) => compact(w.join(' ')));
+    if (heads.some((h) => h.length >= 12 && t.includes(h))) out.push(p.sku);
   }
   return out;
 }

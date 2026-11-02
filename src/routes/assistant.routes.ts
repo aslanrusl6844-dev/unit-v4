@@ -89,7 +89,8 @@ assistantRouter.post('/', async (req, res) => {
       onDelta: (t) => send('delta', { text: t }),
     });
     // Назвал товар без маркера — дописываем маркеры, чтобы у каждого была карточка с фото и корзиной.
-    const missing = missingProductSkus(full, catalog, Math.max(0, 4 - extractSkus(full).length));
+    const realSkus = new Set(catalog.map((p) => p.sku));
+    const missing = missingProductSkus(full, catalog, Math.max(0, 4 - extractSkus(full).filter((s) => realSkus.has(s)).length));
     if (missing.length) send('delta', { text: `\n${missing.map((s) => `{{${s}}}`).join(' ')}` });
     const bySku = new Map(catalog.map((p) => [p.sku, p]));
     const cards = extractSkus(full).map((s) => bySku.get(s)).filter(Boolean).slice(0, 4);
