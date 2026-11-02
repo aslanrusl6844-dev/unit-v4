@@ -166,17 +166,34 @@ wholesalersRouter.post('/move', async (req, res) => {
     const own = marketplace === 'KASPI' ? product.kaspiSku : marketplace === 'OZON' ? product.ozonOfferId : marketplace === 'WB' ? product.wbArticle : (product.shopArticle ?? product.sku);
     if (!own) return res.status(400).json({ error: 'Этот товар не относится к выбранной площадке' });
 
+    // My Market: товар уходит с отключённого магазина — возвращаем ему прежний остаток.
+    const prev: any = marketplace === 'APP' ? await prisma.wholesalerProduct.findUnique({ where: { productId_marketplace: { productId, marketplace } } }) : null;
+    const restoreStock = async () => {
+      if (prev?.savedStock != null) await prisma.product.update({ where: { id: productId }, data: { shopStock: prev.savedStock } });
+    };
     if (wholesalerId === null) {
       await prisma.wholesalerProduct.deleteMany({ where: { productId, marketplace } });
+      await restoreStock();
       return res.json({ productId, marketplace, wholesalerId: null });
     }
-    const wholesaler: any = await prisma.wholesaler.findUnique({ where: { id: wholesalerId }, select: { id: true, marketplace: true } });
+    const wholesaler: any = await prisma.wholesaler.findUnique({ where: { id: wholesalerId }, select: { id: true, marketplace: true, disabled: true } });
     if (!wholesaler) return res.status(404).json({ error: 'Оптовик не найден' });
     if (wholesaler.marketplace !== marketplace) return res.status(400).json({ error: 'Оптовик другой площадки' });
+    let savedStock: number | null = null;
+    if (marketplace === 'APP') {
+      if (wholesaler.disabled) {
+        // На отключённый магазин: запоминаем остаток и ставим 0.
+        const cur: any = await prisma.product.findUnique({ where: { id: productId }, select: { shopStock: true } });
+        savedStock = prev?.savedStock ?? cur?.shopStock ?? 0;
+        await prisma.product.update({ where: { id: productId }, data: { shopStock: 0 } });
+      } else {
+        await restoreStock();
+      }
+    }
     await prisma.wholesalerProduct.upsert({
       where: { productId_marketplace: { productId, marketplace } },
-      update: { wholesalerId, assignedAt: new Date() },
-      create: { productId, marketplace, wholesalerId },
+      update: { wholesalerId, assignedAt: new Date(), savedStock },
+      create: { productId, marketplace, wholesalerId, savedStock },
     });
     res.json({ productId, marketplace, wholesalerId });
   } catch (err: any) {
@@ -256,6 +273,67 @@ wholesalersRouter.get('/app/overview', async (req, res) => {
   } catch (err: any) {
     logger.error({ err }, '[Wholesalers] GET /app/overview упал');
     res.status(500).json({ error: 'Не удалось получить полки My Market', details: String(err?.message ?? err) });
+  }
+});
+
+const stockSchema = z.object({
+  productIds: z.array(z.string().min(1)).min(1).max(2000),
+  stock: z.number().int().min(0).max(100000),
+});
+
+/** My Market: остаток товарам полки — одному или пачкой («всем по 7 шт.»). Меняется только shopStock витрины. */
+wholesalersRouter.post('/app/stock', async (req, res) => {
+  const parsed = stockSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Количество — целое число от 0', details: parsed.error.flatten() });
+  try {
+    const { productIds, stock } = parsed.data;
+    const r = await prisma.product.updateMany({ where: { id: { in: productIds } }, data: { shopStock: stock } });
+    // Товар отключённого магазина получил остаток вручную — это и будет остаток после включения.
+    await prisma.wholesalerProduct.updateMany({ where: { productId: { in: productIds }, marketplace: 'APP', savedStock: { not: null } }, data: { savedStock: stock } });
+    res.json({ updated: r.count, stock });
+  } catch (err: any) {
+    logger.error({ err }, '[Wholesalers] POST /app/stock упал');
+    res.status(500).json({ error: 'Не удалось сохранить количество', details: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * My Market: включить / отключить магазин оптовика. Отключить — у всех его товаров остаток 0
+ * (в приложении «нет в наличии»), прежний остаток запоминается. Включить — остаток возвращается.
+ */
+wholesalersRouter.post('/app/enabled', async (req, res) => {
+  const parsed = z.object({ ids: z.array(z.string().min(1)).min(1).max(200), enabled: z.boolean() }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+  try {
+    const { ids, enabled } = parsed.data;
+    const ws: any[] = await prisma.wholesaler.findMany({ where: { id: { in: ids }, marketplace: 'APP' } });
+    let products = 0;
+    for (const w of ws) {
+      if (Boolean(w.disabled) === !enabled) continue; // уже в нужном состоянии — остатки не трогаем
+      const links: any[] = await prisma.wholesalerProduct.findMany({ where: { wholesalerId: w.id, marketplace: 'APP' } });
+      const items: any[] = links.length
+        ? await prisma.product.findMany({ where: { id: { in: links.map((l) => l.productId) } }, select: { id: true, shopStock: true } })
+        : [];
+      const stockOf = new Map(items.map((p) => [p.id, p.shopStock ?? 0]));
+      const ops: any[] = [];
+      for (const l of links) {
+        if (!stockOf.has(l.productId)) continue;
+        if (!enabled) {
+          ops.push(prisma.wholesalerProduct.update({ where: { productId_marketplace: { productId: l.productId, marketplace: 'APP' } }, data: { savedStock: stockOf.get(l.productId) } }));
+          ops.push(prisma.product.update({ where: { id: l.productId }, data: { shopStock: 0 } }));
+        } else {
+          ops.push(prisma.product.update({ where: { id: l.productId }, data: { shopStock: l.savedStock ?? stockOf.get(l.productId) ?? 0 } }));
+          ops.push(prisma.wholesalerProduct.update({ where: { productId_marketplace: { productId: l.productId, marketplace: 'APP' } }, data: { savedStock: null } }));
+        }
+        products += 1;
+      }
+      ops.push(prisma.wholesaler.update({ where: { id: w.id }, data: { disabled: !enabled } }));
+      await prisma.$transaction(ops);
+    }
+    res.json({ ok: true, enabled, wholesalers: ws.length, products });
+  } catch (err: any) {
+    logger.error({ err }, '[Wholesalers] POST /app/enabled упал');
+    res.status(500).json({ error: 'Не удалось переключить магазин', details: String(err?.message ?? err) });
   }
 });
 

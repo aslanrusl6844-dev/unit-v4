@@ -2614,7 +2614,7 @@ function switchMyMarketTab(tab) {
 // =====================================================================
 let mmProdView = 'shelves';
 let mmViewWired = false;
-const mmShelf = { wholesalers: [], products: [], todayShelf: {}, periodShelf: {}, cities: [], open: new Set(), selected: new Set(), editing: null, adding: false, city: '', error: null, loading: false };
+const mmShelf = { wholesalers: [], products: [], todayShelf: {}, periodShelf: {}, cities: [], open: new Set(), selected: new Set(), picked: new Set(), editing: null, adding: false, city: '', error: null, loading: false };
 
 function mmWireViewTabs() {
   const apply = () => {
@@ -2693,25 +2693,39 @@ function mmShelfHtml(key, title, w, products) {
          <button class="btn btn--accent" type="submit">Сохранить</button>
          <button class="btn btn--ghost" type="button" data-mm-edit-cancel="1">Отмена</button>
        </form>`
-    : `<div style="flex:1;min-width:200px"><div style="font-weight:600;font-size:15px">${wsEsc(title)}${today}</div>
+    : `<div style="flex:1;min-width:200px"><div style="font-weight:600;font-size:15px;${w && w.disabled ? 'color:var(--text-faint)' : ''}">${wsEsc(title)}${w && w.disabled ? ' <span style="color:var(--loss);font-size:12px;font-weight:600">· магазин отключён — в приложении нет в наличии</span>' : ''}${today}</div>
          <div style="font-size:12px;color:var(--text-faint)">${products.length ? `${products.length} ${wsPlural(products.length, 'товар', 'товара', 'товаров')}` : 'Полка пуста'}</div></div>`;
-  const rows = open ? `<div class="table-wrap" style="margin-top:10px"><table class="table"><thead><tr><th>Фото</th><th>Артикул</th><th>Название</th><th class="num">Цена</th><th class="num">Остаток</th><th class="num">Сегодня</th><th>Полка</th></tr></thead><tbody>
+  const pickedHere = products.filter((p) => mmShelf.picked.has(p.id)).length;
+  const allPicked = products.length > 0 && pickedHere === products.length;
+  const rows = open ? `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px;font-size:12.5px">
+      <span style="color:var(--text-muted)">Выбрано товаров: ${pickedHere}</span>
+      <span>Количество:</span>
+      <input type="number" min="0" step="1" data-mm-bulk-qty="${wsEsc(key)}" placeholder="например 7" style="width:110px" />
+      <button class="btn btn--ghost" data-mm-bulk-apply="${wsEsc(key)}" ${pickedHere ? '' : 'disabled'}>Поставить выбранным</button>
+      <button class="btn btn--ghost" data-mm-bulk-all="${wsEsc(key)}" ${products.length ? '' : 'disabled'}>Поставить всем на полке</button>
+    </div>
+    <div class="table-wrap" style="margin-top:8px"><table class="table"><thead><tr>
+      <th style="width:28px"><input type="checkbox" data-mm-pick-all="${wsEsc(key)}" ${allPicked ? 'checked' : ''} style="width:auto" title="Выбрать все товары полки" /></th>
+      <th>Фото</th><th>Артикул</th><th>Название</th><th class="num">Цена</th><th class="num">Остаток</th><th class="num">Сегодня</th><th>Полка</th></tr></thead><tbody>
       ${products.map((p) => `<tr>
+        <td><input type="checkbox" data-mm-pick="${wsEsc(p.id)}" ${mmShelf.picked.has(p.id) ? 'checked' : ''} style="width:auto" /></td>
         <td>${p.image ? `<img src="${wsEsc(p.image)}" alt="" style="width:40px;height:40px;object-fit:cover;border-radius:6px" />` : ''}</td>
         <td>${wsEsc(p.sku)}</td><td>${wsEsc(p.name)}</td>
-        <td class="num">${p.price != null ? fmtMoney(p.price) : '—'}</td><td class="num">${fmt.format(p.stock ?? 0)}</td>
+        <td class="num">${p.price != null ? fmtMoney(p.price) : '—'}</td>
+        <td class="num"><input type="number" min="0" step="1" data-mm-stock="${wsEsc(p.id)}" value="${p.stock ?? 0}" style="width:76px;text-align:right" title="Изменить остаток — сохраняется сразу" /></td>
         <td class="num" style="${p.todayQty ? 'color:var(--loss);font-weight:600' : 'color:var(--text-faint)'}">${p.todayQty ? `+${p.todayQty}` : '0'}</td>
         <td><select data-mm-move="${wsEsc(p.id)}" class="cost-input" style="max-width:220px">
           <option value="" ${!p.wholesalerId ? 'selected' : ''}>Без оптовика</option>
-          ${mmShelf.wholesalers.map((x) => `<option value="${wsEsc(x.id)}" ${p.wholesalerId === x.id ? 'selected' : ''}>${wsEsc(wsDisplayName(x))}</option>`).join('')}
-        </select></td></tr>`).join('') || '<tr><td colspan="7" style="color:var(--text-faint)">Товаров нет</td></tr>'}
+          ${mmShelf.wholesalers.map((x) => `<option value="${wsEsc(x.id)}" ${p.wholesalerId === x.id ? 'selected' : ''}>${wsEsc(wsDisplayName(x))}${x.disabled ? ' (отключён)' : ''}</option>`).join('')}
+        </select></td></tr>`).join('') || '<tr><td colspan="8" style="color:var(--text-faint)">Товаров нет</td></tr>'}
     </tbody></table></div>` : '';
   return `<div style="border:1px solid var(--border,#e5e5e5);border-radius:8px;padding:10px 12px;margin-bottom:8px">
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
       ${w ? `<input type="checkbox" data-mm-select="${wsEsc(w.id)}" ${mmShelf.selected.has(w.id) ? 'checked' : ''} style="width:auto" />` : '<span style="width:13px"></span>'}
       ${head}
       ${!editing ? mmCountBox(key) : ''}
-      ${w && !editing ? `<button class="btn btn--ghost" data-mm-rename="${wsEsc(w.id)}">Переименовать</button>` : ''}
+      ${w && !editing ? `<button class="btn btn--ghost" data-mm-enable="${wsEsc(w.id)}" data-on="${w.disabled ? '1' : '0'}" style="${w.disabled ? 'color:var(--accent)' : 'color:var(--loss)'}">${w.disabled ? 'Включить магазин' : 'Отключить магазин'}</button>
+        <button class="btn btn--ghost" data-mm-rename="${wsEsc(w.id)}">Переименовать</button>` : ''}
       <button class="btn btn--ghost" data-mm-toggle="${wsEsc(key)}">${open ? 'Скрыть товары' : 'Показать товары'}</button>
     </div>${rows}</div>`;
 }
@@ -2727,9 +2741,11 @@ function renderMmShelves() {
   const todayTotal = Object.values(mmShelf.todayShelf).reduce((a, t) => a + t.orders, 0);
   const sel = mmShelf.selected.size;
   root.innerHTML = `
-    <p class="panel__hint" style="margin-top:0">Товары витрины по оптовикам — чтобы сразу видеть, у кого какие заказы. Число в квадратике — заказы за период сверху страницы, красным — сколько пришло сегодня${todayTotal ? ` (всего сегодня: <b>${todayTotal}</b>)` : ''}. Обновляется само каждые 5 минут, пока админка открыта.</p>
+    <p class="panel__hint" style="margin-top:0">Товары витрины по оптовикам — чтобы сразу видеть, у кого какие заказы. Число в квадратике — заказы за период сверху страницы, красным — сколько пришло сегодня. «Отключить магазин» — все товары оптовика в приложении станут «нет в наличии» (остаток 0), «Включить» — остатки вернутся${todayTotal ? ` (всего сегодня: <b>${todayTotal}</b>)` : ''}. Обновляется само каждые 5 минут, пока админка открыта.</p>
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
       <span style="font-size:12.5px;color:var(--text-muted)">Выбрано полок: ${sel}</span>
+      <button class="btn btn--ghost" id="mmShelfDisableSelected" ${sel ? '' : 'disabled'}>Отключить выбранные магазины</button>
+      <button class="btn btn--ghost" id="mmShelfEnableSelected" ${sel ? '' : 'disabled'}>Включить выбранные</button>
       <button class="btn btn--ghost" id="mmShelfDeleteSelected" style="color:var(--loss)" ${sel ? '' : 'disabled'}>Удалить выбранных</button>
       <span id="mmShelfStatus" style="font-size:12px"></span>
     </div>
@@ -2760,7 +2776,63 @@ async function mmZip(url, btn) {
   }
 }
 
+async function mmSetStock(productIds, stock) {
+  await api('/wholesalers/app/stock', { method: 'POST', body: JSON.stringify({ productIds, stock }) });
+  for (const p of mmShelf.products) if (productIds.includes(p.id)) p.stock = stock;
+}
+
+async function mmSetEnabled(ids, enabled) {
+  if (!ids.length) return;
+  const n = ids.length;
+  const text = enabled
+    ? `Включить ${n === 1 ? 'магазин' : `магазины (${n})`}? Остатки товаров вернутся.`
+    : `Отключить ${n === 1 ? 'магазин' : `магазины (${n})`}? Все их товары в приложении станут «нет в наличии» (остаток 0). Остатки запомнятся и вернутся при включении.`;
+  if (!confirm(text)) return;
+  try {
+    const r = await api('/wholesalers/app/enabled', { method: 'POST', body: JSON.stringify({ ids, enabled }) });
+    await loadMmShelves();
+    mmStatus(enabled ? `Включено. Товаров с возвращённым остатком: ${r.products}.` : `Отключено. Товаров с остатком 0: ${r.products}.`);
+  } catch (err) {
+    alert('Не удалось переключить магазин: ' + err.message);
+  }
+}
+
 function mmWireShelves(root) {
+  const shelfProducts = (key) => mmShelf.products.filter((p) => (key === 'none' ? !p.wholesalerId || !mmShelf.wholesalers.some((w) => w.id === p.wholesalerId) : p.wholesalerId === key));
+  root.querySelectorAll('[data-mm-pick]').forEach((c) => c.addEventListener('change', () => {
+    if (c.checked) mmShelf.picked.add(c.dataset.mmPick); else mmShelf.picked.delete(c.dataset.mmPick);
+    renderMmShelves();
+  }));
+  root.querySelectorAll('[data-mm-pick-all]').forEach((c) => c.addEventListener('change', () => {
+    for (const p of shelfProducts(c.dataset.mmPickAll)) { if (c.checked) mmShelf.picked.add(p.id); else mmShelf.picked.delete(p.id); }
+    renderMmShelves();
+  }));
+  root.querySelectorAll('[data-mm-stock]').forEach((inp) => inp.addEventListener('change', async () => {
+    const v = Math.round(Number(inp.value));
+    if (!Number.isFinite(v) || v < 0) { alert('Количество — целое число от 0'); return; }
+    inp.disabled = true;
+    try { await mmSetStock([inp.dataset.mmStock], v); mmStatus('Количество сохранено.'); } catch (err) { alert('Не удалось сохранить: ' + err.message); }
+    inp.disabled = false;
+  }));
+  const bulk = async (key, onlyPicked) => {
+    const inp = root.querySelector(`[data-mm-bulk-qty="${CSS.escape(key)}"]`);
+    const v = Math.round(Number(inp?.value));
+    if (!inp || inp.value === '' || !Number.isFinite(v) || v < 0) { alert('Впишите количество — целое число от 0'); return; }
+    const list = shelfProducts(key).filter((p) => !onlyPicked || mmShelf.picked.has(p.id));
+    if (!list.length) return;
+    if (!confirm(`Поставить количество ${v} шт. — ${list.length} ${wsPlural(list.length, 'товару', 'товарам', 'товарам')}?`)) return;
+    try {
+      await mmSetStock(list.map((p) => p.id), v);
+      list.forEach((p) => mmShelf.picked.delete(p.id));
+      renderMmShelves();
+      mmStatus(`Количество ${v} шт. поставлено: ${list.length}.`);
+    } catch (err) { alert('Не удалось сохранить: ' + err.message); }
+  };
+  root.querySelectorAll('[data-mm-bulk-apply]').forEach((b) => b.addEventListener('click', () => bulk(b.dataset.mmBulkApply, true)));
+  root.querySelectorAll('[data-mm-bulk-all]').forEach((b) => b.addEventListener('click', () => bulk(b.dataset.mmBulkAll, false)));
+  root.querySelectorAll('[data-mm-enable]').forEach((b) => b.addEventListener('click', () => mmSetEnabled([b.dataset.mmEnable], b.dataset.on === '1')));
+  root.querySelector('#mmShelfDisableSelected')?.addEventListener('click', () => mmSetEnabled([...mmShelf.selected], false));
+  root.querySelector('#mmShelfEnableSelected')?.addEventListener('click', () => mmSetEnabled([...mmShelf.selected], true));
   root.querySelectorAll('[data-mm-toggle]').forEach((b) => b.addEventListener('click', () => {
     const k = b.dataset.mmToggle;
     if (mmShelf.open.has(k)) mmShelf.open.delete(k); else mmShelf.open.add(k);

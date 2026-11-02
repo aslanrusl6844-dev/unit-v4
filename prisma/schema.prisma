@@ -858,6 +858,8 @@ model Wholesaler {
   phone     String?
   // Площадка оптовика: KASPI | OZON | WB. Списки оптовиков у площадок раздельные.
   marketplace String @default("KASPI")
+  // My Market: «магазин оптовика отключён» — его товары в приложении с остатком 0 (нет в наличии).
+  disabled  Boolean  @default(false)
   createdAt DateTime @default(now())
 
   products  WholesalerProduct[]
@@ -873,6 +875,8 @@ model WholesalerProduct {
   wholesalerId String
   wholesaler   Wholesaler @relation(fields: [wholesalerId], references: [id])
   assignedAt   DateTime   @default(now())
+  // My Market: остаток товара до отключения магазина оптовика — возвращается при включении.
+  savedStock   Int?
 
   @@id([productId, marketplace])
   @@index([wholesalerId])
