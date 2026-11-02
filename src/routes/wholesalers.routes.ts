@@ -325,6 +325,45 @@ wholesalersRouter.post('/app/move-many', async (req, res) => {
   }
 });
 
+/** Kaspi / Ozon / WB: переместить много товаров разом на полку оптовика этой площадки или на «Без оптовика». */
+wholesalersRouter.post('/move-many', async (req, res) => {
+  const parsed = z.object({
+    productIds: z.array(z.string().min(1)).min(1).max(5000),
+    marketplace: z.enum(['KASPI', 'OZON', 'WB']),
+    wholesalerId: z.string().min(1).nullable(),
+  }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+  try {
+    const { productIds, marketplace, wholesalerId } = parsed.data;
+    if (wholesalerId) {
+      const w: any = await prisma.wholesaler.findUnique({ where: { id: wholesalerId }, select: { marketplace: true } });
+      if (!w) return res.status(404).json({ error: 'Оптовик не найден' });
+      if (w.marketplace !== marketplace) return res.status(400).json({ error: 'Оптовик другой площадки' });
+    }
+    const products: any[] = await prisma.product.findMany({
+      where: { id: { in: productIds } },
+      select: { id: true, kaspiSku: true, ozonOfferId: true, wbArticle: true },
+    });
+    // Товары чужой площадки пропускаем — на полку Kaspi кладём только товары Kaspi.
+    const own = products.filter((p) => (marketplace === 'KASPI' ? p.kaspiSku : marketplace === 'OZON' ? p.ozonOfferId : p.wbArticle));
+    const ids = own.map((p) => p.id);
+    if (!wholesalerId) {
+      await prisma.wholesalerProduct.deleteMany({ where: { productId: { in: ids }, marketplace } });
+    } else {
+      const ops = ids.map((productId) => prisma.wholesalerProduct.upsert({
+        where: { productId_marketplace: { productId, marketplace } },
+        update: { wholesalerId, assignedAt: new Date() },
+        create: { productId, marketplace, wholesalerId },
+      }));
+      for (let i = 0; i < ops.length; i += 300) await prisma.$transaction(ops.slice(i, i + 300));
+    }
+    res.json({ moved: ids.length, skipped: productIds.length - ids.length, marketplace, wholesalerId });
+  } catch (err: any) {
+    logger.error({ err }, '[Wholesalers] POST /move-many упал');
+    res.status(500).json({ error: 'Не удалось переместить товары', details: String(err?.message ?? err) });
+  }
+});
+
 const stockSchema = z.object({
   productIds: z.array(z.string().min(1)).min(1).max(2000),
   stock: z.number().int().min(0).max(100000),

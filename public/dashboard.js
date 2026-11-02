@@ -7341,6 +7341,39 @@ document.getElementById('syncTeezBtn').addEventListener('click', async () => {
 // перерисовываем текущую страницу. Если в этот момент вы что-то вводите — перерисовку
 // пропускаем до следующего раза, чтобы не стереть набранное.
 // ---------------------------------------------------------------------
+// ---------------------------------------------------------------------
+// Ширина рабочей области: справа у страницы — тонкая ручка. Потяните мышкой, чтобы
+// расширить или сузить (широкие таблицы помещаются без бегунка). Двойной щелчок — на весь экран.
+// Ширина запоминается в этом браузере.
+// ---------------------------------------------------------------------
+(function setupPagesResizer() {
+  const pages = document.querySelector('.pages');
+  if (!pages) return;
+  const KEY = 'ue.pagesWidth';
+  const apply = (w) => { pages.style.maxWidth = w ? `${w}px` : 'none'; };
+  try { const saved = localStorage.getItem(KEY); if (saved) apply(saved === 'full' ? null : Number(saved)); } catch { /* без памяти — обычная ширина */ }
+  pages.style.position = 'relative';
+  const handle = document.createElement('div');
+  handle.title = 'Потяните, чтобы изменить ширину страницы. Двойной щелчок — на весь экран';
+  handle.style.cssText = 'position:absolute;top:0;right:-7px;width:10px;height:100%;cursor:col-resize;z-index:5;border-right:2px dashed transparent';
+  handle.addEventListener('mouseenter', () => { handle.style.borderRightColor = 'var(--accent)'; });
+  handle.addEventListener('mouseleave', () => { handle.style.borderRightColor = 'transparent'; });
+  handle.addEventListener('dblclick', () => { apply(null); try { localStorage.setItem(KEY, 'full'); } catch { /* ignore */ } });
+  handle.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    const left = pages.getBoundingClientRect().left;
+    const move = (ev) => apply(Math.max(900, Math.round(ev.clientX - left)));
+    const up = () => {
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+      try { localStorage.setItem(KEY, String(parseInt(pages.style.maxWidth, 10) || 'full')); } catch { /* ignore */ }
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+  });
+  pages.appendChild(handle);
+})();
+
 const AUTO_SYNC_MS = 5 * 60 * 1000;
 let autoSyncBusy = false;
 let autoSyncMissed = false;
@@ -8218,7 +8251,8 @@ function renderYardArchive() {
 const wholesalersState = { loaded: false, error: null, wholesalers: [], assignments: {} };
 const wsOpenShelves = new Set();     // ключи раскрытых полок: 'none' или id оптовика
 const wsSelectedShelves = new Set(); // id оптовиков, отмеченных для ZIP накладных
-const wsRowLimits = new Map();       // `${полка}|${площадка}` -> сколько строк показано
+const wsRowLimits = new Map();
+const wsPicked = new Set(); // отмеченные товары полок: `${productId}|${площадка}` — для массового переноса       // `${полка}|${площадка}` -> сколько строк показано
 const WS_ROWS_STEP = 100;
 let wsWired = false;
 
@@ -8437,7 +8471,7 @@ function wsTableHtml(group, mp, products) {
   const head = `${mp ? `<span class="dot dot--${mp.toLowerCase()}"></span> ${mpLabel(mp)}` : 'Без площадки'} · ${products.length}`;
   const rows = shown.map((p) => `
     <tr data-ws-row="${wsEsc(p.id)}">
-      <td>${mp ? `<button class="link-btn" data-ws-move="${wsEsc(p.id)}" data-ws-shelf="${wsEsc(group.key)}" data-ws-move-mp="${mp}">Переместить</button>` : ''}</td>
+      <td style="white-space:nowrap">${mp ? `<input type="checkbox" data-ws-pick="${wsEsc(p.id)}" data-ws-pick-shelf="${wsEsc(group.key)}" ${wsPicked.has(p.id + '|' + mp) ? 'checked' : ''} style="width:auto;margin-right:6px;vertical-align:middle" /><button class="link-btn" data-ws-move="${wsEsc(p.id)}" data-ws-shelf="${wsEsc(group.key)}" data-ws-move-mp="${mp}">Переместить</button>` : ''}</td>
       <td>${wsPhotoHtml(p)}</td>
       <td class="name-cell">${wsEsc(p.name)}</td>
       <td class="name-cell">${wsEsc(p.sku)}</td>
@@ -8446,11 +8480,24 @@ function wsTableHtml(group, mp, products) {
       ${mp ? wsNumberCells(p, mp) : '<td class="num">—</td>'.repeat(5)}
       <td>${mp ? `<button class="link-btn" data-ws-pdf="${wsEsc(p.id)}" data-ws-mp="${mp}" title="Накладная PDF на последний заказ этого товара на ${mpLabel(mp)}">Накладная</button>` : ''}</td>
     </tr>`).join('');
+  const pickedHere = mp ? products.filter((p) => wsPicked.has(p.id + '|' + mp)).length : 0;
+  const allPicked = mp && products.length > 0 && pickedHere === products.length;
+  const bulkBar = mp ? `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0;font-size:12.5px">
+      <span style="color:var(--text-muted)">Выбрано товаров: ${pickedHere}</span>
+      <span>Переместить выбранных к:</span>
+      <select data-ws-bulk-target="${wsEsc(group.key)}" class="cost-input" style="max-width:260px">
+        <option value="">— выберите оптовика —</option>
+        ${group.wholesaler ? '<option value="__none__">Без оптовика</option>' : ''}
+        ${wholesalersState.wholesalers.filter((w) => (w.marketplace || 'KASPI') === mp && w.id !== group.key).map((w) => `<option value="${wsEsc(w.id)}">${wsEsc(wsDisplayName(w))}</option>`).join('')}
+      </select>
+      <button class="btn btn--accent" data-ws-bulk-move="${wsEsc(group.key)}" data-ws-bulk-mp="${mp}" ${pickedHere ? '' : 'disabled'}>Переместить</button>
+    </div>` : '';
   return `
     <div style="margin:10px 0 4px;font-weight:600;font-size:12.5px">${head}</div>
+    ${bulkBar}
     <div class="table-wrap">
       <table class="table">
-        <thead><tr><th></th><th>Фото</th><th>Название</th><th>SKU</th><th>Артикул</th><th class="num">Себестоимость</th><th class="num">Цена</th><th class="num">Комиссия</th><th class="num">Логистика</th><th class="num">Налог</th><th class="num">Прибыль</th><th></th></tr></thead>
+        <thead><tr><th style="white-space:nowrap">${mp ? `<input type="checkbox" data-ws-pick-all="${wsEsc(group.key)}" data-ws-pick-mp="${mp}" ${allPicked ? 'checked' : ''} style="width:auto" title="Выбрать все товары полки" /> все` : ''}</th><th>Фото</th><th>Название</th><th>SKU</th><th>Артикул</th><th class="num">Себестоимость</th><th class="num">Цена</th><th class="num">Комиссия</th><th class="num">Логистика</th><th class="num">Налог</th><th class="num">Прибыль</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
@@ -8632,10 +8679,48 @@ function renderWholesalerShelves() {
         </div>`;
     }).join('');
     wsUpdateToolbar();
+    wsWireBulk(list, groups);
   } catch (err) {
     // Любая ошибка отрисовки полок видна на месте и не ломает общую таблицу.
     list.innerHTML = `<p style="color:var(--loss);margin:0">Ошибка отрисовки полок: ${wsEsc(err.message || err)}</p>`;
   }
+}
+
+/** Массовый перенос товаров между полками Kaspi / Ozon / WB: галочки + «Переместить выбранных к …». */
+function wsWireBulk(list, groups) {
+  const byKey = new Map(groups.map((g) => [g.key, g]));
+  list.querySelectorAll('[data-ws-pick]').forEach((c) => c.addEventListener('change', () => {
+    const g = byKey.get(c.dataset.wsPickShelf);
+    const k = c.dataset.wsPick + '|' + (g?.mp || '');
+    if (c.checked) wsPicked.add(k); else wsPicked.delete(k);
+    renderWholesalerShelves();
+  }));
+  list.querySelectorAll('[data-ws-pick-all]').forEach((c) => c.addEventListener('change', () => {
+    const g = byKey.get(c.dataset.wsPickAll);
+    if (!g) return;
+    for (const p of g.products) { const k = p.id + '|' + c.dataset.wsPickMp; if (c.checked) wsPicked.add(k); else wsPicked.delete(k); }
+    renderWholesalerShelves();
+  }));
+  list.querySelectorAll('[data-ws-bulk-move]').forEach((b) => b.addEventListener('click', async () => {
+    const g = byKey.get(b.dataset.wsBulkMove);
+    const mp = b.dataset.wsBulkMp;
+    const target = list.querySelector(`[data-ws-bulk-target="${CSS.escape(b.dataset.wsBulkMove)}"]`)?.value;
+    if (!g || !target) { alert('Выберите оптовика, к которому переместить'); return; }
+    const ids = g.products.filter((p) => wsPicked.has(p.id + '|' + mp)).map((p) => p.id);
+    if (!ids.length) return;
+    const name = target === '__none__' ? 'Без оптовика' : wsDisplayName(wholesalersState.wholesalers.find((w) => w.id === target) || {});
+    if (!confirm(`Переместить ${ids.length} ${wsPlural(ids.length, 'товар', 'товара', 'товаров')} → «${name}»?`)) return;
+    b.disabled = true;
+    try {
+      const r = await api('/wholesalers/move-many', { method: 'POST', body: JSON.stringify({ productIds: ids, marketplace: mp, wholesalerId: target === '__none__' ? null : target }) });
+      ids.forEach((id) => wsPicked.delete(id + '|' + mp));
+      await loadWholesalers();
+      wsSetStatus(`Перемещено: ${r.moved} → «${name}».`);
+    } catch (err) {
+      b.disabled = false;
+      alert('Не удалось переместить: ' + err.message);
+    }
+  }));
 }
 
 function wsUpdateToolbar() {
