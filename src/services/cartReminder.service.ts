@@ -117,7 +117,7 @@ export async function runReminderKind(kind: ReminderKind, now = new Date()): Pro
     if (ph) orderTimes.set(ph, [...(orderTimes.get(ph) ?? []), new Date(o.createdAt).getTime()]);
   }
   // Для просмотров «дальше по воронке» — ещё и корзина: ей займётся напоминание о корзине.
-  const doneTypes = kind === 'view' ? ['order', 'paid', 'cart'] : ['order', 'paid'];
+  const doneTypes: Array<'order' | 'paid' | 'cart'> = kind === 'view' ? ['order', 'paid', 'cart'] : ['order', 'paid'];
   const doneEvents: any[] = await prisma.shopEvent.findMany({ where: { type: { in: doneTypes }, createdAt: { gte: windowStart }, phone: { not: null } } });
   for (const o of doneEvents) {
     const ph = normPhone(o.phone);
