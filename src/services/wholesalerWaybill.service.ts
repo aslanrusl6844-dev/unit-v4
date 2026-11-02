@@ -1,7 +1,7 @@
 import PDFDocument from 'pdfkit';
 import path from 'path';
 
-export type WholesalerWaybillMarketplace = 'KASPI' | 'OZON' | 'WB';
+export type WholesalerWaybillMarketplace = 'KASPI' | 'OZON' | 'WB' | 'APP';
 
 export interface WholesalerWaybillItem {
   sku: string;
@@ -26,6 +26,7 @@ const MARKETPLACE_NAMES: Record<WholesalerWaybillMarketplace, string> = {
   KASPI: 'Kaspi',
   OZON: 'Ozon',
   WB: 'Wildberries',
+  APP: 'My Market',
 };
 
 /** Генерирует накладную оптовика по заказу. Цена и финансовые суммы не печатаются. */

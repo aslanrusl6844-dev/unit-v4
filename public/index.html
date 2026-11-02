@@ -550,7 +550,12 @@
 
         <!-- ---- Товары ---- -->
         <div id="mymarketProductsTab" hidden>
-          <div class="panel">
+          <div class="seg" id="mmProdViewTabs" style="margin-bottom:12px">
+            <button data-view="shelves" class="is-active">Полки оптовиков</button>
+            <button data-view="table">Общая таблица</button>
+          </div>
+          <div class="panel" id="mmShelvesRoot"></div>
+          <div class="panel" data-mm-table-view hidden>
             <div class="inline-form" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
               <input type="text" id="mymarketProductsSearch" placeholder="Поиск по названию или SKU" style="max-width:280px" />
               <div style="display:flex;gap:8px">

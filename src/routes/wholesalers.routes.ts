@@ -29,7 +29,7 @@ async function generateWholesalerWaybillPdf(input: WholesalerWaybillInput): Prom
 export const wholesalersRouter = Router();
 
 const ALL_MARKETPLACES: WholesalerWaybillMarketplace[] = ['KASPI', 'OZON', 'WB'];
-const MARKETPLACE_LABEL: Record<WholesalerWaybillMarketplace, string> = { KASPI: 'Kaspi', OZON: 'Ozon', WB: 'Wildberries' };
+const MARKETPLACE_LABEL: Record<WholesalerWaybillMarketplace, string> = { KASPI: 'Kaspi', OZON: 'Ozon', WB: 'Wildberries', APP: 'MyMarket' };
 /** Не больше стольких накладных в одном ZIP — иначе serverless-функция не уложится по времени. */
 const WHOLESALER_ZIP_LIMIT = 150;
 
@@ -59,7 +59,8 @@ wholesalersRouter.get('/', async (_req, res) => {
 /** Телефон необязателен: пустая строка = «нет телефона» (хранится как null). */
 const phoneField = z.string().trim().max(40).optional().nullable().transform((v) => (v ? v : null));
 
-const marketplaceEnum = z.enum(['KASPI', 'OZON', 'WB']);
+// APP — полки оптовиков витрины My Market (свои оптовики, заказы приложения ShopOrder).
+const marketplaceEnum = z.enum(['KASPI', 'OZON', 'WB', 'APP']);
 
 const createSchema = z.object({
   firstName: z.string().trim().min(1).max(60),
@@ -158,11 +159,11 @@ wholesalersRouter.post('/move', async (req, res) => {
     const { productId, wholesalerId, marketplace } = parsed.data;
     const product: any = await prisma.product.findUnique({
       where: { id: productId },
-      select: { id: true, kaspiSku: true, ozonOfferId: true, wbArticle: true },
+      select: { id: true, kaspiSku: true, ozonOfferId: true, wbArticle: true, sku: true, shopArticle: true },
     });
     if (!product) return res.status(404).json({ error: 'Товар не найден' });
-    // Товар чужой площадки на полку не кладём.
-    const own = marketplace === 'KASPI' ? product.kaspiSku : marketplace === 'OZON' ? product.ozonOfferId : product.wbArticle;
+    // Товар чужой площадки на полку не кладём. Витрина My Market — любой товар учёта.
+    const own = marketplace === 'KASPI' ? product.kaspiSku : marketplace === 'OZON' ? product.ozonOfferId : marketplace === 'WB' ? product.wbArticle : (product.shopArticle ?? product.sku);
     if (!own) return res.status(400).json({ error: 'Этот товар не относится к выбранной площадке' });
 
     if (wholesalerId === null) {
@@ -184,6 +185,64 @@ wholesalersRouter.post('/move', async (req, res) => {
   }
 });
 
+/**
+ * Полки My Market одним запросом: товары витрины (в продаже), к какому оптовику привязаны,
+ * сколько заказано СЕГОДНЯ (по Алматы) по товару и по полке, и города заказов за период — для накладных.
+ */
+wholesalersRouter.get('/app/overview', async (req, res) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store');
+    const { from, to } = parseRange(req.query as Record<string, unknown>);
+    const todayStart = almatyNow().startOf('day').toDate();
+    const periodStart = from < todayStart ? from : todayStart;
+    const [products, links, orders, index] = await Promise.all([
+      prisma.product.findMany({
+        where: { shopActive: true, shopArchived: false },
+        select: { id: true, sku: true, shopArticle: true, name: true, shopPrice: true, shopStock: true, images: true },
+        orderBy: { name: 'asc' },
+      }) as Promise<any[]>,
+      prisma.wholesalerProduct.findMany({ where: { marketplace: 'APP' }, select: { productId: true, wholesalerId: true } }) as Promise<any[]>,
+      prisma.shopOrder.findMany({ where: { createdAt: { gte: periodStart } } }) as Promise<any[]>,
+      appProductIndex(),
+    ]);
+    const shelfOf = new Map(links.map((l) => [l.productId, l.wholesalerId]));
+    const todayQty: Record<string, number> = {};
+    const todayShelf: Record<string, { orders: number; qty: number }> = {};
+    const cities = new Map<string, number>();
+    for (const o of orders) {
+      if (!isShippableStatus(o.status)) continue;
+      const created = new Date(o.createdAt);
+      if (created >= from && created <= to && o.city) cities.set(o.city, (cities.get(o.city) ?? 0) + 1);
+      if (created < todayStart) continue;
+      const shelvesInOrder = new Set<string>();
+      for (const line of parseAppItems(o.items)) {
+        const p = index.get(line.sku);
+        if (!p) continue;
+        todayQty[p.id] = (todayQty[p.id] ?? 0) + line.quantity;
+        const shelf = shelfOf.get(p.id) ?? 'none';
+        const t = (todayShelf[shelf] ??= { orders: 0, qty: 0 });
+        t.qty += line.quantity;
+        shelvesInOrder.add(shelf);
+      }
+      for (const sh of shelvesInOrder) todayShelf[sh].orders += 1;
+    }
+    const firstImage = (raw: unknown) => {
+      try { const a = JSON.parse(String(raw ?? '[]')); return Array.isArray(a) && typeof a[0] === 'string' ? a[0] : null; } catch { return null; }
+    };
+    res.json({
+      products: products.map((p) => ({
+        id: p.id, sku: p.shopArticle ?? p.sku, name: p.name, price: p.shopPrice, stock: p.shopStock,
+        image: firstImage(p.images), wholesalerId: shelfOf.get(p.id) ?? null, todayQty: todayQty[p.id] ?? 0,
+      })),
+      todayShelf,
+      cities: [...cities.entries()].sort((a, b) => b[1] - a[1]).map(([city, count]) => ({ city, count })),
+    });
+  } catch (err: any) {
+    logger.error({ err }, '[Wholesalers] GET /app/overview упал');
+    res.status(500).json({ error: 'Не удалось получить полки My Market', details: String(err?.message ?? err) });
+  }
+});
+
 // ---------------------------------------------------------------------
 // Накладные: по одной PDF и пачкой ZIP
 // ---------------------------------------------------------------------
@@ -196,6 +255,7 @@ function isShippableStatus(status: string | null | undefined): boolean {
 function parseMarketplaces(raw: unknown): WholesalerWaybillMarketplace[] | null {
   if (raw === undefined || raw === '' || raw === null) return ALL_MARKETPLACES; // «Всё вместе»
   const v = String(raw).toUpperCase();
+  if (v === 'APP') return ['APP']; // витрина My Market — только явно, в «Всё вместе» не входит
   return (ALL_MARKETPLACES as string[]).includes(v) ? [v as WholesalerWaybillMarketplace] : null;
 }
 
@@ -210,7 +270,7 @@ function parseRange(query: Record<string, unknown>): { from: Date; to: Date } {
 const safeName = (s: string) => s.replace(/[^\p{L}\p{N}_-]+/gu, '_').replace(/^_+|_+$/g, '') || 'x';
 
 function articleFor(marketplace: WholesalerWaybillMarketplace, product: any, externalSku: string): string | null {
-  const own = marketplace === 'KASPI' ? product?.kaspiSku : marketplace === 'OZON' ? product?.ozonOfferId : product?.wbArticle;
+  const own = marketplace === 'KASPI' ? product?.kaspiSku : marketplace === 'OZON' ? product?.ozonOfferId : marketplace === 'WB' ? product?.wbArticle : product?.shopArticle;
   return own ?? externalSku ?? null;
 }
 
@@ -227,12 +287,64 @@ const ORDER_INCLUDE = {
   items: { include: { product: { select: { sku: true, kaspiSku: true, ozonOfferId: true, wbArticle: true } } } },
 };
 
+// ---------------------------------------------------------------------
+// Витрина My Market (APP): заказы приложения ShopOrder, товары в JSON items по sku/shopArticle
+// ---------------------------------------------------------------------
+
+export interface AppOrderLine { sku: string; name: string; quantity: number }
+
+export function parseAppItems(raw: unknown): AppOrderLine[] {
+  try {
+    const arr = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .map((i: any) => ({ sku: String(i?.sku ?? '').trim(), name: String(i?.name ?? '').trim(), quantity: Math.max(1, Math.round(Number(i?.quantity ?? i?.qty ?? 1)) || 1) }))
+      .filter((i) => i.sku);
+  } catch {
+    return [];
+  }
+}
+
+/** Карта «sku/артикул витрины → товар» для заказов приложения. */
+async function appProductIndex(): Promise<Map<string, any>> {
+  const products: any[] = await prisma.product.findMany({ select: { id: true, sku: true, shopArticle: true, name: true } });
+  const map = new Map<string, any>();
+  for (const p of products) {
+    if (p.sku) map.set(String(p.sku), p);
+    if (p.shopArticle) map.set(String(p.shopArticle), p);
+  }
+  return map;
+}
+
+export const sameCity = (a: unknown, b: unknown) =>
+  String(a ?? '').trim().toLowerCase().replace(/ё/g, 'е') === String(b ?? '').trim().toLowerCase().replace(/ё/g, 'е');
+
+async function collectAppJobs(wholesalerName: string, idSet: Set<string>, from: Date, to: Date, city: string | null): Promise<WaybillJob[]> {
+  const [orders, index] = await Promise.all([
+    prisma.shopOrder.findMany({ where: { createdAt: { gte: from, lte: to } }, orderBy: { createdAt: 'desc' } }) as Promise<any[]>,
+    appProductIndex(),
+  ]);
+  const jobs: WaybillJob[] = [];
+  for (const order of orders) {
+    if (!isShippableStatus(order.status)) continue;
+    if (city && !sameCity(order.city, city)) continue;
+    const items: WholesalerWaybillItem[] = parseAppItems(order.items)
+      .map((i) => ({ i, p: index.get(i.sku) }))
+      .filter(({ p }) => p && idSet.has(p.id))
+      .map(({ i, p }) => ({ sku: p.sku ?? i.sku, article: p.shopArticle ?? i.sku, name: i.name || p.name, quantity: i.quantity }));
+    if (!items.length) continue;
+    jobs.push({ wholesalerName, marketplace: 'APP', orderNumber: order.number, orderDate: order.createdAt, city: order.city ?? null, items });
+  }
+  return jobs;
+}
+
 /** Накладные одной полки: заказы за период по товарам этого оптовика, по каждой выбранной площадке отдельно. */
 async function collectJobs(
   wholesaler: { id: string; firstName: string; lastName: string; marketplace?: string },
   allMarketplaces: WholesalerWaybillMarketplace[],
   from: Date,
   to: Date,
+  city: string | null = null,
 ): Promise<WaybillJob[]> {
   // Оптовик принадлежит одной площадке — накладные только по ней (чужие площадки не смешиваем).
   const marketplaces = allMarketplaces.filter((m) => !wholesaler.marketplace || m === wholesaler.marketplace);
@@ -246,6 +358,10 @@ async function collectJobs(
   const wholesalerName = `${wholesaler.firstName} ${wholesaler.lastName}`;
   const jobs: WaybillJob[] = [];
   for (const marketplace of marketplaces) {
+    if (marketplace === 'APP') {
+      jobs.push(...(await collectAppJobs(wholesalerName, idSet, from, to, city)));
+      continue;
+    }
     const orders: any[] = await prisma.order.findMany({
       where: { marketplace, orderDate: { gte: from, lte: to }, items: { some: { productId: { in: productIds } } } },
       orderBy: { orderDate: 'desc' },
@@ -286,6 +402,8 @@ async function sendZip(
       if (opts.multipleWholesalers) parts.push(safeName(job.wholesalerName));
       // Kaspi / Ozon / WB в одном ZIP не смешиваются: при «Всё вместе» — отдельные папки.
       if (opts.multipleMarketplaces) parts.push(MARKETPLACE_LABEL[job.marketplace]);
+      // My Market: накладные разложены по папкам городов — удобно отдавать пачками по городу.
+      if (job.marketplace === 'APP') parts.push(safeName(job.city || 'Без города'));
       parts.push(`${MARKETPLACE_LABEL[job.marketplace]}_${safeName(job.orderNumber)}.pdf`);
       zip.file(parts.join('/'), pdf);
       included += 1;
@@ -328,8 +446,9 @@ wholesalersRouter.get('/waybills.zip', async (req, res) => {
     if (!wholesalers.length) return res.status(404).json({ error: 'Оптовики не найдены' });
     const { from, to } = parseRange(req.query as Record<string, unknown>);
 
+    const city = typeof req.query.city === 'string' && req.query.city.trim() ? req.query.city.trim() : null;
     const jobs: WaybillJob[] = [];
-    for (const w of wholesalers) jobs.push(...(await collectJobs(w, marketplaces, from, to)));
+    for (const w of wholesalers) jobs.push(...(await collectJobs(w, marketplaces, from, to, city)));
     if (!jobs.length) return res.status(404).json({ error: 'За выбранный период нет заказов по товарам этих оптовиков' });
 
     await sendZip(res, jobs, {
@@ -354,7 +473,8 @@ wholesalersRouter.get('/:id/waybills.zip', async (req, res) => {
     if (!wholesaler) return res.status(404).json({ error: 'Оптовик не найден' });
     const { from, to } = parseRange(req.query as Record<string, unknown>);
 
-    const jobs = await collectJobs(wholesaler, marketplaces, from, to);
+    const city = typeof req.query.city === 'string' && req.query.city.trim() ? req.query.city.trim() : null;
+    const jobs = await collectJobs(wholesaler, marketplaces, from, to, city);
     if (!jobs.length) return res.status(404).json({ error: 'За выбранный период нет заказов по товарам этого оптовика' });
 
     await sendZip(res, jobs, {

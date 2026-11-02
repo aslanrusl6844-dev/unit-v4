@@ -2594,6 +2594,8 @@ function switchMyMarketTab(tab) {
     document.querySelectorAll('#mymarketProductFilterTabs button').forEach((b) => b.classList.toggle('is-active', b.dataset.filter === 'active'));
     myMarketSelectedProductIds.clear();
     loadMyMarketProducts();
+    mmWireViewTabs();
+    if (mmProdView === 'shelves') loadMmShelves();
   }
   if (tab === 'catalog') loadMyMarketCatalog();
   if (tab === 'showcases') loadShowcases();
@@ -2603,6 +2605,218 @@ function switchMyMarketTab(tab) {
   if (tab === 'analytics') loadMyMarketAnalytics();
   if (tab === 'couriers') { loadMyMarketCouriers(); loadMyMarketCourierApplications(); }
   if (tab === 'finance') loadMyMarketFinance();
+}
+
+// =====================================================================
+// My Market → Товары → «Полки оптовиков» (как у Kaspi/Ozon, свои оптовики APP):
+// товар витрины лежит на полке оптовика или на «Без оптовика»; у полки видно, сколько
+// заказов пришло СЕГОДНЯ; накладные ZIP за период сверху, разложены по папкам городов.
+// =====================================================================
+let mmProdView = 'shelves';
+let mmViewWired = false;
+const mmShelf = { wholesalers: [], products: [], todayShelf: {}, cities: [], open: new Set(), selected: new Set(), editing: null, adding: false, city: '', error: null, loading: false };
+
+function mmWireViewTabs() {
+  const apply = () => {
+    document.querySelectorAll('#mmProdViewTabs button').forEach((b) => b.classList.toggle('is-active', b.dataset.view === mmProdView));
+    document.getElementById('mmShelvesRoot').hidden = mmProdView !== 'shelves';
+    document.querySelectorAll('[data-mm-table-view]').forEach((el) => { el.hidden = mmProdView !== 'table'; });
+  };
+  apply();
+  if (mmViewWired) return;
+  mmViewWired = true;
+  document.getElementById('mmProdViewTabs').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-view]');
+    if (!b) return;
+    mmProdView = b.dataset.view;
+    apply();
+    if (mmProdView === 'shelves') loadMmShelves();
+  });
+}
+
+function mmShelfQuery(extra) {
+  const params = new URLSearchParams({ marketplace: 'APP', ...extra });
+  if (state.from) params.set('from', state.from);
+  if (state.to) params.set('to', state.to);
+  if (mmShelf.city) params.set('city', mmShelf.city);
+  return params.toString();
+}
+
+async function loadMmShelves() {
+  mmShelf.loading = true;
+  renderMmShelves();
+  try {
+    const q = new URLSearchParams();
+    if (state.from) q.set('from', state.from);
+    if (state.to) q.set('to', state.to);
+    const [ws, ov] = await Promise.all([api('/wholesalers'), api(`/wholesalers/app/overview?${q}`)]);
+    mmShelf.wholesalers = ws.wholesalers.filter((w) => w.marketplace === 'APP');
+    mmShelf.products = ov.products;
+    mmShelf.todayShelf = ov.todayShelf || {};
+    mmShelf.cities = ov.cities || [];
+    mmShelf.error = null;
+  } catch (err) {
+    mmShelf.error = err.message || String(err);
+  }
+  mmShelf.loading = false;
+  renderMmShelves();
+}
+
+function mmStatus(text, kind) {
+  const el = document.getElementById('mmShelfStatus');
+  if (!el) return;
+  el.style.color = kind === 'error' ? 'var(--loss)' : kind === 'warn' ? 'var(--warn)' : 'var(--text-muted)';
+  el.textContent = text || '';
+}
+
+function mmShelfHtml(key, title, w, products) {
+  const t = mmShelf.todayShelf[key] || { orders: 0, qty: 0 };
+  const open = mmShelf.open.has(key);
+  const today = t.orders > 0
+    ? `<span style="color:var(--loss);font-weight:600;margin-left:8px" title="Заказов сегодня / штук">+${t.orders} ${wsPlural(t.orders, 'заказ', 'заказа', 'заказов')} сегодня (${t.qty} шт.)</span>`
+    : '';
+  const editing = w && mmShelf.editing && mmShelf.editing.id === w.id;
+  const head = editing
+    ? `<form data-mm-edit-form="${wsEsc(w.id)}" class="inline-form" style="flex:1;gap:6px;flex-wrap:wrap">
+         <input data-mm-f="firstName" placeholder="Имя" maxlength="60" value="${wsEsc(mmShelf.editing.firstName)}" required />
+         <input data-mm-f="lastName" placeholder="Фамилия" maxlength="60" value="${wsEsc(mmShelf.editing.lastName)}" required />
+         <input data-mm-f="phone" placeholder="Телефон (можно пустым)" maxlength="40" value="${wsEsc(mmShelf.editing.phone)}" />
+         <button class="btn btn--accent" type="submit">Сохранить</button>
+         <button class="btn btn--ghost" type="button" data-mm-edit-cancel="1">Отмена</button>
+       </form>`
+    : `<div style="flex:1;min-width:200px"><div style="font-weight:600;font-size:15px">${wsEsc(title)}${today}</div>
+         <div style="font-size:12px;color:var(--text-faint)">${products.length ? `${products.length} ${wsPlural(products.length, 'товар', 'товара', 'товаров')}` : 'Полка пуста'}</div></div>`;
+  const rows = open ? `<div class="table-wrap" style="margin-top:10px"><table class="table"><thead><tr><th>Фото</th><th>Артикул</th><th>Название</th><th class="num">Цена</th><th class="num">Остаток</th><th class="num">Сегодня</th><th>Полка</th></tr></thead><tbody>
+      ${products.map((p) => `<tr>
+        <td>${p.image ? `<img src="${wsEsc(p.image)}" alt="" style="width:40px;height:40px;object-fit:cover;border-radius:6px" />` : ''}</td>
+        <td>${wsEsc(p.sku)}</td><td>${wsEsc(p.name)}</td>
+        <td class="num">${p.price != null ? fmtMoney(p.price) : '—'}</td><td class="num">${fmt.format(p.stock ?? 0)}</td>
+        <td class="num" style="${p.todayQty ? 'color:var(--loss);font-weight:600' : 'color:var(--text-faint)'}">${p.todayQty ? `+${p.todayQty}` : '0'}</td>
+        <td><select data-mm-move="${wsEsc(p.id)}" class="cost-input" style="max-width:220px">
+          <option value="" ${!p.wholesalerId ? 'selected' : ''}>Без оптовика</option>
+          ${mmShelf.wholesalers.map((x) => `<option value="${wsEsc(x.id)}" ${p.wholesalerId === x.id ? 'selected' : ''}>${wsEsc(wsDisplayName(x))}</option>`).join('')}
+        </select></td></tr>`).join('') || '<tr><td colspan="7" style="color:var(--text-faint)">Товаров нет</td></tr>'}
+    </tbody></table></div>` : '';
+  return `<div style="border:1px solid var(--border,#e5e5e5);border-radius:8px;padding:10px 12px;margin-bottom:8px">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      ${w ? `<input type="checkbox" data-mm-select="${wsEsc(w.id)}" ${mmShelf.selected.has(w.id) ? 'checked' : ''} style="width:auto" />` : '<span style="width:13px"></span>'}
+      ${head}
+      ${w && !editing ? `<button class="btn btn--ghost" data-mm-rename="${wsEsc(w.id)}">Переименовать</button>
+        <button class="btn btn--ghost" data-mm-zip="${wsEsc(w.id)}">📦 Накладные ZIP</button>` : ''}
+      <button class="btn btn--ghost" data-mm-toggle="${wsEsc(key)}">${open ? 'Скрыть товары' : 'Показать товары'}</button>
+    </div>${rows}</div>`;
+}
+
+function renderMmShelves() {
+  const root = document.getElementById('mmShelvesRoot');
+  if (!root) return;
+  if (mmShelf.loading && !mmShelf.products.length) { root.innerHTML = '<p class="panel__hint">Загружаю полки…</p>'; return; }
+  if (mmShelf.error) { root.innerHTML = `<p style="color:var(--loss)">Не удалось загрузить полки: ${wsEsc(mmShelf.error)}</p>`; return; }
+  const byShelf = new Map([['none', []]]);
+  for (const w of mmShelf.wholesalers) byShelf.set(w.id, []);
+  for (const p of mmShelf.products) (byShelf.get(p.wholesalerId) || byShelf.get('none')).push(p);
+  const todayTotal = Object.values(mmShelf.todayShelf).reduce((a, t) => a + t.orders, 0);
+  const sel = mmShelf.selected.size;
+  root.innerHTML = `
+    <p class="panel__hint" style="margin-top:0">Товары витрины по оптовикам — чтобы сразу видеть, у кого какой заказ пришёл сегодня${todayTotal ? ` (сегодня заказов с товарами витрины: <b>${todayTotal}</b>)` : ''}. Накладные — за период сверху страницы, в ZIP разложены по папкам городов; можно выбрать один город.</p>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+      <span style="font-size:12.5px;color:var(--text-muted)">Выбрано полок: ${sel}</span>
+      <select id="mmShelfCity" class="cost-input" style="max-width:240px">
+        <option value="">Все города</option>
+        ${mmShelf.cities.map((c) => `<option value="${wsEsc(c.city)}" ${mmShelf.city === c.city ? 'selected' : ''}>${wsEsc(c.city)} (${c.count})</option>`).join('')}
+      </select>
+      <button class="btn btn--ghost" id="mmShelfZipSelected" ${sel ? '' : 'disabled'}>📦 Накладные ZIP по выбранным</button>
+      <button class="btn btn--ghost" id="mmShelfDeleteSelected" style="color:var(--loss)" ${sel ? '' : 'disabled'}>Удалить выбранных</button>
+      <span id="mmShelfStatus" style="font-size:12px"></span>
+    </div>
+    ${mmShelfHtml('none', 'Без оптовика', null, byShelf.get('none'))}
+    ${mmShelf.wholesalers.map((w) => mmShelfHtml(w.id, wsDisplayName(w), w, byShelf.get(w.id))).join('')}
+    ${mmShelf.adding
+      ? `<form id="mmShelfAddForm" class="inline-form" style="gap:6px;flex-wrap:wrap;margin-top:6px">
+           <input data-mm-a="firstName" placeholder="Имя" maxlength="60" required />
+           <input data-mm-a="lastName" placeholder="Фамилия" maxlength="60" required />
+           <input data-mm-a="phone" placeholder="Телефон (можно пустым)" maxlength="40" />
+           <button class="btn btn--accent" type="submit">Сохранить</button>
+           <button class="btn btn--ghost" type="button" id="mmShelfAddCancel">Отмена</button>
+         </form>`
+      : '<button class="btn btn--ghost" id="mmShelfAdd" style="margin-top:6px">Добавить оптовика</button>'}`;
+  mmWireShelves(root);
+}
+
+async function mmZip(url, btn) {
+  if (btn) btn.disabled = true;
+  mmStatus('Собираю накладные…');
+  try {
+    const r = await wsDownload(url, 'waybills.zip');
+    mmStatus(r.included < r.total ? `Скачано ${r.included} из ${r.total} — сузьте период сверху.` : `Скачано накладных: ${r.included}.`, r.included < r.total ? 'warn' : undefined);
+  } catch (err) {
+    mmStatus(`Накладные: ${err.message}`, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function mmWireShelves(root) {
+  root.querySelectorAll('[data-mm-toggle]').forEach((b) => b.addEventListener('click', () => {
+    const k = b.dataset.mmToggle;
+    if (mmShelf.open.has(k)) mmShelf.open.delete(k); else mmShelf.open.add(k);
+    renderMmShelves();
+  }));
+  root.querySelectorAll('[data-mm-select]').forEach((c) => c.addEventListener('change', () => {
+    if (c.checked) mmShelf.selected.add(c.dataset.mmSelect); else mmShelf.selected.delete(c.dataset.mmSelect);
+    renderMmShelves();
+  }));
+  root.querySelector('#mmShelfCity')?.addEventListener('change', (e) => { mmShelf.city = e.target.value; });
+  root.querySelectorAll('[data-mm-zip]').forEach((b) => b.addEventListener('click', () => mmZip(`/wholesalers/${encodeURIComponent(b.dataset.mmZip)}/waybills.zip?${mmShelfQuery({})}`, b)));
+  root.querySelector('#mmShelfZipSelected')?.addEventListener('click', (e) => mmZip(`/wholesalers/waybills.zip?${mmShelfQuery({ ids: [...mmShelf.selected].join(',') })}`, e.currentTarget));
+  root.querySelector('#mmShelfDeleteSelected')?.addEventListener('click', async () => {
+    const ids = [...mmShelf.selected];
+    if (!ids.length || !confirm(`Удалить оптовиков: ${ids.length}? Их товары уйдут на полку «Без оптовика»`)) return;
+    for (const id of ids) { try { await api(`/wholesalers/${encodeURIComponent(id)}`, { method: 'DELETE' }); } catch (err) { mmStatus(err.message, 'error'); } }
+    mmShelf.selected.clear();
+    await loadMmShelves();
+  });
+  root.querySelectorAll('[data-mm-move]').forEach((sel) => sel.addEventListener('change', async () => {
+    sel.disabled = true;
+    try {
+      await api('/wholesalers/move', { method: 'POST', body: JSON.stringify({ productId: sel.dataset.mmMove, marketplace: 'APP', wholesalerId: sel.value || null }) });
+      const p = mmShelf.products.find((x) => x.id === sel.dataset.mmMove);
+      if (p) p.wholesalerId = sel.value || null;
+      await loadMmShelves();
+    } catch (err) {
+      sel.disabled = false;
+      alert('Не удалось переместить: ' + err.message);
+    }
+  }));
+  root.querySelectorAll('[data-mm-rename]').forEach((b) => b.addEventListener('click', () => {
+    const w = mmShelf.wholesalers.find((x) => x.id === b.dataset.mmRename);
+    if (!w) return;
+    mmShelf.editing = { id: w.id, firstName: w.firstName, lastName: w.lastName, phone: w.phone || '' };
+    renderMmShelves();
+  }));
+  root.querySelector('[data-mm-edit-cancel]')?.addEventListener('click', () => { mmShelf.editing = null; renderMmShelves(); });
+  root.querySelector('[data-mm-edit-form]')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = e.currentTarget;
+    const v = (k) => f.querySelector(`[data-mm-f="${k}"]`).value.trim();
+    try {
+      await api(`/wholesalers/${encodeURIComponent(mmShelf.editing.id)}`, { method: 'PATCH', body: JSON.stringify({ firstName: v('firstName'), lastName: v('lastName'), phone: v('phone') }) });
+      mmShelf.editing = null;
+      await loadMmShelves();
+    } catch (err) { alert('Не удалось сохранить: ' + err.message); }
+  });
+  root.querySelector('#mmShelfAdd')?.addEventListener('click', () => { mmShelf.adding = true; renderMmShelves(); });
+  root.querySelector('#mmShelfAddCancel')?.addEventListener('click', () => { mmShelf.adding = false; renderMmShelves(); });
+  root.querySelector('#mmShelfAddForm')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = e.currentTarget;
+    const v = (k) => f.querySelector(`[data-mm-a="${k}"]`).value.trim();
+    try {
+      await api('/wholesalers', { method: 'POST', body: JSON.stringify({ firstName: v('firstName'), lastName: v('lastName'), phone: v('phone'), marketplace: 'APP' }) });
+      mmShelf.adding = false;
+      await loadMmShelves();
+    } catch (err) { alert('Не удалось добавить оптовика: ' + err.message); }
+  });
 }
 
 async function loadMyMarketPage() {
@@ -7984,6 +8198,7 @@ function wsGroups() {
   }
   const byId = new Map();
   for (const w of wholesalersState.wholesalers) {
+    if (w.marketplace === 'APP') continue; // оптовики витрины My Market — в разделе My Market
     if (sel && wMp(w) !== sel) continue; // оптовик другой площадки здесь не показывается
     const g = { key: w.id, name: wsDisplayName(w), wholesaler: w, mp: wMp(w), products: [] };
     groups.push(g);
