@@ -7377,6 +7377,7 @@ document.getElementById('syncTeezBtn').addEventListener('click', async () => {
 const AUTO_SYNC_MS = 5 * 60 * 1000;
 let autoSyncBusy = false;
 let autoSyncMissed = false;
+let autoSyncOzonCatalogAt = 0; // когда последний раз обновляли живые цены Ozon
 
 async function autoSyncTick() {
   if (autoSyncBusy) return;
@@ -7393,6 +7394,9 @@ async function autoSyncTick() {
     const jobs = [
       ['Kaspi', on('kaspi'), () => api(`/sync/kaspi?${qs({ from: from.toISOString(), to: to.toISOString() })}`, { method: 'POST' })],
       ['Ozon', on('ozon'), () => api('/sync/ozon?days=2', { method: 'POST' })],
+      // Живые цены и тарифы Ozon (как кнопка «↻ Каталог Ozon») — раз в 30 минут, а не каждые 5: запрос тяжелее.
+      ['Цены Ozon', on('ozon') && Date.now() - autoSyncOzonCatalogAt > 30 * 60 * 1000,
+        async () => { await api('/sync/ozon-catalog', { method: 'POST' }); autoSyncOzonCatalogAt = Date.now(); }],
       ['WB', on('wb'), () => api('/sync/wb?days=2', { method: 'POST' })],
       ['Tez', on('teez'), () => api('/sync/teez?days=2', { method: 'POST' })],
     ];

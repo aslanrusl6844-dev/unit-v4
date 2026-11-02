@@ -274,7 +274,14 @@ async function persistOrder(order: NormalizedOrder, stats: { productsCreated: nu
     let updateData: Record<string, any> | null = null;
     if (order.marketplace === 'KASPI' && (!product.kaspiReferencePriceUpdatedAt || order.orderDate > product.kaspiReferencePriceUpdatedAt)) {
       updateData = { kaspiReferencePrice: item.price, kaspiReferencePriceUpdatedAt: order.orderDate };
-    } else if (order.marketplace === 'OZON' && (!product.ozonReferencePriceUpdatedAt || order.orderDate > product.ozonReferencePriceUpdatedAt)) {
+    } else if (
+      order.marketplace === 'OZON'
+      // Живая цена Ozon (каталог, /v5/product/info/prices) главнее цены из заказа: если каталог хоть раз
+      // синхронизировался (есть тарифы), цену заказа в карточку не пишем — иначе продажа по старой/ошибочной
+      // цене (например, 178 000 вместо 8 036) держала бы неверную цену до следующей синхронизации каталога.
+      && !product.ozonTariffsUpdatedAt
+      && (!product.ozonReferencePriceUpdatedAt || order.orderDate > product.ozonReferencePriceUpdatedAt)
+    ) {
       updateData = { ozonReferencePrice: item.price, ozonReferencePriceUpdatedAt: order.orderDate };
     } else if (order.marketplace === 'WB' && (!product.wbReferencePriceUpdatedAt || order.orderDate > product.wbReferencePriceUpdatedAt)) {
       updateData = { wbReferencePrice: item.price, wbReferencePriceUpdatedAt: order.orderDate };
