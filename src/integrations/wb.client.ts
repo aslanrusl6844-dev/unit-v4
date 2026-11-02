@@ -54,6 +54,13 @@ async function withRetryOn429<T>(fn: () => Promise<T>, context: string): Promise
       const headers = err.response?.headers ?? {};
       const retryHeader = headers['x-ratelimit-retry'] ?? headers['retry-after'];
       const waitSec = Number(retryHeader) > 0 ? Number(retryHeader) : 20; // разумный дефолт, если заголовка нет
+      // WB иногда ставит паузу на час и больше (X-Ratelimit-Retry: 6454). Ждать столько функция не может —
+      // раньше она «зависала» до таймаута, а журнал оставался «идёт». Сразу говорим, когда можно повторить.
+      if (waitSec > 30) {
+        const min = Math.ceil(waitSec / 60);
+        logger.warn({ context, waitSec }, '[Wildberries] 429 с долгой паузой — не ждём');
+        throw new Error(`Wildberries временно ограничил запросы (${context}) — повторить можно примерно через ${min} мин. Это ограничение со стороны WB, ключ в порядке.`);
+      }
       logger.warn(`[Wildberries] 429 Too Many Requests (${context}) — жду ${waitSec}с, попытка ${attempt + 1}/${MAX_429_RETRIES}`);
       await sleep(waitSec * 1000);
     }
