@@ -85,13 +85,33 @@ interface WbOrderRow {
   srid: string;
 }
 
+/** Строка детализации отчёта реализации (новый метод WB, finance-api): деньги приходят строками. */
 interface WbRealizationRow {
   srid?: string;
-  ppvz_sales_commission?: number;
-  delivery_rub?: number;
-  rebill_logistic_cost?: number;
-  acquiring_fee?: number;
-  rrd_id?: number;
+  rrdId?: number;
+  ppvzSalesCommission?: string | number;
+  deliveryService?: string | number;
+  rebillLogisticCost?: string | number;
+  acquiringFee?: string | number;
+}
+
+const money = (v: unknown): number => {
+  const n = Number(String(v ?? '0').replace(',', '.'));
+  return Number.isFinite(n) ? Math.abs(n) : 0;
+};
+
+/** Суммы комиссии/логистики/эквайринга по srid из строк детализации. */
+export function financeBySrid(rows: WbRealizationRow[]): Map<string, WbFinanceTotals> {
+  const map = new Map<string, WbFinanceTotals>();
+  for (const row of rows) {
+    if (!row.srid) continue;
+    const entry = map.get(row.srid) ?? { commission: 0, logistics: 0, acquiring: 0 };
+    entry.commission += money(row.ppvzSalesCommission);
+    entry.logistics += money(row.deliveryService) + money(row.rebillLogisticCost);
+    entry.acquiring += money(row.acquiringFee);
+    map.set(row.srid, entry);
+  }
+  return map;
 }
 
 interface WbFinanceTotals {
@@ -114,6 +134,21 @@ export class WbClient {
     return axios.create({
       baseURL: env.wb.statsBaseUrl,
       headers: { Authorization: token },
+      timeout: 30000,
+    });
+  }
+
+  // Отчёт реализации (комиссия, логистика, эквайринг) — с 2026 года на finance-api WB:
+  // POST /api/finance/v1/sales-reports/detailed. Старый /api/v5/supplier/reportDetailByPeriod
+  // WB отключил (отвечает 404). Токену нужна категория доступа «Финансы».
+  private async getFinanceHttp(): Promise<AxiosInstance> {
+    const token = await getWbToken();
+    if (!token) {
+      throw new Error('Wildberries API не настроен: добавьте магазин в разделе «Настройки» или задайте WB_API_TOKEN в .env');
+    }
+    return axios.create({
+      baseURL: env.wb.financeBaseUrl,
+      headers: { Authorization: token, 'Content-Type': 'application/json' },
       timeout: 30000,
     });
   }
@@ -291,8 +326,18 @@ export class WbClient {
   async fetchOrders(params: { dateFrom: Date; dateTo: Date }): Promise<NormalizedOrder[]> {
     const http = await this.getHttp();
     const rows = await this.fetchOrderRows(http, params.dateFrom);
-    await sleep(PACING_DELAY_MS); // пауза перед вторым тяжёлым запросом подряд
-    const financeMap = await this.fetchFinanceBySrid(http, params.dateFrom, params.dateTo);
+    // Финансы — отдельный сервис WB. Если он не ответил (нет категории «Финансы» у токена,
+    // лимит 1 запрос/мин и т. п.) — заказы всё равно сохраняем, только без комиссии из отчёта.
+    let financeMap = new Map<string, WbFinanceTotals>();
+    try {
+      financeMap = await this.fetchFinanceBySrid(params.dateFrom, params.dateTo);
+    } catch (err: any) {
+      const status = err?.response?.status;
+      logger.warn({ status, message: String(err?.message ?? err).slice(0, 200) },
+        status === 401 || status === 403
+          ? '[Wildberries] Отчёт реализации: у токена нет доступа к категории «Финансы» — заказы без комиссии из отчёта'
+          : '[Wildberries] Отчёт реализации недоступен — заказы сохраняем без комиссии из отчёта');
+    }
 
     const filtered = rows.filter((r) => {
       const d = new Date(r.date);
@@ -329,43 +374,22 @@ export class WbClient {
     return all;
   }
 
-  /** Тянет отчёт о реализации и суммирует комиссию/логистику/эквайринг по каждому srid. */
-  private async fetchFinanceBySrid(http: AxiosInstance, dateFrom: Date, dateTo: Date): Promise<Map<string, WbFinanceTotals>> {
-    const map = new Map<string, WbFinanceTotals>();
-    const limit = 100000;
-    let rrdId = 0;
-
-    for (let page = 0; page < MAX_PAGES_SAFETY; page++) {
-      if (page > 0) await sleep(PACING_DELAY_MS);
-      const { data } = await withRetryOn429(
-        () => http.get<WbRealizationRow[]>('/api/v5/supplier/reportDetailByPeriod', {
-          params: {
-            dateFrom: dateFrom.toISOString().slice(0, 10),
-            dateTo: dateTo.toISOString().slice(0, 10),
-            limit,
-            rrdid: rrdId,
-          },
-        }),
-        'отчёт о реализации',
-      );
-
-      if (!data?.length) break;
-
-      for (const row of data) {
-        if (!row.srid) continue;
-        const entry = map.get(row.srid) ?? { commission: 0, logistics: 0, acquiring: 0 };
-        entry.commission += Math.abs(row.ppvz_sales_commission ?? 0);
-        entry.logistics += Math.abs(row.delivery_rub ?? 0) + Math.abs(row.rebill_logistic_cost ?? 0);
-        entry.acquiring += Math.abs(row.acquiring_fee ?? 0);
-        map.set(row.srid, entry);
-      }
-
-      if (data.length < limit) break;
-      rrdId = data[data.length - 1].rrd_id ?? 0;
-      if (!rrdId) break;
-    }
-
-    return map;
+  /**
+   * Комиссия/логистика/эквайринг по каждому srid из детализации отчётов реализации (новый метод WB).
+   * Лимит WB — 1 запрос в минуту, поэтому берём одну страницу (до 100 000 строк — с запасом для 2–30 дней).
+   */
+  private async fetchFinanceBySrid(dateFrom: Date, dateTo: Date): Promise<Map<string, WbFinanceTotals>> {
+    const http = await this.getFinanceHttp();
+    const res = await http.post<WbRealizationRow[]>('/api/finance/v1/sales-reports/detailed', {
+      dateFrom: dateFrom.toISOString().slice(0, 10),
+      dateTo: dateTo.toISOString().slice(0, 10),
+      limit: 100000,
+      rrdId: 0,
+      period: 'daily',
+      fields: ['rrdId', 'srid', 'ppvzSalesCommission', 'deliveryService', 'rebillLogisticCost', 'acquiringFee'],
+    });
+    if (res.status === 204 || !Array.isArray(res.data)) return new Map();
+    return financeBySrid(res.data);
   }
 
   private toNormalizedOrder(row: WbOrderRow, finance?: WbFinanceTotals): NormalizedOrder {
