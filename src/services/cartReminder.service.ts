@@ -42,19 +42,28 @@ export function discountPercent(price: unknown, oldPrice: unknown): number | nul
   return pct >= 1 ? pct : null;
 }
 
-export function reminderText(name: string, pct: number | null, opts: { kind?: ReminderKind; firstName?: string | null; stock?: number | null } = {}): string {
-  const n = name.trim().length > 60 ? `${name.trim().slice(0, 57)}…` : name.trim();
-  const who = opts.firstName ? `${opts.firstName}, вы` : 'Вы';
-  const verb = opts.kind === 'view' ? 'смотрели' : 'оставили';
-  const low = opts.stock != null && opts.stock > 0 && opts.stock <= LOW_STOCK;
-  const tail = low ? `Осталось ${opts.stock} шт. — успейте купить` : 'Успейте купить';
-  return pct ? `${who} ${verb} ${n}. Скидка ${pct}% — ${tail.charAt(0).toLowerCase()}${tail.slice(1)}` : `${who} ${verb} ${n}. ${tail}`;
+/** Короткое название для пуша: до запятой/скобки, не больше 4 слов и ~32 символов («Соковыжималка 1200 Вт центробежная…» → «Соковыжималка 1200 Вт центробежная»). */
+export function shortName(name: string): string {
+  const head = name.trim().split(/[,(\[|;]/)[0].trim();
+  let out = head.split(/\s+/).slice(0, 4).join(' ');
+  while (out.length > 32 && out.includes(' ')) out = out.slice(0, out.lastIndexOf(' '));
+  return out.length > 32 ? `${out.slice(0, 31)}…` : out;
 }
 
-/** Заголовок пуша: как у Coupang — сразу выгода. */
+export function reminderText(name: string, pct: number | null, opts: { kind?: ReminderKind; firstName?: string | null; stock?: number | null } = {}): string {
+  const n = shortName(name);
+  const lead = opts.kind === 'view'
+    ? `${opts.firstName ? `${opts.firstName}, вы` : 'Вы'} смотрели: ${n}.`
+    : `${opts.firstName ? `${opts.firstName}, у вас` : 'У вас'} в корзине: ${n}.`;
+  const low = opts.stock != null && opts.stock > 0 && opts.stock <= LOW_STOCK;
+  const parts = [pct ? `Скидка ${pct}%` : null, low ? `осталось ${opts.stock} шт.` : null].filter(Boolean).join(', ');
+  return parts ? `${lead} ${parts.charAt(0).toUpperCase()}${parts.slice(1)} — успейте купить` : `${lead} Успейте купить`;
+}
+
+/** Заголовок пуша: как у Coupang — сразу выгода (название приложения телефон пишет сам). */
 export function reminderTitle(kind: ReminderKind, pct: number | null): string {
-  if (pct) return `Скидка ${pct}% ↓ — My Market`;
-  return kind === 'view' ? 'Вы смотрели — My Market' : 'Товар ждёт в корзине — My Market';
+  if (kind === 'cart') return pct ? `Скидка ${pct}% ↓ на товар в корзине` : 'Товар ждёт в корзине';
+  return pct ? `Скидка ${pct}% ↓` : 'Вы смотрели этот товар';
 }
 
 /** Имя из последнего заказа номера («Аслан Тушкеев» → «Аслан»); нет заказов — без имени. */

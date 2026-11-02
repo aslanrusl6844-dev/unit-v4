@@ -48,7 +48,7 @@ class StubPrismaClient {
 const prismaPath = require.resolve('@prisma/client');
 require.cache[prismaPath] = { id: prismaPath, filename: prismaPath, loaded: true, exports: { PrismaClient: StubPrismaClient, Prisma: {} } } as any;
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { runCartReminders, discountPercent, reminderText } = require('../src/services/cartReminder.service');
+const { runCartReminders, discountPercent, reminderText, shortName } = require('../src/services/cartReminder.service');
 
 let expoCalls: Row[] = [];
 const realFetch = globalThis.fetch;
@@ -80,11 +80,13 @@ describe('скидка и текст', () => {
     assert.equal(discountPercent(100, 90), null);
   });
   test('текст по шаблону; длинное название обрезается; без скидки — без «Скидка»', () => {
-    assert.equal(reminderText('Крем', 24), 'Вы оставили Крем. Скидка 24% — успейте купить');
-    assert.equal(reminderText('Крем', null), 'Вы оставили Крем. Успейте купить');
-    assert.equal(reminderText('Крем', 11, { kind: 'view', firstName: 'Аслан' }), 'Аслан, вы смотрели Крем. Скидка 11% — успейте купить');
-    assert.equal(reminderText('Крем', null, { stock: 2 }), 'Вы оставили Крем. Осталось 2 шт. — успейте купить');
-    assert.equal(reminderText('Крем', null, { stock: 50 }), 'Вы оставили Крем. Успейте купить');
+    assert.equal(reminderText('Крем', 24), 'У вас в корзине: Крем. Скидка 24% — успейте купить');
+    assert.equal(reminderText('Крем', null), 'У вас в корзине: Крем. Успейте купить');
+    assert.equal(reminderText('Крем', 11, { kind: 'view', firstName: 'Аслан' }), 'Аслан, вы смотрели: Крем. Скидка 11% — успейте купить');
+    assert.equal(reminderText('Крем', null, { stock: 2 }), 'У вас в корзине: Крем. Осталось 2 шт. — успейте купить');
+    assert.equal(reminderText('Крем', null, { stock: 50 }), 'У вас в корзине: Крем. Успейте купить');
+    assert.equal(reminderText('Соковыжималка 1200 Вт центробежная сенсор для фруктов и овощей', 39, { firstName: 'Аслан', stock: 3 }), 'Аслан, у вас в корзине: Соковыжималка 1200 Вт. Скидка 39%, осталось 3 шт. — успейте купить');
+    assert.equal(shortName('CELL29 Illuna-EX Whitening Booster, 5 флаконов по 10 мл'), 'CELL29 Illuna-EX Whitening Booster');
     assert.ok(reminderText('А'.repeat(100), 10).length < 100);
   });
 });
@@ -96,8 +98,8 @@ describe('runCartReminders', () => {
     assert.equal(expoCalls.length, 1);
     const m = expoCalls[0];
     assert.equal(m.to, 'ExponentPushToken[abc]');
-    assert.equal(m.body, 'Вы оставили Крем для лица. Скидка 24% — успейте купить');
-    assert.equal(m.title, 'Скидка 24% ↓ — My Market');
+    assert.equal(m.body, 'У вас в корзине: Крем для лица. Скидка 24% — успейте купить');
+    assert.equal(m.title, 'Скидка 24% ↓ на товар в корзине');
     assert.deepEqual(m.richContent, { image: 'https://img.example/a.jpg' });
     assert.equal(m.data.type, 'cart_reminder');
     assert.equal(m.data.screen, 'product');
@@ -153,7 +155,7 @@ describe('runCartReminders', () => {
     events.push({ id: 'e4', type: 'cart', sku: 'SKU-2', phone: PHONE, createdAt: ago(50) });
     const r = await runCartReminders(NOW);
     assert.equal(r.sent, 1);
-    assert.equal(expoCalls[0].body, 'Вы оставили Шампунь. Осталось 3 шт. — успейте купить');
+    assert.equal(expoCalls[0].body, 'У вас в корзине: Шампунь. Осталось 3 шт. — успейте купить');
     assert.equal(expoCalls[0].richContent, undefined); // нет фото — пуш без картинки
   });
 
@@ -200,7 +202,7 @@ describe('просмотры (как в Coupang)', () => {
     viewBase();
     const r = await runCartReminders(NOW);
     assert.equal(r.sent, 1);
-    assert.equal(expoCalls[0].body, 'Аслан, вы смотрели Крем для лица. Скидка 24% — успейте купить');
+    assert.equal(expoCalls[0].body, 'Аслан, вы смотрели: Крем для лица. Скидка 24% — успейте купить');
     assert.equal(expoCalls[0].data.type, 'view_reminder');
     assert.equal(reminders[0].kind, 'view');
   });
@@ -222,6 +224,6 @@ describe('просмотры (как в Coupang)', () => {
     const r = await runCartReminders(NOW);
     assert.equal(r.sent, 1);
     assert.equal(expoCalls[0].data.type, 'cart_reminder');
-    assert.match(expoCalls[0].body, /^Аслан, вы оставили/);
+    assert.match(expoCalls[0].body, /^Аслан, у вас в корзине:/);
   });
 });
