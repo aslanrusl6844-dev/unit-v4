@@ -102,7 +102,7 @@ describe('runCartReminders', () => {
     assert.equal(m.title, 'Скидка 24% ↓ на товар в корзине');
     assert.deepEqual(m.richContent, { image: 'https://img.example/a.jpg' });
     assert.equal(m.data.type, 'cart_reminder');
-    assert.equal(m.data.screen, 'product');
+    assert.equal(m.data.screen, 'cart');
     assert.equal(m.data.productId, 'p1');
     assert.equal(m.data.sku, 'SKU-1');
     assert.equal(m.data.shopArticle, '1000001');

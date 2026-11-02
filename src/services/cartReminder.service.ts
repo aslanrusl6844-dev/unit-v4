@@ -162,7 +162,7 @@ export async function runReminderKind(kind: ReminderKind, now = new Date()): Pro
         body: reminderText(product.name, pct, { kind, firstName, stock: product.shopStock }),
         imageUrl: firstImage(product),
         tokens: [rec.token],
-        data: { type: cfg.dataType, screen: 'product', productId: String(product.id), sku: String(product.sku), shopArticle: String(product.shopArticle ?? '') },
+        data: { type: cfg.dataType, screen: kind === 'cart' ? 'cart' : 'product', productId: String(product.id), sku: String(product.sku), shopArticle: String(product.shopArticle ?? '') },
       });
       if (r.sent > 0) res.sent++; else { res.failed++; logger.error({ phone, failed: r.failed, fcmError: r.fcmError }, '[CartReminder] Пуш не принят'); }
     } catch (err: any) {
@@ -201,7 +201,7 @@ export async function sendTestReminder(kind: ReminderKind, rawPhone: string): Pr
       body: reminderText(product.name, pct, { kind, firstName: firstNameOf(lastOrder[0]?.customerName), stock: product.shopStock }),
       imageUrl: firstImage(product),
       tokens: [rec.token],
-      data: { type: KIND[kind].dataType, screen: 'product', productId: String(product.id), sku: String(product.sku), shopArticle: String(product.shopArticle ?? '') },
+      data: { type: KIND[kind].dataType, screen: kind === 'cart' ? 'cart' : 'product', productId: String(product.id), sku: String(product.sku), shopArticle: String(product.shopArticle ?? '') },
     });
     return r.sent > 0
       ? { ok: true, message: `Отправлено: ${product.name}` }
