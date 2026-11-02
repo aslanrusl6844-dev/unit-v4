@@ -327,6 +327,14 @@ async function cityImageUrls(raw: unknown): Promise<string[]> {
   return rows.map((r) => r.imageUrl);
 }
 
+/** Причина вылета приложения (присылает само приложение при следующем запуске) — в журнал сервера. */
+shopRouter.post('/app-crash', (req, res) => {
+  const text = String(req.body?.text ?? '').slice(0, 12000);
+  if (!text) return res.status(400).json({ error: 'Пустой отчёт' });
+  logger.error({ version: String(req.body?.version ?? '').slice(0, 40), device: String(req.body?.device ?? '').slice(0, 120), crash: text }, '[App crash] Приложение упало');
+  res.json({ ok: true });
+});
+
 /** Подсказки улиц: GET /streets?city=Алматы&q=аб → ["улица Абая", ...]. Пусто, если улицы города ещё не загружены. */
 shopRouter.get('/streets', async (req, res) => {
   try {
