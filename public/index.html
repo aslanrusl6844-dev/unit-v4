@@ -317,6 +317,10 @@
 
           <!-- ---- Полки оптовиков: у каждого оптовика своя полка, «Без оптовика» — для новых товаров ---- -->
           <div id="productsShelvesView">
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+              <input type="search" id="wsSearch" placeholder="🔍 Поиск по полкам: название или артикул (например «краска для волос»)" autocomplete="off" style="flex:1;min-width:260px;max-width:560px" />
+              <span id="wsSearchInfo" style="font-size:12.5px;color:var(--text-muted)"></span>
+            </div>
             <div class="inline-form" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px">
               <span id="wholesalerSelectedCount" style="font-size:12.5px;color:var(--text-muted)">Выбрано полок: 0</span>
               <button class="btn btn--ghost" id="wholesalerZipSelectedBtn" disabled>📦 Накладные ZIP по выбранным</button>
@@ -554,7 +558,13 @@
             <button data-view="shelves" class="is-active">Полки оптовиков</button>
             <button data-view="table">Общая таблица</button>
           </div>
-          <div class="panel" id="mmShelvesRoot"></div>
+          <div id="mmShelvesView">
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+              <input type="search" id="mmShelfSearch" placeholder="🔍 Поиск по полкам: название или артикул (например «блендер»)" autocomplete="off" style="flex:1;min-width:260px;max-width:560px" />
+              <span id="mmShelfSearchInfo" style="font-size:12.5px;color:var(--text-muted)"></span>
+            </div>
+            <div class="panel" id="mmShelvesRoot"></div>
+          </div>
           <div class="panel" data-mm-table-view hidden>
             <div class="inline-form" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
               <input type="text" id="mymarketProductsSearch" placeholder="Поиск по названию или SKU" style="max-width:280px" />

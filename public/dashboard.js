@@ -2613,18 +2613,25 @@ function switchMyMarketTab(tab) {
 // заказов пришло СЕГОДНЯ; накладные ZIP за период сверху, разложены по папкам городов.
 // =====================================================================
 let mmProdView = 'shelves';
+let mmQuery = '';
 let mmViewWired = false;
 const mmShelf = { wholesalers: [], products: [], todayShelf: {}, periodShelf: {}, cities: [], open: new Set(), selected: new Set(), picked: new Set(), editing: null, adding: false, city: '', error: null, loading: false };
 
 function mmWireViewTabs() {
   const apply = () => {
     document.querySelectorAll('#mmProdViewTabs button').forEach((b) => b.classList.toggle('is-active', b.dataset.view === mmProdView));
-    document.getElementById('mmShelvesRoot').hidden = mmProdView !== 'shelves';
+    document.getElementById('mmShelvesView').hidden = mmProdView !== 'shelves';
     document.querySelectorAll('[data-mm-table-view]').forEach((el) => { el.hidden = mmProdView !== 'table'; });
   };
   apply();
   if (mmViewWired) return;
   mmViewWired = true;
+  const search = document.getElementById('mmShelfSearch');
+  let st = null;
+  search?.addEventListener('input', () => {
+    clearTimeout(st);
+    st = setTimeout(() => { mmQuery = search.value; renderMmShelves(); }, 200);
+  });
   document.getElementById('mmProdViewTabs').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-view]');
     if (!b) return;
@@ -2680,7 +2687,7 @@ function mmCountBox(key) {
 
 function mmShelfHtml(key, title, w, products) {
   const t = mmShelf.todayShelf[key] || { orders: 0, qty: 0 };
-  const open = mmShelf.open.has(key);
+  const open = mmShelf.open.has(key) || (Boolean(shelfMatcher(mmQuery)) && products.length > 0);
   const today = t.orders > 0
     ? `<span style="color:var(--loss);font-weight:600;margin-left:8px" title="Заказов сегодня / штук">+${t.orders} ${wsPlural(t.orders, 'заказ', 'заказа', 'заказов')} сегодня (${t.qty} шт.)</span>`
     : '';
@@ -2744,7 +2751,17 @@ function renderMmShelves() {
   if (mmShelf.error) { root.innerHTML = `<p style="color:var(--loss)">Не удалось загрузить полки: ${wsEsc(mmShelf.error)}</p>`; return; }
   const byShelf = new Map([['none', []]]);
   for (const w of mmShelf.wholesalers) byShelf.set(w.id, []);
-  for (const p of mmShelf.products) (byShelf.get(p.wholesalerId) || byShelf.get('none')).push(p);
+  const match = shelfMatcher(mmQuery);
+  for (const p of mmShelf.products) {
+    if (match && !match(p.name, p.sku)) continue;
+    (byShelf.get(p.wholesalerId) || byShelf.get('none')).push(p);
+  }
+  const info = document.getElementById('mmShelfSearchInfo');
+  if (info) {
+    const found = [...byShelf.values()].reduce((a, l) => a + l.length, 0);
+    info.textContent = match ? (found ? `Найдено: ${found}` : 'Ничего не найдено') : '';
+  }
+  const showShelf = (key) => !match || byShelf.get(key).length > 0;
   const todayTotal = Object.values(mmShelf.todayShelf).reduce((a, t) => a + t.orders, 0);
   const sel = mmShelf.selected.size;
   root.innerHTML = `
@@ -2756,8 +2773,8 @@ function renderMmShelves() {
       <button class="btn btn--ghost" id="mmShelfDeleteSelected" style="color:var(--loss)" ${sel ? '' : 'disabled'}>Удалить выбранных</button>
       <span id="mmShelfStatus" style="font-size:12px"></span>
     </div>
-    ${mmShelfHtml('none', 'Без оптовика', null, byShelf.get('none'))}
-    ${mmShelf.wholesalers.map((w) => mmShelfHtml(w.id, wsDisplayName(w), w, byShelf.get(w.id))).join('')}
+    ${showShelf('none') ? mmShelfHtml('none', 'Без оптовика', null, byShelf.get('none')) : ''}
+    ${mmShelf.wholesalers.filter((w) => showShelf(w.id)).map((w) => mmShelfHtml(w.id, wsDisplayName(w), w, byShelf.get(w.id))).join('')}
     ${mmShelf.adding
       ? `<form id="mmShelfAddForm" class="inline-form" style="gap:6px;flex-wrap:wrap;margin-top:6px">
            <input data-mm-a="firstName" placeholder="Имя" maxlength="60" required />
@@ -7409,7 +7426,7 @@ async function autoSyncTick() {
     if (!typing) {
       try {
         if (state.currentPage === 'mymarket') {
-          const shelves = document.getElementById('mmShelvesRoot');
+          const shelves = document.getElementById('mmShelvesView');
           if (shelves && !shelves.hidden && !document.getElementById('mymarketProductsTab')?.hidden) await loadMmShelves();
         } else {
           await reloadCurrentPage();
@@ -8260,6 +8277,18 @@ const wsPicked = new Set(); // отмеченные товары полок: `${
 const WS_ROWS_STEP = 100;
 let wsWired = false;
 
+/** Поиск по полкам: все слова запроса должны встречаться в названии или артикулах (без регистра, ё = е). */
+const shelfNorm = (v) => String(v ?? '').toLowerCase().replace(/ё/g, 'е');
+function shelfMatcher(query) {
+  const words = shelfNorm(query).split(/\s+/).filter(Boolean);
+  if (!words.length) return null;
+  return (...fields) => {
+    const hay = shelfNorm(fields.filter(Boolean).join(' '));
+    return words.every((w) => hay.includes(w));
+  };
+}
+let wsQuery = '';
+
 const wsEsc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 function wsPlural(n, one, few, many) {
@@ -8277,7 +8306,21 @@ function wsSetStatus(text, kind) {
   el.textContent = text || '';
 }
 
+let wsSearchWired = false;
+function wsWireSearch() {
+  if (wsSearchWired) return;
+  const inp = document.getElementById('wsSearch');
+  if (!inp) return;
+  wsSearchWired = true;
+  let t = null;
+  inp.addEventListener('input', () => {
+    clearTimeout(t);
+    t = setTimeout(() => { wsQuery = inp.value; renderWholesalerShelves(); }, 200);
+  });
+}
+
 async function loadWholesalers() {
+  wsWireSearch();
   try {
     const data = await api('/wholesalers');
     wholesalersState.wholesalers = data.wholesalers;
@@ -8299,6 +8342,8 @@ function wsVisibleProducts() {
   if (filter === 'active') products = products.filter((p) => p.active !== false);
   if (filter === 'inactive') products = products.filter((p) => p.active === false);
   if (state.marketplace) products = products.filter((p) => isLinkedToMarketplace(p, state.marketplace));
+  const match = shelfMatcher(wsQuery);
+  if (match) products = products.filter((p) => match(p.name, p.sku, p.kaspiSku, p.ozonOfferId, p.ozonSku, p.wbArticle, p.wbNmId, p.shopArticle));
   return products;
 }
 
@@ -8659,9 +8704,16 @@ function renderWholesalerShelves() {
     const known = new Set(groups.filter((g) => g.wholesaler).map((g) => g.key));
     for (const id of [...wsSelectedShelves]) if (!known.has(id)) wsSelectedShelves.delete(id);
 
-    list.innerHTML = groups.map((g) => {
+    const searching = Boolean(shelfMatcher(wsQuery));
+    const info = document.getElementById('wsSearchInfo');
+    if (info) {
+      const found = groups.reduce((a, g) => a + g.products.length, 0);
+      info.textContent = searching ? (found ? `Найдено: ${found}` : 'Ничего не найдено') : '';
+    }
+    list.innerHTML = groups.filter((g) => !searching || g.products.length).map((g) => {
       const n = g.products.length;
-      const open = n > 0 && wsOpenShelves.has(g.key);
+      // При поиске полки с найденными товарами раскрываются сами.
+      const open = n > 0 && (searching || wsOpenShelves.has(g.key));
       return `
         <div class="ws-shelf" data-ws-shelf="${wsEsc(g.key)}" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
