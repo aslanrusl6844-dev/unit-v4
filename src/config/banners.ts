@@ -30,3 +30,9 @@ export type BannerTransition = (typeof BANNER_TRANSITIONS)[number];
 export function normalizeTransition(v: unknown): BannerTransition {
   return (BANNER_TRANSITIONS as readonly string[]).includes(String(v)) ? (v as BannerTransition) : 'slide';
 }
+
+/** Появление букв подписи на баннере витрин. */
+export const CAPTION_EFFECTS = ['rise', 'bounce', 'flip3d', 'matrix'] as const;
+export function normalizeCaption(v: unknown): string {
+  return (CAPTION_EFFECTS as readonly string[]).includes(String(v)) ? String(v) : 'rise';
+}

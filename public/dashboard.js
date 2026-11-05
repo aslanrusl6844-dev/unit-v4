@@ -4577,11 +4577,11 @@ function recalcMyMarketPriceRow(tr) {
 async function initBannerTransitionSelect() {
   let cur = {};
   try { cur = await api('/shop-admin/ui-settings'); } catch { /* оставляем как есть */ }
-  for (const [selId, stId] of [['mmBannerTransition', 'mmBannerTransitionStatus'], ['mmShowcaseTransition', 'mmShowcaseTransitionStatus']]) {
+  for (const [selId, stId] of [['mmBannerTransition', 'mmBannerTransitionStatus'], ['mmShowcaseTransition', 'mmShowcaseTransitionStatus'], ['mmCaptionEffect', 'mmCaptionEffectStatus']]) {
     const sel = document.getElementById(selId);
     const st = document.getElementById(stId);
     if (!sel) continue;
-    sel.value = cur[sel.dataset.key] || 'slide';
+    sel.value = cur[sel.dataset.key] || sel.options[0].value;
     if (sel.dataset.bound) continue;
     sel.dataset.bound = '1';
     sel.addEventListener('change', async () => {

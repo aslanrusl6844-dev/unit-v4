@@ -1,4 +1,4 @@
-import { RESERVED_SLOTS, UNDER_SHOWCASE_SLOT, normalizeTransition } from '../config/banners';
+import { RESERVED_SLOTS, UNDER_SHOWCASE_SLOT, normalizeTransition, normalizeCaption } from '../config/banners';
 import { Router } from 'express';
 import { z } from 'zod';
 import multer from 'multer';
@@ -453,9 +453,9 @@ shopRouter.get('/catalog-types', async (_req, res) => {
 shopRouter.get('/ui-settings', async (_req, res) => {
   try {
     const s = await prisma.shopUiSettings.findUnique({ where: { id: 'main' } });
-    res.json({ bannerTransition: normalizeTransition(s?.bannerTransition), showcaseTransition: normalizeTransition(s?.showcaseTransition) });
+    res.json({ bannerTransition: normalizeTransition(s?.bannerTransition), showcaseTransition: normalizeTransition(s?.showcaseTransition), captionEffect: normalizeCaption(s?.captionEffect) });
   } catch {
-    res.json({ bannerTransition: 'slide', showcaseTransition: 'slide' });
+    res.json({ bannerTransition: 'slide', showcaseTransition: 'slide', captionEffect: 'rise' });
   }
 });
 

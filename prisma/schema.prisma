@@ -537,6 +537,7 @@ model ShopUiSettings {
   id               String   @id @default("main")
   bannerTransition   String   @default("slide") // главная: slide | cube | fade | zoom | flip | depth | strips | deck | blinds | checker | mix
   showcaseTransition String   @default("slide") // баннеры внутри витрин — те же варианты
+  captionEffect      String   @default("rise")  // появление букв на баннере витрин: rise | bounce | flip3d | matrix
   updatedAt        DateTime @updatedAt
 }
 
