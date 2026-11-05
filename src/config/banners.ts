@@ -23,3 +23,10 @@ export function nextCarouselSlot(used: number[]): number {
 
 /** Рекомендуемый размер картинки полосы под витринами: 1080 × 250 пикселей (≈ 4,3 : 1). */
 export const UNDER_SHOWCASE_IMAGE_HINT = '1080×250';
+
+/** Переходы карусели баннеров (приложение рисует их само). */
+export const BANNER_TRANSITIONS = ['slide', 'cube', 'fade', 'zoom', 'flip', 'depth', 'mix'] as const;
+export type BannerTransition = (typeof BANNER_TRANSITIONS)[number];
+export function normalizeTransition(v: unknown): BannerTransition {
+  return (BANNER_TRANSITIONS as readonly string[]).includes(String(v)) ? (v as BannerTransition) : 'slide';
+}

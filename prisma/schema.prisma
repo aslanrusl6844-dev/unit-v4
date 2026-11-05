@@ -532,6 +532,13 @@ enum ShopEventType {
   paid
 }
 
+// Настройки внешнего вида приложения (одна строка id="main").
+model ShopUiSettings {
+  id               String   @id @default("main")
+  bannerTransition String   @default("slide") // slide | cube | fade | zoom | flip | depth | mix
+  updatedAt        DateTime @updatedAt
+}
+
 model ShopEvent {
   id           String        @id @default(cuid())
   createdAt    DateTime      @default(now())

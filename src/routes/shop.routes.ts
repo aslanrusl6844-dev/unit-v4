@@ -1,4 +1,4 @@
-import { RESERVED_SLOTS, UNDER_SHOWCASE_SLOT } from '../config/banners';
+import { RESERVED_SLOTS, UNDER_SHOWCASE_SLOT, normalizeTransition } from '../config/banners';
 import { Router } from 'express';
 import { z } from 'zod';
 import multer from 'multer';
@@ -446,6 +446,16 @@ shopRouter.get('/catalog-types', async (_req, res) => {
   } catch (err: any) {
     logger.error({ err }, '[Shop] GET /catalog-types упал');
     res.status(500).json({ error: 'Не удалось получить типы каталога', details: String(err?.message ?? err) });
+  }
+});
+
+/** Настройки вида главной: какой переход у карусели баннеров. */
+shopRouter.get('/ui-settings', async (_req, res) => {
+  try {
+    const s = await prisma.shopUiSettings.findUnique({ where: { id: 'main' } });
+    res.json({ bannerTransition: normalizeTransition(s?.bannerTransition) });
+  } catch {
+    res.json({ bannerTransition: 'slide' });
   }
 });
 

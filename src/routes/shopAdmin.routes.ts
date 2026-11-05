@@ -1,4 +1,4 @@
-import { UNDER_SHOWCASE_SLOT, CAROUSEL_LAST_SLOT, MAX_CAROUSEL_BANNERS, isCarouselSlot, nextCarouselSlot } from '../config/banners';
+import { UNDER_SHOWCASE_SLOT, CAROUSEL_LAST_SLOT, MAX_CAROUSEL_BANNERS, isCarouselSlot, nextCarouselSlot, normalizeTransition } from '../config/banners';
 import express, { Router } from 'express';
 import { put } from '@vercel/blob';
 import { env } from '../config/env';
@@ -102,6 +102,21 @@ shopAdminRouter.get('/banners', async (_req, res) => {
     res.json([...base, ...existing.filter((b) => b.slot > CAROUSEL_LAST_SLOT)]);
   } catch (err: any) {
     res.status(500).json({ error: 'Не удалось получить баннеры', details: String(err?.message ?? err) });
+  }
+});
+
+/** Переход карусели баннеров в приложении. */
+shopAdminRouter.get('/ui-settings', async (_req, res) => {
+  const s = await prisma.shopUiSettings.findUnique({ where: { id: 'main' } }).catch(() => null);
+  res.json({ bannerTransition: normalizeTransition(s?.bannerTransition) });
+});
+shopAdminRouter.put('/ui-settings', async (req, res) => {
+  try {
+    const bannerTransition = normalizeTransition(req.body?.bannerTransition);
+    await prisma.shopUiSettings.upsert({ where: { id: 'main' }, create: { id: 'main', bannerTransition }, update: { bannerTransition } });
+    res.json({ bannerTransition });
+  } catch (err: any) {
+    res.status(500).json({ error: 'Не удалось сохранить', details: String(err?.message ?? err) });
   }
 });
 
