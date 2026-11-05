@@ -453,9 +453,9 @@ shopRouter.get('/catalog-types', async (_req, res) => {
 shopRouter.get('/ui-settings', async (_req, res) => {
   try {
     const s = await prisma.shopUiSettings.findUnique({ where: { id: 'main' } });
-    res.json({ bannerTransition: normalizeTransition(s?.bannerTransition) });
+    res.json({ bannerTransition: normalizeTransition(s?.bannerTransition), showcaseTransition: normalizeTransition(s?.showcaseTransition) });
   } catch {
-    res.json({ bannerTransition: 'slide' });
+    res.json({ bannerTransition: 'slide', showcaseTransition: 'slide' });
   }
 });
 

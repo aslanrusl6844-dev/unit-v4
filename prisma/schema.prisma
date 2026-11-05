@@ -535,7 +535,8 @@ enum ShopEventType {
 // Настройки внешнего вида приложения (одна строка id="main").
 model ShopUiSettings {
   id               String   @id @default("main")
-  bannerTransition String   @default("slide") // slide | cube | fade | zoom | flip | depth | mix
+  bannerTransition   String   @default("slide") // главная: slide | cube | fade | zoom | flip | depth | strips | deck | blinds | checker | mix
+  showcaseTransition String   @default("slide") // баннеры внутри витрин — те же варианты
   updatedAt        DateTime @updatedAt
 }
 

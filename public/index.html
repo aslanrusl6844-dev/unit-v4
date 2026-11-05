@@ -818,9 +818,13 @@
             <p class="panel__hint">Слайды карусели на главной приложения, в том же порядке, что здесь (слева направо). Листайте ряд вбок. «+ Добавить баннер» — новый слайд в конце (до 30), «Удалить» — убрать слайд. Своя картинка (URL), заголовок, подзаголовок и ссылка — на конкретный товар (по SKU) или на категорию.</p>
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:6px 0 10px">
               <label for="mmBannerTransition" style="font-size:13px">Переход между баннерами в приложении:</label>
-              <select id="mmBannerTransition" class="cost-input" style="width:auto">
+              <select id="mmBannerTransition" class="cost-input" style="width:auto" data-key="bannerTransition">
                 <option value="slide">Обычный сдвиг</option>
                 <option value="cube">Куб</option>
+                <option value="strips">3D-полосы</option>
+                <option value="deck">Колода карт</option>
+                <option value="blinds">Жалюзи</option>
+                <option value="checker">Шахматка</option>
                 <option value="fade">Растворение</option>
                 <option value="zoom">Наплыв (зум)</option>
                 <option value="flip">Переворот карточки</option>
@@ -828,6 +832,23 @@
                 <option value="mix">Все по очереди</option>
               </select>
               <span id="mmBannerTransitionStatus" style="font-size:12px;color:var(--text-faint)"></span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 10px">
+              <label for="mmShowcaseTransition" style="font-size:13px">Переход баннеров внутри витрин:</label>
+              <select id="mmShowcaseTransition" class="cost-input" style="width:auto" data-key="showcaseTransition">
+                <option value="slide">Обычный сдвиг</option>
+                <option value="cube">Куб</option>
+                <option value="strips">3D-полосы</option>
+                <option value="deck">Колода карт</option>
+                <option value="blinds">Жалюзи</option>
+                <option value="checker">Шахматка</option>
+                <option value="fade">Растворение</option>
+                <option value="zoom">Наплыв (зум)</option>
+                <option value="flip">Переворот карточки</option>
+                <option value="depth">Глубина</option>
+                <option value="mix">Все по очереди</option>
+              </select>
+              <span id="mmShowcaseTransitionStatus" style="font-size:12px;color:var(--text-faint)"></span>
             </div>
             <div id="mymarketBannerSlots" style="display:flex;gap:14px;overflow-x:auto;padding-bottom:10px;scroll-snap-type:x proximity"></div>
           </div>

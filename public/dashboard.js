@@ -4573,23 +4573,27 @@ function recalcMyMarketPriceRow(tr) {
  * (URL), заголовок, подзаголовок, ссылка на sku ИЛИ категорию, вкл/выкл.
  * 4 фиксированных слота, сервер всегда отдаёт ровно 4 записи.
  */
-// Переход карусели баннеров в приложении (куб, растворение и т.д.) — сохраняется сразу при выборе.
+// Переходы баннеров в приложении (главная и витрины) — сохраняются сразу при выборе.
 async function initBannerTransitionSelect() {
-  const sel = document.getElementById('mmBannerTransition');
-  const st = document.getElementById('mmBannerTransitionStatus');
-  if (!sel) return;
-  try { sel.value = (await api('/shop-admin/ui-settings')).bannerTransition || 'slide'; } catch { /* оставляем как есть */ }
-  if (sel.dataset.bound) return;
-  sel.dataset.bound = '1';
-  sel.addEventListener('change', async () => {
-    st.textContent = 'Сохраняю…';
-    try {
-      await api('/shop-admin/ui-settings', { method: 'PUT', body: JSON.stringify({ bannerTransition: sel.value }) });
-      st.textContent = 'Сохранено — в приложении обновится при следующем открытии главной';
-    } catch (err) {
-      st.textContent = 'Ошибка: ' + err.message;
-    }
-  });
+  let cur = {};
+  try { cur = await api('/shop-admin/ui-settings'); } catch { /* оставляем как есть */ }
+  for (const [selId, stId] of [['mmBannerTransition', 'mmBannerTransitionStatus'], ['mmShowcaseTransition', 'mmShowcaseTransitionStatus']]) {
+    const sel = document.getElementById(selId);
+    const st = document.getElementById(stId);
+    if (!sel) continue;
+    sel.value = cur[sel.dataset.key] || 'slide';
+    if (sel.dataset.bound) continue;
+    sel.dataset.bound = '1';
+    sel.addEventListener('change', async () => {
+      st.textContent = 'Сохраняю…';
+      try {
+        await api('/shop-admin/ui-settings', { method: 'PUT', body: JSON.stringify({ [sel.dataset.key]: sel.value }) });
+        st.textContent = 'Сохранено — в приложении обновится при следующем открытии главной';
+      } catch (err) {
+        st.textContent = 'Ошибка: ' + err.message;
+      }
+    });
+  }
 }
 
 async function renderMyMarketBannerSlots(scrollToEnd = false) {

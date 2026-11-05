@@ -108,13 +108,15 @@ shopAdminRouter.get('/banners', async (_req, res) => {
 /** Переход карусели баннеров в приложении. */
 shopAdminRouter.get('/ui-settings', async (_req, res) => {
   const s = await prisma.shopUiSettings.findUnique({ where: { id: 'main' } }).catch(() => null);
-  res.json({ bannerTransition: normalizeTransition(s?.bannerTransition) });
+  res.json({ bannerTransition: normalizeTransition(s?.bannerTransition), showcaseTransition: normalizeTransition(s?.showcaseTransition) });
 });
 shopAdminRouter.put('/ui-settings', async (req, res) => {
   try {
-    const bannerTransition = normalizeTransition(req.body?.bannerTransition);
-    await prisma.shopUiSettings.upsert({ where: { id: 'main' }, create: { id: 'main', bannerTransition }, update: { bannerTransition } });
-    res.json({ bannerTransition });
+    const data: { bannerTransition?: string; showcaseTransition?: string } = {};
+    if (req.body?.bannerTransition !== undefined) data.bannerTransition = normalizeTransition(req.body.bannerTransition);
+    if (req.body?.showcaseTransition !== undefined) data.showcaseTransition = normalizeTransition(req.body.showcaseTransition);
+    const saved = await prisma.shopUiSettings.upsert({ where: { id: 'main' }, create: { id: 'main', ...data }, update: data });
+    res.json({ bannerTransition: saved.bannerTransition, showcaseTransition: saved.showcaseTransition });
   } catch (err: any) {
     res.status(500).json({ error: 'Не удалось сохранить', details: String(err?.message ?? err) });
   }
