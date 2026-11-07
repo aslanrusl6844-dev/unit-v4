@@ -7317,12 +7317,17 @@ document.getElementById('syncOzonBtn').addEventListener('click', async () => {
   btn.textContent = '…'; btn.disabled = true;
   try {
     const res = await api('/sync/ozon?days=7', { method: 'POST' });
+    // Кнопка обновляет и живые цены/тарифы Ozon (как «Каталог Ozon»): поменяли цену на Ozon —
+    // нажали ↻ Ozon — в таблице сразу новая цена, без ожидания автообновления раз в 30 минут.
+    btn.textContent = 'Цены…';
+    let pricesErr = null;
+    try { await api('/sync/ozon-catalog', { method: 'POST' }); autoSyncOzonCatalogAt = Date.now(); } catch (e) { pricesErr = e; }
     try {
       await reloadCurrentPage();
     } catch (renderErr) {
       console.warn('Синхронизация Ozon прошла успешно, но при обновлении страницы возникла ошибка:', renderErr);
     }
-    alert(`Синхронизация Ozon завершена. Обработано заказов: ${res.ordersProcessed ?? 0}.`);
+    alert(`Синхронизация Ozon завершена. Обработано заказов: ${res.ordersProcessed ?? 0}.` + (pricesErr ? `\nЦены Ozon обновить не удалось: ${pricesErr.message}` : '\nЦены Ozon обновлены.'));
   } catch (err) {
     alert('Ошибка синхронизации Ozon: ' + err.message);
   } finally {
