@@ -8757,7 +8757,8 @@ function wsPayoutHtml(group) {
       <option value="top" ${sel === 'top' ? 'selected' : ''}>Период сверху (${wsEsc(state.from || '')} — ${wsEsc(state.to || '')})</option>
     </select>`;
   const box = (inner) => `<aside data-ws-stats="${wsEsc(group.key)}" style="flex:0 0 310px;border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-top:10px;font-size:12.5px">
-      <div style="font-weight:600;margin-bottom:4px">Выплаты Ozon: ${wsEsc(group.name)}</div>${select}${inner}</aside>`;
+      <div style="font-weight:600;margin-bottom:4px">Выплаты Ozon: ${wsEsc(group.name)}</div>
+      <div style="font-size:10.5px;color:var(--text-faint);margin-bottom:4px">Только товары этого оптовика</div>${select}${inner}</aside>`;
   if (entry.error && !entry.data) return box(`<div style="color:var(--loss)">Не удалось загрузить: ${wsEsc(entry.error)}</div>`);
   if (!entry.data) return box('<div style="color:var(--text-faint)">Считаю выплаты Ozon…</div>');
   const d = entry.data;
@@ -8768,8 +8769,6 @@ function wsPayoutHtml(group) {
   const sec = (t) => `<div style="margin:10px 0 4px;font-weight:600;font-size:12px">${t}</div>`;
   const fmtD = (iso) => { if (!iso) return ''; const [y, m, dd] = String(iso).slice(0, 10).split('-'); return `${dd}.${m}`; };
   const periodRows = (d.periods || []).map((r) => `<tr><td>${fmtD(r.from)}–${fmtD(r.to)}</td><td class="num">${fmtMoney(r.payout)}</td><td class="num">${fmtMoney(r.wholesaler)}</td><td class="num ${r.net >= 0 ? 'pos' : 'neg'}">${fmtMoney(r.net)}</td></tr>`).join('');
-  const flows = (d.store?.cashFlows || []).slice().sort((a, b) => String(b.begin).localeCompare(String(a.begin))).slice(0, 6);
-  const flowRows = flows.map((c) => `<tr><td>${fmtD(c.begin)}–${fmtD(c.end)}</td><td class="num">${fmtMoney(c.accrued)}</td><td class="num">${c.paid ? fmtMoney(c.paid) : '<span style="color:var(--text-faint)">ещё нет</span>'}</td></tr>`).join('');
   return box(`
       ${entry.loading ? '<div style="font-size:10.5px;color:var(--text-faint)">обновляю…</div>' : ''}
       ${sec(`Начислено Ozon за период · ${s.orders} ${wsPlural(s.orders, 'заказ', 'заказа', 'заказов')}`)}
@@ -8787,12 +8786,28 @@ function wsPayoutHtml(group) {
       ${row('≈ К выплате', fmtMoney(p.payout), '', 'Прогноз по текущим тарифам Ozon: заказы в пути или ждут доставки')}
       ${row('≈ Оптовику', neg(p.wholesaler))}
       ${row('≈ Чистая прибыль', fmtMoney(p.net), p.net >= 0 ? 'pos' : 'neg')}` : ''}
-      ${periodRows ? `${sec('По периодам выплат (эта полка)')}
-      <table class="table" style="font-size:11.5px"><thead><tr><th>Период</th><th class="num">К выплате</th><th class="num">Оптовику</th><th class="num">Прибыль</th></tr></thead><tbody>${periodRows}</tbody></table>` : ''}
-      ${sec('Выплаты Ozon (весь магазин)')}
-      ${flowRows ? `<table class="table" style="font-size:11.5px"><thead><tr><th>Период</th><th class="num">Начислено</th><th class="num">Выплачено</th></tr></thead><tbody>${flowRows}</tbody></table>` : `<div style="color:var(--text-faint)">${d.store?.cashFlowsError ? 'Ozon не отдал отчёт: ' + wsEsc(d.store.cashFlowsError) : 'Нет данных за эти даты'}</div>`}
-      ${d.store?.balance?.closing != null ? row('Сейчас на балансе Ozon', fmtMoney(d.store.balance.closing), '', 'Финансы → Баланс в кабинете Ozon: начислено, но ещё не выплачено') : ''}
+      ${periodRows || p.orders ? `${sec('По периодам выплат — только этот оптовик')}
+      <table class="table" style="font-size:11.5px"><thead><tr><th>Период</th><th class="num">К выплате</th><th class="num">Оптовику</th><th class="num">Прибыль</th></tr></thead><tbody>
+      ${p.orders ? `<tr><td>ожидается</td><td class="num">≈${fmtMoney(p.payout)}</td><td class="num">≈${fmtMoney(p.wholesaler)}</td><td class="num ${p.net >= 0 ? 'pos' : 'neg'}">≈${fmtMoney(p.net)}</td></tr>` : ''}
+      ${periodRows}</tbody></table>` : ''}
       <div style="margin-top:6px;font-size:10.5px;color:var(--text-faint)">Заказ попадает в период по дате, когда Ozon начислил продажу (после доставки). Ozon платит за период 1–15 и 16–конец месяца отдельно.</div>`);
+}
+
+/** Над полками Ozon: общее по магазину (баланс и выплаты Ozon) — отдельно от расчёта по оптовикам. */
+function wsOzonStoreStrip() {
+  if (state.marketplace !== 'OZON') return '';
+  let d = null;
+  for (const e of wsPayout.cache.values()) if (e.data) { d = e.data; break; }
+  if (!d) return '';
+  const fmtD = (iso) => { if (!iso) return ''; const [, m, dd] = String(iso).slice(0, 10).split('-'); return `${dd}.${m}`; };
+  const paid = (d.store?.cashFlows || []).filter((c) => c.paid > 0).sort((a, b) => String(b.begin).localeCompare(String(a.begin))).slice(0, 4);
+  const bal = d.store?.balance?.closing;
+  return `<div style="border:1px dashed var(--border);border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:12.5px;display:flex;gap:18px;flex-wrap:wrap;align-items:center">
+      <b>Ozon — весь магазин</b>
+      ${bal != null ? `<span>Сейчас на балансе Ozon: <b>${fmtMoney(bal)}</b></span>` : ''}
+      ${paid.length ? `<span>Выплачено: ${paid.map((c) => `${fmtD(c.begin)}–${fmtD(c.end)} — <b>${fmtMoney(c.paid)}</b>`).join(' · ')}</span>` : '<span style="color:var(--text-faint)">Выплат за последние периоды Ozon не показал</span>'}
+      <span style="color:var(--text-faint);font-size:11px">Это общие деньги магазина. Расчёт по каждому оптовику — справа у его полки.</span>
+    </div>`;
 }
 
 function wsStatsHtml(group) {
@@ -8840,7 +8855,7 @@ function renderWholesalerShelves() {
       const found = groups.reduce((a, g) => a + g.products.length, 0);
       info.textContent = searching ? (found ? `Найдено: ${found}` : 'Ничего не найдено') : '';
     }
-    list.innerHTML = groups.filter((g) => !searching || g.products.length).map((g) => {
+    list.innerHTML = wsOzonStoreStrip() + groups.filter((g) => !searching || g.products.length).map((g) => {
       const n = g.products.length;
       // При поиске полки с найденными товарами раскрываются сами.
       const open = n > 0 && (searching || wsOpenShelves.has(g.key));
