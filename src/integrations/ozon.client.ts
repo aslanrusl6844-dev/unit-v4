@@ -702,6 +702,13 @@ export class OzonClient {
     return this.fetchFinanceByPosting(http, postingNumbers);
   }
 
+  /** Статусы FBS-отправлений за период (для обновления старых заказов: в пути → доставлен/отменён). */
+  async fetchPostingStatuses(dateFrom: Date, dateTo: Date): Promise<Map<string, string>> {
+    const http = await this.getHttp();
+    const postings = await this.fetchAllFbsPostings(http, dateFrom, dateTo);
+    return new Map(postings.map((p) => [p.posting_number, p.status]));
+  }
+
   /** Справочник видов начислений Ozon (id → название), кэш на время жизни функции. */
   private accrualTypes: Map<number, string> | null = null;
   async fetchAccrualTypes(http?: AxiosInstance): Promise<Map<number, string>> {
@@ -711,7 +718,7 @@ export class OzonClient {
     try {
       const { data } = await h.post('/v1/finance/accrual/types', {});
       for (const t of data?.accrual_types ?? data?.result?.accrual_types ?? []) map.set(Number(t.id), String(t.name ?? t.description ?? ''));
-      logger.info({ types: Array.from(map.entries()).slice(0, 60) }, '[Ozon] Справочник начислений');
+      logger.info({ types: Array.from(map.entries()) }, '[Ozon] Справочник начислений');
     } catch (err: any) {
       logger.warn({ status: err?.response?.status, body: err?.response?.data }, '[Ozon] Не удалось получить справочник начислений');
     }
@@ -755,26 +762,24 @@ export class OzonClient {
         const postingNumber = posting.posting_number;
         const accruals: any[] = posting.accruals ?? [];
         if (!postingNumber || accruals.length === 0) continue;
+        // В начислениях по отправлению Ozon присылает только УДЕРЖАНИЯ (со знаком «−»): комиссию
+        // за продажу (появляется при доставке покупателю), логистику, штрафы и т.п. Выручки там нет —
+        // её берём из самого заказа. Названия видов — английские (Acquiring, LastMile, ...).
         const f: OzonPostingFinance = { commission: 0, logistics: 0, acquiring: 0, other: 0, revenue: 0, payout: 0, settledAt: null };
-        let hasNegative = false;
         for (const acc of accruals) {
           const amount = Number(acc?.accrued?.amount ?? acc?.amount ?? 0) || 0;
           if (!amount) continue;
-          f.payout += amount;
-          const name = (types.get(Number(acc.type_id)) ?? '').toLowerCase();
+          const name = types.get(Number(acc.type_id)) ?? '';
           const date = acc.accrual_date ? new Date(acc.accrual_date) : null;
-          if (date && !isNaN(+date) && (!f.settledAt || date < f.settledAt)) f.settledAt = date;
-          if (amount > 0 && /выручк|продаж|реализац|sale|revenue/.test(name)) { f.revenue += amount; continue; }
-          if (amount < 0) hasNegative = true;
-          const fee = Math.abs(amount); // удержание (Ozon присылает его со знаком «−»)
-          if (/вознагражд|комисс|commission/.test(name)) f.commission += fee;
-          else if (/эквайр|acquir/.test(name)) f.acquiring += fee;
-          else if (/логист|доставк|мил|магистрал|обработк|отгрузк|delivery|logist/.test(name)) f.logistics += fee;
-          else f.other += fee;
+          if (amount > 0 && /sale|revenue|выручк|продаж/i.test(name) && !/commission/i.test(name)) { f.revenue += amount; continue; }
+          const fee = -amount; // удержание «−» → положительная сумма; возврат удержания «+» → уменьшает
+          const kind = ozonFeeKind(name);
+          f[kind] += fee;
+          // Комиссия за продажу начисляется, когда покупатель получил товар, — это и есть дата продажи.
+          if (kind === 'commission' && date && !isNaN(+date) && (!f.settledAt || date < f.settledAt)) f.settledAt = date;
         }
-        // Если вдруг удержания пришли без минуса — считаем выплату как выручка − удержания.
-        if (!hasNegative && f.revenue > 0) f.payout = f.revenue - f.commission - f.logistics - f.acquiring - f.other;
-        f.payout = Math.round(f.payout * 100) / 100;
+        // К выплате без выручки: −(все удержания). Выручку прибавит тот, кто знает сумму заказа.
+        f.payout = Math.round(-(f.commission + f.logistics + f.acquiring + f.other) * 100) / 100;
         result.set(postingNumber, f);
       }
     }
@@ -904,4 +909,12 @@ export function sellingPrice(p: any): number | undefined {
   const promo = Number(p?.marketing_seller_price) || 0;
   const v = promo > 0 && (base <= 0 || promo < base) ? promo : base;
   return v > 0 ? v : undefined;
+}
+
+/** Вид удержания Ozon по английскому названию из справочника /v1/finance/accrual/types. */
+export function ozonFeeKind(name: string): 'commission' | 'logistics' | 'acquiring' | 'other' {
+  if (/commission/i.test(name)) return 'commission';
+  if (/acquiring|installment/i.test(name)) return 'acquiring';
+  if (/logistic|lastmile|last mile|drop-?off|pick-?up|crossdock|fulfillment|shipment|delivery|packing|return|placement|storage/i.test(name)) return 'logistics';
+  return 'other';
 }

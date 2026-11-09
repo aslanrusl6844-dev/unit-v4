@@ -45,33 +45,53 @@ export async function refreshOzonAccruals(opts: { force?: boolean } = {}) {
     take: 1000,
   });
   if (!orders.length) return { checked: 0, settled: 0 };
+
+  // Статусы старых заказов: синхронизация заказов берёт только последние дни, поэтому
+  // заказ месячной давности мог остаться «в пути», хотя давно доставлен или отменён.
+  const oldest = orders.reduce((m, o) => (o.orderDate < m ? o.orderDate : m), new Date());
+  let statuses = new Map<string, string>();
+  try {
+    statuses = await ozonClient.fetchPostingStatuses(new Date(oldest.getTime() - DAY), new Date());
+  } catch (err: any) {
+    logger.warn({ err: String(err?.message ?? err) }, '[Ozon] Не удалось обновить статусы отправлений');
+  }
+
   const finance = await ozonClient.fetchFinanceForPostings(orders.map((o) => o.externalId));
   let settled = 0;
   for (const o of orders) {
+    const status = statuses.get(o.externalId) ?? o.status;
     const f = finance.get(o.externalId);
-    if (!f) continue;
+    if (!f && status === o.status) continue;
     const revenue = o.items.reduce((s, i) => s + i.price * i.quantity, 0) || o.totalRevenue;
+    const commission = f?.commission ?? o.marketplaceCommission;
+    const logistics = f?.logistics ?? o.logisticsCost;
+    const acquiring = f?.acquiring ?? o.acquiringCost;
+    const other = f?.other ?? o.otherFees;
+    // Продажа засчитана Ozon: доставлен покупателю (есть комиссия за продажу или статус «доставлен»).
+    const isSold = status === 'delivered' || !!f?.settledAt;
+    const settledAt = isSold ? (f?.settledAt ?? o.settledAt ?? new Date()) : null;
+    if (isSold) settled += 1;
     await prisma.$transaction([
       prisma.order.update({
         where: { id: o.id },
         data: {
-          marketplaceCommission: round2(f.commission),
-          logisticsCost: round2(f.logistics),
-          acquiringCost: round2(f.acquiring),
-          otherFees: round2(f.other),
-          settledAt: f.settledAt ?? o.settledAt ?? new Date(),
-          payoutAmount: f.payout,
+          status,
+          marketplaceCommission: round2(commission),
+          logisticsCost: round2(logistics),
+          acquiringCost: round2(acquiring),
+          otherFees: round2(other),
+          settledAt,
+          payoutAmount: isSold ? round2(revenue - commission - logistics - acquiring - other) : null,
         },
       }),
       ...o.items.map((i) => {
         const share = revenue > 0 ? (i.price * i.quantity) / revenue : 1 / o.items.length;
         return prisma.orderItem.update({
           where: { id: i.id },
-          data: { commission: round2(f.commission * share), itemLogistics: round2(f.logistics * share) },
+          data: { commission: round2(commission * share), itemLogistics: round2(logistics * share) },
         });
       }),
     ]);
-    settled += 1;
   }
   logger.info(`[Ozon] Начисления: проверено ${orders.length}, с начислениями ${settled}`);
   return { checked: orders.length, settled };
@@ -177,11 +197,12 @@ export async function getOzonPayoutReport(params: { from: Date; to: Date; wholes
         otherFees = (o.acquiringCost + o.otherFees) * share;
         payout = o.payoutAmount != null ? o.payoutAmount * share : revenue - commission - logistics - otherFees;
       } else {
-        // Ozon ещё не начислил — прогноз по текущим тарифам товара.
-        commission = revenue * ((p?.ozonCommissionRatePct ?? 0) / 100);
-        logistics = ((p?.ozonLogisticsAmount ?? 0) + (p?.ozonLastMileAmount ?? 0)) * i.quantity;
-        otherFees = 0;
-        payout = revenue - commission - logistics;
+        // Ozon ещё не засчитал продажу — комиссия и логистика по текущим тарифам товара
+        // (или уже начисленные, если больше), плюс уже удержанные штрафы/сборы по заказу.
+        commission = Math.max(revenue * ((p?.ozonCommissionRatePct ?? 0) / 100), o.marketplaceCommission * share);
+        logistics = Math.max(((p?.ozonLogisticsAmount ?? 0) + (p?.ozonLastMileAmount ?? 0)) * i.quantity, o.logisticsCost * share);
+        otherFees = (o.acquiringCost + o.otherFees) * share;
+        payout = revenue - commission - logistics - otherFees;
       }
       const tax = revenue * (taxRatePct / 100);
       const wholesaler = unitCost * i.quantity;

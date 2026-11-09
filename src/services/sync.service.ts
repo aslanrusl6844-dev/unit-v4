@@ -235,12 +235,22 @@ async function persistOrder(order: NormalizedOrder, stats: { productsCreated: nu
     logisticsCost,
     acquiringCost: order.acquiringCost,
     otherFees: order.otherFees,
-    ...(order.marketplace === 'OZON' ? { settledAt: order.settledAt ?? null, payoutAmount: order.payoutAmount ?? null } : {}),
+    ...(order.marketplace === 'OZON'
+      ? {
+          settledAt: order.settledAt ?? null,
+          // В начислениях Ozon нет выручки — к выплате = выручка заказа − удержания (только когда продажа засчитана).
+          payoutAmount: order.settledAt ? order.totalRevenue - marketplaceCommission - logisticsCost - order.acquiringCost - order.otherFees : null,
+        }
+      : {}),
     rawData: JSON.stringify(order.raw ?? {}),
   };
   // Ozon: начисления по заказу приходят позже (после доставки) и подтягиваются отдельно
   // (refreshOzonAccruals). Повторная синхронизация заказа без начислений не должна их стирать.
-  if (order.marketplace === 'OZON' && order.settledAt == null && existing?.settledAt) {
+  const ozonNoFinance = order.marketplace === 'OZON' && order.settledAt == null
+    && !order.marketplaceCommission && !order.logisticsCost && !order.acquiringCost && !order.otherFees;
+  const existingHasFinance = !!existing && (existing.settledAt != null || existing.marketplaceCommission > 0
+    || existing.logisticsCost > 0 || existing.acquiringCost > 0 || existing.otherFees > 0);
+  if (ozonNoFinance && existingHasFinance && existing) {
     Object.assign(orderData, {
       marketplaceCommission: existing.marketplaceCommission,
       logisticsCost: existing.logisticsCost,

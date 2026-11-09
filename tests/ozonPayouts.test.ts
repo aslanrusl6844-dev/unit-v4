@@ -16,10 +16,10 @@ test('fetchFinanceByPosting: разбор posting_accruals (выручка +, у
   const http = {
     post: async (url: string) => {
       if (url === '/v1/finance/accrual/types') return { data: { accrual_types: [
-        { id: 1, name: 'Выручка' }, { id: 2, name: 'Вознаграждение за продажу' }, { id: 3, name: 'Логистика' }, { id: 4, name: 'Эквайринг' },
+        { id: 1, name: 'DefectRate' }, { id: 2, name: 'SaleCommission' }, { id: 3, name: 'Logistic' }, { id: 4, name: 'Acquiring' },
       ] } };
       return { data: { posting_accruals: [{ posting_number: 'P-1', accruals: [
-        { accrual_date: '2026-11-05', accrued: { amount: '10000' }, type_id: 1 },
+        { accrual_date: '2026-11-04', accrued: { amount: '-100' }, type_id: 1 },
         { accrual_date: '2026-11-05', accrued: { amount: '-1200' }, type_id: 2 },
         { accrual_date: '2026-11-06', accrued: { amount: '-699' }, type_id: 3 },
         { accrual_date: '2026-11-06', accrued: { amount: '-150' }, type_id: 4 },
@@ -29,11 +29,21 @@ test('fetchFinanceByPosting: разбор posting_accruals (выручка +, у
   ozonClient.accrualTypes = null;
   const m = await ozonClient.fetchFinanceByPosting(http, ['P-1', 'P-2']);
   const f = m.get('P-1');
-  assert.equal(f.revenue, 10000);
+  assert.equal(f.revenue, 0);
   assert.equal(f.commission, 1200);
   assert.equal(f.logistics, 699);
   assert.equal(f.acquiring, 150);
-  assert.equal(f.payout, 7951);
+  assert.equal(f.other, 100);
+  assert.equal(f.payout, -2149);
   assert.equal(f.settledAt.toISOString().slice(0, 10), '2026-11-05');
   assert.equal(m.has('P-2'), false);
+});
+
+test('ozonFeeKind: английские названия Ozon', () => {
+  const { ozonFeeKind } = require('../src/integrations/ozon.client');
+  assert.equal(ozonFeeKind('SaleCommission'), 'commission');
+  assert.equal(ozonFeeKind('LastMileCourier'), 'logistics');
+  assert.equal(ozonFeeKind('Drop-Off'), 'logistics');
+  assert.equal(ozonFeeKind('Acquiring'), 'acquiring');
+  assert.equal(ozonFeeKind('DefectRate'), 'other');
 });
