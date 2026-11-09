@@ -32,6 +32,9 @@ export interface NormalizedOrder {
   logisticsCost: number;
   acquiringCost: number;
   otherFees: number;
+  /** Ozon: дата начисления продажи (по ней — период выплаты) и сумма к выплате по заказу. */
+  settledAt?: Date | null;
+  payoutAmount?: number | null;
   items: NormalizedOrderItem[];
   raw?: unknown;
   /** Только для Kaspi: доставлялся ли заказ через Kaspi Доставку (влияет на логистику) */

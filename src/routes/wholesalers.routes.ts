@@ -38,6 +38,28 @@ const WHOLESALER_ZIP_LIMIT = 150;
 // ---------------------------------------------------------------------
 
 /** Оптовики (в порядке добавления, у каждого своя площадка) и привязки товаров: { 'KASPI:<productId>': wholesalerId }. */
+/**
+ * Выплаты Ozon по полке оптовика: ?from=ГГГГ-ММ-ДД&to=ГГГГ-ММ-ДД&wholesalerId=<id|__none__|пусто = весь Ozon>.
+ * Даты — по Алматы. Начислено Ozon в периоде, к выплате, оптовику, налог, чистая прибыль, периоды выплат.
+ */
+wholesalersRouter.get('/ozon-payouts', async (req, res) => {
+  try {
+    const from = String(req.query.from || '');
+    const to = String(req.query.to || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return res.status(400).json({ error: 'Нужны даты from и to (ГГГГ-ММ-ДД)' });
+    const { getOzonPayoutReport } = await import('../services/ozonPayouts.service');
+    const report = await getOzonPayoutReport({
+      from: almatyStartOfDay(from),
+      to: almatyEndOfDay(to),
+      wholesalerId: req.query.wholesalerId ? String(req.query.wholesalerId) : null,
+    });
+    res.json(report);
+  } catch (err: any) {
+    logger.error({ err }, 'Выплаты Ozon по полке');
+    res.status(500).json({ error: String(err?.message ?? err) });
+  }
+});
+
 wholesalersRouter.get('/', async (_req, res) => {
   try {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');

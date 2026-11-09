@@ -50,5 +50,14 @@ export async function runCartReminder() {
 
 /** Живые цены Ozon (с учётом акций) — каждые 5 минут, см. .github/workflows/ozon-prices.yml. */
 export async function runOzonPrices() {
-  return syncOzonPrices();
+  const prices = await syncOzonPrices();
+  // Заодно начисления Ozon по заказам — сама функция ходит в Ozon не чаще раза в 20 минут.
+  let accruals: unknown = null;
+  try {
+    const { refreshOzonAccruals } = await import('../services/ozonPayouts.service');
+    accruals = await refreshOzonAccruals();
+  } catch (err: any) {
+    accruals = { error: String(err?.message ?? err) };
+  }
+  return { prices, accruals };
 }

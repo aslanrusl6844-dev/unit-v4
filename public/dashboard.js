@@ -7322,6 +7322,8 @@ document.getElementById('syncOzonBtn').addEventListener('click', async () => {
     btn.textContent = 'Цены…';
     let pricesErr = null;
     try { await api('/sync/ozon-prices', { method: 'POST' }); } catch (e) { pricesErr = e; }
+    btn.textContent = 'Выплаты…';
+    try { await api('/sync/ozon-accruals?force=1', { method: 'POST' }); wsPayout.cache.clear(); } catch (e) { console.warn('Начисления Ozon:', e); }
     try {
       await reloadCurrentPage();
     } catch (renderErr) {
@@ -8698,7 +8700,103 @@ function wsSoldBadge(group) {
   return q > 0 ? ` <span class="ws-sold" style="color:var(--loss);font-weight:600;margin-left:6px" title="Продано сегодня">+${fmt.format(q)}</span>` : '';
 }
 
+// ---- Ozon: выплаты по полке оптовика ----
+// Для полок Ozon справа вместо краткой сводки — расчёт по выплатам Ozon: сколько Ozon начислил
+// к выплате за выбранный период выплат (1–15 / 16–конец месяца), сколько отдать оптовику
+// (оптовые цены = себестоимость), налог и чистая прибыль; что ещё ожидается; периоды выплат.
+const wsPayout = { period: null, cache: new Map() }; // period: 'ГГГГ-ММ-ДД|ГГГГ-ММ-ДД' или 'top' (период сверху)
+
+/** Периоды выплат Ozon (по Алматы): текущий и 5 предыдущих полумесяцев. */
+function wsPayoutPeriods() {
+  const out = [];
+  const [y0, m0, d0] = wsAlmatyToday().split('-').map(Number);
+  let y = y0, m = m0, half = d0 <= 15 ? 1 : 2;
+  const months = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+  for (let i = 0; i < 6; i++) {
+    const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    const mm = String(m).padStart(2, '0');
+    const from = `${y}-${mm}-${half === 1 ? '01' : '16'}`;
+    const to = `${y}-${mm}-${half === 1 ? '15' : String(last)}`;
+    out.push({ value: `${from}|${to}`, label: `${half === 1 ? '1–15' : `16–${last}`} ${months[m - 1]}${i === 0 ? ' (текущий)' : ''}` });
+    if (half === 2) half = 1; else { half = 2; m -= 1; if (m === 0) { m = 12; y -= 1; } }
+  }
+  return out;
+}
+
+function wsPayoutRange() {
+  if (!wsPayout.period) wsPayout.period = wsPayoutPeriods()[1].value; // по умолчанию — прошлый (закрытый) период
+  if (wsPayout.period === 'top') return { from: state.from, to: state.to };
+  const [from, to] = wsPayout.period.split('|');
+  return { from, to };
+}
+
+function wsPayoutWholesalerId(group) {
+  return group.wholesaler ? group.wholesaler.id : '__none__';
+}
+
+function wsEnsurePayout(group) {
+  const { from, to } = wsPayoutRange();
+  const key = `${wsPayoutWholesalerId(group)}|${from}|${to}`;
+  const cur = wsPayout.cache.get(key);
+  if (cur && (cur.loading || cur.data || cur.error) && !(cur.data && Date.now() - cur.at > 5 * 60 * 1000)) return cur;
+  const entry = { loading: true, data: cur?.data || null, error: null, at: Date.now() };
+  wsPayout.cache.set(key, entry);
+  api(`/wholesalers/ozon-payouts?${qs({ from, to, wholesalerId: wsPayoutWholesalerId(group) })}`)
+    .then((d) => { entry.data = d; entry.error = null; })
+    .catch((err) => { entry.error = err.message || String(err); })
+    .finally(() => { entry.loading = false; entry.at = Date.now(); if (!wsEditing) renderWholesalerShelves(); });
+  return entry;
+}
+
+function wsPayoutHtml(group) {
+  const entry = wsEnsurePayout(group);
+  const periods = wsPayoutPeriods();
+  const sel = wsPayout.period;
+  const select = `<select data-ws-payout-period class="cost-input" style="width:100%;margin:2px 0 8px">
+      ${periods.map((p) => `<option value="${p.value}" ${p.value === sel ? 'selected' : ''}>Период выплаты: ${p.label}</option>`).join('')}
+      <option value="top" ${sel === 'top' ? 'selected' : ''}>Период сверху (${wsEsc(state.from || '')} — ${wsEsc(state.to || '')})</option>
+    </select>`;
+  const box = (inner) => `<aside data-ws-stats="${wsEsc(group.key)}" style="flex:0 0 310px;border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-top:10px;font-size:12.5px">
+      <div style="font-weight:600;margin-bottom:4px">Выплаты Ozon: ${wsEsc(group.name)}</div>${select}${inner}</aside>`;
+  if (entry.error && !entry.data) return box(`<div style="color:var(--loss)">Не удалось загрузить: ${wsEsc(entry.error)}</div>`);
+  if (!entry.data) return box('<div style="color:var(--text-faint)">Считаю выплаты Ozon…</div>');
+  const d = entry.data;
+  const row = (label, val, cls, hint) => `<div style="display:flex;justify-content:space-between;gap:8px;padding:2px 0"${hint ? ` title="${wsEsc(hint)}"` : ''}><span style="color:var(--text-muted)">${label}</span><b class="${cls || ''}">${val}</b></div>`;
+  const neg = (v) => (v ? '−' + fmtMoney(v) : fmtMoney(0));
+  const s = d.settled;
+  const p = d.pending;
+  const sec = (t) => `<div style="margin:10px 0 4px;font-weight:600;font-size:12px">${t}</div>`;
+  const fmtD = (iso) => { if (!iso) return ''; const [y, m, dd] = String(iso).slice(0, 10).split('-'); return `${dd}.${m}`; };
+  const periodRows = (d.periods || []).map((r) => `<tr><td>${fmtD(r.from)}–${fmtD(r.to)}</td><td class="num">${fmtMoney(r.payout)}</td><td class="num">${fmtMoney(r.wholesaler)}</td><td class="num ${r.net >= 0 ? 'pos' : 'neg'}">${fmtMoney(r.net)}</td></tr>`).join('');
+  const flows = (d.store?.cashFlows || []).slice().sort((a, b) => String(b.begin).localeCompare(String(a.begin))).slice(0, 6);
+  const flowRows = flows.map((c) => `<tr><td>${fmtD(c.begin)}–${fmtD(c.end)}</td><td class="num">${fmtMoney(c.accrued)}</td><td class="num">${c.paid ? fmtMoney(c.paid) : '<span style="color:var(--text-faint)">ещё нет</span>'}</td></tr>`).join('');
+  return box(`
+      ${entry.loading ? '<div style="font-size:10.5px;color:var(--text-faint)">обновляю…</div>' : ''}
+      ${sec(`Начислено Ozon за период · ${s.orders} ${wsPlural(s.orders, 'заказ', 'заказа', 'заказов')}`)}
+      ${row('Продано, шт', fmt.format(s.quantity))}
+      ${row('Выручка', fmtMoney(s.revenue))}
+      ${row('Комиссия Ozon', neg(s.commission))}
+      ${row('Логистика Ozon', neg(s.logistics))}
+      ${s.otherFees ? row('Прочие удержания', neg(s.otherFees)) : ''}
+      ${row('К выплате от Ozon', fmtMoney(s.payout), '', 'Выручка минус все удержания Ozon по этим заказам — по данным начислений Ozon')}
+      ${row(`Налог ${d.taxRatePct}%`, neg(s.tax), '', 'Налог ИП от выручки')}
+      ${row('Отдать оптовику', neg(s.wholesaler), '', 'Оптовая цена (себестоимость) × проданное количество')}
+      ${row('Чистая прибыль', fmtMoney(s.net), s.net >= 0 ? 'pos' : 'neg', 'К выплате − налог − оптовику')}
+      ${p.orders ? `${sec(`Ожидается (Ozon ещё не начислил) · ${p.orders} ${wsPlural(p.orders, 'заказ', 'заказа', 'заказов')}`)}
+      ${row('Выручка', fmtMoney(p.revenue))}
+      ${row('≈ К выплате', fmtMoney(p.payout), '', 'Прогноз по текущим тарифам Ozon: заказы в пути или ждут доставки')}
+      ${row('≈ Оптовику', neg(p.wholesaler))}
+      ${row('≈ Чистая прибыль', fmtMoney(p.net), p.net >= 0 ? 'pos' : 'neg')}` : ''}
+      ${periodRows ? `${sec('По периодам выплат (эта полка)')}
+      <table class="table" style="font-size:11.5px"><thead><tr><th>Период</th><th class="num">К выплате</th><th class="num">Оптовику</th><th class="num">Прибыль</th></tr></thead><tbody>${periodRows}</tbody></table>` : ''}
+      ${sec('Выплаты Ozon (весь магазин)')}
+      ${flowRows ? `<table class="table" style="font-size:11.5px"><thead><tr><th>Период</th><th class="num">Начислено</th><th class="num">Выплачено</th></tr></thead><tbody>${flowRows}</tbody></table>` : `<div style="color:var(--text-faint)">${d.store?.cashFlowsError ? 'Ozon не отдал отчёт: ' + wsEsc(d.store.cashFlowsError) : 'Нет данных за эти даты'}</div>`}
+      ${d.store?.balance?.closing != null ? row('Сейчас на балансе Ozon', fmtMoney(d.store.balance.closing), '', 'Финансы → Баланс в кабинете Ozon: начислено, но ещё не выплачено') : ''}
+      <div style="margin-top:6px;font-size:10.5px;color:var(--text-faint)">Заказ попадает в период по дате, когда Ozon начислил продажу (после доставки). Ozon платит за период 1–15 и 16–конец месяца отдельно.</div>`);
+}
+
 function wsStatsHtml(group) {
+  if (group.mp === 'OZON') return wsPayoutHtml(group);
   wsEnsureStats();
   const box = (inner) => `<aside data-ws-stats="${wsEsc(group.key)}" style="flex:0 0 210px;border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-top:10px;font-size:12.5px">
       <div style="font-weight:600;margin-bottom:6px">Продажи: ${wsEsc(group.name)}</div>${inner}</aside>`;
@@ -8926,6 +9024,12 @@ function wireWholesalersOnce() {
 
   // Себестоимость прямо в таблице полки: вписал → Enter (или клик мимо) → сохранили и пересчитали прибыль.
   const shelvesRoot = document.getElementById('productsShelvesView');
+  shelvesRoot.addEventListener('change', (e) => {
+    const sel = e.target.closest('[data-ws-payout-period]');
+    if (!sel) return;
+    wsPayout.period = sel.value;
+    renderWholesalerShelves();
+  });
   shelvesRoot.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && e.target.matches('[data-ws-cost]')) e.target.blur();
   });
@@ -8942,6 +9046,7 @@ function wireWholesalersOnce() {
       if (p) p.costPrice = value;
       const forecasts = await api('/analytics/forecast');
       productsForecastCache = new Map(forecasts.map((f) => [`${f.productId}:${f.marketplace}`, f]));
+      wsPayout.cache.clear();
       renderWholesalerShelves();
       try { renderProductsAdminTable(); } catch { /* общая таблица перерисуется при следующем открытии */ }
     } catch (err) {

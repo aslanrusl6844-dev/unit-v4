@@ -37,6 +37,33 @@ async function getOzonCredentials(): Promise<OzonCredentials | null> {
   return null;
 }
 
+export interface OzonPostingFinance {
+  commission: number;
+  logistics: number;
+  acquiring: number;
+  other: number;
+  revenue: number;
+  /** Сумма всех начислений по отправлению = к выплате от Ozon. */
+  payout: number;
+  /** Дата первого начисления (Ozon засчитал продажу) — по ней заказ попадает в период выплаты. */
+  settledAt: Date | null;
+}
+
+export interface OzonCashFlow {
+  periodId: string;
+  begin: string | null;
+  end: string | null;
+  ordersAmount: number;
+  returnsAmount: number;
+  commissionAmount: number;
+  servicesAmount: number;
+  deliveryAndReturnAmount: number;
+  payments: number;
+  beginBalance: number | null;
+  endBalance: number | null;
+  currency: string | null;
+}
+
 interface OzonPostingProduct {
   sku: number;
   offer_id: string;
@@ -457,7 +484,7 @@ export class OzonClient {
     const postingNumbers = postings.map((p) => p.posting_number).filter(Boolean);
     const financeByPosting = postingNumbers.length > 0
       ? await this.fetchFinanceByPosting(http, postingNumbers)
-      : new Map<string, { commission: number; logistics: number; other: number }>();
+      : new Map<string, OzonPostingFinance>();
 
     if (financeByPosting.size > 0) {
       const ourCommissionTotal = Array.from(financeByPosting.values()).reduce((sum, v) => sum + v.commission, 0);
@@ -669,70 +696,138 @@ export class OzonClient {
    * метод вызывать вообще не нужно, Ozon в любом случае откажет с ошибкой
    * валидации на пустом массиве.
    */
-  private async fetchFinanceByPosting(
+  /** Начисления по списку отправлений (для уже сохранённых заказов). */
+  async fetchFinanceForPostings(postingNumbers: string[]): Promise<Map<string, OzonPostingFinance>> {
+    const http = await this.getHttp();
+    return this.fetchFinanceByPosting(http, postingNumbers);
+  }
+
+  /** Справочник видов начислений Ozon (id → название), кэш на время жизни функции. */
+  private accrualTypes: Map<number, string> | null = null;
+  async fetchAccrualTypes(http?: AxiosInstance): Promise<Map<number, string>> {
+    if (this.accrualTypes) return this.accrualTypes;
+    const h = http ?? (await this.getHttp());
+    const map = new Map<number, string>();
+    try {
+      const { data } = await h.post('/v1/finance/accrual/types', {});
+      for (const t of data?.accrual_types ?? data?.result?.accrual_types ?? []) map.set(Number(t.id), String(t.name ?? t.description ?? ''));
+      logger.info({ types: Array.from(map.entries()).slice(0, 60) }, '[Ozon] Справочник начислений');
+    } catch (err: any) {
+      logger.warn({ status: err?.response?.status, body: err?.response?.data }, '[Ozon] Не удалось получить справочник начислений');
+    }
+    this.accrualTypes = map;
+    return map;
+  }
+
+  /**
+   * Начисления по отправлениям: POST /v1/finance/accrual/postings (до 200 номеров за раз).
+   * Ответ: posting_accruals[] → { posting_number, accruals[] { accrual_date, accrued{amount}, type_id, sku, quantity, seller_price } }.
+   * Сумма accrued по отправлению = сколько Ozon начислил продавцу (выручка «+», удержания «−»),
+   * т.е. это и есть «к выплате» по заказу. Вид удержания определяем по названию из справочника.
+   */
+  async fetchFinanceByPosting(
     http: AxiosInstance,
     postingNumbers: string[],
-  ): Promise<Map<string, { commission: number; logistics: number; other: number }>> {
-    const result = new Map<string, { commission: number; logistics: number; other: number }>();
-    if (postingNumbers.length === 0) return result; // нечего запрашивать — не дёргаем API вообще
-
-    const BATCH_SIZE = 200; // официальный лимит Ozon для этого метода
+  ): Promise<Map<string, OzonPostingFinance>> {
+    const result = new Map<string, OzonPostingFinance>();
+    if (postingNumbers.length === 0) return result;
+    const types = await this.fetchAccrualTypes(http);
+    const BATCH_SIZE = 200;
+    let logged = false;
 
     for (let i = 0; i < postingNumbers.length; i += BATCH_SIZE) {
       const batch = postingNumbers.slice(i, i + BATCH_SIZE);
-      const requestBody = { posting_numbers: batch };
-
       let data: any;
       try {
-        const response = await http.post('/v1/finance/accrual/postings', requestBody);
+        const response = await http.post('/v1/finance/accrual/postings', { posting_numbers: batch });
         data = response.data;
       } catch (err: any) {
         const ozonErrorBody = err?.response?.data;
-        logger.error(
-          { status: err?.response?.status, body: ozonErrorBody, batchSize: batch.length },
-          '[Ozon] Ошибка запроса начислений (/v1/finance/accrual/postings)',
-        );
-        throw new Error(
-          `Ozon API вернул ошибку ${err?.response?.status ?? ''} при запросе начислений: ` +
-            `${JSON.stringify(ozonErrorBody) || err?.message || err}. ` +
-            `Учтите: старый метод /v3/finance/transaction/list отключён Ozon с 8 сентября 2026 — используется новый.`,
-        );
+        logger.error({ status: err?.response?.status, body: ozonErrorBody, batchSize: batch.length }, '[Ozon] Ошибка запроса начислений (/v1/finance/accrual/postings)');
+        throw new Error(`Ozon API вернул ошибку ${err?.response?.status ?? ''} при запросе начислений: ${JSON.stringify(ozonErrorBody) || err?.message || err}.`);
       }
-
-      // Терпимый разбор — новый метод официально ещё дорабатывается Ozon,
-      // точная структура полей не задокументирована так же подробно, как
-      // была у старого метода. Пробуем несколько вероятных путей к списку
-      // отправлений и суммам, логируем сырой ответ при первой неудаче.
-      const postings: any[] = data.postings ?? data.result?.postings ?? data.items ?? data.result?.items ?? [];
-      if (postings.length === 0) {
-        logger.info({ batchSize: batch.length, sampleResponse: data }, '[Ozon] /accrual/postings вернул пустой список (или неожиданную структуру) — см. sampleResponse');
+      const postings: any[] = data?.posting_accruals ?? data?.result?.posting_accruals ?? data?.postings ?? [];
+      if (!logged && postings.some((p) => (p.accruals ?? []).length)) {
+        logged = true;
+        logger.info({ sample: postings.find((p) => (p.accruals ?? []).length) }, '[Ozon] Пример начислений по отправлению');
       }
-
       for (const posting of postings) {
-        const postingNumber = posting.posting_number ?? posting.posting?.posting_number ?? posting.number;
-        if (!postingNumber) continue;
-
-        const entry = result.get(postingNumber) ?? { commission: 0, logistics: 0, other: 0 };
-        // Начисления по отправлению могут прийти списком (accruals/items)
-        // или как плоские поля прямо на самом posting — поддерживаем оба варианта.
-        const accruals: any[] = posting.accruals ?? posting.items ?? [posting];
+        const postingNumber = posting.posting_number;
+        const accruals: any[] = posting.accruals ?? [];
+        if (!postingNumber || accruals.length === 0) continue;
+        const f: OzonPostingFinance = { commission: 0, logistics: 0, acquiring: 0, other: 0, revenue: 0, payout: 0, settledAt: null };
+        let hasNegative = false;
         for (const acc of accruals) {
-          const amount = Math.abs(Number(acc.amount ?? acc.accrual_amount ?? acc.sum ?? acc.sale_commission ?? acc.delivery_charge ?? 0));
+          const amount = Number(acc?.accrued?.amount ?? acc?.amount ?? 0) || 0;
           if (!amount) continue;
-          const typeLabel = String(acc.type ?? acc.accrual_type ?? acc.name ?? acc.operation_type_name ?? '').toLowerCase();
-          if (typeLabel.includes('comm') || typeLabel.includes('комисс') || acc.sale_commission != null) {
-            entry.commission += Math.abs(Number(acc.sale_commission ?? amount));
-          } else if (typeLabel.includes('log') || typeLabel.includes('deliver') || typeLabel.includes('логист') || typeLabel.includes('доставк') || acc.delivery_charge != null) {
-            entry.logistics += Math.abs(Number(acc.delivery_charge ?? amount));
-          } else {
-            entry.other += amount;
-          }
+          f.payout += amount;
+          const name = (types.get(Number(acc.type_id)) ?? '').toLowerCase();
+          const date = acc.accrual_date ? new Date(acc.accrual_date) : null;
+          if (date && !isNaN(+date) && (!f.settledAt || date < f.settledAt)) f.settledAt = date;
+          if (amount > 0 && /выручк|продаж|реализац|sale|revenue/.test(name)) { f.revenue += amount; continue; }
+          if (amount < 0) hasNegative = true;
+          const fee = Math.abs(amount); // удержание (Ozon присылает его со знаком «−»)
+          if (/вознагражд|комисс|commission/.test(name)) f.commission += fee;
+          else if (/эквайр|acquir/.test(name)) f.acquiring += fee;
+          else if (/логист|доставк|мил|магистрал|обработк|отгрузк|delivery|logist/.test(name)) f.logistics += fee;
+          else f.other += fee;
         }
-        result.set(postingNumber, entry);
+        // Если вдруг удержания пришли без минуса — считаем выплату как выручка − удержания.
+        if (!hasNegative && f.revenue > 0) f.payout = f.revenue - f.commission - f.logistics - f.acquiring - f.other;
+        f.payout = Math.round(f.payout * 100) / 100;
+        result.set(postingNumber, f);
       }
     }
-
     return result;
+  }
+
+  /** Финансовый отчёт по периодам выплат (1–15 и 16–конец месяца): POST /v1/finance/cash-flow-statement/list. */
+  async fetchCashFlows(from: Date, to: Date): Promise<OzonCashFlow[]> {
+    const http = await this.getHttp();
+    const out: OzonCashFlow[] = [];
+    for (let page = 1; page <= 20; page++) {
+      const { data } = await http.post('/v1/finance/cash-flow-statement/list', {
+        date: { from: from.toISOString(), to: to.toISOString() },
+        with_details: true,
+        page,
+        page_size: 1,
+      });
+      const r = data?.result ?? {};
+      for (const c of r.cash_flows ?? []) {
+        const d = r.details ?? {};
+        out.push({
+          periodId: String(c.period?.id ?? ''),
+          begin: c.period?.begin ?? null,
+          end: c.period?.end ?? null,
+          ordersAmount: Number(c.orders_amount) || 0,
+          returnsAmount: Number(c.returns_amount) || 0,
+          commissionAmount: Number(c.commission_amount) || 0,
+          servicesAmount: Number(c.services_amount) || 0,
+          deliveryAndReturnAmount: Number(c.item_delivery_and_return_amount) || 0,
+          payments: (d.payments ?? []).reduce((s: number, p: any) => s + (Number(p.payment) || 0), 0),
+          beginBalance: d.begin_balance_amount != null ? Number(d.begin_balance_amount) : null,
+          endBalance: d.end_balance_amount != null ? Number(d.end_balance_amount) : null,
+          currency: c.currency_code ?? null,
+        });
+      }
+      if (page >= Number(r.page_count ?? data?.page_count ?? 1)) break;
+    }
+    return out;
+  }
+
+  /** Баланс за период до 30 дней: POST /v1/finance/balance (Финансы → Баланс в кабинете). */
+  async fetchBalance(from: Date, to: Date): Promise<{ opening: number | null; closing: number | null; accrued: number | null; paid: number; currency: string | null }> {
+    const http = await this.getHttp();
+    const { data } = await http.post('/v1/finance/balance', { date_from: from.toISOString().slice(0, 10), date_to: to.toISOString().slice(0, 10) });
+    const t = data?.total ?? data?.result?.total ?? {};
+    const v = (x: any) => (x?.value != null ? Number(x.value) : null);
+    return {
+      opening: v(t.opening_balance),
+      closing: v(t.closing_balance),
+      accrued: v(t.accrued),
+      paid: (t.payments ?? []).reduce((s: number, p: any) => s + Math.abs(Number(p?.value) || 0), 0),
+      currency: t.closing_balance?.currency_code ?? null,
+    };
   }
 
   /**
@@ -766,7 +861,7 @@ export class OzonClient {
 
   private toNormalizedOrder(
     posting: OzonPosting,
-    finance?: { commission: number; logistics: number; other: number },
+    finance?: OzonPostingFinance,
   ): NormalizedOrder {
     const items: NormalizedOrderItem[] = (posting.products ?? []).map((p) => ({
       externalSku: p.offer_id,
@@ -787,8 +882,10 @@ export class OzonClient {
       totalRevenue,
       marketplaceCommission: finance?.commission ?? 0,
       logisticsCost: finance?.logistics ?? 0,
-      acquiringCost: 0,
+      acquiringCost: finance?.acquiring ?? 0,
       otherFees: finance?.other ?? 0,
+      settledAt: finance?.settledAt ?? null,
+      payoutAmount: finance ? finance.payout : null,
       items,
       raw: posting,
     };

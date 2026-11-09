@@ -278,6 +278,10 @@ model Order {
   acquiringCost          Float       @default(0) // эквайринг/платёжная комиссия (Kaspi)
   otherFees              Float       @default(0) // прочие удержания
   adSpendAllocated        Float       @default(0) // распределённые расходы на рекламу (при пересчёте)
+  // Ozon: когда Ozon засчитал продажу (первое начисление) — по этой дате заказ попадает
+  // в период выплаты; и сколько по заказу начислено к выплате (выручка − все удержания).
+  settledAt              DateTime?
+  payoutAmount           Float?
 
   rawData                String?     // JSON исходного ответа API — для отладки/аудита
 
@@ -288,6 +292,7 @@ model Order {
 
   @@unique([marketplace, externalId])
   @@index([marketplace, orderDate])
+  @@index([marketplace, settledAt])
   @@index([status])
 }
 

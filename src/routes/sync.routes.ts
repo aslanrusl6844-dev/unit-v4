@@ -78,6 +78,17 @@ syncRouter.post('/teez', async (req, res) => {
  * поэтому эндпоинт есть только для Ozon и Wildberries.
  */
 /** Только цены и тарифы Ozon (быстро) — для кнопки ↻ Ozon и автообновления. */
+/** Начисления Ozon по заказам (комиссия, логистика, к выплате) — для ↻ Ozon и автообновления. */
+syncRouter.post('/ozon-accruals', async (req, res) => {
+  try {
+    const { refreshOzonAccruals } = await import('../services/ozonPayouts.service');
+    res.json({ ok: true, ...(await refreshOzonAccruals({ force: req.query.force === '1' })) });
+  } catch (err: any) {
+    logger.error({ err }, 'Ошибка начислений Ozon');
+    res.status(500).json({ ok: false, error: String(err?.message ?? err) });
+  }
+});
+
 syncRouter.post('/ozon-prices', async (_req, res) => {
   try {
     res.json({ ok: true, ...(await syncOzonPrices()) });
