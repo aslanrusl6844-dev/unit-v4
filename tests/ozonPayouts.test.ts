@@ -47,3 +47,11 @@ test('ozonFeeKind: английские названия Ozon', () => {
   assert.equal(ozonFeeKind('Acquiring'), 'acquiring');
   assert.equal(ozonFeeKind('DefectRate'), 'other');
 });
+
+test('withActionPrice: цена в акции ниже обычной — берём её', () => {
+  const { withActionPrice } = require('../src/services/sync.service');
+  const m = new Map([['111', 46222]]);
+  assert.equal(withActionPrice(57057, '111', m), 46222);
+  assert.equal(withActionPrice(57057, '222', m), 57057);
+  assert.equal(withActionPrice(40000, '111', m), 40000);
+});

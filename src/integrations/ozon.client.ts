@@ -432,6 +432,7 @@ export class OzonClient {
    */
   async fetchPrices(offerIds: string[]): Promise<Map<string, {
     price?: number;
+    productId?: string;
     commissionRatePct?: number;
     logisticsAmount?: number;
     lastMileAmount?: number;
@@ -450,10 +451,16 @@ export class OzonClient {
           cursor: '',
         });
         const items: any[] = data.items ?? data.result?.items ?? [];
+        let sampled = false;
         items.forEach((item) => {
           const c = item.commissions ?? {};
+          if (!sampled && item.price?.marketing_actions?.ozon_actions_exist) {
+            sampled = true;
+            logger.info({ offer: item.offer_id, price: item.price, marketing_actions: item.marketing_actions ?? item.price?.marketing_actions }, '[Ozon] Пример цены товара в акции');
+          }
           result.set(item.offer_id, {
             price: sellingPrice(item.price),
+            productId: item.product_id != null ? String(item.product_id) : undefined,
             commissionRatePct: c.sales_percent_fbs != null ? Number(c.sales_percent_fbs) : undefined,
             logisticsAmount: c.fbs_direct_flow_trans_min_amount != null ? Number(c.fbs_direct_flow_trans_min_amount) : undefined,
             lastMileAmount: c.fbs_deliv_to_customer_amount != null ? Number(c.fbs_deliv_to_customer_amount) : undefined,
@@ -696,6 +703,53 @@ export class OzonClient {
    * метод вызывать вообще не нужно, Ozon в любом случае откажет с ошибкой
    * валидации на пустом массиве.
    */
+  /**
+   * Цены в акциях Ozon, в которых товар СЕЙЧАС участвует: GET /v1/actions (участвуем, акция идёт)
+   * → POST /v2/actions/products (action_price — цена продавца в акции). product_id → минимальная цена.
+   * Это та цена, по которой товар реально продаётся, пока идёт акция (на 500–1000 ₸ ниже обычной).
+   */
+  async fetchActionPrices(): Promise<Map<string, number>> {
+    const http = await this.getHttp();
+    const out = new Map<string, number>();
+    let actions: any[] = [];
+    try {
+      const { data } = await http.get('/v1/actions');
+      actions = data?.result ?? [];
+    } catch (err: any) {
+      logger.warn({ status: err?.response?.status, body: err?.response?.data }, '[Ozon] Не удалось получить список акций');
+      return out;
+    }
+    const now = Date.now();
+    const active = actions.filter((a) => a.is_participating && Number(a.participating_products_count) > 0
+      && (!a.date_start || Date.parse(a.date_start) <= now) && (!a.date_end || Date.parse(a.date_end) >= now));
+    const money = (v: any) => Number(typeof v === 'object' && v ? v.amount : v) || 0;
+    for (const a of active) {
+      let lastId = '';
+      for (let page = 0; page < 50; page++) {
+        let data: any;
+        try {
+          ({ data } = await http.post('/v2/actions/products', { action_id: Number(a.id), limit: 100, last_id: lastId }));
+        } catch (err: any) {
+          logger.warn({ action: a.id, status: err?.response?.status, body: err?.response?.data }, '[Ozon] Не удалось получить товары акции');
+          break;
+        }
+        const products: any[] = data?.products ?? data?.result?.products ?? [];
+        for (const p of products) {
+          const price = money(p.action_price);
+          const id = p.id != null ? String(p.id) : p.product_id != null ? String(p.product_id) : '';
+          if (!id || price <= 0) continue;
+          const prev = out.get(id);
+          if (prev == null || price < prev) out.set(id, price);
+        }
+        const next = String(data?.last_id ?? data?.result?.last_id ?? '');
+        if (!products.length || !next || next === lastId) break;
+        lastId = next;
+      }
+    }
+    logger.info({ actions: active.map((a) => ({ id: a.id, title: a.title })), products: out.size }, '[Ozon] Цены в акциях');
+    return out;
+  }
+
   /** Начисления по списку отправлений (для уже сохранённых заказов). */
   async fetchFinanceForPostings(postingNumbers: string[]): Promise<Map<string, OzonPostingFinance>> {
     const http = await this.getHttp();

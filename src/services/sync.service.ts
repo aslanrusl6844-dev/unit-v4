@@ -428,6 +428,13 @@ export async function syncWbOrders(dateFrom: Date, dateTo: Date) {
  * название/статус активности уже существующих, НЕ трогая себестоимость,
  * которую пользователь мог уже проставить.
  */
+/** Цена продажи с учётом акции Ozon: если товар сейчас в акции и цена там ниже — берём её. */
+export function withActionPrice(price: number | undefined, productId: string | undefined, actionPrices: Map<string, number>): number | undefined {
+  const action = productId ? actionPrices.get(productId) : undefined;
+  if (action && action > 0 && (!price || action < price)) return action;
+  return price;
+}
+
 /**
  * Лёгкое обновление ТОЛЬКО цен и тарифов Ozon (без списка товаров и фото) — для частого
  * запуска раз в 5 минут: акция на Ozon снизила цену → у нас сразу та же цена и прибыль.
@@ -439,12 +446,14 @@ export async function syncOzonPrices() {
     select: { id: true, ozonOfferId: true, ozonReferencePrice: true, ozonCommissionRatePct: true, ozonLogisticsAmount: true, ozonLastMileAmount: true },
   });
   const prices = await ozonClient.fetchPrices(products.map((p) => p.ozonOfferId!) );
+  const actionPrices = await ozonClient.fetchActionPrices().catch(() => new Map<string, number>());
   let updated = 0;
   for (const p of products) {
     const t = prices.get(p.ozonOfferId!);
     if (!t) continue;
+    const price = withActionPrice(t.price, t.productId, actionPrices);
     const data: Record<string, any> = {};
-    if (t.price && t.price !== p.ozonReferencePrice) Object.assign(data, { ozonReferencePrice: t.price, ozonReferencePriceUpdatedAt: new Date() });
+    if (price && price !== p.ozonReferencePrice) Object.assign(data, { ozonReferencePrice: price, ozonReferencePriceUpdatedAt: new Date() });
     if (t.commissionRatePct != null && t.commissionRatePct !== p.ozonCommissionRatePct) data.ozonCommissionRatePct = t.commissionRatePct;
     if (t.logisticsAmount != null && t.logisticsAmount !== p.ozonLogisticsAmount) data.ozonLogisticsAmount = t.logisticsAmount;
     if (t.lastMileAmount != null && t.lastMileAmount !== p.ozonLastMileAmount) data.ozonLastMileAmount = t.lastMileAmount;
@@ -467,6 +476,7 @@ export async function syncOzonCatalog() {
   // Тарифы (комиссия/логистика) — отдельный запрос по всем найденным
   // offer_id разом, чтобы не делать по одному запросу на каждый товар.
   const prices = await ozonClient.fetchPrices(catalog.map((item) => item.offerId));
+  const actionPrices = await ozonClient.fetchActionPrices().catch(() => new Map<string, number>());
 
   let created = 0;
   let updated = 0;
@@ -485,7 +495,7 @@ export async function syncOzonCatalog() {
       : {};
     // Цена: приоритет — живая цена из /v5/product/info/prices (точнее и
     // свежее, чем то, что вернул /v3/product/info/list в fetchCatalog).
-    const referencePrice = tariff?.price ?? item.price;
+    const referencePrice = withActionPrice(tariff?.price, tariff?.productId, actionPrices) ?? item.price;
 
     const existing = await prisma.product.findFirst({ where: { ozonOfferId: item.offerId } });
     if (existing) {
