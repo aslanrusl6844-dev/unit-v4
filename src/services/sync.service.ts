@@ -429,8 +429,8 @@ export async function syncWbOrders(dateFrom: Date, dateTo: Date) {
  * которую пользователь мог уже проставить.
  */
 /** Цена продажи с учётом акции Ozon: если товар сейчас в акции и цена там ниже — берём её. */
-export function withActionPrice(price: number | undefined, productId: string | undefined, actionPrices: Map<string, number>): number | undefined {
-  const action = productId ? actionPrices.get(productId) : undefined;
+export function withActionPrice(price: number | undefined, productId: string | undefined, actionPrices: Map<string, number>, offerId?: string): number | undefined {
+  const action = (productId ? actionPrices.get(productId) : undefined) ?? (offerId ? actionPrices.get(offerId) : undefined);
   if (action && action > 0 && (!price || action < price)) return action;
   return price;
 }
@@ -448,10 +448,12 @@ export async function syncOzonPrices() {
   const prices = await ozonClient.fetchPrices(products.map((p) => p.ozonOfferId!) );
   const actionPrices = await ozonClient.fetchActionPrices().catch(() => new Map<string, number>());
   let updated = 0;
+  let matched = 0;
   for (const p of products) {
     const t = prices.get(p.ozonOfferId!);
     if (!t) continue;
-    const price = withActionPrice(t.price, t.productId, actionPrices);
+    const price = withActionPrice(t.price, t.productId, actionPrices, p.ozonOfferId ?? undefined);
+    if (actionPrices.size && t.productId && actionPrices.has(t.productId)) matched += 1;
     const data: Record<string, any> = {};
     if (price && price !== p.ozonReferencePrice) Object.assign(data, { ozonReferencePrice: price, ozonReferencePriceUpdatedAt: new Date() });
     if (t.commissionRatePct != null && t.commissionRatePct !== p.ozonCommissionRatePct) data.ozonCommissionRatePct = t.commissionRatePct;
@@ -462,8 +464,8 @@ export async function syncOzonPrices() {
     await prisma.product.update({ where: { id: p.id }, data });
     updated += 1;
   }
-  logger.info(`[Ozon] Цены обновлены: изменилось ${updated} из ${products.length}`);
-  return { updated, total: products.length };
+  logger.info(`[Ozon] Цены обновлены: изменилось ${updated} из ${products.length}, в акциях найдено ${matched}`);
+  return { updated, total: products.length, inActions: matched };
 }
 
 export async function syncOzonCatalog() {
@@ -495,7 +497,7 @@ export async function syncOzonCatalog() {
       : {};
     // Цена: приоритет — живая цена из /v5/product/info/prices (точнее и
     // свежее, чем то, что вернул /v3/product/info/list в fetchCatalog).
-    const referencePrice = withActionPrice(tariff?.price, tariff?.productId, actionPrices) ?? item.price;
+    const referencePrice = withActionPrice(tariff?.price, tariff?.productId, actionPrices, item.offerId) ?? item.price;
 
     const existing = await prisma.product.findFirst({ where: { ozonOfferId: item.offerId } });
     if (existing) {

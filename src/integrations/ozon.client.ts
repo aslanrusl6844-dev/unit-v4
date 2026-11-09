@@ -734,12 +734,17 @@ export class OzonClient {
           break;
         }
         const products: any[] = data?.products ?? data?.result?.products ?? [];
+        if (page === 0 && products.length) logger.info({ action: a.id, sample: products.slice(0, 2) }, '[Ozon] Пример товара в акции');
         for (const p of products) {
-          const price = money(p.action_price);
-          const id = p.id != null ? String(p.id) : p.product_id != null ? String(p.product_id) : '';
-          if (!id || price <= 0) continue;
-          const prev = out.get(id);
-          if (prev == null || price < prev) out.set(id, price);
+          const price = money(p.action_price) || money(p.website_prices?.price);
+          if (price <= 0) continue;
+          // Ключи на всякий случай все: product_id, id, sku, offer_id — сверяем с тем, что есть у товара.
+          for (const k of [p.product_id, p.id, p.sku, p.offer_id]) {
+            if (k == null || k === '') continue;
+            const id = String(k);
+            const prev = out.get(id);
+            if (prev == null || price < prev) out.set(id, price);
+          }
         }
         const next = String(data?.last_id ?? data?.result?.last_id ?? '');
         if (!products.length || !next || next === lastId) break;
