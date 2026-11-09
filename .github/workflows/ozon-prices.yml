@@ -1,0 +1,16 @@
+name: Ozon prices every 5 min
+# Живые цены Ozon (с учётом акций) обновляются на сервере сами, даже когда админка закрыта.
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch: {}
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Обновить цены Ozon
+        run: |
+          code=$(curl -s -o out.json -w '%{http_code}' --max-time 90 "https://unit-v4.vercel.app/api/cron/ozon-prices")
+          cat out.json; echo
+          test "$code" = "200"

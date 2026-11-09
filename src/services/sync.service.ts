@@ -398,6 +398,35 @@ export async function syncWbOrders(dateFrom: Date, dateTo: Date) {
  * название/статус активности уже существующих, НЕ трогая себестоимость,
  * которую пользователь мог уже проставить.
  */
+/**
+ * Лёгкое обновление ТОЛЬКО цен и тарифов Ozon (без списка товаров и фото) — для частого
+ * запуска раз в 5 минут: акция на Ozon снизила цену → у нас сразу та же цена и прибыль.
+ */
+export async function syncOzonPrices() {
+  if (!(await ozonClient.isConfigured())) return { updated: 0, skipped: 'not-configured' as const };
+  const products = await prisma.product.findMany({
+    where: { ozonOfferId: { not: null } },
+    select: { id: true, ozonOfferId: true, ozonReferencePrice: true, ozonCommissionRatePct: true, ozonLogisticsAmount: true, ozonLastMileAmount: true },
+  });
+  const prices = await ozonClient.fetchPrices(products.map((p) => p.ozonOfferId!) );
+  let updated = 0;
+  for (const p of products) {
+    const t = prices.get(p.ozonOfferId!);
+    if (!t) continue;
+    const data: Record<string, any> = {};
+    if (t.price && t.price !== p.ozonReferencePrice) Object.assign(data, { ozonReferencePrice: t.price, ozonReferencePriceUpdatedAt: new Date() });
+    if (t.commissionRatePct != null && t.commissionRatePct !== p.ozonCommissionRatePct) data.ozonCommissionRatePct = t.commissionRatePct;
+    if (t.logisticsAmount != null && t.logisticsAmount !== p.ozonLogisticsAmount) data.ozonLogisticsAmount = t.logisticsAmount;
+    if (t.lastMileAmount != null && t.lastMileAmount !== p.ozonLastMileAmount) data.ozonLastMileAmount = t.lastMileAmount;
+    if (!Object.keys(data).length) continue;
+    data.ozonTariffsUpdatedAt = new Date();
+    await prisma.product.update({ where: { id: p.id }, data });
+    updated += 1;
+  }
+  logger.info(`[Ozon] Цены обновлены: изменилось ${updated} из ${products.length}`);
+  return { updated, total: products.length };
+}
+
 export async function syncOzonCatalog() {
   if (!(await ozonClient.isConfigured())) {
     logger.warn('[Ozon] Магазин не настроен — синхронизация каталога пропущена');

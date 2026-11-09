@@ -19,6 +19,10 @@
       "maxDuration": 60,
       "includeFiles": "node_modules/.prisma/client/**"
     },
+    "api/cron/ozon-prices.ts": {
+      "maxDuration": 60,
+      "includeFiles": "node_modules/.prisma/client/**"
+    },
     "api/cron/warm.ts": {
       "maxDuration": 30,
       "includeFiles": "node_modules/.prisma/client/**"

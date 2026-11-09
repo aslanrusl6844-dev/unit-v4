@@ -533,6 +533,12 @@ enum ShopEventType {
 }
 
 // Настройки внешнего вида приложения (одна строка id="main").
+// Служебные отметки времени фоновых задач (например, когда последний раз обновляли цены Ozon).
+model JobMark {
+  id     String   @id
+  lastAt DateTime
+}
+
 model ShopUiSettings {
   id               String   @id @default("main")
   bannerTransition   String   @default("slide") // главная: slide | cube | fade | zoom | flip | depth | strips | deck | blinds | checker | mix

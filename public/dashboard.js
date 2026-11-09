@@ -7321,7 +7321,7 @@ document.getElementById('syncOzonBtn').addEventListener('click', async () => {
     // нажали ↻ Ozon — в таблице сразу новая цена, без ожидания автообновления раз в 30 минут.
     btn.textContent = 'Цены…';
     let pricesErr = null;
-    try { await api('/sync/ozon-catalog', { method: 'POST' }); autoSyncOzonCatalogAt = Date.now(); } catch (e) { pricesErr = e; }
+    try { await api('/sync/ozon-prices', { method: 'POST' }); } catch (e) { pricesErr = e; }
     try {
       await reloadCurrentPage();
     } catch (renderErr) {
@@ -7441,7 +7441,10 @@ async function autoSyncTick() {
       ['Kaspi', on('kaspi'), () => api(`/sync/kaspi?${qs({ from: from.toISOString(), to: to.toISOString() })}`, { method: 'POST' })],
       ['Ozon', on('ozon'), () => api('/sync/ozon?days=2', { method: 'POST' })],
       // Живые цены и тарифы Ozon (как кнопка «↻ Каталог Ozon») — раз в 30 минут, а не каждые 5: запрос тяжелее.
-      ['Цены Ozon', on('ozon') && Date.now() - autoSyncOzonCatalogAt > 30 * 60 * 1000,
+      // Живые цены Ozon (с акциями) — каждые 5 минут (сервер их обновляет и сам, без открытой админки).
+      ['Цены Ozon', on('ozon'), () => api('/sync/ozon-prices', { method: 'POST' })],
+      // Полный каталог (новые товары, фото) — раз в 30 минут: запрос тяжелее.
+      ['Каталог Ozon', on('ozon') && Date.now() - autoSyncOzonCatalogAt > 30 * 60 * 1000,
         async () => { await api('/sync/ozon-catalog', { method: 'POST' }); autoSyncOzonCatalogAt = Date.now(); }],
       ['WB', on('wb'), () => api('/sync/wb?days=2', { method: 'POST' })],
       ['Tez', on('teez'), () => api('/sync/teez?days=2', { method: 'POST' })],

@@ -3,7 +3,7 @@ import dayjs from 'dayjs';
 import { prisma } from '../db/prisma';
 import { syncTeezOrders } from '../services/teezSync.service';
 import { teezClient } from '../integrations/teez.client';
-import { syncKaspiOrders, syncOzonOrders, syncWbOrders, syncOzonCatalog, syncWbCatalog, syncKaspiPhotos, syncOzonContent } from '../services/sync.service';
+import { syncKaspiOrders, syncOzonOrders, syncWbOrders, syncOzonCatalog, syncOzonPrices, syncWbCatalog, syncKaspiPhotos, syncOzonContent } from '../services/sync.service';
 import { kaspiClient } from '../integrations/kaspi.client';
 import { ozonClient } from '../integrations/ozon.client';
 import { wbClient } from '../integrations/wb.client';
@@ -77,6 +77,16 @@ syncRouter.post('/teez', async (req, res) => {
  * такого метода нет (см. предупреждение в README и в разделе «Товары») —
  * поэтому эндпоинт есть только для Ozon и Wildberries.
  */
+/** Только цены и тарифы Ozon (быстро) — для кнопки ↻ Ozon и автообновления. */
+syncRouter.post('/ozon-prices', async (_req, res) => {
+  try {
+    res.json({ ok: true, ...(await syncOzonPrices()) });
+  } catch (err: any) {
+    logger.error({ err }, 'Ошибка обновления цен Ozon');
+    res.status(500).json({ ok: false, error: String(err?.message ?? err) });
+  }
+});
+
 syncRouter.post('/ozon-catalog', async (_req, res) => {
   try {
     const result = await syncOzonCatalog();

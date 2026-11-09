@@ -1,5 +1,5 @@
 import dayjs from 'dayjs';
-import { syncKaspiOrders, syncOzonOrders, syncWbOrders } from '../services/sync.service';
+import { syncKaspiOrders, syncOzonOrders, syncWbOrders, syncOzonPrices } from '../services/sync.service';
 import { runRepricingCycle } from '../services/repricer.service';
 import { prisma } from '../db/prisma';
 
@@ -46,4 +46,9 @@ export async function runWarmup() {
 export async function runCartReminder() {
   const { runCartReminders } = await import('../services/cartReminder.service');
   return runCartReminders();
+}
+
+/** Живые цены Ozon (с учётом акций) — каждые 5 минут, см. .github/workflows/ozon-prices.yml. */
+export async function runOzonPrices() {
+  return syncOzonPrices();
 }

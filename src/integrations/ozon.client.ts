@@ -195,7 +195,7 @@ export class OzonClient {
     if (!creds) {
       throw new Error('Ozon API не настроен: добавьте магазин в разделе «Настройки» или задайте OZON_CLIENT_ID/OZON_API_KEY в .env');
     }
-    return axios.create({
+    const http = axios.create({
       baseURL: creds.baseUrl,
       headers: {
         'Client-Id': creds.clientId,
@@ -204,6 +204,18 @@ export class OzonClient {
       },
       timeout: 20000,
     });
+    // Ozon ограничивает число запросов В СЕКУНДУ (429 «request rate limit per second»).
+    // Такая ошибка проходит сама через секунду-другую — повторяем запрос до 4 раз с паузой,
+    // а не роняем всю синхронизацию (из-за этого автообновление писало «не вышло: Ozon»).
+    http.interceptors.response.use(undefined, async (err) => {
+      const cfg: any = err?.config;
+      if (err?.response?.status !== 429 || !cfg) throw err;
+      cfg.__retry429 = (cfg.__retry429 ?? 0) + 1;
+      if (cfg.__retry429 > 4) throw err;
+      await new Promise((r) => setTimeout(r, 1200 * cfg.__retry429));
+      return http.request(cfg);
+    });
+    return http;
   }
 
   /**
@@ -414,7 +426,7 @@ export class OzonClient {
         items.forEach((item) => {
           const c = item.commissions ?? {};
           result.set(item.offer_id, {
-            price: item.price?.price ? Number(item.price.price) : undefined,
+            price: sellingPrice(item.price),
             commissionRatePct: c.sales_percent_fbs != null ? Number(c.sales_percent_fbs) : undefined,
             logisticsAmount: c.fbs_direct_flow_trans_min_amount != null ? Number(c.fbs_direct_flow_trans_min_amount) : undefined,
             lastMileAmount: c.fbs_deliv_to_customer_amount != null ? Number(c.fbs_deliv_to_customer_amount) : undefined,
@@ -784,3 +796,15 @@ export class OzonClient {
 }
 
 export const ozonClient = new OzonClient();
+
+/**
+ * Цена, по которой товар СЕЙЧАС продаётся на Ozon: если действует акция продавца,
+ * Ozon присылает её в marketing_seller_price (она ниже обычной price) — берём её,
+ * иначе обычную цену. Так юнит-экономика считается по реальной продажной цене.
+ */
+export function sellingPrice(p: any): number | undefined {
+  const base = Number(p?.price) || 0;
+  const promo = Number(p?.marketing_seller_price) || 0;
+  const v = promo > 0 && (base <= 0 || promo < base) ? promo : base;
+  return v > 0 ? v : undefined;
+}
