@@ -8549,7 +8549,7 @@ function wsTableHtml(group, mp, products) {
       <td class="name-cell">${wsEsc(p.name)}</td>
       <td class="name-cell">${wsEsc(p.sku)}</td>
       <td class="name-cell" style="font-size:11px">${wsEsc(mp ? (wsArticle(p, mp) ?? '—') : '—')}</td>
-      <td class="num">${fmtMoney(p.costPrice)}</td>
+      <td class="num"><input class="cost-input" type="number" min="0" step="1" value="${Number(p.costPrice) || 0}" data-ws-cost="${wsEsc(p.id)}" title="Себестоимость за 1 шт — впишите и нажмите Enter, прибыль пересчитается" style="width:90px;text-align:right" /></td>
       ${mp ? wsNumberCells(p, mp) : '<td class="num">—</td>'.repeat(5)}
       <td>${mp ? `<button class="link-btn" data-ws-pdf="${wsEsc(p.id)}" data-ws-mp="${mp}" title="Накладная PDF на последний заказ этого товара на ${mpLabel(mp)}">Накладная</button>` : ''}</td>
     </tr>`).join('');
@@ -8915,6 +8915,33 @@ function wireWholesalersOnce() {
   if (wsWired) return;
   wsWired = true;
   setInterval(wsTodayTick, 60000);
+
+  // Себестоимость прямо в таблице полки: вписал → Enter (или клик мимо) → сохранили и пересчитали прибыль.
+  const shelvesRoot = document.getElementById('productsShelvesView');
+  shelvesRoot.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && e.target.matches('[data-ws-cost]')) e.target.blur();
+  });
+  shelvesRoot.addEventListener('change', async (e) => {
+    const input = e.target.closest('[data-ws-cost]');
+    if (!input) return;
+    const id = input.dataset.wsCost;
+    const value = Number(String(input.value).replace(',', '.'));
+    if (!Number.isFinite(value) || value < 0) { input.style.borderColor = 'var(--danger, #d33)'; return; }
+    input.disabled = true;
+    try {
+      await api(`/products/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify({ costPrice: value }) });
+      const p = allProductsCache.find((x) => x.id === id);
+      if (p) p.costPrice = value;
+      const forecasts = await api('/analytics/forecast');
+      productsForecastCache = new Map(forecasts.map((f) => [`${f.productId}:${f.marketplace}`, f]));
+      renderWholesalerShelves();
+      try { renderProductsAdminTable(); } catch { /* общая таблица перерисуется при следующем открытии */ }
+    } catch (err) {
+      input.disabled = false;
+      input.style.borderColor = 'var(--danger, #d33)';
+      alert('Не удалось сохранить себестоимость: ' + err.message);
+    }
+  });
 
   document.getElementById('productsViewTabs').addEventListener('click', (e) => {
     const btn = e.target.closest('button');
