@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import dayjs from 'dayjs';
 import { prisma } from '../db/prisma';
-import { syncTeezOrders } from '../services/teezSync.service';
+import { syncTeezOrders, syncTeezCatalog } from '../services/teezSync.service';
 import { teezClient } from '../integrations/teez.client';
 import { syncKaspiOrders, syncOzonOrders, syncWbOrders, syncOzonCatalog, syncOzonPrices, syncWbCatalog, syncKaspiPhotos, syncOzonContent } from '../services/sync.service';
 import { kaspiClient } from '../integrations/kaspi.client';
@@ -67,6 +67,16 @@ syncRouter.post('/teez', async (req, res) => {
     res.json({ ok: true, ...result });
   } catch (err: any) {
     logger.error({ err }, 'Ошибка ручной синхронизации Teez');
+    res.status(500).json({ ok: false, error: String(err?.message ?? err) });
+  }
+});
+
+/** Каталог Tez Market: товары, штрихкоды, цены, фото, остатки — в «Товары». */
+syncRouter.post('/teez-catalog', async (_req, res) => {
+  try {
+    res.json({ ok: true, ...(await syncTeezCatalog()) });
+  } catch (err: any) {
+    logger.error({ err }, 'Ошибка каталога Teez');
     res.status(500).json({ ok: false, error: String(err?.message ?? err) });
   }
 });

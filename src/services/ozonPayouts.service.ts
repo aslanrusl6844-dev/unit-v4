@@ -16,7 +16,7 @@ import { getTaxRatePct } from '../handlers/taxSettings';
  *    плюс заказы, по которым Ozon ещё не начислил (ожидается — по тарифам).
  */
 
-const CANCELLED = ['cancelled', 'canceled', 'CANCELLED', 'not_accepted'];
+const CANCELLED = ['cancelled', 'canceled', 'CANCELLED', 'not_accepted', 'RETURNED'];
 const DAY = 24 * 3600 * 1000;
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -133,16 +133,18 @@ function roundMoney(m: Money): Money {
   return out;
 }
 
-export async function getOzonPayoutReport(params: { from: Date; to: Date; wholesalerId?: string | null }) {
+export async function getOzonPayoutReport(params: { from: Date; to: Date; wholesalerId?: string | null; marketplace?: 'OZON' | 'TEEZ' }) {
+  const mp = params.marketplace ?? 'OZON';
+  const linkWhere = mp === 'TEEZ' ? { teezSku: { not: null } } : { ozonOfferId: { not: null } };
   const taxRatePct = await getTaxRatePct();
 
   // Товары полки: у оптовика — его товары на Ozon; '__none__' — товары Ozon без оптовика; пусто — весь Ozon.
   let productIds: Set<string> | null = null;
   if (params.wholesalerId) {
-    const assigned = await prisma.wholesalerProduct.findMany({ where: { marketplace: 'OZON' }, select: { productId: true, wholesalerId: true } });
+    const assigned = await prisma.wholesalerProduct.findMany({ where: { marketplace: mp }, select: { productId: true, wholesalerId: true } });
     if (params.wholesalerId === '__none__') {
       const taken = new Set(assigned.map((a) => a.productId));
-      const ozonProducts = await prisma.product.findMany({ where: { ozonOfferId: { not: null } }, select: { id: true } });
+      const ozonProducts = await prisma.product.findMany({ where: linkWhere, select: { id: true } });
       productIds = new Set(ozonProducts.map((p) => p.id).filter((id) => !taken.has(id)));
     } else {
       productIds = new Set(assigned.filter((a) => a.wholesalerId === params.wholesalerId).map((a) => a.productId));
@@ -150,14 +152,14 @@ export async function getOzonPayoutReport(params: { from: Date; to: Date; wholes
   }
 
   const products = await prisma.product.findMany({
-    where: { ozonOfferId: { not: null } },
-    select: { id: true, costPrice: true, ozonCommissionRatePct: true, ozonLogisticsAmount: true, ozonLastMileAmount: true },
+    where: linkWhere,
+    select: { id: true, costPrice: true, ozonCommissionRatePct: true, ozonLogisticsAmount: true, ozonLastMileAmount: true, teezCommissionRatePct: true },
   });
   const productById = new Map(products.map((p) => [p.id, p]));
 
   const orders = await prisma.order.findMany({
     where: {
-      marketplace: 'OZON',
+      marketplace: mp,
       status: { notIn: CANCELLED },
       OR: [
         { settledAt: { gte: params.from, lte: params.to } },
@@ -199,8 +201,10 @@ export async function getOzonPayoutReport(params: { from: Date; to: Date; wholes
       } else {
         // Ozon ещё не засчитал продажу — комиссия и логистика по текущим тарифам товара
         // (или уже начисленные, если больше), плюс уже удержанные штрафы/сборы по заказу.
-        commission = Math.max(revenue * ((p?.ozonCommissionRatePct ?? 0) / 100), o.marketplaceCommission * share);
-        logistics = Math.max(((p?.ozonLogisticsAmount ?? 0) + (p?.ozonLastMileAmount ?? 0)) * i.quantity, o.logisticsCost * share);
+        const ratePct = mp === 'TEEZ' ? (p?.teezCommissionRatePct ?? 0) : (p?.ozonCommissionRatePct ?? 0);
+        commission = Math.max(revenue * (ratePct / 100), o.marketplaceCommission * share);
+        logistics = mp === 'TEEZ' ? o.logisticsCost * share
+          : Math.max(((p?.ozonLogisticsAmount ?? 0) + (p?.ozonLastMileAmount ?? 0)) * i.quantity, o.logisticsCost * share);
         otherFees = (o.acquiringCost + o.otherFees) * share;
         payout = revenue - commission - logistics - otherFees;
       }
@@ -225,13 +229,13 @@ export async function getOzonPayoutReport(params: { from: Date; to: Date; wholes
   // Выплаты Ozon по всему магазину (из финансового отчёта Ozon) — сколько реально перечислено за период.
   let cashFlows: OzonCashFlow[] = [];
   let cashFlowsError: string | null = null;
-  try {
+  if (mp === 'OZON') try {
     cashFlows = await ozonClient.fetchCashFlows(new Date(params.from.getTime() - 16 * DAY), new Date(Math.max(params.to.getTime(), Date.now())));
   } catch (err: any) {
     cashFlowsError = String(err?.response?.data?.message ?? err?.message ?? err);
   }
   let balance: Awaited<ReturnType<typeof ozonClient.fetchBalance>> | null = null;
-  try {
+  if (mp === 'OZON') try {
     balance = await ozonClient.fetchBalance(new Date(Date.now() - 29 * DAY), new Date());
   } catch { /* баланс — справочно */ }
 

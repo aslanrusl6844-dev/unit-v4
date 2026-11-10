@@ -1348,7 +1348,7 @@ async function loadProductsAdminTable() {
 }
 
 function priceFieldName(marketplace) {
-  return marketplace === 'KASPI' ? 'kaspiReferencePrice' : marketplace === 'OZON' ? 'ozonReferencePrice' : 'wbReferencePrice';
+  return marketplace === 'KASPI' ? 'kaspiReferencePrice' : marketplace === 'OZON' ? 'ozonReferencePrice' : marketplace === 'TEEZ' ? 'teezReferencePrice' : 'wbReferencePrice';
 }
 
 function isLinkedToMarketplace(p, marketplace) {
@@ -1581,6 +1581,7 @@ function getVisibleMarketplaces() {
   if (state.marketplace === 'KASPI') return ['KASPI'];
   if (state.marketplace === 'OZON') return ['OZON'];
   if (state.marketplace === 'WB') return ['WB'];
+  if (state.marketplace === 'TEEZ') return ['TEEZ'];
   return ['KASPI', 'OZON', 'WB'];
 }
 
@@ -1699,7 +1700,7 @@ function renderProductsAdminTable() {
     let articlesCell;
     if (marketplaces.length === 1) {
       const mp = marketplaces[0];
-      const value = mp === 'KASPI' ? p.kaspiSku : mp === 'OZON' ? p.ozonOfferId : p.wbArticle;
+      const value = mp === 'KASPI' ? p.kaspiSku : mp === 'OZON' ? p.ozonOfferId : mp === 'TEEZ' ? p.teezSku : p.wbArticle;
       articlesCell = `${value ?? '—'}${mp === 'KASPI' ? categorySelectHtml(p.kaspiTopCategory, p.kaspiLeafCategory, p.id, p.name) : ''}`;
     } else {
       const kaspiHint = p.kaspiSku
@@ -1843,7 +1844,7 @@ function updateProductsSelectedCount() {
   const countEl = document.getElementById('productsInSaleCount');
   if (countEl) {
     const mp = state.marketplace || 'KASPI';
-    const articleField = mp === 'KASPI' ? 'kaspiSku' : mp === 'OZON' ? 'ozonOfferId' : 'wbArticle';
+    const articleField = mp === 'KASPI' ? 'kaspiSku' : mp === 'OZON' ? 'ozonOfferId' : mp === 'TEEZ' ? 'teezSku' : 'wbArticle';
     const mpProducts = allProductsCache.filter((p) => p[articleField]);
     const inSale = mpProducts.filter((p) => p.active !== false).length;
     countEl.textContent = `${inSale} в продаже (${mpLabel(mp)})`;
@@ -7365,6 +7366,12 @@ document.getElementById('syncTeezBtn').addEventListener('click', async () => {
   const btn = document.getElementById('syncTeezBtn');
   btn.textContent = '…'; btn.disabled = true;
   try {
+    // Сначала каталог (товары, штрихкоды, цены) — чтобы заказы сразу связались с товарами.
+    btn.textContent = 'Каталог…';
+    let cat = null;
+    let catErr = null;
+    try { cat = await api('/sync/teez-catalog', { method: 'POST' }); autoSyncTeezCatalogAt = Date.now(); } catch (e) { catErr = e; }
+    btn.textContent = 'Заказы…';
     const res = await api('/sync/teez?days=30', { method: 'POST' });
     try {
       await reloadCurrentPage();
@@ -7372,7 +7379,8 @@ document.getElementById('syncTeezBtn').addEventListener('click', async () => {
       console.warn('Синхронизация Tez прошла успешно, но при обновлении страницы возникла ошибка:', renderErr);
     }
     const unmatched = res.unmatchedItems ? `\nПозиций без товара в «Товарах» (себестоимость 0): ${res.unmatchedItems}.` : '';
-    alert(`Синхронизация заказов Tez Market завершена. Обработано заказов: ${res.ordersProcessed ?? 0}.${unmatched}`);
+    const catMsg = cat ? `\nКаталог Tez: товаров ${cat.total}, новых ${cat.created}, обновлено ${cat.updated}.` : catErr ? `\nКаталог Tez не загрузился: ${catErr.message}` : '';
+    alert(`Синхронизация Tez Market завершена. Обработано заказов: ${res.ordersProcessed ?? 0}.${catMsg}${unmatched}`);
   } catch (err) {
     alert('Ошибка синхронизации Tez Market: ' + err.message);
   } finally {
@@ -7425,6 +7433,7 @@ document.getElementById('syncTeezBtn').addEventListener('click', async () => {
 const AUTO_SYNC_MS = 5 * 60 * 1000;
 let autoSyncBusy = false;
 let autoSyncMissed = false;
+let autoSyncTeezCatalogAt = 0;
 let autoSyncOzonCatalogAt = 0; // когда последний раз обновляли живые цены Ozon
 
 async function autoSyncTick() {
@@ -7449,6 +7458,8 @@ async function autoSyncTick() {
       ['Каталог Ozon', on('ozon') && Date.now() - autoSyncOzonCatalogAt > 30 * 60 * 1000,
         async () => { await api('/sync/ozon-catalog', { method: 'POST' }); autoSyncOzonCatalogAt = Date.now(); }],
       ['WB', on('wb'), () => api('/sync/wb?days=2', { method: 'POST' })],
+      ['Каталог Tez', on('teez') && Date.now() - autoSyncTeezCatalogAt > 30 * 60 * 1000,
+        async () => { await api('/sync/teez-catalog', { method: 'POST' }); autoSyncTeezCatalogAt = Date.now(); }],
       ['Tez', on('teez'), () => api('/sync/teez?days=2', { method: 'POST' })],
     ];
     for (const [name, enabled, run] of jobs) {
@@ -8459,7 +8470,7 @@ async function wsSaveEdit() {
 
 function wsGroups() {
   const MPS = ['KASPI', 'OZON', 'WB'];
-  const wMp = (w) => (MPS.includes(w.marketplace) ? w.marketplace : 'KASPI');
+  const wMp = (w) => ([...MPS, 'TEEZ'].includes(w.marketplace) ? w.marketplace : 'KASPI');
   const sel = state.marketplace;
   const mps = sel ? [sel] : MPS;
   const groups = [];
@@ -8532,7 +8543,7 @@ function wsNumberCells(p, mp) {
 }
 
 function wsArticle(p, mp) {
-  return mp === 'KASPI' ? p.kaspiSku : mp === 'OZON' ? p.ozonOfferId : mp === 'WB' ? p.wbArticle : null;
+  return mp === 'KASPI' ? p.kaspiSku : mp === 'OZON' ? p.ozonOfferId : mp === 'WB' ? p.wbArticle : mp === 'TEEZ' ? p.teezSku : null;
 }
 
 /** Таблица одной площадки внутри раскрытой полки (mp = null — товары без привязки к площадкам). */
@@ -8815,12 +8826,12 @@ function wsPayoutWholesalerId(group) {
 
 function wsEnsurePayout(group) {
   const { from, to } = wsPayoutRange();
-  const key = `${wsPayoutWholesalerId(group)}|${from}|${to}`;
+  const key = `${group.mp}|${wsPayoutWholesalerId(group)}|${from}|${to}`;
   const cur = wsPayout.cache.get(key);
   if (cur && (cur.loading || cur.data || cur.error) && !(cur.data && Date.now() - cur.at > 5 * 60 * 1000)) return cur;
   const entry = { loading: true, data: cur?.data || null, error: null, at: Date.now() };
   wsPayout.cache.set(key, entry);
-  api(`/wholesalers/ozon-payouts?${qs({ from, to, wholesalerId: wsPayoutWholesalerId(group) })}`)
+  api(`/wholesalers/ozon-payouts?${qs({ from, to, wholesalerId: wsPayoutWholesalerId(group), marketplace: group.mp })}`)
     .then((d) => { entry.data = d; entry.error = null; })
     .catch((err) => { entry.error = err.message || String(err); })
     .finally(() => { entry.loading = false; entry.at = Date.now(); if (!wsEditing) renderWholesalerShelves(); });
@@ -8831,11 +8842,12 @@ function wsPayoutHtml(group) {
   const entry = wsEnsurePayout(group);
   const select = wsPayoutCalendarHtml(group.key);
   const box = (inner) => `<aside data-ws-stats="${wsEsc(group.key)}" style="flex:0 0 310px;border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-top:10px;font-size:12.5px">
-      <div style="font-weight:600;margin-bottom:4px">Выплаты Ozon: ${wsEsc(group.name)}</div>
+      <div style="font-weight:600;margin-bottom:4px">Выплаты ${group.mp === 'TEEZ' ? 'Tez Market' : 'Ozon'}: ${wsEsc(group.name)}</div>
       <div style="font-size:10.5px;color:var(--text-faint);margin-bottom:4px">Только товары этого оптовика</div>${select}${inner}</aside>`;
   if (entry.error && !entry.data) return box(`<div style="color:var(--loss)">Не удалось загрузить: ${wsEsc(entry.error)}</div>`);
   if (!entry.data) return box('<div style="color:var(--text-faint)">Считаю выплаты Ozon…</div>');
   const d = entry.data;
+  const MPN = group.mp === 'TEEZ' ? 'Tez Market' : 'Ozon';
   const row = (label, val, cls, hint) => `<div style="display:flex;justify-content:space-between;gap:8px;padding:2px 0"${hint ? ` title="${wsEsc(hint)}"` : ''}><span style="color:var(--text-muted)">${label}</span><b class="${cls || ''}">${val}</b></div>`;
   const neg = (v) => (v ? '−' + fmtMoney(v) : fmtMoney(0));
   const s = d.settled;
@@ -8845,17 +8857,17 @@ function wsPayoutHtml(group) {
   const periodRows = (d.periods || []).map((r) => `<tr><td>${fmtD(r.from)}–${fmtD(r.to)}</td><td class="num">${fmtMoney(r.payout)}</td><td class="num">${fmtMoney(r.wholesaler)}</td><td class="num ${r.net >= 0 ? 'pos' : 'neg'}">${fmtMoney(r.net)}</td></tr>`).join('');
   return box(`
       ${entry.loading ? '<div style="font-size:10.5px;color:var(--text-faint)">обновляю…</div>' : ''}
-      ${sec(`Начислено Ozon за период · ${s.orders} ${wsPlural(s.orders, 'заказ', 'заказа', 'заказов')}`)}
+      ${sec(`Начислено ${MPN} за период · ${s.orders} ${wsPlural(s.orders, 'заказ', 'заказа', 'заказов')}`)}
       ${row('Продано, шт', fmt.format(s.quantity))}
       ${row('Выручка', fmtMoney(s.revenue))}
-      ${row('Комиссия Ozon', neg(s.commission))}
-      ${row('Логистика Ozon', neg(s.logistics))}
+      ${row(`Комиссия ${MPN}`, neg(s.commission))}
+      ${group.mp === 'TEEZ' && !s.logistics ? '' : row(`Логистика ${MPN}`, neg(s.logistics))}
       ${s.otherFees ? row('Прочие удержания', neg(s.otherFees)) : ''}
-      ${row('К выплате от Ozon', fmtMoney(s.payout), '', 'Выручка минус все удержания Ozon по этим заказам — по данным начислений Ozon')}
+      ${row(`К выплате от ${MPN}`, fmtMoney(s.payout), '', `Выручка минус все удержания ${MPN} по этим заказам — по данным ${MPN}`)}
       ${row(`Налог ${d.taxRatePct}%`, neg(s.tax), '', 'Налог ИП от выручки')}
       ${row('Отдать оптовику', neg(s.wholesaler), '', 'Оптовая цена (себестоимость) × проданное количество')}
       ${row('Чистая прибыль', fmtMoney(s.net), s.net >= 0 ? 'pos' : 'neg', 'К выплате − налог − оптовику')}
-      ${p.orders ? `${sec(`Ожидается (Ozon ещё не начислил) · ${p.orders} ${wsPlural(p.orders, 'заказ', 'заказа', 'заказов')}`)}
+      ${p.orders ? `${sec(`Ожидается (${MPN} ещё не засчитал) · ${p.orders} ${wsPlural(p.orders, 'заказ', 'заказа', 'заказов')}`)}
       ${row('Выручка', fmtMoney(p.revenue))}
       ${row('≈ К выплате', fmtMoney(p.payout), '', 'Прогноз по текущим тарифам Ozon: заказы в пути или ждут доставки')}
       ${row('≈ Оптовику', neg(p.wholesaler))}
@@ -8864,7 +8876,7 @@ function wsPayoutHtml(group) {
       <table class="table" style="font-size:11.5px"><thead><tr><th>Период</th><th class="num">К выплате</th><th class="num">Оптовику</th><th class="num">Прибыль</th></tr></thead><tbody>
       ${p.orders ? `<tr><td>ожидается</td><td class="num">≈${fmtMoney(p.payout)}</td><td class="num">≈${fmtMoney(p.wholesaler)}</td><td class="num ${p.net >= 0 ? 'pos' : 'neg'}">≈${fmtMoney(p.net)}</td></tr>` : ''}
       ${periodRows}</tbody></table>` : ''}
-      <div style="margin-top:6px;font-size:10.5px;color:var(--text-faint)">Заказ попадает в период по дате, когда Ozon начислил продажу (после доставки). Ozon платит за период 1–15 и 16–конец месяца отдельно.</div>`);
+      <div style="margin-top:6px;font-size:10.5px;color:var(--text-faint)">${group.mp === 'TEEZ' ? 'Заказ попадает в период по дате, когда покупатель получил товар. Комиссию и сумму к выплате считает сам Teez.' : 'Заказ попадает в период по дате, когда Ozon начислил продажу (после доставки). Ozon платит за период 1–15 и 16–конец месяца отдельно.'}</div>`);
 }
 
 /** Над полками Ozon: общее по магазину (баланс и выплаты Ozon) — отдельно от расчёта по оптовикам. */
@@ -8885,7 +8897,7 @@ function wsOzonStoreStrip() {
 }
 
 function wsStatsHtml(group) {
-  if (group.mp === 'OZON') return wsPayoutHtml(group);
+  if (group.mp === 'OZON' || group.mp === 'TEEZ') return wsPayoutHtml(group);
   wsEnsureStats();
   const box = (inner) => `<aside data-ws-stats="${wsEsc(group.key)}" style="flex:0 0 210px;border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-top:10px;font-size:12.5px">
       <div style="font-weight:600;margin-bottom:6px">Продажи: ${wsEsc(group.name)}</div>${inner}</aside>`;

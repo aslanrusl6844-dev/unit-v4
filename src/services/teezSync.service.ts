@@ -12,7 +12,7 @@ import { NormalizedOrder } from '../types';
  */
 async function findProductForTeezItem(barcode: string, name: string) {
   const byBarcode = barcode
-    ? await prisma.product.findFirst({ where: { sku: barcode } })
+    ? await prisma.product.findFirst({ where: { OR: [{ teezSku: barcode }, { sku: barcode }] } })
     : null;
   if (byBarcode) return byBarcode;
   if (!name) return null;
@@ -28,6 +28,11 @@ async function persistTeezOrder(order: NormalizedOrder): Promise<{ matched: numb
   for (const item of order.items) {
     const product = await findProductForTeezItem(item.externalSku, item.name);
     if (product) matched += 1;
+    // Ставка комиссии Teez по этому товару — из заказа (Teez сам считает комиссию по категории).
+    const rate = Number((order.raw as any)?.commissionPercent);
+    if (product && Number.isFinite(rate) && rate > 0 && product.teezCommissionRatePct !== rate) {
+      await prisma.product.update({ where: { id: product.id }, data: { teezCommissionRatePct: rate } });
+    }
     else unmatched += 1;
     itemsData.push({
       externalSku: item.externalSku,
@@ -54,6 +59,8 @@ async function persistTeezOrder(order: NormalizedOrder): Promise<{ matched: numb
     logisticsCost: order.logisticsCost,
     acquiringCost: order.acquiringCost,
     otherFees: order.otherFees,
+    settledAt: order.settledAt ?? null,
+    payoutAmount: order.payoutAmount ?? null,
     rawData: JSON.stringify(order.raw ?? {}),
   };
 
@@ -87,6 +94,8 @@ export function mergeTeezOrders(orders: NormalizedOrder[]): NormalizedOrder[] {
     prev.items.push(...o.items);
     prev.totalRevenue = Math.round((prev.totalRevenue + o.totalRevenue) * 100) / 100;
     prev.marketplaceCommission = Math.round((prev.marketplaceCommission + o.marketplaceCommission) * 100) / 100;
+    if (prev.payoutAmount != null || o.payoutAmount != null) prev.payoutAmount = Math.round(((prev.payoutAmount ?? 0) + (o.payoutAmount ?? 0)) * 100) / 100;
+    if (!prev.settledAt || (o.settledAt && o.settledAt > prev.settledAt)) prev.settledAt = o.settledAt ?? prev.settledAt;
     // Заказ считается продажей, пока жива хотя бы одна позиция.
     const dead = (st: string) => st === 'CANCELLED' || st === 'RETURNED';
     if (dead(prev.status) && !dead(o.status)) prev.status = o.status;
@@ -122,4 +131,55 @@ export async function syncTeezOrders(dateFrom: Date, dateTo: Date) {
     });
     throw err;
   }
+}
+
+/**
+ * Каталог Teez → «Товары»: список товаров + детали (SKU, штрихкод, цена, фото).
+ * Товар учёта ищем по штрихкоду Teez (teezSku), затем по совпадающему артикулу
+ * (sku / Kaspi / Ozon / WB), затем по точному названию; не нашли — создаём новый
+ * (себестоимость 0 — её надо вписать). Остаток берём из списка товаров Teez.
+ */
+export async function syncTeezCatalog() {
+  if (!(await teezClient.isConfigured())) return { total: 0, created: 0, updated: 0, skipped: 'not-configured' as const };
+  const list = await teezClient.fetchProducts();
+  const stockById = new Map(list.map((p) => [Number(p.productId), Number(p.totalWmsQuantity ?? 0)]));
+  const details = await teezClient.fetchProductDetails(list.map((p) => Number(p.productId)));
+  let created = 0;
+  let updated = 0;
+  for (const d of details) {
+    const key = d.barcode || `teez-${d.skuId}`;
+    const singleSku = details.filter((x) => x.productId === d.productId).length === 1;
+    let product = await prisma.product.findFirst({ where: { teezSku: key } });
+    if (!product) {
+      product = await prisma.product.findFirst({
+        where: { OR: [{ sku: key }, { kaspiSku: key }, { ozonOfferId: key }, { wbArticle: key }, { shopArticle: key }] },
+      });
+    }
+    if (!product && d.name) product = await prisma.product.findFirst({ where: { name: { equals: d.name, mode: 'insensitive' } } });
+    const data: Record<string, any> = {
+      teezSku: key,
+      teezProductId: String(d.productId),
+      teezStock: singleSku ? stockById.get(d.productId) ?? null : null,
+    };
+    if (d.price != null && d.price > 0) Object.assign(data, { teezReferencePrice: d.price, teezReferencePriceUpdatedAt: new Date() });
+    if (product) {
+      if (!product.marketImages && d.photos.length) data.marketImages = JSON.stringify(d.photos);
+      await prisma.product.update({ where: { id: product.id }, data });
+      updated += 1;
+    } else {
+      const skuTaken = await prisma.product.findUnique({ where: { sku: key } });
+      await prisma.product.create({
+        data: {
+          ...data,
+          sku: skuTaken ? `teez-${d.skuId}` : key,
+          name: d.name || `Товар Teez ${key}`,
+          costPrice: 0,
+          marketImages: d.photos.length ? JSON.stringify(d.photos) : null,
+        },
+      });
+      created += 1;
+    }
+  }
+  logger.info(`[Teez] Каталог: товаров ${list.length}, SKU ${details.length}, создано ${created}, обновлено ${updated}`);
+  return { total: details.length, created, updated };
 }

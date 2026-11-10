@@ -140,6 +140,14 @@ model Product {
   ozonReferencePriceUpdatedAt  DateTime?
   wbReferencePrice             Float?
   wbReferencePriceUpdatedAt    DateTime?
+  // Tez Market (Teez): штрихкод SKU (по нему же приходят заказы), id товара Teez,
+  // цена на Teez, ставка комиссии (из последних заказов Teez) и остаток на складе Teez.
+  teezSku                      String?
+  teezProductId                String?
+  teezReferencePrice           Float?
+  teezReferencePriceUpdatedAt  DateTime?
+  teezCommissionRatePct        Float?
+  teezStock                    Int?
 
   // --- Предварительные расходы Ozon по тарифу (POST /v5/product/info/prices) ---
   // Это ТА ЖЕ тарифная сетка, что видна в кабинете Ozon → Цены и акции →
@@ -242,6 +250,7 @@ model Product {
 
   @@index([kaspiSku])
   @@index([ozonOfferId])
+  @@index([teezSku])
 }
 
 // История изменений цены автоботом — чтобы видеть, что и когда происходило.

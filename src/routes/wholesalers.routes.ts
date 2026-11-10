@@ -52,6 +52,7 @@ wholesalersRouter.get('/ozon-payouts', async (req, res) => {
       from: almatyStartOfDay(from),
       to: almatyEndOfDay(to),
       wholesalerId: req.query.wholesalerId ? String(req.query.wholesalerId) : null,
+      marketplace: req.query.marketplace === 'TEEZ' ? 'TEEZ' : 'OZON',
     });
     res.json(report);
   } catch (err: any) {

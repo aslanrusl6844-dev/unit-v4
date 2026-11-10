@@ -55,3 +55,13 @@ test('withActionPrice: цена в акции ниже обычной — бер
   assert.equal(withActionPrice(57057, '222', m), 57057);
   assert.equal(withActionPrice(40000, '111', m), 40000);
 });
+
+test('mapTeezOrder: к выплате и дата получения из Teez', () => {
+  const { mapTeezOrder } = require('../src/integrations/teez.client');
+  const o = mapTeezOrder({ orderGuid: 'g1', createdDate: '2026-11-01T10:00:00Z', receivedDate: '2026-11-04T10:00:00Z', statusKey: 'received', barcode: '460123', productName: 'Шампунь', quantity: 2, quantityReturned: 0, price: 5000, commissionAmount: 600, payoutAmount: 4400 });
+  assert.equal(o.status, 'COMPLETED');
+  assert.equal(o.payoutAmount, 8800);
+  assert.equal(o.settledAt.toISOString().slice(0, 10), '2026-11-04');
+  const pending = mapTeezOrder({ orderGuid: 'g2', createdDate: '2026-11-01T10:00:00Z', statusKey: 'pending', barcode: '1', quantity: 1, price: 100, payoutAmount: 80 });
+  assert.equal(pending.settledAt, null);
+});

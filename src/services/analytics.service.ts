@@ -341,7 +341,7 @@ export interface ProductForecast {
   // estProfit/estPayout (возврат не гарантирован для каждой продажи),
   // показывается отдельной колонкой.
   estReturnCost: number | null;
-  source: 'kaspi-tariff' | 'kaspi-tariff-default' | 'ozon-tariff' | 'wb-tariff' | 'historical-average' | 'no-data';
+  source: 'kaspi-tariff' | 'kaspi-tariff-default' | 'ozon-tariff' | 'wb-tariff' | 'teez-rate' | 'historical-average' | 'no-data';
 }
 
 export async function getProductForecasts(taxRatePct = 4): Promise<ProductForecast[]> {
@@ -503,6 +503,34 @@ export async function getProductForecasts(taxRatePct = 4): Promise<ProductForeca
         // Тариф ещё не синхронизирован (кнопка «Каталог Ozon» не нажималась
         // после появления этой функции) — запасной вариант, как раньше.
         forecasts.push(historicalOrNoData(p.id, 'OZON', referencePrice, totalCost));
+      }
+    }
+
+    // --- Tez Market ---
+    // Цена — из каталога Teez; комиссия — ставка из последних заказов Teez (Teez сам
+    // считает её по категории). Логистику Teez удерживает внутри комиссии/выплаты, отдельной строки нет.
+    if (p.teezSku) {
+      const referencePrice = p.teezReferencePrice ?? null;
+      if (referencePrice == null) {
+        forecasts.push({ productId: p.id, marketplace: 'TEEZ', referencePrice: null, estCommission: null, estCommissionRate: null, estLogistics: null, estProfit: null, estMarginPct: null, estTax: null, estPayout: null, estMarginAfterTaxPct: null, estReturnCost: null, source: 'no-data' });
+      } else if (p.teezCommissionRatePct != null) {
+        const estCommission = referencePrice * (p.teezCommissionRatePct / 100);
+        const estProfit = round2(referencePrice - totalCost - estCommission);
+        forecasts.push({
+          productId: p.id,
+          marketplace: 'TEEZ',
+          referencePrice,
+          estCommission: round2(estCommission),
+          estCommissionRate: round2(p.teezCommissionRatePct),
+          estLogistics: 0,
+          estProfit,
+          estMarginPct: referencePrice > 0 ? round2((estProfit / referencePrice) * 100) : 0,
+          ...taxFields(referencePrice, estProfit),
+          estReturnCost: null,
+          source: 'teez-rate',
+        });
+      } else {
+        forecasts.push(historicalOrNoData(p.id, 'TEEZ', referencePrice, totalCost));
       }
     }
 

@@ -127,6 +127,11 @@ export function mapTeezOrder(row: TeezOrderRow): NormalizedOrder | null {
     logisticsCost: 0,
     acquiringCost: 0,
     otherFees: 0,
+    // К выплате — ровно то, что посчитал Teez; продажа засчитана, когда покупатель получил заказ.
+    payoutAmount: netQuantity > 0 && (row.payoutAmount != null || row.totalPayoutAmount != null)
+      ? round2(row.payoutAmount != null ? num(row.payoutAmount) * netQuantity : num(row.totalPayoutAmount) * (netQuantity / quantity))
+      : null,
+    settledAt: status === 'COMPLETED' && row.receivedDate ? new Date(row.receivedDate) : null,
     items: [
       {
         externalSku: String(row.barcode || row.orderNumber || externalId),
@@ -344,6 +349,33 @@ class TeezClient {
     return result;
   }
 
+  /**
+   * Детали товаров: POST /api/seller/v1/products/details (до 30 id за раз).
+   * У каждого товара — SKU со штрихкодом (по нему приходят заказы), ценой и фото.
+   */
+  async fetchProductDetails(productIds: number[]): Promise<TeezSkuDetail[]> {
+    const out: TeezSkuDetail[] = [];
+    for (let i = 0; i < productIds.length; i += 30) {
+      const batch = productIds.slice(i, i + 30);
+      const data = await this.post<{ products?: any[] }>('/api/seller/v1/products/details', { productIds: batch }, 'детали товаров');
+      for (const p of data.products ?? []) {
+        const name = String(p?.name?.rus || p?.name?.kaz || '').trim();
+        for (const sku of p.skus ?? []) {
+          out.push({
+            productId: Number(p.productId),
+            name,
+            skuId: Number(sku.skuId),
+            barcode: sku.skuBarcode ? String(sku.skuBarcode).trim() : null,
+            price: sku.price != null ? Number(sku.price) : null,
+            photos: (sku.photos ?? []).slice().sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0)).map((x: any) => x.url).filter(Boolean),
+          });
+        }
+      }
+      if (i + 30 < productIds.length) await sleep(PACING_DELAY_MS);
+    }
+    return out;
+  }
+
   /** Список товаров магазина (статус, остаток, число продаж) — постранично, до конца. */
   async fetchProducts(): Promise<TeezProductRow[]> {
     const products: TeezProductRow[] = [];
@@ -359,6 +391,15 @@ class TeezClient {
     }
     return products;
   }
+}
+
+export interface TeezSkuDetail {
+  productId: number;
+  name: string;
+  skuId: number;
+  barcode: string | null;
+  price: number | null;
+  photos: string[];
 }
 
 export const teezClient = new TeezClient();
