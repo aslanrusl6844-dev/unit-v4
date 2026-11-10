@@ -208,7 +208,9 @@ function normalizeOzonReturn(r: any): OzonReturnRow {
     targetPlaceAddress: pickStr(r?.target_place?.address),
     returnedAt: pickStr(r?.logistic?.final_moment, r?.logistic?.technical_return_moment) || null,
     statusSysName: pickStr(r?.visual?.status?.sys_name),
-    arrivedAt: pickStr(r?.storage?.arrived_moment, r?.logistic?.return_date, r?.logistic?.final_moment) || null,
+    // Когда возврат приехал на склад: storage.arrived_moment, а если Ozon его не заполнил —
+    // момент смены статуса на «на складе Ozon» (visual.change_moment).
+    arrivedAt: pickStr(r?.storage?.arrived_moment, r?.visual?.change_moment, r?.logistic?.final_moment) || null,
     storage: r?.storage && typeof r.storage === 'object' ? r.storage : null,
     raw: r,
   };

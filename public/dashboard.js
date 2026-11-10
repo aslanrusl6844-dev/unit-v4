@@ -450,16 +450,28 @@ async function loadOzonReturnsPickup() {
     return;
   }
   const fmtD = (v) => (v ? fmtOrderDateTime(v) : '—');
-  const storageText = (st) => {
-    if (!st || typeof st !== 'object') return '—';
-    const L = { arrived_moment: 'прибыл', days: 'дней на складе', sum: 'сумма хранения', tariffication_first_date: 'первый день платного хранения', tariffication_start_date: 'платное хранение с', utilization_forecast_date: 'утилизация', utilization_sum: 'стоимость утилизации' };
-    return Object.entries(st).filter(([, v]) => v != null && v !== '' && typeof v !== 'object').map(([k, v]) => {
-      const val = /date|moment/.test(k) ? fmtOrderDateTime(v) : v;
-      return `<div><span style="color:var(--text-muted)">${ozEsc(L[k] || k)}:</span> ${ozEsc(val)}</div>`;
-    }).join('') || '—';
+  // Ozon в блоке storage часто ничего не присылает (даты null, суммы 0) — тогда честно пишем,
+  // сколько дней возврат уже лежит (от даты прибытия), а сроки — смотреть в кабинете Ozon.
+  const storageText = (st, r, inTransit) => {
+    const parts = [];
+    const since = r.arrivedAt || r.statusChangedAt;
+    if (!inTransit && since) {
+      const days = Math.max(0, Math.floor((Date.now() - new Date(since).getTime()) / 86400000));
+      parts.push(`<div><b>Лежит ${days} ${wsPlural(days, 'день', 'дня', 'дней')}</b></div>`);
+    }
+    const price = (v) => (v && typeof v === 'object' ? Number(v.price) || 0 : Number(v) || 0);
+    if (st && typeof st === 'object') {
+      if (st.tariffication_start_date) parts.push(`<div>Платное хранение с: ${fmtOrderDateTime(st.tariffication_start_date)}</div>`);
+      else if (st.tariffication_first_date) parts.push(`<div>Платное хранение с: ${fmtOrderDateTime(st.tariffication_first_date)}</div>`);
+      if (price(st.sum)) parts.push(`<div>Начислено за хранение: ${fmtMoney(price(st.sum))}</div>`);
+      if (st.utilization_forecast_date) parts.push(`<div style="color:var(--loss)">Утилизация: ${fmtOrderDateTime(st.utilization_forecast_date)}</div>`);
+      if (price(st.utilization_sum)) parts.push(`<div>Стоимость утилизации: ${fmtMoney(price(st.utilization_sum))}</div>`);
+    }
+    if (!inTransit && !parts.some((x) => /Платное|Утилизация/.test(x))) parts.push('<div style="color:var(--text-faint)">Сроки хранения Ozon не прислал — проверьте в кабинете: Логистика → Возвраты</div>');
+    return parts.join('');
   };
-  const table = (rows, withTarget) => `<div class="table-wrap"><table class="table" style="font-size:12.5px"><thead><tr><th>Отправление</th><th>Товар</th><th>Артикул</th><th class="num">Кол-во</th><th>${withTarget ? 'Откуда едет' : 'Прибыл'}</th><th>Хранение и утилизация</th></tr></thead><tbody>
-    ${rows.map((r) => `<tr><td>${ozEsc(r.postingNumber || r.orderNumber || '—')}</td><td>${ozEsc(r.productName || '—')}<div style="font-size:11px;color:var(--text-muted)">${ozEsc(r.status || '')}</div></td><td>${ozEsc(r.offerId || '—')}</td><td class="num">${r.quantity}</td><td>${withTarget ? `${ozEsc(r.placeName || '—')} → ${ozEsc(r.targetPlaceName)}` : fmtD(r.arrivedAt || r.statusChangedAt)}</td><td style="font-size:11.5px">${storageText(r.storage)}</td></tr>`).join('')}
+  const table = (rows, withTarget) => `<div class="table-wrap"><table class="table" style="font-size:12.5px"><thead><tr><th>Отправление</th><th>Товар</th><th>Артикул</th><th class="num">Кол-во</th><th>${withTarget ? 'Откуда едет' : 'Прибыл на склад'}</th><th>${withTarget ? 'Хранение' : 'Хранение и утилизация'}</th></tr></thead><tbody>
+    ${rows.map((r) => `<tr><td>${ozEsc(r.postingNumber || r.orderNumber || '—')}</td><td>${ozEsc(r.productName || '—')}<div style="font-size:11px;color:var(--text-muted)">${ozEsc(r.status || '')}</div></td><td>${ozEsc(r.offerId || '—')}</td><td class="num">${r.quantity}</td><td>${withTarget ? `${ozEsc(r.placeName || '—')} → ${ozEsc(r.targetPlaceName)}` : fmtD(r.arrivedAt || r.statusChangedAt)}</td><td style="font-size:11.5px">${storageText(r.storage, r, withTarget)}</td></tr>`).join('')}
     </tbody></table></div>`;
   box.innerHTML = `
     <div style="border:1px solid #16a34a;border-radius:8px;padding:10px 12px;margin-bottom:10px">
