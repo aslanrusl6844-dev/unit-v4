@@ -64,7 +64,7 @@ const envSchema = z.object({
   WB_PRICES_API_BASE_URL: z.preprocess(cleanEnvString, z.string().default('https://discounts-prices-api.wildberries.ru')),
   WB_FINANCE_API_BASE_URL: z.preprocess(cleanEnvString, z.string().default('https://finance-api.wildberries.ru')),
 
-  TEEZ_API_BASE_URL: z.preprocess(cleanEnvString, z.string().default('https://seller-api.teez.kz')),
+  TEEZ_API_BASE_URL: z.preprocess(cleanEnvString, z.string().default('https://api.teez.kz')),
 
   SYNC_CRON: z.preprocess(cleanEnvString, z.string().default('*/30 * * * *')),
   SYNC_INITIAL_LOOKBACK_DAYS: z.preprocess(cleanEnvString, z.string().default('30')),
@@ -158,7 +158,7 @@ export const env = {
   },
 
   teez: {
-    baseUrl: safeData.TEEZ_API_BASE_URL ?? 'https://seller-api.teez.kz',
+    baseUrl: safeData.TEEZ_API_BASE_URL ?? 'https://api.teez.kz',
   },
 
   sync: {

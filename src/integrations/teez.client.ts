@@ -7,6 +7,7 @@ import { NormalizedOrder } from '../types';
 /**
  * Клиент Teez Seller API (маркетплейс Teez / Freedom Market, teez.kz).
  * Документация: https://api-docs.teez.kz/
+ * Адрес API (с осени 2026): https://api.teez.kz — старый seller-api.teez.kz отвечает 404.
  *
  * Что умеет API (и что НЕТ — важно не обещать лишнего):
  * - заказы (POST /api/seller/v1/orders/list): продажи, возвраты, комиссия и
