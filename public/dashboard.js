@@ -1352,6 +1352,9 @@ function priceFieldName(marketplace) {
 }
 
 function isLinkedToMarketplace(p, marketplace) {
+  // Tez Market: своего артикула у товара пока нет (каталог Teez ещё не загружается) —
+  // раньше сюда проваливались товары WB, поэтому при фильтре «Tez Market» показывались чужие товары.
+  if (marketplace === 'TEEZ') return !!p.teezSku;
   return marketplace === 'KASPI' ? !!p.kaspiSku : marketplace === 'OZON' ? !!p.ozonOfferId : !!p.wbArticle;
 }
 
@@ -1652,6 +1655,7 @@ function renderProductsAdminTable() {
   if (state.marketplace === 'KASPI') products = products.filter((p) => p.kaspiSku);
   if (state.marketplace === 'OZON') products = products.filter((p) => p.ozonOfferId);
   if (state.marketplace === 'WB') products = products.filter((p) => p.wbArticle);
+  if (state.marketplace === 'TEEZ') products = products.filter((p) => p.teezSku);
 
   const marketplaces = getVisibleMarketplaces();
   renderProductsTableHead(marketplaces);
