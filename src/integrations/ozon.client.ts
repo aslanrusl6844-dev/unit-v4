@@ -176,6 +176,9 @@ export interface OzonReturnRow {
   targetPlaceName: string;   // куда направлен возврат
   targetPlaceAddress: string;
   returnedAt: string | null; // момент окончания логистики возврата
+  statusSysName: string;     // системный код статуса (visual.status.sys_name)
+  arrivedAt: string | null;  // когда возврат прибыл в место выдачи (storage)
+  storage: Record<string, unknown> | null; // блок storage Ozon: платное хранение, утилизация
   raw: unknown;
 }
 
@@ -204,6 +207,9 @@ function normalizeOzonReturn(r: any): OzonReturnRow {
     targetPlaceName: pickStr(r?.target_place?.name),
     targetPlaceAddress: pickStr(r?.target_place?.address),
     returnedAt: pickStr(r?.logistic?.final_moment, r?.logistic?.technical_return_moment) || null,
+    statusSysName: pickStr(r?.visual?.status?.sys_name),
+    arrivedAt: pickStr(r?.storage?.arrived_moment, r?.logistic?.return_date, r?.logistic?.final_moment) || null,
+    storage: r?.storage && typeof r.storage === 'object' ? r.storage : null,
     raw: r,
   };
 }
@@ -588,20 +594,18 @@ export class OzonClient {
    * разбор терпимый, а сырой элемент возврата отдаётся целиком (raw) — чтобы
    * в интерфейсе можно было показать всё, что вернул Ozon.
    */
-  async fetchReturns(dateFrom: Date, dateTo: Date): Promise<OzonReturnRow[]> {
+  async fetchReturns(dateFrom: Date | null, dateTo: Date | null): Promise<OzonReturnRow[]> {
     const http = await this.getHttp();
     const rows: OzonReturnRow[] = [];
     let lastId = 0;
     for (let page = 0; page < 40; page++) {
       let data: any;
       try {
-        const response = await http.post('/v1/returns/list', {
-          filter: {
-            visual_status_change_moment: { time_from: dateFrom.toISOString(), time_to: dateTo.toISOString() },
-          },
-          limit: 500,
-          last_id: lastId,
-        });
+        // Без дат — ВСЕ возвраты (для «что лежит на складе возвратов и ждёт забора»).
+        const filter = dateFrom && dateTo
+          ? { visual_status_change_moment: { time_from: dateFrom.toISOString(), time_to: dateTo.toISOString() } }
+          : {};
+        const response = await http.post('/v1/returns/list', { filter, limit: 500, last_id: lastId });
         data = response.data;
       } catch (err: any) {
         const body = err?.response?.data;
@@ -613,7 +617,8 @@ export class OzonClient {
       const body = data?.result && !Array.isArray(data.returns) ? data.result : data;
       const list: any[] = Array.isArray(body?.returns) ? body.returns : [];
       for (const r of list) rows.push(normalizeOzonReturn(r));
-      if (!list.length || body?.has_next !== true) break;
+      // Листаем по last_id до пустой страницы: has_next у Ozon бывает не заполнен.
+      if (!list.length) break;
       const next = Number(list[list.length - 1]?.id);
       if (!next || next === lastId) break;
       lastId = next;

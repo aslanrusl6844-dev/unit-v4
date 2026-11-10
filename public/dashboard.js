@@ -439,7 +439,42 @@ async function loadOzonPage() {
 let ozonReturnsCache = [];
 const ozEsc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
+// ---- Возвраты к забору: склад возвратов Ozon в Алматы (Ельтай) — все возвраты, без периода ----
+async function loadOzonReturnsPickup() {
+  const box = document.getElementById('ozReturnsPickupBox');
+  if (!box) return;
+  box.innerHTML = '<div style="color:var(--text-faint);font-size:12.5px">Проверяю склад возвратов в Алматы…</div>';
+  let d;
+  try { d = await api('/ozon-returns/pickup'); } catch (err) {
+    box.innerHTML = `<div style="color:var(--danger,#d33);font-size:12.5px">Не удалось проверить склад возвратов: ${ozEsc(err.message)}</div>`;
+    return;
+  }
+  const fmtD = (v) => (v ? fmtOrderDateTime(v) : '—');
+  const storageText = (st) => {
+    if (!st || typeof st !== 'object') return '—';
+    const L = { arrived_moment: 'прибыл', days: 'дней на складе', sum: 'сумма хранения', tariffication_first_date: 'первый день платного хранения', tariffication_start_date: 'платное хранение с', utilization_forecast_date: 'утилизация', utilization_sum: 'стоимость утилизации' };
+    return Object.entries(st).filter(([, v]) => v != null && v !== '' && typeof v !== 'object').map(([k, v]) => {
+      const val = /date|moment/.test(k) ? fmtOrderDateTime(v) : v;
+      return `<div><span style="color:var(--text-muted)">${ozEsc(L[k] || k)}:</span> ${ozEsc(val)}</div>`;
+    }).join('') || '—';
+  };
+  const table = (rows, withTarget) => `<div class="table-wrap"><table class="table" style="font-size:12.5px"><thead><tr><th>Отправление</th><th>Товар</th><th>Артикул</th><th class="num">Кол-во</th><th>${withTarget ? 'Откуда едет' : 'Прибыл'}</th><th>Хранение и утилизация</th></tr></thead><tbody>
+    ${rows.map((r) => `<tr><td>${ozEsc(r.postingNumber || r.orderNumber || '—')}</td><td>${ozEsc(r.productName || '—')}<div style="font-size:11px;color:var(--text-muted)">${ozEsc(r.status || '')}</div></td><td>${ozEsc(r.offerId || '—')}</td><td class="num">${r.quantity}</td><td>${withTarget ? `${ozEsc(r.placeName || '—')} → ${ozEsc(r.targetPlaceName)}` : fmtD(r.arrivedAt || r.statusChangedAt)}</td><td style="font-size:11.5px">${storageText(r.storage)}</td></tr>`).join('')}
+    </tbody></table></div>`;
+  box.innerHTML = `
+    <div style="border:1px solid #16a34a;border-radius:8px;padding:10px 12px;margin-bottom:10px">
+      <b>✅ Готовы к забору в Ельтае (склад возвратов Ozon, Алматы): ${d.ready.length}</b>
+      ${d.ready.length ? table(d.ready, false) : '<div style="color:var(--text-faint);font-size:12.5px">Сейчас на складе возвратов ваших товаров нет</div>'}
+    </div>
+    <div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px">
+      <b>🚚 Едут на склад возвратов в Алматы: ${d.coming.length}</b>
+      ${d.coming.length ? table(d.coming, true) : '<div style="color:var(--text-faint);font-size:12.5px">Сейчас в пути нет</div>'}
+    </div>
+    <div style="font-size:11px;color:var(--text-faint);margin-top:4px">Это все возвраты Ozon без учёта периода сверху. Ниже — история возвратов за выбранный период.</div>`;
+}
+
 async function loadOzonReturnsPage() {
+  loadOzonReturnsPickup();
   const tbody = document.querySelector('#ozReturnsTable tbody');
   const info = document.getElementById('ozReturnsInfo');
   tbody.innerHTML = '<tr><td colspan="8" style="color:var(--text-faint)">Загрузка…</td></tr>';
