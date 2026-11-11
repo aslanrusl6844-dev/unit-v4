@@ -7467,7 +7467,7 @@ async function applyAppConfig() {
   }
   if (!mpEnabled('OZON')) document.querySelectorAll('.nav-item[data-page="ozonfbo"]').forEach((b) => { b.hidden = true; });
   if (!cfg.shop) {
-    for (const page of ['mymarket', 'notifications', 'broadcast', 'cityimages', 'yard']) {
+    for (const page of ['mymarket', 'notifications', 'broadcast', 'cityimages', 'yard', 'demping', 'ads', 'searchstats']) {
       document.querySelectorAll(`.nav-item[data-page="${page}"]`).forEach((b) => { b.hidden = true; });
     }
     hidePanelByTitle('Yandex Cloud (Wordstat)');
