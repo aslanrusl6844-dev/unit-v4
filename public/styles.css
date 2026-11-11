@@ -487,3 +487,8 @@ body {
   .gm-side { max-height: none; }
   .gm-tip { position: static; margin: 8px 10px; max-width: none; }
 }
+
+/* Режим «только площадки» (APP_MODE=marketplaces): прячем пункты меню, кнопки площадок и панели
+   атрибутом hidden. У этих элементов свой display (flex/inline-flex/block), который перебивает
+   стандартное [hidden]{display:none} браузера, — поэтому явно. */
+.nav-item[hidden], .mp-filter__btn[hidden], .btn[hidden], .panel[hidden] { display: none !important; }
