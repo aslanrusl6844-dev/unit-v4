@@ -9,8 +9,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
+      # Адрес сервера: переменная репозитория SITE_URL (Settings → Secrets and variables → Actions → Variables).
+      # В копии для другого продавца — его адрес Vercel; если не задана — наш сервер.
       - name: Обновить цены Ozon
+        env:
+          SITE_URL: ${{ vars.SITE_URL || 'https://unit-v4.vercel.app' }}
         run: |
-          code=$(curl -s -o out.json -w '%{http_code}' --max-time 90 "https://unit-v4.vercel.app/api/cron/ozon-prices")
+          code=$(curl -s -o out.json -w '%{http_code}' --max-time 90 "${SITE_URL%/}/api/cron/ozon-prices")
           cat out.json; echo
           test "$code" = "200"

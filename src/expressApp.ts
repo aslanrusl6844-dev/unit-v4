@@ -131,6 +131,14 @@ app.get('/api/health', (_req, res) => res.json({
   buildMarker: 'kaspi-14day-date-chunking',
 }));
 
+// Режим сервера: у копии для другого продавца (только Kaspi и Ozon, без My Market) задаются
+//   APP_MODE=marketplaces и ENABLED_MARKETPLACES=KASPI,OZON — админка прячет лишние разделы.
+app.get('/api/app-config', (_req, res) => {
+  const all = ['KASPI', 'OZON', 'WB', 'TEEZ'];
+  const enabled = (process.env.ENABLED_MARKETPLACES || '').split(',').map((x) => x.trim().toUpperCase()).filter((x) => all.includes(x));
+  res.json({ marketplaces: enabled.length ? enabled : all, shop: process.env.APP_MODE !== 'marketplaces' });
+});
+
 app.use('/api/products', productsRouter);
 app.use('/api/orders', ordersRouter);
 app.use('/api/analytics', analyticsRouter);

@@ -1,3 +1,7 @@
+// Площадки, включённые на этом сервере (см. applyAppConfig и /api/app-config).
+let ENABLED_MPS = ['KASPI', 'OZON', 'WB', 'TEEZ'];
+function mpEnabled(mp) { return ENABLED_MPS.includes(String(mp).toUpperCase()); }
+
 const state = {
   marketplace: '',
   from: null,
@@ -1632,7 +1636,7 @@ function getVisibleMarketplaces() {
   if (state.marketplace === 'OZON') return ['OZON'];
   if (state.marketplace === 'WB') return ['WB'];
   if (state.marketplace === 'TEEZ') return ['TEEZ'];
-  return ['KASPI', 'OZON', 'WB'];
+  return ['KASPI', 'OZON', 'WB'].filter(mpEnabled);
 }
 
 function renderProductsTableHead(marketplaces) {
@@ -7443,6 +7447,34 @@ document.getElementById('syncTeezBtn').addEventListener('click', async () => {
 // Инициализация
 // =====================================================================
 // ---------------------------------------------------------------------
+// Режим сервера (/api/app-config): на копии «только площадки» прячем My Market, приложение,
+// рассылки, витрины и площадки, которые не включены (например, оставить только Kaspi и Ozon).
+// ---------------------------------------------------------------------
+async function applyAppConfig() {
+  let cfg;
+  try { cfg = await api('/app-config'); } catch { return; }
+  ENABLED_MPS = cfg.marketplaces || ENABLED_MPS;
+  const MP_BTN = { KASPI: 'syncKaspiBtn', OZON: 'syncOzonBtn', WB: 'syncWbBtn', TEEZ: 'syncTeezBtn' };
+  const MP_PANEL = { KASPI: 'Магазин Kaspi', OZON: 'Магазин Ozon', WB: 'Магазин Wildberries', TEEZ: 'Магазин Tez Market' };
+  const hidePanelByTitle = (title) => document.querySelectorAll('.panel__head h2').forEach((h) => {
+    if (h.textContent.trim() === title) { const p = h.closest('.panel'); if (p) p.hidden = true; }
+  });
+  for (const mp of ['KASPI', 'OZON', 'WB', 'TEEZ']) {
+    if (mpEnabled(mp)) continue;
+    document.querySelectorAll(`.mp-filter__btn[data-mp="${mp}"]`).forEach((b) => { b.hidden = true; });
+    const btn = document.getElementById(MP_BTN[mp]); if (btn) btn.hidden = true;
+    hidePanelByTitle(MP_PANEL[mp]);
+  }
+  if (!mpEnabled('OZON')) document.querySelectorAll('.nav-item[data-page="ozonfbo"]').forEach((b) => { b.hidden = true; });
+  if (!cfg.shop) {
+    for (const page of ['mymarket', 'notifications', 'broadcast', 'cityimages', 'yard']) {
+      document.querySelectorAll(`.nav-item[data-page="${page}"]`).forEach((b) => { b.hidden = true; });
+    }
+    hidePanelByTitle('Yandex Cloud (Wordstat)');
+  }
+}
+applyAppConfig();
+// ---------------------------------------------------------------------
 // Автообновление: пока админка открыта, каждые 5 минут тихо (без окон) подтягиваем свежие
 // заказы Kaspi / Ozon / WB / Tez за последние 2 дня — то же, что кнопки ↻ сверху, — и
 // перерисовываем текущую страницу. Если в этот момент вы что-то вводите — перерисовку
@@ -7496,7 +7528,7 @@ async function autoSyncTick() {
   const errors = [];
   try {
     const status = await api('/sync/status').catch(() => null);
-    const on = (k) => !status || (status[k] && status[k].configured);
+    const on = (k) => mpEnabled(k === 'teez' ? 'TEEZ' : k) && (!status || (status[k] && status[k].configured));
     const to = new Date();
     const from = new Date(to.getTime() - 2 * 24 * 3600 * 1000);
     const jobs = [
@@ -8523,7 +8555,7 @@ function wsGroups() {
   const MPS = ['KASPI', 'OZON', 'WB'];
   const wMp = (w) => ([...MPS, 'TEEZ'].includes(w.marketplace) ? w.marketplace : 'KASPI');
   const sel = state.marketplace;
-  const mps = sel ? [sel] : MPS;
+  const mps = sel ? [sel] : MPS.filter(mpEnabled);
   const groups = [];
   // «Без оптовика»: на одной площадке — одна полка 'none', на «Все вместе» — своя у каждой площадки.
   const noneBy = new Map();
@@ -8663,7 +8695,7 @@ const wsStats = { key: null, rows: null, loading: false, error: null };
 
 /** Площадки, по которым грузим цифры: выбранная сверху или все три (по отдельности, чтобы ничего не посчитать дважды). */
 function wsMpList() {
-  return state.marketplace ? [state.marketplace] : ['KASPI', 'OZON', 'WB'];
+  return state.marketplace ? [state.marketplace] : ['KASPI', 'OZON', 'WB'].filter(mpEnabled);
 }
 
 /** rows приходят как { KASPI: [...], OZON: [...], WB: [...] }. */
