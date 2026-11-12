@@ -22,6 +22,9 @@ import { searchStreets } from '../services/streets.service';
 import { sendBroadcast } from '../services/pushBroadcast.service';
 import { createHmac, randomInt, timingSafeEqual } from 'node:crypto';
 import { deliveryFeeFor, deliveryFeeOfOrder } from '../config/shopDelivery';
+import {
+  applyWowToItems, getWowSettings, getCurrentMembership, membershipSavings, effectiveStatus, wowPriceOf, pushToCustomer,
+} from '../services/wow.service';
 
 export const shopRouter = Router();
 
@@ -109,6 +112,10 @@ export function toShopProduct(p: any) {
     type: p.type,
     price: p.shopPrice,
     oldPrice: p.shopOldPrice,
+    // Подписка «Вау»: процент и цена для подписчика (null — товар без метки «Вау»).
+    // Показывать ли вообще — приложение решает по GET /wow/settings (enabled).
+    wowPercent: p.wowPercent ?? null,
+    wowPrice: p.wowPercent && p.shopPrice != null ? wowPriceOf(p.shopPrice, p.wowPercent) : null,
     stock: p.shopStock,
     description,
     composition,
@@ -843,8 +850,39 @@ shopRouter.post('/orders', async (req, res) => {
   try {
     const itemsSubtotal = parsed.data.items.reduce((sum, i) => sum + i.price * i.quantity, 0);
     // Доставка: до 10 000 ₸ — 1 000 ₸, от 10 000 ₸ — бесплатно (правило считает только сервер).
+    // Считается по сумме ДО скидки «Вау» — подписчик не теряет бесплатную доставку из-за скидки.
     const deliveryFee = deliveryFeeFor(itemsSubtotal);
-    const total = itemsSubtotal + deliveryFee;
+
+    // Подписка «Вау»: если у номера есть подписка (активная или ожидает оплаты) — скидка
+    // на товары с меткой «Вау». Цены позиций сразу со скидкой, чтобы учёт/накладная сходились.
+    let orderItems: Array<Record<string, any>> = parsed.data.items;
+    let wowDiscount = 0;
+    let membershipId: string | null = null;
+    const wow = await getWowSettings();
+    const buyerPhone = normalizePhone(parsed.data.phone);
+    if (wow.enabled && buyerPhone) {
+      const membership = await getCurrentMembership(buyerPhone);
+      if (membership) {
+        const skus = parsed.data.items.map((i) => i.sku);
+        const prods: Array<{ sku: string; shopArticle: string | null; wowPercent: number | null }> = await prisma.product.findMany({
+          where: { OR: [{ sku: { in: skus } }, { shopArticle: { in: skus } }], wowPercent: { not: null } },
+          select: { sku: true, shopArticle: true, wowPercent: true },
+        });
+        const percentBySku = new Map<string, number>();
+        for (const p of prods) {
+          if (!p.wowPercent) continue;
+          percentBySku.set(p.sku, p.wowPercent);
+          if (p.shopArticle) percentBySku.set(p.shopArticle, p.wowPercent);
+        }
+        const applied = applyWowToItems(parsed.data.items, percentBySku);
+        if (applied.discount > 0) {
+          orderItems = applied.items;
+          wowDiscount = applied.discount;
+          membershipId = membership.id;
+        }
+      }
+    }
+    const total = itemsSubtotal - wowDiscount + deliveryFee;
 
     // Гарантируем уникальность номера — крайне маловероятная коллизия, но
     // проверяем, а не полагаемся вслепую на рандом.
@@ -872,7 +910,9 @@ shopRouter.post('/orders', async (req, res) => {
         customerName: parsed.data.customerName,
         phone: parsed.data.phone,
         total,
-        items: JSON.stringify(parsed.data.items),
+        items: JSON.stringify(orderItems),
+        wowDiscount,
+        membershipId,
       },
     });
 
@@ -889,7 +929,7 @@ shopRouter.post('/orders', async (req, res) => {
       logger.error({ err }, '[Telegram] sendOrderNotify не должен был бросить исключение');
     }
 
-    res.status(201).json({ id: order.id, number: order.number, total: order.total, deliveryFee, status: order.status });
+    res.status(201).json({ id: order.id, number: order.number, total: order.total, deliveryFee, wowDiscount, status: order.status });
   } catch (err: any) {
     logger.error({ err }, '[Shop API] Ошибка создания заказа');
     res.status(500).json({ error: 'Не удалось создать заказ', details: String(err?.message ?? err) });
@@ -1183,6 +1223,7 @@ shopRouter.get('/orders', async (req, res) => {
       pickupCode: o.pickupCode,
       total: o.total,
       deliveryFee: deliveryFeeOfOrder(o.total, parsedItems.get(o.id) ?? []),
+      wowDiscount: o.wowDiscount ?? 0,
       items: (parsedItems.get(o.id) ?? []).map((it: any) => ({
         ...it,
         image: it?.image || covers.get(String(it?.sku ?? '')) || undefined,
@@ -2126,3 +2167,122 @@ shopRouter.post('/events', async (req, res) => {
     res.status(500).json({ error: 'Не удалось записать событие', details: String(err?.message ?? err) });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Подписка «Вау» (как Coupang WOW). Покупатель определяется по номеру телефона —
+// так же, как «Мои заказы». Скидку считает только сервер (см. POST /orders).
+// ---------------------------------------------------------------------------
+
+/** Настройки для приложения: включена ли, цена в месяц, процент по умолчанию, как оплатить. */
+shopRouter.get('/wow/settings', async (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.json(await getWowSettings());
+});
+
+async function wowStatusFor(phone: string) {
+  const settings = await getWowSettings();
+  const rows: Array<{ id: string; status: string; endsAt: Date | null; startsAt: Date | null; price: number; cancelRequested: boolean; createdAt: Date }> =
+    await prisma.wowMembership.findMany({ where: { phone }, orderBy: { createdAt: 'desc' }, take: 5 });
+  const current = rows.find((m) => ['active', 'pending_payment', 'refund_requested'].includes(effectiveStatus(m))) ?? null;
+  const savings = await membershipSavings(current ? [current.id] : []);
+  const s = current ? savings.get(current.id)! : { saved: 0, orders: 0 };
+  return {
+    enabled: settings.enabled,
+    monthlyPrice: settings.monthlyPrice,
+    payInstructions: settings.payInstructions,
+    // none | pending_payment | active | refund_requested
+    status: current ? effectiveStatus(current) : 'none',
+    // Скидка работает и пока оплата ждёт подтверждения (админ проверяет заказ и подписку вместе).
+    discountActive: !!current && ['active', 'pending_payment'].includes(effectiveStatus(current)) && settings.enabled,
+    membershipId: current?.id ?? null,
+    startsAt: current?.startsAt ?? null,
+    endsAt: current?.endsAt ?? null,
+    willRenew: !!current && !current.cancelRequested,
+    savedTotal: Math.round(s.saved),
+    discountedOrders: s.orders,
+  };
+}
+
+/** Статус подписки покупателя: GET /wow/status?phone=... */
+shopRouter.get('/wow/status', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const phone = normalizePhone(String(req.query.phone ?? ''));
+  if (!phone) return res.status(400).json({ error: 'Некорректный номер телефона' });
+  try {
+    res.json(await wowStatusFor(phone));
+  } catch (err: any) {
+    logger.error({ err }, '[Wow] GET /wow/status упал');
+    res.status(500).json({ error: 'Не удалось получить подписку', details: String(err?.message ?? err) });
+  }
+});
+
+const wowSubscribeSchema = z.object({ phone: z.string().min(1), name: z.string().optional().nullable() });
+
+/**
+ * «Получить скидку и оплатить»: создаёт подписку в ожидании оплаты (или возвращает уже
+ * существующую — повторное нажатие не плодит строки). Скидка в заказах работает сразу.
+ */
+shopRouter.post('/wow/subscribe', async (req, res) => {
+  const parsed = wowSubscribeSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные' });
+  const phone = normalizePhone(parsed.data.phone);
+  if (!phone) return res.status(400).json({ error: 'Некорректный номер телефона' });
+  try {
+    const settings = await getWowSettings();
+    if (!settings.enabled) return res.status(409).json({ error: 'Подписка «Вау» пока недоступна', reason: 'disabled' });
+    const existing = await getCurrentMembership(phone);
+    if (!existing) {
+      await prisma.wowMembership.create({
+        data: { phone, customerName: parsed.data.name?.trim() || null, status: 'pending_payment', price: settings.monthlyPrice },
+      });
+    }
+    res.status(existing ? 200 : 201).json(await wowStatusFor(phone));
+  } catch (err: any) {
+    logger.error({ err }, '[Wow] POST /wow/subscribe упал');
+    res.status(500).json({ error: 'Не удалось подключить подписку', details: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * Отказ от подписки («Отменить в любой момент»):
+ *  - ещё не оплачена → просто отменяется;
+ *  - оплачена, но покупок со скидкой не было → скидка выключается сразу, деньги вернёт админ (refund_requested);
+ *  - покупки со скидкой были → денег не возвращаем, подписка работает до конца месяца и не продлевается.
+ */
+shopRouter.post('/wow/cancel', async (req, res) => {
+  const phone = normalizePhone(String(req.body?.phone ?? ''));
+  if (!phone) return res.status(400).json({ error: 'Некорректный номер телефона' });
+  try {
+    const m = await getCurrentMembership(phone);
+    if (!m) return res.status(404).json({ error: 'Активной подписки нет' });
+    let result: 'cancelled' | 'refund_requested' | 'no_renew';
+    if (m.status === 'pending_payment') {
+      await prisma.wowMembership.update({ where: { id: m.id }, data: { status: 'cancelled', cancelledAt: new Date() } });
+      result = 'cancelled';
+    } else {
+      const s = (await membershipSavings([m.id])).get(m.id)!;
+      if (s.orders === 0) {
+        await prisma.wowMembership.update({ where: { id: m.id }, data: { status: 'refund_requested', cancelledAt: new Date(), cancelRequested: true } });
+        result = 'refund_requested';
+      } else {
+        await prisma.wowMembership.update({ where: { id: m.id }, data: { cancelRequested: true } });
+        result = 'no_renew';
+      }
+    }
+    const messages = {
+      cancelled: 'Подписка отменена.',
+      refund_requested: 'Подписка отменена. Покупок со скидкой не было — вернём деньги полностью.',
+      no_renew: 'Продление отключено. Скидка работает до конца оплаченного месяца, деньги за него не возвращаются, так как были покупки со скидкой.',
+    };
+    res.json({ result, message: messages[result], ...(await wowStatusFor(phone)) });
+  } catch (err: any) {
+    logger.error({ err }, '[Wow] POST /wow/cancel упал');
+    res.status(500).json({ error: 'Не удалось отменить подписку', details: String(err?.message ?? err) });
+  }
+});
+
+/** Уведомить покупателя о подтверждении подписки (используется админкой). */
+export async function notifyWowActivated(phone: string, endsAt: Date) {
+  const d = endsAt.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', timeZone: 'Asia/Almaty' });
+  await pushToCustomer(phone, 'Подписка Вау подключена', `Скидки Вау действуют до ${d}. Приятных покупок!`);
+}
