@@ -2347,7 +2347,7 @@ let myMarketProductsCache = [];
 let myMarketChartInstance = null;
 let myMarketEditingProductId = null;
 
-const MY_MARKET_TABS = ['home', 'products', 'catalog', 'showcases', 'prices', 'orders', 'returns', 'analytics', 'couriers', 'finance', 'upload'];
+const MY_MARKET_TABS = ['home', 'products', 'catalog', 'showcases', 'prices', 'wow', 'orders', 'returns', 'analytics', 'couriers', 'finance', 'upload'];
 
 function wireMyMarketTabsOnce() {
   if (myMarketTabWired) return;
@@ -2656,6 +2656,7 @@ function switchMyMarketTab(tab) {
   if (tab === 'catalog') loadMyMarketCatalog();
   if (tab === 'showcases') loadShowcases();
   if (tab === 'prices') loadMyMarketPrices();
+  if (tab === 'wow') loadWowPage();
   if (tab === 'orders') loadMyMarketOrders();
   if (tab === 'returns') loadMyMarketReturns();
   if (tab === 'analytics') loadMyMarketAnalytics();
@@ -9729,3 +9730,212 @@ async function catUploadZip(file) {
   document.querySelectorAll('.sidebar .nav-item').forEach((btn) => btn.addEventListener('click', () => setOpen(false)));
   window.addEventListener('resize', () => { if (window.innerWidth > 860) setOpen(false); });
 })();
+
+
+// =====================================================================
+// My Market → «Вау»: подписка (настройки, подписчики) и галочки «Вау» на товарах.
+// =====================================================================
+const wowState = { settings: null, members: [], summary: null, products: [], tab: 'pending_payment', filter: 'all', q: '', selected: new Set(), wired: false };
+const WOW_STATUS_LABELS = {
+  pending_payment: 'Ждёт подтверждения оплаты', active: 'Активна', refund_requested: 'Просит вернуть деньги',
+  refunded: 'Деньги возвращены', cancelled: 'Отменена', expired: 'Закончилась',
+};
+const wowDate = (d) => (d ? new Date(d).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Almaty' }) : '—');
+
+async function loadWowPage() {
+  wireWowOnce();
+  try {
+    const [settings, members, products] = await Promise.all([
+      api('/shop-admin/wow/settings'), api('/shop-admin/wow/members'), api('/shop-admin/wow/products'),
+    ]);
+    wowState.settings = settings;
+    wowState.members = members.members;
+    wowState.summary = members.summary;
+    wowState.products = products;
+    document.getElementById('wowEnabled').checked = settings.enabled;
+    document.getElementById('wowPrice').value = settings.monthlyPrice;
+    document.getElementById('wowDefaultPct').value = settings.defaultPercent;
+    document.getElementById('wowPayInfo').value = settings.payInstructions || '';
+    const pct = document.getElementById('wowNewPct');
+    if (!pct.value) pct.value = settings.defaultPercent;
+    renderWowKpis();
+    renderWowMembers();
+    renderWowProducts();
+  } catch (e) {
+    showToast('Не удалось загрузить «Вау»: ' + e.message);
+  }
+}
+
+function renderWowKpis() {
+  const s = wowState.summary || {};
+  const card = (label, value, cls = '') => `<div class="kpi-card"><div class="kpi-card__label">${label}</div><div class="kpi-card__value ${cls}">${value}</div></div>`;
+  const net = (s.paid30d || 0) - (s.discount30d || 0);
+  document.getElementById('wowKpis').innerHTML = [
+    card('Активных подписчиков', fmt.format(s.active || 0)),
+    card('Ждут подтверждения', fmt.format(s.pending || 0)),
+    card('Получено за подписки (30 дн.)', fmtMoney(s.paid30d)),
+    card('Отдано скидкой (30 дн.)', fmtMoney(s.discount30d)),
+    card('Итог подписки (30 дн.)', fmtMoney(net), net >= 0 ? 'pos' : 'neg'),
+  ].join('');
+  const counts = {};
+  for (const m of wowState.members) counts[m.status] = (counts[m.status] || 0) + 1;
+  mmSetTabBadges('wowMemberTabs', 'wowstatus', counts, 'mm-tab-badge--red', ['pending_payment', 'refund_requested']);
+}
+
+function renderWowMembers() {
+  const tbody = document.querySelector('#wowMembersTable tbody');
+  const rows = wowState.members.filter((m) => wowState.tab === 'all' || m.status === wowState.tab);
+  if (!rows.length) { tbody.innerHTML = '<tr><td colspan="7" style="color:var(--text-faint)">Пока никого</td></tr>'; return; }
+  tbody.innerHTML = rows.map((m) => {
+    const actions = [];
+    if (m.status === 'pending_payment') {
+      actions.push(`<button class="btn btn--accent" data-wow-act="confirm" data-id="${m.id}">Подтвердить оплату ${fmtMoney(m.price)}</button>`);
+      actions.push(`<button class="btn" data-wow-act="cancel" data-id="${m.id}">Отменить</button>`);
+    }
+    if (m.status === 'refund_requested' || (m.status === 'active' && !m.discountedOrders)) {
+      actions.push(`<button class="btn" data-wow-act="refund" data-id="${m.id}">Деньги вернули</button>`);
+    }
+    const renew = m.status === 'active' && m.cancelRequested ? ' <span style="color:var(--text-muted)">(без продления)</span>' : '';
+    return `<tr>
+      <td>${fmtOrderDateTime(m.createdAt)}</td>
+      <td class="name-cell">${mmEsc(m.customerName || '—')}</td>
+      <td><a href="tel:+${mmEsc(m.phone)}">+${mmEsc(m.phone)}</a></td>
+      <td>${WOW_STATUS_LABELS[m.status] || m.status}${renew}</td>
+      <td>${wowDate(m.endsAt)}</td>
+      <td>${fmtMoney(m.savedTotal)} · ${m.discountedOrders} зак.</td>
+      <td style="white-space:nowrap">${actions.join(' ')}</td>
+    </tr>`;
+  }).join('');
+}
+
+function wowVisibleProducts() {
+  const q = wowState.q.trim().toLowerCase();
+  return wowState.products.filter((p) => (wowState.filter === 'all' || p.enabled)
+    && (!q || p.name.toLowerCase().includes(q) || String(p.article || '').includes(q)));
+}
+
+function renderWowProducts() {
+  const tbody = document.querySelector('#wowProductsTable tbody');
+  const rows = wowVisibleProducts();
+  if (!rows.length) { tbody.innerHTML = '<tr><td colspan="10" style="color:var(--text-faint)">Товаров нет</td></tr>'; updateWowSelInfo(); return; }
+  const money = (n, ok = true) => `<span style="color:${ok ? 'inherit' : 'var(--loss)'}">${fmtMoney(n)}</span>`;
+  tbody.innerHTML = rows.map((p) => {
+    // Без галочки показываем расчёт по проценту из поля «Скидка, %» — сразу видно, что останется.
+    const pct = p.enabled ? p.percent : (Number(document.getElementById('wowNewPct').value) || wowState.settings?.defaultPercent || 5);
+    const wowPrice = Math.round(p.price * (1 - pct / 100));
+    const profit = Math.round(wowPrice - p.cost);
+    const margin = wowPrice > 0 ? (profit / wowPrice) * 100 : 0;
+    const costCell = p.costKnown ? fmtMoney(p.cost) : '<span style="color:var(--text-muted)" title="Себестоимость не указана — проверить минус нельзя">не указана</span>';
+    return `<tr>
+      <td><input type="checkbox" data-wow-sel="${p.id}" ${wowState.selected.has(p.id) ? 'checked' : ''}></td>
+      <td><label style="display:flex;align-items:center;gap:4px;white-space:nowrap"><input type="checkbox" data-wow-toggle="${p.id}" ${p.enabled ? 'checked' : ''}> ${p.enabled ? `−${p.percent}%` : ''}</label>${p.expired ? '<div style="font-size:11px;color:var(--text-muted)">срок вышел</div>' : ''}</td>
+      <td class="name-cell"><div style="display:flex;gap:8px;align-items:center">${p.image ? `<img src="${mmEsc(p.image)}" alt="" style="width:36px;height:36px;object-fit:cover;border-radius:6px">` : ''}<div>${mmEsc(p.name)}<div style="font-size:11px;color:var(--text-muted)">${mmEsc(p.article || '')}</div></div></div></td>
+      <td>${fmtMoney(p.price)}</td>
+      <td><b>${fmtMoney(wowPrice)}</b> <span style="color:var(--text-muted);font-size:11px">−${pct}%</span></td>
+      <td>${costCell}</td>
+      <td>${p.costKnown ? money(p.profitBefore, p.profitBefore >= 0) : '—'}</td>
+      <td>${p.costKnown ? money(profit, profit >= 0) : '—'}</td>
+      <td>${p.costKnown ? `<span style="color:${margin < 0 ? 'var(--loss)' : 'inherit'}">${margin.toFixed(1)}%</span>` : '—'}</td>
+      <td>${p.enabled ? (p.until ? wowDate(p.until) : 'пока не снимут') : '—'}</td>
+    </tr>`;
+  }).join('');
+  updateWowSelInfo();
+}
+
+function updateWowSelInfo() {
+  const n = wowState.selected.size;
+  document.getElementById('wowSelInfo').textContent = n ? `Выбрано: ${n}` : '';
+  const all = document.getElementById('wowSelAll');
+  const vis = wowVisibleProducts();
+  all.checked = vis.length > 0 && vis.every((p) => wowState.selected.has(p.id));
+}
+
+async function wowSetProducts(ids, on) {
+  if (!ids.length) { showToast('Сначала отметьте товары'); return; }
+  const percent = on ? Number(document.getElementById('wowNewPct').value) : null;
+  if (on && !(percent >= 1 && percent <= 30)) { showToast('Скидка — от 1 до 30%'); return; }
+  const until = on ? (document.getElementById('wowNewUntil').value || null) : null;
+  try {
+    const r = await api('/shop-admin/wow/products', { method: 'POST', body: JSON.stringify({ ids, percent, until }) });
+    if (r.skipped?.length) {
+      alertWowSkipped(r.skipped);
+    } else {
+      showToast(on ? `Скидка Вау включена: ${r.updated}` : `Скидка Вау снята: ${r.updated}`);
+    }
+    wowState.products = await api('/shop-admin/wow/products');
+    renderWowProducts();
+  } catch (e) {
+    showToast('Не сохранилось: ' + e.message);
+    renderWowProducts();
+  }
+}
+
+function alertWowSkipped(skipped) {
+  showToast(`Не включено ${skipped.length}: ${skipped.slice(0, 3).map((s) => `${s.name} — ${s.reason}`).join('; ')}${skipped.length > 3 ? '…' : ''}`);
+}
+
+async function wowMemberAction(act, id) {
+  const confirmText = {
+    confirm: 'Деньги за подписку пришли? Подписка заработает на 1 месяц, покупатель получит уведомление.',
+    cancel: 'Отменить подписку, которая ждёт оплаты?',
+    refund: 'Вы вернули покупателю деньги за подписку? Скидка выключится.',
+  }[act];
+  if (!confirm(confirmText)) return;
+  try {
+    await api(`/shop-admin/wow/members/${id}/${act}`, { method: 'POST', body: '{}' });
+    showToast({ confirm: 'Подписка подключена', cancel: 'Подписка отменена', refund: 'Возврат отмечен' }[act]);
+  } catch (e) {
+    showToast(e.body?.error || e.message);
+  }
+  const members = await api('/shop-admin/wow/members');
+  wowState.members = members.members; wowState.summary = members.summary;
+  renderWowKpis(); renderWowMembers();
+}
+
+function wireWowOnce() {
+  if (wowState.wired) return;
+  wowState.wired = true;
+  document.getElementById('wowSaveSettings').addEventListener('click', async () => {
+    const body = {
+      enabled: document.getElementById('wowEnabled').checked,
+      monthlyPrice: Number(document.getElementById('wowPrice').value),
+      defaultPercent: Number(document.getElementById('wowDefaultPct').value),
+      payInstructions: document.getElementById('wowPayInfo').value,
+    };
+    if (!(body.monthlyPrice > 0)) { showToast('Укажите цену подписки'); return; }
+    if (!(body.defaultPercent >= 1 && body.defaultPercent <= 30)) { showToast('Скидка — от 1 до 30%'); return; }
+    try {
+      wowState.settings = await api('/shop-admin/wow/settings', { method: 'PUT', body: JSON.stringify(body) });
+      showToast(body.enabled ? 'Сохранено. Подписка включена' : 'Сохранено. Подписка выключена');
+    } catch (e) { showToast('Не сохранилось: ' + e.message); }
+  });
+  document.getElementById('wowMemberTabs').addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    wowState.tab = b.dataset.wowstatus;
+    document.querySelectorAll('#wowMemberTabs button').forEach((x) => x.classList.toggle('is-active', x === b));
+    renderWowMembers();
+  });
+  document.getElementById('wowMembersTable').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-wow-act]'); if (!b) return;
+    wowMemberAction(b.dataset.wowAct, b.dataset.id);
+  });
+  document.getElementById('wowProdFilter').addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    wowState.filter = b.dataset.wowfilter;
+    document.querySelectorAll('#wowProdFilter button').forEach((x) => x.classList.toggle('is-active', x === b));
+    renderWowProducts();
+  });
+  document.getElementById('wowProdSearch').addEventListener('input', (e) => { wowState.q = e.target.value; renderWowProducts(); });
+  document.getElementById('wowNewPct').addEventListener('input', () => renderWowProducts());
+  document.getElementById('wowProductsTable').addEventListener('change', (e) => {
+    const t = e.target;
+    if (t.dataset.wowToggle) { wowSetProducts([t.dataset.wowToggle], t.checked); return; }
+    if (t.dataset.wowSel) { if (t.checked) wowState.selected.add(t.dataset.wowSel); else wowState.selected.delete(t.dataset.wowSel); updateWowSelInfo(); }
+  });
+  document.getElementById('wowSelAll').addEventListener('change', (e) => {
+    for (const p of wowVisibleProducts()) { if (e.target.checked) wowState.selected.add(p.id); else wowState.selected.delete(p.id); }
+    renderWowProducts();
+  });
+  document.getElementById('wowBulkOn').addEventListener('click', () => wowSetProducts([...wowState.selected], true));
+  document.getElementById('wowBulkOff').addEventListener('click', () => wowSetProducts([...wowState.selected], false));
+}

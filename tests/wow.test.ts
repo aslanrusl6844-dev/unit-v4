@@ -188,6 +188,21 @@ describe('подписка в приложении', () => {
     assert.equal(r.json.wowDiscount, 0);
   });
 
+  test('срок скидки на товаре прошёл — кнопки «Вау» нет и скидки нет', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { toShopProduct } = require('../src/routes/shop.routes');
+    products[0].wowUntil = new Date(Date.now() - 1000);
+    try {
+      const p = toShopProduct({ ...products[0], images: null, characteristics: null });
+      assert.equal(p.wowPrice, null);
+      await call('POST', '/api/shop/wow/subscribe', { phone: PHONE });
+      const r = await order([{ sku: '1000001', name: 'Сушилка', price: 24990, quantity: 1 }]);
+      assert.equal(r.json.wowDiscount, 0);
+    } finally {
+      products[0].wowUntil = null;
+    }
+  });
+
   test('товар отдаёт цену «Вау»', () => {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { toShopProduct } = require('../src/routes/shop.routes');

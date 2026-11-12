@@ -228,6 +228,8 @@ model Product {
   shopCost        Float?
   // Подписка «Вау»: скидка для подписчиков в процентах (null — товар без метки «Вау»).
   wowPercent      Int?
+  // До какой даты действует скидка «Вау» на товар (null — пока не снимут галочку).
+  wowUntil        DateTime?
   banner          Boolean   @default(false) // товар участвует в баннерах на главной приложения
   bannerTitle     String?
   bannerSubtitle  String?

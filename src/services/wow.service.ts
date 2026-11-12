@@ -32,6 +32,13 @@ export function wowPriceOf(price: number, percent: number | null | undefined): n
   return Math.round(price * (1 - p / 100));
 }
 
+/** Действующий процент «Вау» у товара: null, если метки нет или срок (wowUntil) уже прошёл. */
+export function activeWowPercent(p: { wowPercent?: number | null; wowUntil?: Date | string | null }, now = new Date()): number | null {
+  if (!p.wowPercent) return null;
+  if (p.wowUntil && new Date(p.wowUntil).getTime() <= now.getTime()) return null;
+  return p.wowPercent;
+}
+
 /** Нормальный процент для товара: целое 1..30 или null (снять метку). */
 export function normalizeWowPercent(raw: unknown): number | null {
   if (raw === null || raw === undefined || raw === '' || raw === 0 || raw === '0') return null;

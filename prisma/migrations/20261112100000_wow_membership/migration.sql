@@ -1,5 +1,6 @@
 -- Подписка «Вау»: скидка у товара, скидка в заказе, настройки и подписки покупателей.
 ALTER TABLE "Product" ADD COLUMN IF NOT EXISTS "wowPercent" INTEGER;
+ALTER TABLE "Product" ADD COLUMN IF NOT EXISTS "wowUntil" TIMESTAMP(3);
 ALTER TABLE "ShopOrder" ADD COLUMN IF NOT EXISTS "wowDiscount" DOUBLE PRECISION NOT NULL DEFAULT 0;
 ALTER TABLE "ShopOrder" ADD COLUMN IF NOT EXISTS "membershipId" TEXT;
 CREATE INDEX IF NOT EXISTS "ShopOrder_membershipId_idx" ON "ShopOrder"("membershipId");

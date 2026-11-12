@@ -23,7 +23,7 @@ import { sendBroadcast } from '../services/pushBroadcast.service';
 import { createHmac, randomInt, timingSafeEqual } from 'node:crypto';
 import { deliveryFeeFor, deliveryFeeOfOrder } from '../config/shopDelivery';
 import {
-  applyWowToItems, getWowSettings, getCurrentMembership, membershipSavings, effectiveStatus, wowPriceOf, pushToCustomer,
+  applyWowToItems, activeWowPercent, getWowSettings, getCurrentMembership, membershipSavings, effectiveStatus, wowPriceOf, pushToCustomer,
 } from '../services/wow.service';
 
 export const shopRouter = Router();
@@ -114,8 +114,10 @@ export function toShopProduct(p: any) {
     oldPrice: p.shopOldPrice,
     // Подписка «Вау»: процент и цена для подписчика (null — товар без метки «Вау»).
     // Показывать ли вообще — приложение решает по GET /wow/settings (enabled).
-    wowPercent: p.wowPercent ?? null,
-    wowPrice: p.wowPercent && p.shopPrice != null ? wowPriceOf(p.shopPrice, p.wowPercent) : null,
+    // Нет галочки или срок прошёл — null: в карточке обычные кнопки, без «Купить со скидкой Вау».
+    wowPercent: activeWowPercent(p),
+    wowPrice: activeWowPercent(p) && p.shopPrice != null ? wowPriceOf(p.shopPrice, activeWowPercent(p)) : null,
+    wowUntil: activeWowPercent(p) ? (p.wowUntil ?? null) : null,
     stock: p.shopStock,
     description,
     composition,
@@ -864,15 +866,16 @@ shopRouter.post('/orders', async (req, res) => {
       const membership = await getCurrentMembership(buyerPhone);
       if (membership) {
         const skus = parsed.data.items.map((i) => i.sku);
-        const prods: Array<{ sku: string; shopArticle: string | null; wowPercent: number | null }> = await prisma.product.findMany({
+        const prods: Array<{ sku: string; shopArticle: string | null; wowPercent: number | null; wowUntil: Date | null }> = await prisma.product.findMany({
           where: { OR: [{ sku: { in: skus } }, { shopArticle: { in: skus } }], wowPercent: { not: null } },
-          select: { sku: true, shopArticle: true, wowPercent: true },
+          select: { sku: true, shopArticle: true, wowPercent: true, wowUntil: true },
         });
         const percentBySku = new Map<string, number>();
         for (const p of prods) {
-          if (!p.wowPercent) continue;
-          percentBySku.set(p.sku, p.wowPercent);
-          if (p.shopArticle) percentBySku.set(p.shopArticle, p.wowPercent);
+          const pct = activeWowPercent(p);
+          if (!pct) continue;
+          percentBySku.set(p.sku, pct);
+          if (p.shopArticle) percentBySku.set(p.shopArticle, pct);
         }
         const applied = applyWowToItems(parsed.data.items, percentBySku);
         if (applied.discount > 0) {
