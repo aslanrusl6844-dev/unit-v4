@@ -536,6 +536,7 @@
           <button data-tab="catalog">Каталог</button>
           <button data-tab="showcases">Подбаннерные витрины</button>
           <button data-tab="prices">Цены и акции</button>
+          <button data-tab="wow">Вау</button>
           <button data-tab="orders">Заказы</button>
           <button data-tab="returns">Возвраты</button>
           <button data-tab="analytics">Аналитика</button>
@@ -944,6 +945,66 @@
         </div>
 
         <!-- ---- Возвраты ---- -->
+        <!-- ---- Подписка «Вау» ---- -->
+        <div id="mymarketWowTab" hidden>
+          <div class="panel">
+            <div class="panel__head"><h2>Подписка «Вау»</h2></div>
+            <p class="panel__hint" style="margin-top:0">Покупатель платит за месяц и получает скидку только на товары, где вы поставили галочку «Вау». Пока подписка выключена, приложение её не показывает.</p>
+            <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end">
+              <label style="display:flex;align-items:center;gap:8px;font-weight:600"><input type="checkbox" id="wowEnabled"> Подписка включена</label>
+              <label>Цена в месяц, ₸<br><input type="number" id="wowPrice" min="1" step="10" style="width:120px"></label>
+              <label>Скидка по умолчанию, %<br><input type="number" id="wowDefaultPct" min="1" max="30" step="1" style="width:90px"></label>
+              <label style="flex:1;min-width:260px">Как оплатить (видит покупатель)<br><input type="text" id="wowPayInfo" placeholder="Перевод на Kaspi по номеру +7 7xx xxx xx xx, в комментарии — ваш телефон" style="width:100%"></label>
+              <button class="btn btn--accent" id="wowSaveSettings">Сохранить</button>
+            </div>
+          </div>
+
+          <div class="kpi-grid" id="wowKpis"></div>
+
+          <div class="panel">
+            <div class="panel__head"><h2>Подписчики</h2></div>
+            <div class="seg" id="wowMemberTabs" style="margin-bottom:10px">
+              <button class="is-active" data-wowstatus="pending_payment">Ждут подтверждения оплаты</button>
+              <button data-wowstatus="active">Активные</button>
+              <button data-wowstatus="refund_requested">Просят вернуть деньги</button>
+              <button data-wowstatus="all">Все</button>
+            </div>
+            <div class="table-wrap">
+              <table class="table" id="wowMembersTable">
+                <thead><tr><th>Создана</th><th>Покупатель</th><th>Телефон</th><th>Статус</th><th>Действует до</th><th>Сэкономил</th><th></th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel__head"><h2>Товары со скидкой «Вау»</h2></div>
+            <p class="panel__hint" style="margin-top:0">Поставьте галочку — у товара в приложении появится кнопка «Купить со скидкой Вау». Снимите или дождитесь даты окончания — кнопка исчезнет. «Останется» — цена минус себестоимость и упаковка (без доставки и рекламы). Если после скидки товар уходит в минус, галочка не поставится.</p>
+            <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;margin-bottom:10px">
+              <label>Скидка, %<br><input type="number" id="wowNewPct" min="1" max="30" step="1" style="width:80px"></label>
+              <label>Действует до (включительно)<br><input type="date" id="wowNewUntil"></label>
+              <span class="panel__hint" style="margin:0">Пусто — пока не снимете галочку.</span>
+              <span style="flex:1"></span>
+              <div class="seg" id="wowProdFilter" style="margin:0">
+                <button class="is-active" data-wowfilter="all">Все</button>
+                <button data-wowfilter="on">Со скидкой Вау</button>
+              </div>
+              <input type="search" id="wowProdSearch" placeholder="Поиск по названию или артикулу" style="width:240px">
+            </div>
+            <div style="display:flex;gap:8px;margin-bottom:10px">
+              <button class="btn" id="wowBulkOn">Включить Вау выбранным</button>
+              <button class="btn" id="wowBulkOff">Снять Вау с выбранных</button>
+              <span id="wowSelInfo" class="panel__hint" style="margin:0;align-self:center"></span>
+            </div>
+            <div class="table-wrap">
+              <table class="table" id="wowProductsTable">
+                <thead><tr><th><input type="checkbox" id="wowSelAll"></th><th>Вау</th><th>Товар</th><th>Цена</th><th>Цена Вау</th><th>Себест.</th><th>Останется без скидки</th><th>Останется со скидкой</th><th>Маржа</th><th>До</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
         <div id="mymarketReturnsTab" hidden>
           <div class="panel">
             <p class="panel__hint" style="margin-top:0">Клик по строке — причина, фото, адрес, телефон. Вскрытая/пользованная косметика — повод отказать, но решение принимает админ вручную, не автоматически.</p>

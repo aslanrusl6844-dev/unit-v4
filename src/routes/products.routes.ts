@@ -84,6 +84,9 @@ const productSchema = z.object({
   details: detailsSchema.optional().nullable(),
   videos: videosSchema.optional(), // до 3 видео товара (URL)
   shopCost: z.number().nonnegative().optional().nullable(),
+  // Подписка «Вау»: % скидки для подписчиков (1..30), null — без метки «Вау».
+  wowPercent: z.number().int().min(1).max(30).optional().nullable(),
+  wowUntil: z.coerce.date().optional().nullable(),
   banner: z.boolean().optional(),
   bannerTitle: z.string().optional().nullable(),
   bannerSubtitle: z.string().optional().nullable(),

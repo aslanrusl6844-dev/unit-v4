@@ -7,7 +7,8 @@ import { z } from 'zod';
 import JSZip from 'jszip';
 import { prisma } from '../db/prisma';
 import { logger } from '../utils/logger';
-import { markShopOrderAsPaid, normalizePhone } from './shop.routes';
+import { markShopOrderAsPaid, normalizePhone, notifyWowActivated } from './shop.routes';
+import { getWowSettings, membershipSavings, effectiveStatus, addOneMonth, wowPriceOf, normalizeWowPercent, pushToCustomer, WOW_MIN_PERCENT, WOW_MAX_PERCENT } from '../services/wow.service';
 import { getSearchAnalytics, getConversionAnalytics, getSeasonalityAnalytics } from '../services/shopAnalytics.service';
 import { getGeoAnalytics } from '../services/shopGeo.service';
 import { generateWaybillPdf, WaybillOrderItem } from '../services/waybill.service';
@@ -2144,5 +2145,241 @@ shopAdminRouter.delete('/catalog-types/:id', async (req, res) => {
   } catch (err: any) {
     logger.error({ err }, '[Shop Admin] DELETE /catalog-types/:id упал');
     res.status(500).json({ error: 'Не удалось удалить тип', details: String(err?.message ?? err) });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Подписка «Вау» — админка: настройки, подписчики (подтвердить оплату / вернуть
+// деньги), товары со скидкой «Вау» с проверкой, что после скидки не в минус.
+// ---------------------------------------------------------------------------
+
+const wowSettingsSchema = z.object({
+  enabled: z.boolean().optional(),
+  monthlyPrice: z.number().positive().max(1_000_000).optional(),
+  defaultPercent: z.number().int().min(WOW_MIN_PERCENT).max(WOW_MAX_PERCENT).optional(),
+  payInstructions: z.string().max(1000).optional().nullable(),
+});
+
+shopAdminRouter.get('/wow/settings', async (_req, res) => {
+  res.json(await getWowSettings());
+});
+
+shopAdminRouter.put('/wow/settings', async (req, res) => {
+  const parsed = wowSettingsSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные настройки', details: parsed.error.flatten() });
+  try {
+    const d = parsed.data;
+    const data = {
+      ...(d.enabled !== undefined ? { enabled: d.enabled } : {}),
+      ...(d.monthlyPrice !== undefined ? { monthlyPrice: Math.round(d.monthlyPrice) } : {}),
+      ...(d.defaultPercent !== undefined ? { defaultPercent: d.defaultPercent } : {}),
+      ...(d.payInstructions !== undefined ? { payInstructions: d.payInstructions?.trim() || null } : {}),
+    };
+    await prisma.wowSettings.upsert({ where: { id: 'main' }, update: data, create: { id: 'main', ...data } });
+    res.json(await getWowSettings());
+  } catch (err: any) {
+    logger.error({ err }, '[Wow admin] PUT /wow/settings упал');
+    res.status(500).json({ error: 'Не удалось сохранить настройки', details: String(err?.message ?? err) });
+  }
+});
+
+/** Подписчики: GET /wow/members?status=pending_payment|active|refund_requested|all */
+shopAdminRouter.get('/wow/members', async (req, res) => {
+  try {
+    const want = String(req.query.status ?? 'all');
+    const rows: Array<{ id: string; phone: string; customerName: string | null; status: string; price: number; createdAt: Date; paidAt: Date | null; startsAt: Date | null; endsAt: Date | null; cancelRequested: boolean; refundedAt: Date | null }> =
+      await prisma.wowMembership.findMany({ orderBy: { createdAt: 'desc' }, take: 500 });
+    const savings = await membershipSavings(rows.map((r) => r.id));
+    const list = rows
+      .map((r) => {
+        const s = savings.get(r.id)!;
+        return { ...r, status: effectiveStatus(r), savedTotal: Math.round(s.saved), discountedOrders: s.orders };
+      })
+      .filter((r) => want === 'all' || r.status === want);
+    const now = Date.now();
+    const monthAgo = now - 30 * 86400_000;
+    const summary = {
+      active: list.filter((r) => r.status === 'active').length,
+      pending: rows.filter((r) => effectiveStatus(r) === 'pending_payment').length,
+      refundRequested: rows.filter((r) => effectiveStatus(r) === 'refund_requested').length,
+      // Деньги за подписки за 30 дней (подтверждённые, без возвращённых) и сколько скидки отдали за то же время.
+      paid30d: Math.round(rows.filter((r) => r.paidAt && r.paidAt.getTime() >= monthAgo && r.status !== 'refunded').reduce((a, r) => a + r.price, 0)),
+      discount30d: 0,
+    };
+    const disc: Array<{ wowDiscount: number }> = await prisma.shopOrder.findMany({
+      where: { wowDiscount: { gt: 0 }, status: { not: 'cancelled' }, createdAt: { gte: new Date(monthAgo) } },
+      select: { wowDiscount: true },
+    });
+    summary.discount30d = Math.round(disc.reduce((a, o) => a + o.wowDiscount, 0));
+    res.json({ summary, members: list });
+  } catch (err: any) {
+    logger.error({ err }, '[Wow admin] GET /wow/members упал');
+    res.status(500).json({ error: 'Не удалось получить подписчиков', details: String(err?.message ?? err) });
+  }
+});
+
+/** «Подтвердить оплату»: подписка начинает работать на 1 месяц (продление — с конца текущей). */
+shopAdminRouter.post('/wow/members/:id/confirm', async (req, res) => {
+  try {
+    const m = await prisma.wowMembership.findUnique({ where: { id: req.params.id } });
+    if (!m) return res.status(404).json({ error: 'Подписка не найдена' });
+    if (m.status !== 'pending_payment') return res.status(409).json({ error: `Подписка уже в статусе «${m.status}»` });
+    const now = new Date();
+    const prev = await prisma.wowMembership.findFirst({
+      where: { phone: m.phone, status: 'active', endsAt: { gt: now }, id: { not: m.id } },
+      orderBy: { endsAt: 'desc' },
+    });
+    const startsAt = prev?.endsAt ?? now;
+    const endsAt = addOneMonth(startsAt);
+    const updated = await prisma.wowMembership.update({
+      where: { id: m.id },
+      data: { status: 'active', paidAt: now, startsAt, endsAt },
+    });
+    await notifyWowActivated(m.phone, endsAt);
+    res.json(updated);
+  } catch (err: any) {
+    logger.error({ err }, '[Wow admin] confirm упал');
+    res.status(500).json({ error: 'Не удалось подтвердить оплату', details: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * «Деньги вернули»: только если по подписке не было покупок со скидкой (правило возврата).
+ * force=true — вернуть всё равно (решение админа, например по жалобе).
+ */
+shopAdminRouter.post('/wow/members/:id/refund', async (req, res) => {
+  try {
+    const m = await prisma.wowMembership.findUnique({ where: { id: req.params.id } });
+    if (!m) return res.status(404).json({ error: 'Подписка не найдена' });
+    if (!['active', 'refund_requested'].includes(m.status)) return res.status(409).json({ error: `Вернуть нельзя: статус «${m.status}»` });
+    const s = (await membershipSavings([m.id])).get(m.id)!;
+    if (s.orders > 0 && req.body?.force !== true) {
+      return res.status(409).json({ error: `По подписке было ${s.orders} заказ(а) со скидкой на ${Math.round(s.saved)} ₸ — по правилам деньги не возвращаются`, reason: 'has_orders' });
+    }
+    const updated = await prisma.wowMembership.update({
+      where: { id: m.id },
+      data: { status: 'refunded', refundedAt: new Date(), cancelledAt: m.cancelledAt ?? new Date(), cancelRequested: true },
+    });
+    await pushToCustomer(m.phone, 'Подписка Вау отменена', `Мы вернули ${Math.round(m.price)} ₸ за подписку.`);
+    res.json(updated);
+  } catch (err: any) {
+    logger.error({ err }, '[Wow admin] refund упал');
+    res.status(500).json({ error: 'Не удалось оформить возврат', details: String(err?.message ?? err) });
+  }
+});
+
+/** Отменить подписку, которая ждёт оплаты (например, деньги так и не пришли). */
+shopAdminRouter.post('/wow/members/:id/cancel', async (req, res) => {
+  try {
+    const m = await prisma.wowMembership.findUnique({ where: { id: req.params.id } });
+    if (!m) return res.status(404).json({ error: 'Подписка не найдена' });
+    if (m.status !== 'pending_payment') return res.status(409).json({ error: 'Отменить можно только подписку, которая ждёт оплаты. Для оплаченной — «Вернуть деньги»' });
+    const updated = await prisma.wowMembership.update({ where: { id: m.id }, data: { status: 'cancelled', cancelledAt: new Date() } });
+    res.json(updated);
+  } catch (err: any) {
+    logger.error({ err }, '[Wow admin] cancel упал');
+    res.status(500).json({ error: 'Не удалось отменить', details: String(err?.message ?? err) });
+  }
+});
+
+type WowProductRow = {
+  id: string; name: string; shopArticle: string | null; shopPrice: number | null; shopCost: number | null; costPrice: number;
+  packagingCost: number; wowPercent: number | null; wowUntil: Date | null; images?: string | null; category?: string | null;
+};
+const WOW_PRODUCT_SELECT = {
+  id: true, name: true, shopArticle: true, shopPrice: true, shopCost: true, costPrice: true, packagingCost: true,
+  wowPercent: true, wowUntil: true, images: true, category: true,
+} as const;
+
+/**
+ * Юнит-экономика товара для «Вау»: сколько остаётся с одной продажи без скидки и со скидкой.
+ * Себестоимость = закуп для витрины (shopCost, иначе общий costPrice) + упаковка. Комиссии площадки
+ * у своего приложения нет; доставку/рекламу тут не вычитаем (они не зависят от скидки).
+ */
+function wowMarginOf(p: WowProductRow, percent: number) {
+  const price = p.shopPrice ?? 0;
+  const wowPrice = wowPriceOf(price, percent);
+  const cost = (p.shopCost ?? p.costPrice ?? 0) + (p.packagingCost ?? 0);
+  const profit = Math.round(wowPrice - cost);
+  return {
+    wowPrice, cost: Math.round(cost), costKnown: cost > 0,
+    profitBefore: Math.round(price - cost),
+    profit,
+    discountPerUnit: Math.round(price - wowPrice),
+    marginPct: wowPrice > 0 ? Math.round((profit / wowPrice) * 1000) / 10 : 0,
+  };
+}
+
+/** Товары витрины для раздела «Вау»: галочка, %, срок, цена, цена со скидкой, прибыль до/после скидки. */
+shopAdminRouter.get('/wow/products', async (_req, res) => {
+  try {
+    const settings = await getWowSettings();
+    const rows: WowProductRow[] = await prisma.product.findMany({
+      where: { shopActive: true, shopArchived: false, shopPrice: { not: null } },
+      select: WOW_PRODUCT_SELECT,
+      orderBy: { shopPrice: 'desc' },
+    });
+    const now = Date.now();
+    res.json(rows.map((p) => {
+      const pct = p.wowPercent ?? settings.defaultPercent;
+      let image: string | null = null;
+      try { image = (p.images ? JSON.parse(p.images) : [])[0] ?? null; } catch { image = null; }
+      const expired = !!(p.wowPercent && p.wowUntil && p.wowUntil.getTime() <= now);
+      return {
+        id: p.id, name: p.name, article: p.shopArticle, category: p.category, image, price: p.shopPrice,
+        percent: pct, until: p.wowUntil, enabled: !!p.wowPercent && !expired, expired,
+        ...wowMarginOf(p, pct),
+      };
+    }));
+  } catch (err: any) {
+    logger.error({ err }, '[Wow admin] GET /wow/products упал');
+    res.status(500).json({ error: 'Не удалось получить товары', details: String(err?.message ?? err) });
+  }
+});
+
+const wowProductsSchema = z.object({
+  ids: z.array(z.string().min(1)).min(1).max(2000),
+  // null или 0 — снять галочку «Вау».
+  percent: z.number().int().min(0).max(WOW_MAX_PERCENT).nullable(),
+  // До какой даты действует (ГГГГ-ММ-ДД, включительно). null — пока не снимут вручную.
+  until: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+});
+
+/** Конец дня по Алматы (UTC+5) для даты ГГГГ-ММ-ДД: скидка действует весь последний день. */
+function endOfAlmatyDay(ymd: string): Date {
+  return new Date(Date.parse(`${ymd}T23:59:59.999+05:00`));
+}
+
+/**
+ * Поставить/снять галочку «Вау» на выбранных товарах. Если после скидки цена ниже себестоимости —
+ * товар НЕ включается (возвращается в skipped), чтобы не продавать в минус.
+ */
+shopAdminRouter.post('/wow/products', async (req, res) => {
+  const parsed = wowProductsSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+  try {
+    const percent = normalizeWowPercent(parsed.data.percent);
+    const until = percent && parsed.data.until ? endOfAlmatyDay(parsed.data.until) : null;
+    if (until && until.getTime() <= Date.now()) return res.status(400).json({ error: 'Дата окончания уже прошла' });
+    const rows: WowProductRow[] = await prisma.product.findMany({ where: { id: { in: parsed.data.ids } }, select: WOW_PRODUCT_SELECT });
+    const okIds: string[] = [];
+    const skipped: Array<{ id: string; name: string; reason: string }> = [];
+    for (const p of rows) {
+      if (percent === null) { okIds.push(p.id); continue; }
+      if (p.shopPrice == null) { skipped.push({ id: p.id, name: p.name, reason: 'нет цены на витрине' }); continue; }
+      const m = wowMarginOf(p, percent);
+      if (m.costKnown && m.profit < 0) {
+        skipped.push({ id: p.id, name: p.name, reason: `после скидки ${m.wowPrice} ₸ меньше себестоимости ${m.cost} ₸` });
+        continue;
+      }
+      okIds.push(p.id);
+    }
+    if (okIds.length) {
+      await prisma.product.updateMany({ where: { id: { in: okIds } }, data: { wowPercent: percent, wowUntil: percent ? until : null } });
+    }
+    res.json({ updated: okIds.length, skipped });
+  } catch (err: any) {
+    logger.error({ err }, '[Wow admin] POST /wow/products упал');
+    res.status(500).json({ error: 'Не удалось сохранить скидки', details: String(err?.message ?? err) });
   }
 });
