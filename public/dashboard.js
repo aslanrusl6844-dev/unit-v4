@@ -4323,7 +4323,7 @@ async function mmUploadError(res) {
 }
 
 /**
- * Прямая загрузка в Cloudflare R2 (мимо Vercel, видео до 50 МБ): сервер выдаёт одноразовую
+ * Прямая загрузка ВИДЕО в Cloudflare R2 (мимо Vercel, до 100 МБ): сервер выдаёт одноразовую
  * ссылку, браузер кладёт файл PUT-запросом. null — R2 на сервере не настроен (грузим по-старому).
  */
 async function mmUploadDirect(file, purpose, onProgress) {
@@ -4372,15 +4372,19 @@ async function uploadMyMarketFile(file, opts) {
     throw new Error(`Формат ${file.type || '(неизвестен)'} не поддерживается — нужен JPEG/PNG/WEBP`);
   }
 
-  // 1) Сначала напрямую в R2 — там видео до 50 МБ, фото до 10 МБ (размер проверит сервер).
-  const purpose = banner ? 'banner' : video ? 'video' : 'image';
-  const directUrl = await mmUploadDirect(file, purpose, onProgress);
-  if (directUrl) return directUrl;
+  // 1) Видео — напрямую в Cloudflare R2, до 100 МБ (размер проверит сервер).
+  if (file.type.startsWith('video/')) {
+    const directUrl = await mmUploadDirect(file, banner ? 'banner' : 'video', onProgress);
+    if (directUrl) return directUrl;
+  }
 
-  // 2) R2 не настроен — по-старому через сервер (Vercel Blob), с прежними пределами.
-  const maxBytes = video || banner ? MM_BANNER_MAX_BYTES : MM_IMAGE_MAX_MB * 1024 * 1024;
-  if (file.size > maxBytes) {
-    throw new Error(`Файл слишком большой: ${(file.size / 1e6).toFixed(1)} МБ, максимум ${(maxBytes / 1e6).toFixed(1)} МБ. Для больших видео подключите Cloudflare R2.`);
+  // 2) Фото (и видео, если R2 не настроен) — как раньше: через сервер, с прежними пределами.
+  if (video || banner) {
+    if (file.size > MM_BANNER_MAX_BYTES) {
+      throw new Error(`Файл слишком большой: ${(file.size / 1e6).toFixed(1)} МБ, максимум ${MM_BANNER_MAX_BYTES / 1e6} МБ`);
+    }
+  } else if (file.size > MM_IMAGE_MAX_MB * 1024 * 1024) {
+    throw new Error(`Файл слишком большой: ${(file.size / 1024 / 1024).toFixed(1)} МБ, максимум ${MM_IMAGE_MAX_MB} МБ`);
   }
   const dataBase64 = await readFileAsBase64(file);
   const res = await fetch('/api/shop/admin/upload', {

@@ -12,8 +12,8 @@ process.env.BLOB_READ_WRITE_TOKEN = 'stub-token';
 process.env.R2_ACCOUNT_ID = 'acc123';
 process.env.R2_ACCESS_KEY_ID = 'key';
 process.env.R2_SECRET_ACCESS_KEY = 'secret';
-process.env.R2_BUCKET_NAME = 'mymarket-videos';
-process.env.R2_PUBLIC_URL = 'https://pub-test.r2.dev/';
+// R2_BUCKET_NAME не задан — по умолчанию mymarket-videos. R2_PUBLIC_URL без https:// — как в Vercel.
+process.env.R2_PUBLIC_URL = 'pub-test.r2.dev';
 
 type Row = Record<string, any>;
 const sent: Row[] = [];
@@ -76,49 +76,54 @@ before(async () => {
 after(() => new Promise<void>((r) => server.close(() => r())));
 beforeEach(() => { sent.length = 0; blobPuts.length = 0; r2Fail = null; });
 
-describe('Cloudflare R2', () => {
-  test('upload-info: R2 включён, видео до 50 МБ', async () => {
+describe('Cloudflare R2 — загрузка видео', () => {
+  test('upload-info: видео — в R2 до 100 МБ, фото — как раньше в Blob', async () => {
     const r = await call('GET', '/api/shop/admin/upload-info');
-    assert.equal(r.json.storage, 'r2');
-    assert.equal(r.json.direct, true);
-    assert.equal(r.json.maxVideoBytes, 50 * MB);
+    assert.equal(r.json.videoStorage, 'r2');
+    assert.equal(r.json.imageStorage, 'blob');
+    assert.equal(r.json.maxVideoBytes, 100 * MB);
   });
 
-  test('видео 30 МБ: ссылка для прямой загрузки и публичный адрес R2_PUBLIC_URL/путь', async () => {
-    const r = await call('POST', '/api/shop/admin/upload-url', { purpose: 'video', filename: 'Мой ролик.mp4', contentType: 'video/mp4', size: 30 * MB });
+  test('видео 90 МБ: ссылка для загрузки в бакет mymarket-videos и публичная ссылка https://pub…/имя.mp4', async () => {
+    const r = await call('POST', '/api/shop/admin/upload-url', { purpose: 'video', filename: 'Мой ролик.mp4', contentType: 'video/mp4', size: 90 * MB });
     assert.equal(r.status, 200);
     assert.equal(r.json.method, 'PUT');
     assert.equal(r.json.headers['Content-Type'], 'video/mp4');
-    assert.match(r.json.uploadUrl, /^https:\/\/acc123\.r2\.cloudflarestorage\.com\/mymarket-videos\/shop\/video\//);
-    assert.match(r.json.url, /^https:\/\/pub-test\.r2\.dev\/shop\/video\/\d+-[a-z0-9]+-[\w.-]+\.mp4$/);
-    assert.ok(!r.json.url.includes('//shop'), 'без двойного слэша после R2_PUBLIC_URL');
+    assert.match(r.json.uploadUrl, /^https:\/\/acc123\.r2\.cloudflarestorage\.com\/mymarket-videos\/\d+-/);
+    assert.match(r.json.url, /^https:\/\/pub-test\.r2\.dev\/\d+-[a-z0-9]+-[\w.-]+\.mp4$/);
   });
 
-  test('слишком большой файл и неверный формат — отказ до выдачи ссылки', async () => {
-    const big = await call('POST', '/api/shop/admin/upload-url', { purpose: 'video', filename: 'a.mp4', contentType: 'video/mp4', size: 51 * MB });
+  test('больше 100 МБ, не видео и неверный формат — отказ', async () => {
+    const big = await call('POST', '/api/shop/admin/upload-url', { purpose: 'video', filename: 'a.mp4', contentType: 'video/mp4', size: 101 * MB });
     assert.equal(big.status, 413);
-    assert.match(big.json.error, /максимум 50\.0 МБ/);
-    const img = await call('POST', '/api/shop/admin/upload-url', { purpose: 'image', filename: 'a.jpg', contentType: 'image/jpeg', size: 11 * MB });
-    assert.equal(img.status, 413);
+    assert.match(big.json.error, /максимум 100\.0 МБ/);
+    const img = await call('POST', '/api/shop/admin/upload-url', { purpose: 'image', filename: 'a.jpg', contentType: 'image/jpeg', size: MB });
+    assert.equal(img.status, 400);
+    assert.equal(img.json.reason, 'not_video');
     const bad = await call('POST', '/api/shop/admin/upload-url', { purpose: 'video', filename: 'a.mov', contentType: 'video/quicktime', size: MB });
     assert.equal(bad.status, 400);
   });
 
-  test('старый /upload тоже сохраняет в R2, а не в Blob', async () => {
-    const r = await call('POST', '/api/shop/admin/upload', { kind: 'image', filename: 'a.jpg', contentType: 'image/jpeg', dataBase64: Buffer.alloc(1000, 1).toString('base64') });
-    assert.equal(r.status, 200);
-    assert.match(r.json.url, /^https:\/\/pub-test\.r2\.dev\/shop\/image\//);
+  test('маленькое видео через старый /upload — тоже в R2; фото — по-прежнему в Blob', async () => {
+    const v = await call('POST', '/api/shop/admin/upload', { kind: 'image', purpose: 'video', filename: 'a.mp4', contentType: 'video/mp4', dataBase64: Buffer.alloc(1000, 1).toString('base64') });
+    assert.equal(v.status, 200);
+    assert.match(v.json.url, /^https:\/\/pub-test\.r2\.dev\/\d+-/);
     assert.equal(sent.length, 1);
     assert.equal(sent[0].Bucket, 'mymarket-videos');
-    assert.equal(sent[0].ContentType, 'image/jpeg');
+    assert.equal(sent[0].ContentType, 'video/mp4');
     assert.equal(sent[0].endpoint, 'https://acc123.r2.cloudflarestorage.com');
-    assert.equal(blobPuts.length, 0);
+
+    const p = await call('POST', '/api/shop/admin/upload', { kind: 'image', filename: 'a.jpg', contentType: 'image/jpeg', dataBase64: Buffer.alloc(1000, 1).toString('base64') });
+    assert.equal(p.status, 200);
+    assert.match(p.json.url, /^https:\/\/blob\.example\.com\/shop\/image\/\d+-a\.jpg$/);
+    assert.equal(sent.length, 1);
+    assert.equal(blobPuts.length, 1);
   });
 
-  test('R2 недоступен — 503 и понятный текст', async () => {
+  test('R2 недоступен — понятный текст ошибки', async () => {
     r2Fail = 'InvalidAccessKeyId';
-    const r = await call('POST', '/api/shop/admin/upload', { kind: 'image', filename: 'a.jpg', contentType: 'image/jpeg', dataBase64: Buffer.alloc(10, 1).toString('base64') });
-    assert.equal(r.status, 503);
+    const r = await call('POST', '/api/shop/admin/upload', { kind: 'image', purpose: 'video', filename: 'a.mp4', contentType: 'video/mp4', dataBase64: Buffer.alloc(10, 1).toString('base64') });
+    assert.equal(r.status, 500);
     assert.match(r.json.details, /неверные R2_ACCESS_KEY_ID/);
   });
 });

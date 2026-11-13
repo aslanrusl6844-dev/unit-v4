@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import {
-  activeStorage, buildMediaPath, isR2Configured, presignR2Upload, uploadPublicFile, StorageUnavailableError,
+  activeStorage, isR2Configured, isVideoType, presignR2Upload, uploadPublicFile, StorageUnavailableError,
 } from '../services/mediaStorage.service';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
@@ -60,14 +60,14 @@ shopMediaRouter.get('/orders/:id/waybill', async (req, res) => {
  * приложения). Роут подключён в expressApp.ts ПОД ПУТЁМ /api/shop/admin и РАНЬШЕ
  * основного /api/shop (у которого общий x-app-key) — поэтому та проверка сюда не попадает.
  *
- * Два способа:
- *  1. POST /upload-url — для любых размеров, когда настроен Cloudflare R2: сервер выдаёт
- *     одноразовую ссылку, браузер кладёт файл прямо в R2 (видео до 50 МБ). Через Vercel
- *     файл не идёт, поэтому его предел ~4.5 МБ на тело запроса не мешает.
- *  2. POST /upload — старый путь: файл в base64 через сервер. Остаётся для небольших
- *     файлов и как запасной, если R2 не настроен (тогда — Vercel Blob). Здесь предел
- *     прежний (~3 МБ): Vercel режет тело запроса ДО нашего кода, и никакой multipart
- *     или лимит express.json() этого не обходит.
+ * ВИДЕО (MP4/WEBM) — в Cloudflare R2, бакет mymarket-videos:
+ *  1. POST /upload-url — сервер выдаёт одноразовую ссылку, браузер кладёт видео (до 100 МБ)
+ *     прямо в R2. Через Vercel файл не идёт, поэтому его предел ~4.5 МБ не мешает
+ *     (этот предел Vercel ставит ДО нашего кода — multipart или express.json() его не обходят).
+ *     В базу сохраняется публичная ссылка `${R2_PUBLIC_URL}/<имя-файла>.mp4`.
+ * ФОТО и всё остальное — без изменений:
+ *  2. POST /upload — файл в base64 через сервер в Vercel Blob (до ~3 МБ). Маленькое видео,
+ *     присланное сюда, при настроенном R2 тоже уходит в R2.
  */
 
 const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
@@ -84,9 +84,8 @@ export const MAX_BANNER_BYTES = 3_000_000;
 /** Видео товара и витрины (purpose='video'): только MP4/WEBM. */
 export const VIDEO_ALLOWED_TYPES = ['video/mp4', 'video/webm'];
 
-/** Пределы при прямой загрузке в R2 (мимо Vercel). */
-export const DIRECT_MAX_VIDEO_BYTES = 50 * 1024 * 1024;
-export const DIRECT_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+/** Предел видео при прямой загрузке в R2 (мимо Vercel). */
+export const DIRECT_MAX_VIDEO_BYTES = 100 * 1024 * 1024;
 
 type Purpose = 'image' | 'banner' | 'video';
 
@@ -105,21 +104,17 @@ function rulesFor(purpose: Purpose) {
   };
 }
 
-/** Предел прямой загрузки: видео (и видео-баннер) — 50 МБ, картинки — 10 МБ. */
-function directMax(contentType: string): number {
-  return contentType.startsWith('video/') ? DIRECT_MAX_VIDEO_BYTES : DIRECT_MAX_IMAGE_BYTES;
-}
-
 const mb = (n: number) => (n / 1024 / 1024).toFixed(1);
 
-/** Куда сейчас идут загрузки и какие пределы — админка показывает подсказки по этому ответу. */
+/** Куда сейчас идут видео и фото и какие пределы — для проверки настройки. */
 shopMediaRouter.get('/upload-info', (_req, res) => {
   const r2 = isR2Configured();
   res.json({
-    storage: activeStorage(),
-    direct: r2,
+    videoStorage: activeStorage('video/mp4'),
+    imageStorage: activeStorage('image/jpeg'),
+    directVideo: r2,
     maxVideoBytes: r2 ? DIRECT_MAX_VIDEO_BYTES : MAX_BANNER_BYTES,
-    maxImageBytes: r2 ? DIRECT_MAX_IMAGE_BYTES : MAX_IMAGE_BYTES,
+    maxImageBytes: MAX_IMAGE_BYTES,
   });
 });
 
@@ -131,10 +126,11 @@ const uploadUrlSchema = z.object({
 });
 
 /**
- * Ссылка для прямой загрузки в R2. Ответ: { uploadUrl, url, method: 'PUT', headers }.
+ * ЗАГРУЗКА ВИДЕО: ссылка для прямой загрузки в R2. Ответ: { uploadUrl, url, method: 'PUT', headers }.
  * Браузер делает PUT на uploadUrl с телом-файлом и заголовком Content-Type, потом
- * сохраняет url (публичная ссылка) в товар/баннер как раньше.
- * 501 { reason: 'no_r2' } — R2 не настроен: админка грузит по-старому через /upload.
+ * сохраняет url (публичная ссылка R2) в товар/витрину/баннер как раньше.
+ * Только видео (MP4/WEBM), до 100 МБ. 501 { reason: 'no_r2' } — R2 не настроен:
+ * админка грузит по-старому через /upload.
  */
 shopMediaRouter.post('/upload-url', async (req, res) => {
   const parsed = uploadUrlSchema.safeParse(req.body);
@@ -145,13 +141,14 @@ shopMediaRouter.post('/upload-url', async (req, res) => {
     return res.status(501).json({ error: 'Cloudflare R2 не настроен', reason: 'no_r2', details: 'Загрузка пойдёт по-старому через сервер (до ~3 МБ).' });
   }
   if (!rules.allowedTypes.includes(contentType)) return res.status(400).json({ error: rules.formatError });
-  const max = directMax(contentType);
-  if (size > max) {
-    return res.status(413).json({ error: `Файл слишком большой: ${mb(size)} МБ, максимум ${mb(max)} МБ` });
+  if (!isVideoType(contentType)) {
+    return res.status(400).json({ error: 'Прямая загрузка — только для видео (MP4/WEBM). Фото загружаются как раньше.', reason: 'not_video' });
+  }
+  if (size > DIRECT_MAX_VIDEO_BYTES) {
+    return res.status(413).json({ error: `Файл слишком большой: ${mb(size)} МБ, максимум ${mb(DIRECT_MAX_VIDEO_BYTES)} МБ` });
   }
   try {
-    const pathname = buildMediaPath(rules.folder, filename);
-    const signed = await presignR2Upload(pathname, contentType);
+    const signed = await presignR2Upload(filename, contentType);
     res.json({ ...signed, method: 'PUT', headers: { 'Content-Type': contentType }, storage: 'r2' });
   } catch (err: any) {
     logger.error({ err }, '[Shop Media] не удалось выдать ссылку для загрузки в R2');
@@ -167,7 +164,7 @@ const uploadSchema = z.object({
   dataBase64: z.string().min(1),
 });
 
-/** Старый путь: файл в base64 через сервер (до ~3 МБ). Сохраняет в R2, если он настроен, иначе в Blob. */
+/** Старый путь: файл в base64 через сервер (до ~3 МБ). Фото — в Blob; видео — в R2, если он настроен. */
 shopMediaRouter.post('/upload', async (req, res) => {
   const parsed = uploadSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -178,7 +175,7 @@ shopMediaRouter.post('/upload', async (req, res) => {
   const isBanner = parsed.data.purpose === 'banner' || parsed.data.purpose === 'video';
 
   // Проверяем ДО декодирования: файл всё равно некуда сохранить.
-  if (activeStorage() === 'none') {
+  if (activeStorage(contentType) === 'none') {
     return res.status(501).json({ error: 'добавьте Blob', details: 'Не заданы ни R2_* (Cloudflare R2), ни BLOB_READ_WRITE_TOKEN — загрузка файлом недоступна, используйте поле URL.' });
   }
 
@@ -198,18 +195,18 @@ shopMediaRouter.post('/upload', async (req, res) => {
       error: isBanner
         ? `Файл слишком большой: ${(buffer.length / 1e6).toFixed(1)} МБ, максимум ${rules.viaServerMax / 1e6} МБ`
         : `Файл слишком большой: ${mb(buffer.length)} МБ, максимум ${mb(rules.viaServerMax)} МБ`,
-      details: isR2Configured()
-        ? 'Большие файлы загружаются напрямую в Cloudflare R2 — обновите страницу админки.'
-        : 'Через сервер больше не пройдёт (предел Vercel ~4.5 МБ). Для видео до 50 МБ подключите Cloudflare R2.',
+      details: isR2Configured() && isVideoType(contentType)
+        ? 'Видео загружаются напрямую в Cloudflare R2 (до 100 МБ) — обновите страницу админки.'
+        : 'Через сервер больше не пройдёт (предел Vercel ~4.5 МБ).',
     });
   }
 
   try {
-    const { url } = await uploadPublicFile(buildMediaPath(rules.folder, filename), buffer, contentType);
+    const { url } = await uploadPublicFile(rules.folder, filename, buffer, contentType);
     res.json({ url });
   } catch (err: any) {
     logger.error({ err }, '[Shop Media] Ошибка загрузки файла');
-    res.status(err instanceof StorageUnavailableError ? 503 : 500).json({
+    res.status(500).json({
       error: 'Не удалось загрузить файл в хранилище',
       details: String(err?.message ?? err),
     });

@@ -14,6 +14,13 @@ import { z } from 'zod';
  * дефолта (например, базового URL Kaspi API) получится '', из-за чего
  * запросы к API падают с "Invalid URL".
  */
+/** Публичный адрес бакета R2: добавляет https://, если его нет, и убирает «/» в конце. */
+export function normalizePublicUrl(raw: string): string {
+  const v = raw.trim().replace(/\/+$/, '');
+  if (!v) return '';
+  return /^https?:\/\//i.test(v) ? v : `https://${v}`;
+}
+
 function cleanEnvString(value: unknown): unknown {
   if (typeof value !== 'string') return value;
   const trimmed = value.trim();
@@ -182,8 +189,10 @@ export const env = {
     accountId: safeData.R2_ACCOUNT_ID ?? '',
     accessKeyId: safeData.R2_ACCESS_KEY_ID ?? '',
     secretAccessKey: safeData.R2_SECRET_ACCESS_KEY ?? '',
-    bucket: safeData.R2_BUCKET_NAME ?? '',
-    publicUrl: (safeData.R2_PUBLIC_URL ?? '').replace(/\/+$/, ''),
+    // Бакет для видео; переменную можно не задавать — по умолчанию mymarket-videos.
+    bucket: safeData.R2_BUCKET_NAME || 'mymarket-videos',
+    // «pub-xxx.r2.dev» без https:// тоже принимаем; хвостовой «/» убираем.
+    publicUrl: normalizePublicUrl(safeData.R2_PUBLIC_URL ?? ''),
   },
   smsProvider: safeData.SMS_PROVIDER ?? 'smsc',
   smsApiKey: safeData.SMS_API_KEY ?? '',
