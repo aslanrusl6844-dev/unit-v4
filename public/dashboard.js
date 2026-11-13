@@ -4475,6 +4475,53 @@ async function mmUploadDirect(file, purpose, onProgress) {
 
 let mmLastPct = 0;
 
+const MM_VIDEO_CHUNK = 4 * 1000 * 1000; // как VIDEO_CHUNK_BYTES на сервере (предел Vercel ~4.5 МБ)
+const MM_VIDEO_MAX_BYTES = 100 * 1024 * 1024;
+
+/**
+ * Видео в R2 кусками по 4 МБ через наш сервер: браузер не соединяется с Cloudflare напрямую
+ * (то соединение у части провайдеров рвётся на больших файлах). Упавший кусок — до 5 повторов.
+ * null — R2 на сервере не настроен (тогда грузим старым способом).
+ */
+async function mmUploadVideoChunked(file, onProgress) {
+  if (file.size > MM_VIDEO_MAX_BYTES) {
+    throw new Error(`Файл слишком большой: ${(file.size / 1024 / 1024).toFixed(1)} МБ, максимум 100 МБ`);
+  }
+  const uploadId = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`);
+  const total = Math.max(1, Math.ceil(file.size / MM_VIDEO_CHUNK));
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  for (let i = 0; i < total; i++) {
+    const part = file.slice(i * MM_VIDEO_CHUNK, Math.min(file.size, (i + 1) * MM_VIDEO_CHUNK));
+    let lastErr = null;
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      try {
+        const res = await fetch(`/api/shop/admin/video-chunk?uploadId=${encodeURIComponent(uploadId)}&index=${i}`, {
+          method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: part,
+        });
+        if (res.status === 501) { const e = await mmUploadError(res); if (e.reason === 'no_r2') return null; throw e; }
+        if (!res.ok) throw await mmUploadError(res);
+        lastErr = null;
+        break;
+      } catch (err) {
+        lastErr = err;
+        if (attempt < 5) await sleep(1000 * attempt);
+      }
+    }
+    if (lastErr) throw new Error(`Видео не загрузилось: часть ${i + 1} из ${total} не дошла после 5 попыток (${lastErr.message}). Проверьте интернет и попробуйте ещё раз.`);
+    if (onProgress) onProgress(Math.min(99, Math.round(((i + 1) / total) * 100)));
+  }
+  if (onProgress) onProgress(99);
+  const res = await fetch('/api/shop/admin/video-complete', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ uploadId, total, filename: file.name, contentType: file.type }),
+  });
+  if (res.status === 501) { const e = await mmUploadError(res); if (e.reason === 'no_r2') return null; throw e; }
+  if (!res.ok) throw await mmUploadError(res);
+  const body = await res.json();
+  if (onProgress) onProgress(100);
+  return body.url;
+}
+
 /** Открывается ли видео по ссылке (метаданные загрузились) — без CORS, через <video>. */
 function mmVideoUrlPlays(url, timeoutMs = 15000) {
   return new Promise((resolve) => {
@@ -4507,10 +4554,10 @@ async function uploadMyMarketFile(file, opts) {
     throw new Error(`Формат ${file.type || '(неизвестен)'} не поддерживается — нужен JPEG/PNG/WEBP`);
   }
 
-  // 1) Видео — напрямую в Cloudflare R2, до 100 МБ (размер проверит сервер).
+  // 1) Видео — в Cloudflare R2 кусками через наш сервер, до 100 МБ (обрыв = повтор одного куска).
   if (file.type.startsWith('video/')) {
-    const directUrl = await mmUploadDirect(file, banner ? 'banner' : 'video', onProgress);
-    if (directUrl) return directUrl;
+    const url = await mmUploadVideoChunked(file, onProgress);
+    if (url) return url;
   }
 
   // 2) Фото (и видео, если R2 не настроен) — как раньше: через сервер, с прежними пределами.

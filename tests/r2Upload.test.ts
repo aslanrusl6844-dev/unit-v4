@@ -30,16 +30,26 @@ function stub(name: string, exports: Row) {
   require.cache[p] = { id: p, filename: p, loaded: true, exports } as any;
 }
 stub('@prisma/client', { PrismaClient: StubPrismaClient, Prisma: {} });
-class PutObjectCommand { constructor(readonly input: Row) {} }
+const store = new Map<string, Buffer>();
+class PutObjectCommand { kind = 'put'; constructor(readonly input: Row) {} }
+class GetObjectCommand { kind = 'get'; constructor(readonly input: Row) {} }
+class DeleteObjectsCommand { kind = 'del'; constructor(readonly input: Row) {} }
 class S3Client {
   constructor(readonly config: Row) {}
-  async send(cmd: PutObjectCommand) {
+  async send(cmd: any) {
     if (r2Fail) { const e: any = new Error(r2Fail); e.name = r2Fail; throw e; }
+    if (cmd.kind === 'get') {
+      const b = store.get(cmd.input.Key);
+      if (!b) { const e: any = new Error('NoSuchKey'); e.name = 'NoSuchKey'; throw e; }
+      return { Body: { transformToByteArray: async () => new Uint8Array(b) } };
+    }
+    if (cmd.kind === 'del') { for (const o of cmd.input.Delete.Objects) store.delete(o.Key); return {}; }
+    store.set(cmd.input.Key, Buffer.from(cmd.input.Body));
     sent.push({ ...cmd.input, endpoint: this.config.endpoint });
     return {};
   }
 }
-stub('@aws-sdk/client-s3', { S3Client, PutObjectCommand });
+stub('@aws-sdk/client-s3', { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectsCommand });
 stub('@aws-sdk/s3-request-presigner', {
   getSignedUrl: async (_c: S3Client, cmd: PutObjectCommand, o: Row) => `https://acc123.r2.cloudflarestorage.com/${cmd.input.Bucket}/${cmd.input.Key}?X-Amz-Expires=${o.expiresIn}&ct=${cmd.input.ContentType}`,
 });
@@ -67,6 +77,15 @@ function call(method: string, path: string, body?: unknown): Promise<{ status: n
   });
 }
 const MB = 1024 * 1024;
+function postRaw(path: string, body: Buffer): Promise<{ status: number; json: any }> {
+  return new Promise((resolve, reject) => {
+    const r = http.request({ host: '127.0.0.1', port, method: 'POST', path, headers: {
+      'content-type': 'application/octet-stream', 'content-length': String(body.length),
+      authorization: 'Basic ' + Buffer.from(`${process.env.ADMIN_USER}:${process.env.ADMIN_PASSWORD}`).toString('base64'),
+    } }, (res) => { const c: Buffer[] = []; res.on('data', (x) => c.push(x)); res.on('end', () => resolve({ status: res.statusCode ?? 0, json: JSON.parse(Buffer.concat(c).toString() || 'null') })); });
+    r.on('error', reject); r.write(body); r.end();
+  });
+}
 
 before(async () => {
   server = http.createServer(app);
@@ -155,5 +174,30 @@ describe('Cloudflare R2 — загрузка видео', () => {
     } finally {
       globalThis.fetch = realFetch;
     }
+  });
+
+  test('видео кусками через сервер: куски склеиваются в один файл в R2, временные удаляются', async () => {
+    const a = Buffer.alloc(4_000_000, 1);
+    const b = Buffer.alloc(1234, 2);
+    assert.equal((await postRaw('/api/shop/admin/video-chunk?uploadId=abcd1234-xyz&index=0', a)).status, 200);
+    assert.equal((await postRaw('/api/shop/admin/video-chunk?uploadId=abcd1234-xyz&index=1', b)).status, 200);
+    const done = await call('POST', '/api/shop/admin/video-complete', { uploadId: 'abcd1234-xyz', total: 2, filename: 'Ролик.mp4', contentType: 'video/mp4' });
+    assert.equal(done.status, 200);
+    assert.equal(done.json.bytes, 4_001_234);
+    assert.match(done.json.url, /^https:\/\/pub-test\.r2\.dev\/\d+-[a-z0-9]+-[\w.-]+\.mp4$/);
+    const key = decodeURIComponent(new URL(done.json.url).pathname.slice(1));
+    const final = store.get(key)!;
+    assert.equal(final.length, 4_001_234);
+    assert.equal(final[0], 1);
+    assert.equal(final[4_001_233], 2);
+    assert.equal([...store.keys()].filter((k) => k.startsWith('tmp-upload/abcd1234-xyz')).length, 0);
+  });
+
+  test('не все куски дошли — понятная ошибка; плохой uploadId — отказ', async () => {
+    await postRaw('/api/shop/admin/video-chunk?uploadId=zzzz9999&index=0', Buffer.alloc(10, 1));
+    const r = await call('POST', '/api/shop/admin/video-complete', { uploadId: 'zzzz9999', total: 3, filename: 'a.mp4', contentType: 'video/mp4' });
+    assert.equal(r.status, 500);
+    assert.match(r.json.error, /Не все части видео дошли/);
+    assert.equal((await postRaw('/api/shop/admin/video-chunk?uploadId=../../x&index=0', Buffer.alloc(10))).status, 400);
   });
 });

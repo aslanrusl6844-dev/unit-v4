@@ -11,7 +11,7 @@
  * express.json() это не обходит. Поэтому для них сервер выдаёт одноразовую подписанную
  * ссылку (presigned PUT), и браузер кладёт файл прямо в R2, минуя Vercel.
  */
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectsCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { put } from '@vercel/blob';
 import { env } from '../config/env';
@@ -137,4 +137,67 @@ function r2ErrorText(err: any): string {
   if (name === 'AccessDenied') return 'нет доступа — у ключа R2 должно быть право Object Read & Write на этот бакет';
   if (err?.code === 'ENOTFOUND' || err?.code === 'ECONNREFUSED' || err?.code === 'ETIMEDOUT') return 'нет связи с Cloudflare R2 (проверьте R2_ACCOUNT_ID)';
   return String(err?.message ?? err);
+}
+
+// ---------------------------------------------------------------------------
+// Загрузка видео кусками через наш сервер (без прямого соединения браузер → Cloudflare).
+// Браузер шлёт куски по ≤4 МБ (предел Vercel на запрос); сервер кладёт каждый во временный
+// объект R2 tmp-upload/<id>/<n>, в конце склеивает в один файл и временные удаляет.
+// Если соединение браузера с Cloudflare рвётся на больших файлах — так видео всё равно доходит,
+// а при обрыве повторяется только один кусок.
+// ---------------------------------------------------------------------------
+
+export const CHUNK_PREFIX = 'tmp-upload';
+const chunkKey = (uploadId: string, index: number) => `${CHUNK_PREFIX}/${uploadId}/${String(index).padStart(4, '0')}`;
+
+export async function r2PutChunk(uploadId: string, index: number, body: Buffer): Promise<void> {
+  if (!isR2Configured()) throw new StorageUnavailableError('R2 не настроен', 'none');
+  try {
+    await r2Client().send(new PutObjectCommand({ Bucket: env.r2.bucket, Key: chunkKey(uploadId, index), Body: body, ContentType: 'application/octet-stream' }));
+  } catch (err) {
+    throw new StorageUnavailableError(`Cloudflare R2 недоступен: ${r2ErrorText(err)}`, 'r2', err);
+  }
+}
+
+async function readBody(body: any): Promise<Buffer> {
+  if (!body) return Buffer.alloc(0);
+  if (typeof body.transformToByteArray === 'function') return Buffer.from(await body.transformToByteArray());
+  if (Buffer.isBuffer(body)) return body;
+  const parts: Buffer[] = [];
+  for await (const c of body as AsyncIterable<Uint8Array>) parts.push(Buffer.from(c));
+  return Buffer.concat(parts);
+}
+
+/** Склеить куски 0..total-1 в видео, сохранить в R2 и удалить временные куски. */
+export async function r2CompleteChunks(uploadId: string, total: number, filename: string, contentType: string, maxBytes: number): Promise<{ url: string; bytes: number }> {
+  if (!isR2Configured()) throw new StorageUnavailableError('R2 не настроен', 'none');
+  const keys = Array.from({ length: total }, (_, i) => chunkKey(uploadId, i));
+  const parts: Buffer[] = [];
+  let bytes = 0;
+  try {
+    for (const Key of keys) {
+      const r = await r2Client().send(new GetObjectCommand({ Bucket: env.r2.bucket, Key }));
+      const buf = await readBody((r as any).Body);
+      bytes += buf.length;
+      if (bytes > maxBytes) throw new Error('файл больше допустимого');
+      parts.push(buf);
+    }
+  } catch (err: any) {
+    if (err?.name === 'NoSuchKey') throw new StorageUnavailableError('Не все части видео дошли до сервера — загрузите ещё раз', 'r2', err);
+    if (err instanceof Error && err.message === 'файл больше допустимого') throw new StorageUnavailableError('Видео больше допустимого размера', 'r2', err);
+    throw new StorageUnavailableError(`Cloudflare R2 недоступен: ${r2ErrorText(err)}`, 'r2', err);
+  }
+  const pathname = buildR2VideoKey(filename);
+  try {
+    await r2Client().send(new PutObjectCommand({
+      Bucket: env.r2.bucket, Key: pathname, Body: Buffer.concat(parts), ContentType: contentType,
+      CacheControl: 'public, max-age=31536000, immutable',
+    }));
+  } catch (err) {
+    throw new StorageUnavailableError(`Cloudflare R2 недоступен: ${r2ErrorText(err)}`, 'r2', err);
+  }
+  await r2Client().send(new DeleteObjectsCommand({ Bucket: env.r2.bucket, Delete: { Objects: keys.map((Key) => ({ Key })), Quiet: true } }))
+    .catch((err) => logger.warn({ err: String(err?.message ?? err) }, '[Media] временные куски не удалились'));
+  logger.info({ storage: 'r2', pathname, bytes, chunks: total }, '[Media] видео собрано из кусков и сохранено в R2');
+  return { url: r2PublicUrl(pathname), bytes };
 }
