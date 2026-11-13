@@ -4458,10 +4458,35 @@ async function mmUploadDirect(file, purpose, onProgress) {
     xhr.onload = () => (xhr.status >= 200 && xhr.status < 300
       ? resolve()
       : reject(new Error(`Cloudflare R2 не принял файл (HTTP ${xhr.status}). Проверьте права ключа R2.`)));
-    xhr.onerror = () => reject(new Error('Не удалось отправить файл в Cloudflare R2. Скорее всего, в бакете не разрешён CORS для этого сайта (см. docs/R2_SETUP.md), либо пропал интернет.'));
+    xhr.onerror = async () => {
+      // Браузер прячет ответ R2, если в бакете нет CORS-заголовков на ответе, хотя файл мог
+      // уже загрузиться. Проверяем по публичной ссылке (тегу <video> CORS не нужен).
+      if (await mmVideoUrlPlays(signed.url)) { resolve(); return; }
+      reject(new Error(xhr.upload && mmLastPct < 100
+        ? `Загрузка в Cloudflare R2 оборвалась на ${mmLastPct}%. Проверьте интернет и CORS бакета mymarket-videos (Cloudflare → R2 → mymarket-videos → Settings → CORS Policy: метод PUT, заголовок Content-Type, адрес https://unit-v4.vercel.app).`
+        : 'Cloudflare R2 не ответил браузеру. Проверьте CORS бакета mymarket-videos (Cloudflare → R2 → mymarket-videos → Settings → CORS Policy: метод PUT, заголовок Content-Type, адрес https://unit-v4.vercel.app).'));
+    };
+    mmLastPct = 0;
+    xhr.upload.addEventListener('progress', (e) => { if (e.lengthComputable) mmLastPct = Math.round((e.loaded / e.total) * 100); });
     xhr.send(file);
   });
   return signed.url;
+}
+
+let mmLastPct = 0;
+
+/** Открывается ли видео по ссылке (метаданные загрузились) — без CORS, через <video>. */
+function mmVideoUrlPlays(url, timeoutMs = 15000) {
+  return new Promise((resolve) => {
+    const v = document.createElement('video');
+    v.preload = 'metadata';
+    v.muted = true;
+    const done = (ok) => { clearTimeout(t); v.removeAttribute('src'); v.load(); resolve(ok); };
+    const t = setTimeout(() => done(false), timeoutMs);
+    v.onloadedmetadata = () => done(true);
+    v.onerror = () => done(false);
+    v.src = url + (url.includes('?') ? '&' : '?') + 'check=' + Date.now();
+  });
 }
 
 async function uploadMyMarketFile(file, opts) {
