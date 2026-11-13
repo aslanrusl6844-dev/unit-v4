@@ -10269,6 +10269,9 @@ function closeOzonPriceDialog() {
 (function wireOzonPriceDialog() {
   const ov = document.getElementById('ozonPriceOverlay');
   if (!ov) return;
+  // Окно лежит в разметке раздела My Market; переносим его на уровень страницы,
+  // иначе на «Товарах» (раздел My Market скрыт) оно открывается невидимым.
+  document.body.appendChild(ov);
   document.getElementById('ozonPriceClose').addEventListener('click', closeOzonPriceDialog);
   document.getElementById('ozonPriceCancel').addEventListener('click', closeOzonPriceDialog);
   ov.addEventListener('click', (e) => { if (e.target === ov) closeOzonPriceDialog(); });
