@@ -2778,18 +2778,19 @@ function mmShelfHtml(key, title, w, products) {
     </div>
     <div class="table-wrap" style="margin-top:8px"><table class="table"><thead><tr>
       <th style="width:28px"><input type="checkbox" data-mm-pick-all="${wsEsc(key)}" ${allPicked ? 'checked' : ''} style="width:auto" title="Выбрать все товары полки" /></th>
-      <th>Фото</th><th>Артикул</th><th>Название</th><th class="num">Цена</th><th class="num">Остаток</th><th class="num">Сегодня</th><th>Полка</th></tr></thead><tbody>
+      <th>Фото</th><th>Артикул</th><th>Название</th><th>Витрина</th><th class="num">Цена</th><th class="num">Остаток</th><th class="num">Сегодня</th><th>Полка</th></tr></thead><tbody>
       ${products.map((p) => `<tr>
         <td><input type="checkbox" data-mm-pick="${wsEsc(p.id)}" ${mmShelf.picked.has(p.id) ? 'checked' : ''} style="width:auto" /></td>
         <td>${p.image ? `<img src="${wsEsc(p.image)}" alt="" style="width:40px;height:40px;object-fit:cover;border-radius:6px" />` : ''}</td>
         <td>${wsEsc(p.sku)}</td><td>${wsEsc(p.name)}</td>
+        <td>${mmShelfSaleCell(p)}</td>
         <td class="num">${p.price != null ? fmtMoney(p.price) : '—'}</td>
         <td class="num"><input type="number" min="0" step="1" data-mm-stock="${wsEsc(p.id)}" value="${p.stock ?? 0}" style="width:76px;text-align:right" title="Изменить остаток — сохраняется сразу" /></td>
         <td class="num" style="${p.todayQty ? 'color:var(--loss);font-weight:600' : 'color:var(--text-faint)'}">${p.todayQty ? `+${p.todayQty}` : '0'}</td>
         <td><select data-mm-move="${wsEsc(p.id)}" class="cost-input" style="max-width:220px">
           <option value="" ${!p.wholesalerId ? 'selected' : ''}>Без оптовика</option>
           ${mmShelf.wholesalers.map((x) => `<option value="${wsEsc(x.id)}" ${p.wholesalerId === x.id ? 'selected' : ''}>${wsEsc(wsDisplayName(x))}${x.disabled ? ' (отключён)' : ''}</option>`).join('')}
-        </select></td></tr>`).join('') || '<tr><td colspan="8" style="color:var(--text-faint)">Товаров нет</td></tr>'}
+        </select></td></tr>`).join('') || '<tr><td colspan="9" style="color:var(--text-faint)">Товаров нет</td></tr>'}
     </tbody></table></div>` : '';
   return `<div style="border:1px solid var(--border,#e5e5e5);border-radius:8px;padding:10px 12px;margin-bottom:8px">
     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
@@ -2845,6 +2846,15 @@ function renderMmShelves() {
   mmWireShelves(root);
 }
 
+/** Колонка «Витрина» на полке: в продаже / выставить / сначала категория из каталога приложения. */
+function mmShelfSaleCell(p) {
+  if (p.onSale !== false) return '<span style="color:var(--text-muted);font-size:12px">✓ в продаже</span>';
+  const needCat = !p.category || (MY_MARKET_TYPE_REQUIRED_FOR_SALE && !p.type);
+  return needCat
+    ? `<button class="btn btn--ghost" data-mm-sale="${wsEsc(p.id)}" style="color:var(--warn);padding:4px 10px;font-size:12px" title="Нет категории/типа — откроется карточка, выберите их из каталога приложения">Выбрать категорию</button>`
+    : `<button class="btn btn--accent" data-mm-sale="${wsEsc(p.id)}" style="padding:4px 10px;font-size:12px" title="${wsEsc(p.category)} → ${wsEsc(p.type || '')}">В витрину</button>`;
+}
+
 async function mmZip(url, btn) {
   if (btn) btn.disabled = true;
   mmStatus('Собираю накладные…');
@@ -2881,6 +2891,17 @@ async function mmSetEnabled(ids, enabled) {
 
 function mmWireShelves(root) {
   const shelfProducts = (key) => mmShelf.products.filter((p) => (key === 'none' ? !p.wholesalerId || !mmShelf.wholesalers.some((w) => w.id === p.wholesalerId) : p.wholesalerId === key));
+  root.querySelectorAll('[data-mm-sale]').forEach((b) => b.addEventListener('click', async () => {
+    const id = b.dataset.mmSale;
+    b.disabled = true;
+    try {
+      if (!myMarketProductsCache.some((x) => x.id === id)) await loadMyMarketProducts();
+      await runMyMarketPutOnSale(id);
+      // Если открылась карточка (нет цены/категории) — после её сохранения обновим полки.
+      myMarketCardEditDone = () => loadMmShelves();
+      await loadMmShelves();
+    } finally { b.disabled = false; }
+  }));
   root.querySelectorAll('[data-mm-pick]').forEach((c) => c.addEventListener('change', () => {
     if (c.checked) mmShelf.picked.add(c.dataset.mmPick); else mmShelf.picked.delete(c.dataset.mmPick);
     renderMmShelves();
@@ -3133,6 +3154,13 @@ async function runMyMarketPutOnSale(id) {
   if (!p) return;
   if (p.shopPrice == null) {
     alert('Укажите цену на витрине — откроется карточка. Цена с Ozon сама не подставляется.');
+    openMyMarketProductCard(id);
+    return;
+  }
+  // Без категории/типа товар в приложении не попадёт в нужный раздел каталога (и сервер не
+  // включит продажу) — открываем карточку: там категория, подкатегория и тип из каталога приложения.
+  if (!p.category || (MY_MARKET_TYPE_REQUIRED_FOR_SALE && !p.type)) {
+    alert('Выберите категорию, подкатегорию и тип из каталога приложения — откроется карточка. Потом поставьте «В продаже» и сохраните.');
     openMyMarketProductCard(id);
     return;
   }
@@ -10012,8 +10040,8 @@ async function runMyMarketOzonImport() {
       ? `Добавлено новых товаров с Ozon: ${added}.`
       : 'Новых товаров на Ozon нет — всё уже есть в My Market.';
     if (added) {
-      msg += `\n\nОни пока не в продаже: в «Общей таблице» найдите их во вкладке «Скрыты» и нажмите «В витрину».`;
-      if (noCat) msg += `\nБез категории: ${noCat} — они во вкладке «Без категории ⚠».`;
+      msg += `\n\nОни лежат на «Полках оптовиков» → «Без оптовика» (пока не в продаже): разложите по оптовикам и нажмите «В витрину».`;
+      if (noCat) msg += `\nБез категории: ${noCat} — у них кнопка «Выбрать категорию»: откроется карточка, выберите категорию, подкатегорию и тип из каталога приложения.`;
     }
     if (noPrice) msg += `\n\nПропущено без цены на Ozon: ${noPrice}.`;
     if (unmapped.size) msg += `\nТипов Ozon без соответствия в словаре: ${unmapped.size} («Товары» → «Словарь типов Ozon → категория My Market»).`;

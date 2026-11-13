@@ -226,7 +226,8 @@ wholesalersRouter.post('/move', async (req, res) => {
 });
 
 /**
- * Полки My Market одним запросом: товары витрины (в продаже), к какому оптовику привязаны,
+ * Полки My Market одним запросом: товары витрины — в продаже и ещё не выставленные (например,
+ * только что подтянутые «Синхронизировать с Ozon»; у них onSale=false), к какому оптовику привязаны,
  * сколько заказано СЕГОДНЯ (по Алматы) по товару и по полке, и города заказов за период — для накладных.
  */
 wholesalersRouter.get('/app/overview', async (req, res) => {
@@ -237,8 +238,10 @@ wholesalersRouter.get('/app/overview', async (req, res) => {
     const periodStart = from < todayStart ? from : todayStart;
     const [products, links, orders, index] = await Promise.all([
       prisma.product.findMany({
-        where: { shopActive: true, shopArchived: false },
-        select: { id: true, sku: true, shopArticle: true, name: true, shopPrice: true, shopStock: true, images: true },
+        // Не только «В продаже»: товар витрины с ценой/артикулом, но выключенный, тоже лежит на
+        // полке (по умолчанию «Без оптовика») — продавец сначала раскладывает, потом выставляет.
+        where: { shopArchived: false, OR: [{ shopActive: true }, { shopPrice: { not: null } }, { shopArticle: { not: null } }] },
+        select: { id: true, sku: true, shopArticle: true, name: true, shopPrice: true, shopStock: true, images: true, shopActive: true, category: true, type: true },
         orderBy: { name: 'asc' },
       }) as Promise<any[]>,
       prisma.wholesalerProduct.findMany({ where: { marketplace: 'APP' }, select: { productId: true, wholesalerId: true } }) as Promise<any[]>,
@@ -288,6 +291,7 @@ wholesalersRouter.get('/app/overview', async (req, res) => {
       products: products.map((p) => ({
         id: p.id, sku: p.shopArticle ?? p.sku, name: p.name, price: p.shopPrice, stock: p.shopStock,
         image: firstImage(p.images), wholesalerId: shelfOf.get(p.id) ?? null, todayQty: todayQty[p.id] ?? 0,
+        onSale: !!p.shopActive, category: p.category ?? null, type: p.type ?? null,
       })),
       todayShelf,
       periodShelf,
