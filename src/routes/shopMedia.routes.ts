@@ -1,7 +1,8 @@
-import { Router } from 'express';
+import express, { Router } from 'express';
 import { z } from 'zod';
 import {
   activeStorage, isR2Configured, isVideoType, presignR2Upload, uploadPublicFile, StorageUnavailableError,
+  r2PutChunk, r2CompleteChunks,
 } from '../services/mediaStorage.service';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
@@ -301,5 +302,56 @@ shopMediaRouter.post('/upload-from-url', async (req, res) => {
     });
   } finally {
     clearTimeout(timer);
+  }
+});
+
+/** Размер куска: ниже предела Vercel на тело запроса (~4.5 МБ). */
+export const VIDEO_CHUNK_BYTES = 4 * 1000 * 1000;
+const UPLOAD_ID_RE = /^[a-z0-9-]{8,64}$/i;
+
+/**
+ * ЗАГРУЗКА ВИДЕО КУСКАМИ через сервер (основной путь для видео в админке):
+ *   POST /video-chunk?uploadId=…&index=N  — тело: кусок файла (application/octet-stream, ≤4 МБ);
+ *   POST /video-complete { uploadId, total, filename, contentType } → { url }.
+ * Браузер не соединяется с Cloudflare напрямую, поэтому обрывы того соединения не мешают;
+ * упавший кусок админка просто отправляет ещё раз.
+ */
+shopMediaRouter.post('/video-chunk', express.raw({ type: 'application/octet-stream', limit: '4400kb' }), async (req, res) => {
+  const uploadId = String(req.query.uploadId ?? '');
+  const index = Number(req.query.index);
+  if (!UPLOAD_ID_RE.test(uploadId) || !Number.isInteger(index) || index < 0 || index > Math.ceil(DIRECT_MAX_VIDEO_BYTES / VIDEO_CHUNK_BYTES)) {
+    return res.status(400).json({ error: 'Неверный кусок загрузки' });
+  }
+  if (!isR2Configured()) return res.status(501).json({ error: 'Cloudflare R2 не настроен', reason: 'no_r2' });
+  const body = req.body as Buffer;
+  if (!Buffer.isBuffer(body) || !body.length) return res.status(400).json({ error: 'Пустой кусок' });
+  try {
+    await r2PutChunk(uploadId, index, body);
+    res.json({ ok: true, index, bytes: body.length });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Media] кусок видео не сохранился');
+    res.status(500).json({ error: 'Не удалось сохранить часть видео', details: String(err?.message ?? err) });
+  }
+});
+
+const completeSchema = z.object({
+  uploadId: z.string().regex(UPLOAD_ID_RE),
+  total: z.number().int().min(1).max(Math.ceil(DIRECT_MAX_VIDEO_BYTES / VIDEO_CHUNK_BYTES)),
+  filename: z.string().min(1).max(300),
+  contentType: z.string().min(1),
+});
+
+shopMediaRouter.post('/video-complete', async (req, res) => {
+  const parsed = completeSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Неверные данные загрузки', details: parsed.error.flatten() });
+  const { uploadId, total, filename, contentType } = parsed.data;
+  if (!VIDEO_ALLOWED_TYPES.includes(contentType)) return res.status(400).json({ error: 'Формат не поддерживается. Нужен MP4 или WEBM' });
+  if (!isR2Configured()) return res.status(501).json({ error: 'Cloudflare R2 не настроен', reason: 'no_r2' });
+  try {
+    const r = await r2CompleteChunks(uploadId, total, filename, contentType, DIRECT_MAX_VIDEO_BYTES);
+    res.json({ url: r.url, bytes: r.bytes, storage: 'r2' });
+  } catch (err: any) {
+    logger.error({ err }, '[Shop Media] видео не собралось из кусков');
+    res.status(500).json({ error: err instanceof StorageUnavailableError ? err.message : 'Не удалось сохранить видео', details: String(err?.message ?? err) });
   }
 });
