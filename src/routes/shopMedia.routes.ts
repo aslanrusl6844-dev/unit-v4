@@ -212,3 +212,94 @@ shopMediaRouter.post('/upload', async (req, res) => {
     });
   }
 });
+
+/** Хост из «локальной» сети — такие адреса сервер не скачивает (защита от SSRF). */
+function isPrivateHost(host: string): boolean {
+  const h = host.toLowerCase().replace(/^\[|\]$/g, '');
+  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.internal') || h.endsWith('.local')) return true;
+  if (h.includes(':')) return h === '::1' || h.startsWith('fc') || h.startsWith('fd') || h.startsWith('fe80') || h.startsWith('::ffff:');
+  const m = h.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (!m) return false;
+  const [a, b] = [Number(m[1]), Number(m[2])];
+  return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
+}
+
+/** Тип видео по ответу сайта или по расширению в ссылке (некоторые CDN отдают octet-stream). */
+function videoTypeOf(contentType: string | null, url: URL): string | null {
+  const ct = (contentType || '').split(';')[0].trim().toLowerCase();
+  if (VIDEO_ALLOWED_TYPES.includes(ct)) return ct;
+  if (!ct || ct === 'application/octet-stream' || ct === 'binary/octet-stream') {
+    if (/\.mp4$/i.test(url.pathname)) return 'video/mp4';
+    if (/\.webm$/i.test(url.pathname)) return 'video/webm';
+  }
+  return null;
+}
+
+const fromUrlSchema = z.object({ url: z.string().url().max(2000) });
+
+/**
+ * Видео по ссылке (перетащили видео с сайта в админку): сервер сам скачивает файл MP4/WEBM
+ * (до 100 МБ) и кладёт к себе — в Cloudflare R2 (или в Blob, если R2 не настроен). Так видео
+ * не пропадёт, если чужой сайт его уберёт. Ссылка на страницу (YouTube и т. п.), а не на файл —
+ * понятный отказ: такое видео нужно скачать и перетащить файлом.
+ */
+shopMediaRouter.post('/upload-from-url', async (req, res) => {
+  const parsed = fromUrlSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Это не ссылка' });
+  let url: URL;
+  try { url = new URL(parsed.data.url); } catch { return res.status(400).json({ error: 'Это не ссылка' }); }
+  if (!['http:', 'https:'].includes(url.protocol) || isPrivateHost(url.hostname)) {
+    return res.status(400).json({ error: 'Такую ссылку скачать нельзя' });
+  }
+  if (activeStorage('video/mp4') === 'none') return res.status(501).json({ error: 'Хранилище для видео не настроено' });
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 45_000);
+  try {
+    const r = await fetch(url, { signal: ctrl.signal, redirect: 'follow', headers: { 'user-agent': 'Mozilla/5.0 (MyMarket admin video import)' } });
+    if (!r.ok || !r.body) return res.status(400).json({ error: `Сайт не отдал видео (HTTP ${r.status})`, details: 'Скачайте видео на компьютер и перетащите файл.' });
+    const finalUrl = new URL(r.url || url.toString());
+    const contentType = videoTypeOf(r.headers.get('content-type'), finalUrl);
+    if (!contentType) {
+      return res.status(400).json({
+        error: 'По ссылке не файл видео, а страница сайта',
+        reason: 'not_video_file',
+        details: 'Так бывает с YouTube, Instagram, TikTok и т. п. Скачайте видео на компьютер (MP4) и перетащите файл.',
+      });
+    }
+    const declared = Number(r.headers.get('content-length') || 0);
+    if (declared > DIRECT_MAX_VIDEO_BYTES) {
+      ctrl.abort();
+      return res.status(413).json({ error: `Видео слишком большое: ${mb(declared)} МБ, максимум ${mb(DIRECT_MAX_VIDEO_BYTES)} МБ` });
+    }
+    // Читаем с ограничением: сайт мог не прислать размер.
+    const chunks: Buffer[] = [];
+    let total = 0;
+    const reader = r.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > DIRECT_MAX_VIDEO_BYTES) {
+        ctrl.abort();
+        return res.status(413).json({ error: `Видео больше ${mb(DIRECT_MAX_VIDEO_BYTES)} МБ` });
+      }
+      chunks.push(Buffer.from(value));
+    }
+    if (!total) return res.status(400).json({ error: 'Сайт отдал пустой файл' });
+    const base = decodeURIComponent(finalUrl.pathname.split('/').pop() || '') || 'video';
+    const filename = /\.(mp4|webm)$/i.test(base) ? base : `${base}.${contentType === 'video/webm' ? 'webm' : 'mp4'}`;
+    const saved = await uploadPublicFile('video', filename, Buffer.concat(chunks), contentType);
+    logger.info({ from: url.hostname, bytes: total, storage: saved.storage }, '[Shop Media] видео по ссылке сохранено');
+    res.json({ url: saved.url, bytes: total, storage: saved.storage });
+  } catch (err: any) {
+    const aborted = err?.name === 'AbortError';
+    logger.warn({ err: String(err?.message ?? err), host: url.hostname }, '[Shop Media] видео по ссылке не скачалось');
+    res.status(aborted ? 504 : 502).json({
+      error: aborted ? 'Сайт отдаёт видео слишком долго' : 'Не удалось скачать видео с сайта',
+      details: 'Скачайте видео на компьютер и перетащите файл.',
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+});
