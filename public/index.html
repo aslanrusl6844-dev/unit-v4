@@ -623,6 +623,24 @@
         </div>
 
         <!-- ---- Карточка товара (редактирование) ---- -->
+        <!-- Цена на Ozon: меняется прямо отсюда и уходит на Ozon (Товары → полки → Ozon) -->
+        <div id="ozonPriceOverlay" class="modal-overlay" hidden>
+          <div class="modal" style="max-width:440px">
+            <div class="modal__head"><h2>Цена на Ozon</h2><button type="button" class="btn btn--ghost" id="ozonPriceClose">✕</button></div>
+            <p id="ozonPriceName" style="margin:0 0 10px;font-size:13px;color:var(--text-muted)"></p>
+            <form id="ozonPriceForm" style="display:grid;gap:10px">
+              <label style="display:grid;gap:4px;font-size:13px;font-weight:600">Цена продажи, ₸ *<input type="number" name="price" min="1" step="1" required style="width:100%" /></label>
+              <label style="display:grid;gap:4px;font-size:13px">Старая цена (зачёркнутая), ₸<input type="number" name="oldPrice" min="0" step="1" placeholder="пусто — без зачёркнутой цены" style="width:100%" /></label>
+              <label style="display:grid;gap:4px;font-size:13px">Минимальная цена для акций, ₸<input type="number" name="minPrice" min="0" step="1" placeholder="пусто — не менять" style="width:100%" /></label>
+              <p class="panel__hint" style="margin:0">Юнит-экономика считается от цены продажи. На Ozon новая цена появится через несколько минут; если товар в акции, покупатель видит цену акции.</p>
+              <div id="ozonPriceStatus" class="panel__hint" style="margin:0"></div>
+              <div style="display:flex;gap:8px;justify-content:flex-end">
+                <button type="button" class="btn btn--ghost" id="ozonPriceCancel">Отмена</button>
+                <button type="submit" class="btn btn--accent" id="ozonPriceSave">Сохранить на Ozon</button>
+              </div>
+            </form>
+          </div>
+        </div>
         <div id="mymarketProductCardOverlay" class="modal-overlay" hidden>
           <div class="modal modal--wide">
             <div class="modal__head">
