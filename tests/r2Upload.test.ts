@@ -126,4 +126,34 @@ describe('Cloudflare R2 — загрузка видео', () => {
     assert.equal(r.status, 500);
     assert.match(r.json.details, /неверные R2_ACCESS_KEY_ID/);
   });
+
+  test('видео по ссылке с сайта: скачивается и кладётся в R2', async () => {
+    const realFetch = globalThis.fetch;
+    const body = Buffer.alloc(2048, 7);
+    (globalThis as any).fetch = async (u: any) => {
+      const href = String(u);
+      if (href.includes('page')) return new Response('<html>YouTube</html>', { status: 200, headers: { 'content-type': 'text/html' } });
+      if (href.includes('huge')) return new Response(body, { status: 200, headers: { 'content-type': 'video/mp4', 'content-length': String(200 * MB) } });
+      return new Response(body, { status: 200, headers: { 'content-type': 'video/mp4' } });
+    };
+    try {
+      const ok = await call('POST', '/api/shop/admin/upload-from-url', { url: 'https://cdn.example.com/media/promo%20clip.mp4' });
+      assert.equal(ok.status, 200);
+      assert.match(ok.json.url, /^https:\/\/pub-test\.r2\.dev\/\d+-[a-z0-9]+-promo_clip\.mp4$/);
+      assert.equal(sent.at(-1)!.ContentType, 'video/mp4');
+      assert.equal(sent.at(-1)!.Body.length, 2048);
+
+      const page = await call('POST', '/api/shop/admin/upload-from-url', { url: 'https://youtube.example.com/page?v=1' });
+      assert.equal(page.status, 400);
+      assert.equal(page.json.reason, 'not_video_file');
+
+      const big = await call('POST', '/api/shop/admin/upload-from-url', { url: 'https://cdn.example.com/huge.mp4' });
+      assert.equal(big.status, 413);
+
+      const local = await call('POST', '/api/shop/admin/upload-from-url', { url: 'http://127.0.0.1:8080/a.mp4' });
+      assert.equal(local.status, 400);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
 });

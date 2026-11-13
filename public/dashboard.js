@@ -3427,6 +3427,68 @@ async function handleMyMarketVideoFile(file) {
   }
 }
 
+/** Несколько файлов разом (выбор или перетаскивание): по очереди, не больше лимита видео. */
+async function mmAddVideoFiles(files) {
+  const status = document.getElementById('mmVideosStatus');
+  const videos = files.filter((f) => /^video\//.test(f.type) || /\.(mp4|webm)$/i.test(f.name));
+  if (!videos.length) { status.textContent = 'Это не видео. Нужен файл MP4 или WEBM.'; status.style.color = 'var(--loss)'; return; }
+  for (const f of videos) {
+    if (myMarketCardVideos.length >= MM_VIDEOS_MAX) { status.textContent = `Можно не больше ${MM_VIDEOS_MAX} видео.`; status.style.color = 'var(--loss)'; break; }
+    // Иногда браузер не знает тип файла — подставляем по расширению.
+    const file = f.type ? f : new File([f], f.name, { type: /\.webm$/i.test(f.name) ? 'video/webm' : 'video/mp4' });
+    await handleMyMarketVideoFile(file);
+  }
+}
+
+/**
+ * Что перетащили с сайта: само видео (<video src>/<source src> в text/html), ссылку
+ * (text/uri-list) или текст-ссылку. blob:/data: ссылки браузер наружу не отдаёт — их не берём.
+ */
+function mmVideoUrlFromDrop(dt) {
+  const ok = (u) => /^https?:\/\//i.test(String(u || '').trim());
+  const html = dt.getData('text/html');
+  if (html) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const src = doc.querySelector('video[src]')?.getAttribute('src')
+      || doc.querySelector('video source[src], source[src]')?.getAttribute('src')
+      || doc.querySelector('a[href$=".mp4"], a[href$=".webm"]')?.getAttribute('href');
+    if (ok(src)) return src.trim();
+  }
+  const list = (dt.getData('text/uri-list') || '').split(/\r?\n/).find((l) => l && !l.startsWith('#'));
+  if (ok(list)) return list.trim();
+  const text = dt.getData('text/plain');
+  if (ok(text)) return text.trim();
+  if (html) {
+    const href = new DOMParser().parseFromString(html, 'text/html').querySelector('a[href]')?.getAttribute('href');
+    if (ok(href)) return href.trim();
+  }
+  return null;
+}
+
+/** Видео по ссылке/с сайта: сервер скачивает файл к себе (R2), чтобы видео не пропало с чужого сайта. */
+async function handleMyMarketVideoUrl(url) {
+  const status = document.getElementById('mmVideosStatus');
+  const fail = (msg) => { status.textContent = msg; status.style.color = 'var(--loss)'; };
+  if (myMarketCardVideos.length >= MM_VIDEOS_MAX) return fail(`Можно не больше ${MM_VIDEOS_MAX} видео.`);
+  if (!/^https?:\/\//i.test(url)) return fail('Нужна ссылка, начинающаяся с https://');
+  status.textContent = 'Скачиваю видео с сайта… (большое видео — до минуты)';
+  status.style.color = 'var(--text-faint)';
+  try {
+    const res = await fetch('/api/shop/admin/upload-from-url', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }),
+    });
+    if (!res.ok) throw await mmUploadError(res);
+    const body = await res.json();
+    if (myMarketCardVideos.includes(body.url)) return fail('Это видео уже добавлено.');
+    myMarketCardVideos.push(body.url);
+    status.textContent = 'Видео добавлено — нажмите «Сохранить» в карточке';
+    status.style.color = 'var(--text-faint)';
+    renderMyMarketVideosList();
+  } catch (err) {
+    fail(err.message);
+  }
+}
+
 function mmxEsc(v) {
   return String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
@@ -3662,9 +3724,28 @@ function initMyMarketQtyDetails() {
   if (shopPriceEl) shopPriceEl.addEventListener('input', updateMyMarketQtyAutoPrice);
   document.getElementById('mmVideosAddBtn').addEventListener('click', () => document.getElementById('mmVideosFileInput').click());
   document.getElementById('mmVideosFileInput').addEventListener('change', (e) => {
-    const f = e.target.files[0];
+    const files = Array.from(e.target.files || []);
     e.target.value = '';
-    if (f) handleMyMarketVideoFile(f);
+    mmAddVideoFiles(files);
+  });
+  const videoUrlInput = document.getElementById('mmVideosUrlInput');
+  const addVideoUrl = () => { const v = videoUrlInput.value.trim(); if (v) { videoUrlInput.value = ''; handleMyMarketVideoUrl(v); } };
+  document.getElementById('mmVideosUrlBtn').addEventListener('click', addVideoUrl);
+  videoUrlInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addVideoUrl(); } });
+  // Перетаскивание: файлы с компьютера или видео/ссылка прямо с сайта.
+  const videoDrop = document.getElementById('mmVideosDropzone');
+  videoDrop.addEventListener('dragover', (e) => { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'; videoDrop.classList.add('is-dragover'); });
+  videoDrop.addEventListener('dragleave', (e) => { if (!videoDrop.contains(e.relatedTarget)) videoDrop.classList.remove('is-dragover'); });
+  videoDrop.addEventListener('drop', (e) => {
+    e.preventDefault();
+    videoDrop.classList.remove('is-dragover');
+    const dt = e.dataTransfer;
+    if (!dt) return;
+    const files = Array.from(dt.files || []);
+    if (files.length) { mmAddVideoFiles(files); return; }
+    const url = mmVideoUrlFromDrop(dt);
+    if (url) handleMyMarketVideoUrl(url);
+    else { const st = document.getElementById('mmVideosStatus'); st.textContent = 'Не понял, что перетащили. Перетащите файл MP4/WEBM или само видео с сайта.'; st.style.color = 'var(--loss)'; }
   });
   document.getElementById('mmDetailsChooseBtn').addEventListener('click', () => document.getElementById('mmDetailsFileInput').click());
   document.getElementById('mmDetailsFileInput').addEventListener('change', (e) => {
