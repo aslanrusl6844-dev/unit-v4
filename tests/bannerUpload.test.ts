@@ -81,7 +81,7 @@ describe('загрузка баннеров главной: GIF / MP4 / WEBM', (
     for (const [type, name, ext] of [['image/gif', 'a.gif', 'gif'], ['video/mp4', 'a.mp4', 'mp4'], ['video/webm', 'a.webm', 'webm'], ['image/jpeg', 'a.jpg', 'jpg'], ['image/png', 'a.png', 'png'], ['image/webp', 'a.webp', 'webp']]) {
       const r = await post(file(1000, type, name, 'banner'));
       assert.equal(r.status, 200, type);
-      assert.match(r.json.url, new RegExp(`^https://blob\\.example\\.com/shop/banner/\\d+-a\\.${ext}$`), type);
+      assert.match(r.json.url, new RegExp(`^https://blob\\.example\\.com/shop/banner/\\d+-[a-z0-9]+-a\\.${ext}$`), type);
     }
     assert.equal(puts.length, 6);
     assert.deepEqual(puts.map((p) => p.contentType), ['image/gif', 'video/mp4', 'video/webm', 'image/jpeg', 'image/png', 'image/webp']);
@@ -114,11 +114,25 @@ describe('загрузка баннеров главной: GIF / MP4 / WEBM', (
     assert.match(puts[0].pathname, /^shop\/image\//);
   });
 
-  test('нужна админская авторизация; сбой хранилища → 500', async () => {
+  test('без R2 прямая загрузка недоступна (501 no_r2) — админка грузит по-старому', async () => {
+    const payload = JSON.stringify({ purpose: 'video', filename: 'a.mp4', contentType: 'video/mp4', size: 1000 });
+    const r = await new Promise<{ status: number; json: any }>((resolve, reject) => {
+      const req = http.request({ host: '127.0.0.1', port, method: 'POST', path: '/api/shop/admin/upload-url', headers: {
+        'content-type': 'application/json', 'content-length': String(Buffer.byteLength(payload)),
+        authorization: 'Basic ' + Buffer.from(`${process.env.ADMIN_USER}:${process.env.ADMIN_PASSWORD}`).toString('base64'),
+      } }, (res) => { const c: Buffer[] = []; res.on('data', (x) => c.push(x)); res.on('end', () => resolve({ status: res.statusCode ?? 0, json: JSON.parse(Buffer.concat(c).toString()) })); });
+      req.on('error', reject); req.write(payload); req.end();
+    });
+    assert.equal(r.status, 501);
+    assert.equal(r.json.reason, 'no_r2');
+  });
+
+  test('нужна админская авторизация; сбой хранилища → 503 с понятным текстом', async () => {
     assert.equal((await post(file(100, 'image/gif', 'a.gif', 'banner'), false)).status, 401);
     blobFail = true;
     const r = await post(file(100, 'image/gif', 'a.gif', 'banner'));
-    assert.equal(r.status, 500);
+    assert.equal(r.status, 503);
+    assert.match(r.json.details, /Vercel Blob недоступен/);
   });
 });
 
@@ -129,7 +143,7 @@ describe('загрузка видео товара/витрины (purpose=video
     for (const [type, name] of [['video/mp4', 'a.mp4'], ['video/webm', 'a.webm']]) {
       const r = await post(vid(1000, type, name));
       assert.equal(r.status, 200, type);
-      assert.match(r.json.url, /^https:\/\/blob\.example\.com\/shop\/video\/\d+-a\.(mp4|webm)$/);
+      assert.match(r.json.url, /^https:\/\/blob\.example\.com\/shop\/video\/\d+-[a-z0-9]+-a\.(mp4|webm)$/);
     }
     assert.ok(puts.every((p) => p.size === 1000));
   });

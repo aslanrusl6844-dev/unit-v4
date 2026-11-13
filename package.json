@@ -17,6 +17,8 @@
     "sync:wb": "tsx src/scripts/runSyncWb.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1168.0",
+    "@aws-sdk/s3-request-presigner": "^3.1168.0",
     "@fontsource/manrope": "^5.3.0",
     "@prisma/client": "^5.20.0",
     "@resvg/resvg-js": "^2.6.2",
