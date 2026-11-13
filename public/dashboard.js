@@ -8854,7 +8854,11 @@ function wsNumberCells(p, mp) {
   const fc = productsForecastCache.get(`${p.id}:${mp}`);
   const badge = (fc?.source === 'historical-average' || fc?.source === 'kaspi-tariff-default')
     ? ' <span style="color:var(--text-faint);font-size:10px">≈</span>' : '';
-  const price = fc?.referencePrice != null ? fmtMoney(fc.referencePrice) : '—';
+  const priceText = fc?.referencePrice != null ? fmtMoney(fc.referencePrice) : '—';
+  // Ozon: цену можно поменять прямо здесь — она уйдёт на Ozon (окно «Цена на Ozon»).
+  const price = mp === 'OZON' && p.ozonOfferId
+    ? `<button class="link-btn" data-ozon-price="${wsEsc(p.id)}" title="Поменять цену на Ozon" style="white-space:nowrap">${priceText} <span style="color:var(--accent)">✎</span></button>`
+    : priceText;
   const commission = fc?.estCommission != null
     ? `${fmtMoney(fc.estCommission)}${fc.estCommissionRate != null ? ` <span style="color:var(--text-faint);font-size:10px">(${fc.estCommissionRate}%)</span>` : ''}${badge}`
     : '—';
@@ -10222,3 +10226,95 @@ async function runMyMarketOzonImport() {
     btn.disabled = false;
   }
 }
+
+
+// ---------------------------------------------------------------------------
+// «Цена на Ozon»: цена продажи, старая (зачёркнутая) и минимальная для акций —
+// меняются из админки и уходят на Ozon. Юнит-экономика — от цены продажи.
+// ---------------------------------------------------------------------------
+let ozonPriceProductId = null;
+
+async function openOzonPriceDialog(productId) {
+  const p = allProductsCache.find((x) => x.id === productId);
+  const ov = document.getElementById('ozonPriceOverlay');
+  const form = document.getElementById('ozonPriceForm');
+  const st = document.getElementById('ozonPriceStatus');
+  ozonPriceProductId = productId;
+  form.reset();
+  document.getElementById('ozonPriceName').textContent = p ? `${p.name} · offer_id ${p.ozonOfferId || '—'}` : '';
+  st.textContent = 'Загружаю текущие цены с Ozon…';
+  st.style.color = 'var(--text-faint)';
+  ov.hidden = false;
+  try {
+    const d = await api(`/sync/ozon-price/${encodeURIComponent(productId)}`);
+    if (ozonPriceProductId !== productId) return;
+    form.elements.price.value = d.price ?? '';
+    form.elements.oldPrice.value = d.oldPrice ?? '';
+    form.elements.minPrice.value = d.minPrice ?? '';
+    form.dataset.cur = JSON.stringify(d);
+    st.textContent = d.sellingPrice && d.price && d.sellingPrice < d.price
+      ? `Сейчас на Ozon продаётся по ${fmtMoney(d.sellingPrice)} (акция продавца).`
+      : '';
+  } catch (err) {
+    st.textContent = 'Не удалось получить цены с Ozon: ' + err.message;
+    st.style.color = 'var(--loss)';
+  }
+}
+
+function closeOzonPriceDialog() {
+  document.getElementById('ozonPriceOverlay').hidden = true;
+  ozonPriceProductId = null;
+}
+
+(function wireOzonPriceDialog() {
+  const ov = document.getElementById('ozonPriceOverlay');
+  if (!ov) return;
+  document.getElementById('ozonPriceClose').addEventListener('click', closeOzonPriceDialog);
+  document.getElementById('ozonPriceCancel').addEventListener('click', closeOzonPriceDialog);
+  ov.addEventListener('click', (e) => { if (e.target === ov) closeOzonPriceDialog(); });
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-ozon-price]');
+    if (b) { e.preventDefault(); openOzonPriceDialog(b.dataset.ozonPrice); }
+  });
+  document.getElementById('ozonPriceForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const st = document.getElementById('ozonPriceStatus');
+    const id = ozonPriceProductId;
+    if (!id) return;
+    const price = Number(form.elements.price.value);
+    const oldPrice = form.elements.oldPrice.value === '' ? 0 : Number(form.elements.oldPrice.value);
+    const minPrice = form.elements.minPrice.value === '' ? null : Number(form.elements.minPrice.value);
+    const fail = (m) => { st.textContent = m; st.style.color = 'var(--loss)'; };
+    if (!(price > 0)) return fail('Укажите цену продажи');
+    if (oldPrice && oldPrice <= price) return fail('Старая цена должна быть больше цены продажи (или оставьте пусто)');
+    if (minPrice != null && minPrice > price) return fail('Минимальная цена не может быть больше цены продажи');
+    let cur = {};
+    try { cur = JSON.parse(form.dataset.cur || '{}'); } catch { cur = {}; }
+    const lines = [`Цена продажи: ${cur.price ? fmtMoney(cur.price) + ' → ' : ''}${fmtMoney(price)}`];
+    lines.push(`Старая цена: ${oldPrice ? fmtMoney(oldPrice) : 'нет'}`);
+    if (minPrice != null) lines.push(`Минимальная для акций: ${fmtMoney(minPrice)}`);
+    if (!confirm(`Поменять цену на Ozon?\n\n${lines.join('\n')}`)) return;
+    const btn = document.getElementById('ozonPriceSave');
+    btn.disabled = true;
+    st.textContent = 'Отправляю на Ozon…';
+    st.style.color = 'var(--text-faint)';
+    try {
+      await api(`/sync/ozon-price/${encodeURIComponent(id)}`, {
+        method: 'POST',
+        body: JSON.stringify({ price, oldPrice, ...(minPrice != null ? { minPrice } : {}) }),
+      });
+      closeOzonPriceDialog();
+      const forecasts = await api('/analytics/forecast');
+      productsForecastCache = new Map(forecasts.map((f) => [`${f.productId}:${f.marketplace}`, f]));
+      wsPayout.cache.clear();
+      try { renderWholesalerShelves(); } catch { /* полки перерисуются при открытии */ }
+      try { renderProductsAdminTable(); } catch { /* общая таблица перерисуется при открытии */ }
+      alert(`Цена отправлена на Ozon: ${fmtMoney(price)}. На витрине Ozon появится через несколько минут.`);
+    } catch (err) {
+      fail(err.message);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+})();

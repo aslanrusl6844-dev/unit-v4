@@ -487,6 +487,52 @@ export class OzonClient {
     return result;
   }
 
+  /** Текущие цены одного товара на Ozon: продажи, старая (зачёркнутая), минимальная для акций. */
+  async fetchPriceDetails(offerId: string): Promise<OzonPriceDetails | null> {
+    const http = await this.getHttp();
+    const { data } = await http.post('/v5/product/info/prices', { filter: { offer_id: [offerId], visibility: 'ALL' }, limit: 1, cursor: '' });
+    const item = (data.items ?? data.result?.items ?? [])[0];
+    if (!item) return null;
+    const p = item.price ?? {};
+    const num = (v: unknown) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : null; };
+    return {
+      offerId: item.offer_id,
+      price: num(p.price),
+      oldPrice: num(p.old_price),
+      minPrice: num(p.min_price),
+      sellingPrice: sellingPrice(p) ?? null,
+      currency: p.currency_code || null,
+    };
+  }
+
+  /**
+   * Поменять цены товара на Ozon (/v1/product/import/prices). oldPrice = 0 — убрать зачёркнутую цену;
+   * minPrice = undefined — минимальную не трогаем. Возвращает ошибки Ozon текстом (пусто — принято).
+   */
+  async updatePrice(input: { offerId: string; price: number; oldPrice: number; minPrice?: number; currency?: string | null }): Promise<string[]> {
+    const http = await this.getHttp();
+    const item: Record<string, unknown> = {
+      offer_id: input.offerId,
+      price: String(Math.round(input.price)),
+      old_price: String(Math.round(input.oldPrice)),
+    };
+    if (input.minPrice !== undefined) item.min_price = String(Math.round(input.minPrice));
+    if (input.currency) item.currency_code = input.currency;
+    try {
+      const { data } = await http.post('/v1/product/import/prices', { prices: [item] });
+      const r = (data.result ?? [])[0];
+      if (!r) return ['Ozon не вернул ответ по товару'];
+      if (r.updated) return [];
+      return (r.errors ?? []).map((e: any) => [e.code, e.message].filter(Boolean).join(': ')).filter(Boolean).concat(r.errors?.length ? [] : ['Ozon не обновил цену']);
+    } catch (err: any) {
+      const status = err?.response?.status;
+      const body = err?.response?.data;
+      logger.error({ status, body }, '[Ozon] Ошибка смены цены (/v1/product/import/prices)');
+      if (status === 403) return ['У ключа Ozon нет прав менять цены — нужен ключ с ролью «Admin» или «Цены и остатки» (Настройки → Ozon)'];
+      return [String(body?.message || err?.message || err)];
+    }
+  }
+
   async fetchOrders(params: { dateFrom: Date; dateTo: Date }): Promise<NormalizedOrder[]> {
     const http = await this.getHttp();
     const postings = await this.fetchAllFbsPostings(http, params.dateFrom, params.dateTo);
@@ -970,6 +1016,16 @@ export const ozonClient = new OzonClient();
  * Ozon присылает её в marketing_seller_price (она ниже обычной price) — берём её,
  * иначе обычную цену. Так юнит-экономика считается по реальной продажной цене.
  */
+export interface OzonPriceDetails {
+  offerId: string;
+  price: number | null;
+  oldPrice: number | null;
+  minPrice: number | null;
+  /** Цена, по которой реально продаётся (с акцией продавца, если есть). */
+  sellingPrice: number | null;
+  currency: string | null;
+}
+
 export function sellingPrice(p: any): number | undefined {
   const base = Number(p?.price) || 0;
   const promo = Number(p?.marketing_seller_price) || 0;

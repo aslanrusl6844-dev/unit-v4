@@ -108,6 +108,49 @@ syncRouter.post('/ozon-prices', async (_req, res) => {
   }
 });
 
+/** Цены товара на Ozon прямо сейчас — для окна «Цена на Ozon» в админке. */
+syncRouter.get('/ozon-price/:productId', async (req, res) => {
+  try {
+    const p = await prisma.product.findUnique({ where: { id: req.params.productId }, select: { ozonOfferId: true } });
+    if (!p?.ozonOfferId) return res.status(404).json({ error: 'У товара нет offer_id Ozon' });
+    const d = await ozonClient.fetchPriceDetails(p.ozonOfferId);
+    if (!d) return res.status(404).json({ error: 'Ozon не нашёл товар' });
+    res.json(d);
+  } catch (err: any) {
+    logger.error({ err }, 'Ошибка чтения цены Ozon');
+    res.status(500).json({ error: 'Не удалось получить цену с Ozon', details: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * Поменять цену товара на Ozon: { price, oldPrice?, minPrice? }. Юнит-экономика считается
+ * только от цены продажи (ozonReferencePrice) — её сразу записываем, дальше её уточнит
+ * автосверка цен Ozon (каждые 5 минут, с учётом акций).
+ */
+syncRouter.post('/ozon-price/:productId', async (req, res) => {
+  const price = Number(req.body?.price);
+  const oldPrice = req.body?.oldPrice == null || req.body.oldPrice === '' ? 0 : Number(req.body.oldPrice);
+  const minPrice = req.body?.minPrice == null || req.body.minPrice === '' ? undefined : Number(req.body.minPrice);
+  if (!Number.isFinite(price) || price <= 0) return res.status(400).json({ error: 'Укажите цену продажи больше 0' });
+  if (!Number.isFinite(oldPrice) || oldPrice < 0) return res.status(400).json({ error: 'Старая цена — число от 0' });
+  if (oldPrice > 0 && oldPrice <= price) return res.status(400).json({ error: 'Старая (зачёркнутая) цена должна быть больше цены продажи' });
+  if (minPrice !== undefined && (!Number.isFinite(minPrice) || minPrice < 0)) return res.status(400).json({ error: 'Минимальная цена — число от 0' });
+  if (minPrice !== undefined && minPrice > price) return res.status(400).json({ error: 'Минимальная цена для акций не может быть больше цены продажи' });
+  try {
+    const p = await prisma.product.findUnique({ where: { id: req.params.productId }, select: { id: true, ozonOfferId: true, name: true } });
+    if (!p?.ozonOfferId) return res.status(404).json({ error: 'У товара нет offer_id Ozon' });
+    const current = await ozonClient.fetchPriceDetails(p.ozonOfferId).catch(() => null);
+    const errors = await ozonClient.updatePrice({ offerId: p.ozonOfferId, price, oldPrice, minPrice, currency: current?.currency });
+    if (errors.length) return res.status(422).json({ error: 'Ozon не принял цену', details: errors.join('; ') });
+    await prisma.product.update({ where: { id: p.id }, data: { ozonReferencePrice: Math.round(price), ozonReferencePriceUpdatedAt: new Date() } });
+    logger.info({ offerId: p.ozonOfferId, price, oldPrice, minPrice }, '[Ozon] цена изменена из админки');
+    res.json({ ok: true, price: Math.round(price), oldPrice: Math.round(oldPrice), minPrice: minPrice != null ? Math.round(minPrice) : null });
+  } catch (err: any) {
+    logger.error({ err }, 'Ошибка смены цены Ozon');
+    res.status(500).json({ error: 'Не удалось поменять цену на Ozon', details: String(err?.message ?? err) });
+  }
+});
+
 syncRouter.post('/ozon-catalog', async (_req, res) => {
   try {
     const result = await syncOzonCatalog();
