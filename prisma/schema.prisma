@@ -937,6 +937,22 @@ model Wholesaler {
   products  WholesalerProduct[]
 }
 
+// Закупки у оптовиков — сколько денег потрачено на закупку (только для учёта продавца,
+// на себестоимость и прибыль в таблицах не влияет). wholesalerId = null — «Общая» закупка.
+model WholesalerPurchase {
+  id           String   @id @default(cuid())
+  amount       Float
+  wholesalerId String?
+  note         String?
+  // Дата закупки по Алматы, ГГГГ-ММ-ДД (по ней фильтр периода).
+  date         String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([date])
+  @@index([wholesalerId])
+}
+
 model WholesalerProduct {
   // productId — первичный ключ: один товар может лежать только на одной
   // полке, «переместить» = перезаписать эту строку (у старого пропадает сам).

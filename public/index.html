@@ -318,6 +318,8 @@
 
           <!-- ---- Полки оптовиков: у каждого оптовика своя полка, «Без оптовика» — для новых товаров ---- -->
           <div id="productsShelvesView">
+            <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;margin-bottom:10px">
+            <div style="flex:1 1 520px;min-width:300px">
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
               <input type="search" id="wsSearch" placeholder="🔍 Поиск по полкам: название или артикул (например «краска для волос»)" autocomplete="off" style="flex:1;min-width:260px;max-width:560px" />
               <span id="wsSearchInfo" style="font-size:12.5px;color:var(--text-muted)"></span>
@@ -326,6 +328,27 @@
               <span id="wholesalerSelectedCount" style="font-size:12.5px;color:var(--text-muted)">Выбрано полок: 0</span>
               <button class="btn btn--ghost" id="wholesalerZipSelectedBtn" disabled>📦 Накладные ZIP по выбранным</button>
               <button class="btn btn--ghost" id="wholesalerDeleteSelectedBtn" disabled style="color:var(--loss)">Удалить выбранных</button>
+            </div>
+            </div>
+            <!-- Закупки у оптовиков: сколько потрачено (только учёт, на прибыль не влияет) -->
+            <aside id="wsPurchases" style="flex:0 1 400px;min-width:300px;box-sizing:border-box;border:1px solid var(--border);border-radius:10px;padding:12px 14px;font-size:13px">
+              <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:6px">
+                <b style="font-size:14px">Закупки у оптовиков</b>
+                <span style="font-size:11px;color:var(--text-faint)">только учёт</span>
+              </div>
+              <div id="wsPurCal"></div>
+              <form id="wsPurForm" style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:6px">
+                <input type="number" name="amount" min="1" step="1" placeholder="Сумма, ₸" required style="width:100%;box-sizing:border-box" />
+                <select name="wholesalerId" style="width:100%;box-sizing:border-box"><option value="">Общая (без оптовика)</option></select>
+                <input type="text" name="note" maxlength="300" placeholder="Комментарий: 10 кофеварок" style="grid-column:1/-1;width:100%;box-sizing:border-box" />
+                <input type="date" name="date" title="Дата закупки" style="width:100%;box-sizing:border-box" />
+                <button type="submit" class="btn btn--accent" id="wsPurSubmit">+ Добавить</button>
+                <button type="button" class="btn btn--ghost" id="wsPurCancelEdit" hidden style="grid-column:1/-1">Отменить правку</button>
+              </form>
+              <div id="wsPurStatus" style="font-size:12px;margin-top:4px"></div>
+              <div id="wsPurTotals" style="margin-top:8px"></div>
+              <div id="wsPurList"></div>
+            </aside>
             </div>
             <div id="wholesalerStatus" style="margin:0 0 8px;font-size:12.5px"></div>
             <div id="wholesalerShelvesList"></div>
