@@ -28,6 +28,96 @@ async function generateWholesalerWaybillPdf(input: WholesalerWaybillInput): Prom
  */
 export const wholesalersRouter = Router();
 
+// ---------------------------------------------------------------------------
+// Закупки у оптовиков: продавец записывает, сколько потратил на закупку (общая сумма
+// или по оптовику). Только учёт — на себестоимость/прибыль не влияет.
+// ---------------------------------------------------------------------------
+const YMD = /^\d{4}-\d{2}-\d{2}$/;
+const purchaseSchema = z.object({
+  amount: z.number().positive().max(1_000_000_000),
+  wholesalerId: z.string().min(1).nullable().optional(),
+  note: z.string().max(300).nullable().optional(),
+  date: z.string().regex(YMD).optional(),
+});
+
+/** Закупки за период { from, to } (ГГГГ-ММ-ДД) + итоги: за период, за всё время, по оптовикам за период. */
+wholesalersRouter.get('/purchases', async (req, res) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store');
+    const from = YMD.test(String(req.query.from ?? '')) ? String(req.query.from) : null;
+    const to = YMD.test(String(req.query.to ?? '')) ? String(req.query.to) : null;
+    const where = from || to ? { date: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {};
+    const [items, allAgg] = await Promise.all([
+      prisma.wholesalerPurchase.findMany({ where, orderBy: [{ date: 'desc' }, { createdAt: 'desc' }], take: 1000 }),
+      prisma.wholesalerPurchase.aggregate({ _sum: { amount: true } }),
+    ]);
+    const byWholesaler: Record<string, number> = {};
+    let totalPeriod = 0;
+    for (const it of items as Array<{ amount: number; wholesalerId: string | null }>) {
+      totalPeriod += it.amount;
+      const k = it.wholesalerId ?? '__general__';
+      byWholesaler[k] = (byWholesaler[k] ?? 0) + it.amount;
+    }
+    res.json({ items, totalPeriod: Math.round(totalPeriod), totalAll: Math.round(allAgg._sum.amount ?? 0), byWholesaler });
+  } catch (err: any) {
+    logger.error({ err }, '[Закупки] список');
+    res.status(500).json({ error: 'Не удалось получить закупки', details: String(err?.message ?? err) });
+  }
+});
+
+wholesalersRouter.post('/purchases', async (req, res) => {
+  const parsed = purchaseSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Укажите сумму больше 0' });
+  try {
+    const d = parsed.data;
+    const item = await prisma.wholesalerPurchase.create({
+      data: {
+        amount: Math.round(d.amount),
+        wholesalerId: d.wholesalerId || null,
+        note: d.note?.trim() || null,
+        date: d.date ?? almatyNow().format('YYYY-MM-DD'),
+      },
+    });
+    res.status(201).json(item);
+  } catch (err: any) {
+    logger.error({ err }, '[Закупки] добавление');
+    res.status(500).json({ error: 'Не удалось добавить закупку', details: String(err?.message ?? err) });
+  }
+});
+
+wholesalersRouter.put('/purchases/:pid', async (req, res) => {
+  const parsed = purchaseSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Укажите сумму больше 0' });
+  try {
+    const d = parsed.data;
+    const item = await prisma.wholesalerPurchase.update({
+      where: { id: req.params.pid },
+      data: {
+        amount: Math.round(d.amount),
+        wholesalerId: d.wholesalerId || null,
+        note: d.note?.trim() || null,
+        ...(d.date ? { date: d.date } : {}),
+      },
+    });
+    res.json(item);
+  } catch (err: any) {
+    if (err?.code === 'P2025') return res.status(404).json({ error: 'Запись не найдена' });
+    logger.error({ err }, '[Закупки] изменение');
+    res.status(500).json({ error: 'Не удалось изменить закупку', details: String(err?.message ?? err) });
+  }
+});
+
+wholesalersRouter.delete('/purchases/:pid', async (req, res) => {
+  try {
+    await prisma.wholesalerPurchase.delete({ where: { id: req.params.pid } });
+    res.json({ ok: true });
+  } catch (err: any) {
+    if (err?.code === 'P2025') return res.status(404).json({ error: 'Запись не найдена' });
+    logger.error({ err }, '[Закупки] удаление');
+    res.status(500).json({ error: 'Не удалось удалить закупку', details: String(err?.message ?? err) });
+  }
+});
+
 const ALL_MARKETPLACES: WholesalerWaybillMarketplace[] = ['KASPI', 'OZON', 'WB'];
 const MARKETPLACE_LABEL: Record<WholesalerWaybillMarketplace, string> = { KASPI: 'Kaspi', OZON: 'Ozon', WB: 'Wildberries', APP: 'MyMarket' };
 /** Не больше стольких накладных в одном ZIP — иначе serverless-функция не уложится по времени. */

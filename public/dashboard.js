@@ -9243,6 +9243,7 @@ function wsStatsHtml(group) {
 function renderWholesalerShelves() {
   const list = document.getElementById('wholesalerShelvesList');
   if (!list) return;
+  wsPurInitOnce();
   try {
     if (wholesalersState.error) {
       list.innerHTML = `<p style="color:var(--loss);margin:0">Не удалось загрузить оптовиков: ${wsEsc(wholesalersState.error)}. Общая таблица работает — вкладка «Общая таблица».
@@ -10321,3 +10322,217 @@ function closeOzonPriceDialog() {
     }
   });
 })();
+
+
+// ---------------------------------------------------------------------------
+// «Закупки у оптовиков» (Товары → Полки оптовиков, справа сверху): сколько потрачено на
+// закупку — общей суммой или по оптовику, за период из календаря. Только учёт.
+// ---------------------------------------------------------------------------
+const wsPur = { inited: false, from: null, to: null, cal: false, y: null, m: null, pickStart: null, data: null, wholesalers: [], editId: null, listOpen: false };
+
+function wsPurMonthRange() {
+  const [y, m] = wsAlmatyToday().split('-').map(Number);
+  const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  return { from: wsIso(y, m, 1), to: wsIso(y, m, last) };
+}
+
+function wsPurInitOnce() {
+  if (wsPur.inited) return;
+  const root = document.getElementById('wsPurchases');
+  if (!root) return;
+  wsPur.inited = true;
+  const r = wsPurMonthRange();
+  wsPur.from = r.from; wsPur.to = r.to;
+  const form = document.getElementById('wsPurForm');
+  form.elements.date.value = wsAlmatyToday();
+  form.addEventListener('submit', wsPurSubmit);
+  document.getElementById('wsPurCancelEdit').addEventListener('click', wsPurResetForm);
+  root.addEventListener('click', wsPurClick);
+  wsPurLoad();
+}
+
+function wsPurName(id) {
+  if (!id || id === '__general__') return 'Общая';
+  const w = wsPur.wholesalers.find((x) => x.id === id);
+  return w ? `${w.firstName} ${w.lastName}`.trim() : 'Оптовик удалён';
+}
+
+async function wsPurLoad() {
+  const st = document.getElementById('wsPurStatus');
+  try {
+    const [data, ws] = await Promise.all([
+      api(`/wholesalers/purchases?${qs({ from: wsPur.from, to: wsPur.to })}`),
+      wsPur.wholesalers.length ? Promise.resolve(null) : api('/wholesalers'),
+    ]);
+    wsPur.data = data;
+    if (ws) {
+      wsPur.wholesalers = ws.wholesalers || [];
+      const sel = document.getElementById('wsPurForm').elements.wholesalerId;
+      const mpName = { KASPI: 'Kaspi', OZON: 'Ozon', WB: 'WB', TEEZ: 'Tez', APP: 'My Market' };
+      sel.innerHTML = '<option value="">Общая (без оптовика)</option>' + wsPur.wholesalers
+        .map((w) => `<option value="${wsEsc(w.id)}">${wsEsc(`${w.firstName} ${w.lastName}`.trim())}${mpName[w.marketplace] ? ` · ${mpName[w.marketplace]}` : ''}</option>`).join('');
+    }
+    st.textContent = '';
+    wsPurRender();
+  } catch (err) {
+    st.textContent = 'Не удалось загрузить закупки: ' + err.message;
+    st.style.color = 'var(--loss)';
+  }
+}
+
+function wsPurCalHtml() {
+  const fmtD = (iso) => { const [y, m, d] = String(iso || '').split('-'); return d ? `${d}.${m}.${y}` : ''; };
+  const label = wsPur.cal && wsPur.pickStart ? `с ${fmtD(wsPur.pickStart)} — выберите конец`
+    : wsPur.from === '2000-01-01' ? 'Всё время' : `${fmtD(wsPur.from)} — ${fmtD(wsPur.to)}`;
+  const head = `<button type="button" class="btn btn--ghost" data-pur-cal-toggle style="width:100%;margin:0 0 8px;justify-content:space-between;display:flex">📅 ${label}<span>${wsPur.cal ? '▴' : '▾'}</span></button>`;
+  if (!wsPur.cal) return head;
+  if (wsPur.y == null) { const [y, m] = wsPur.from.split('-').map(Number); wsPur.y = y; wsPur.m = m; }
+  const y = wsPur.y, m = wsPur.m;
+  const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const firstDow = (new Date(Date.UTC(y, m - 1, 1)).getUTCDay() + 6) % 7;
+  const today = wsAlmatyToday();
+  const a = wsPur.pickStart || wsPur.from;
+  const b = wsPur.pickStart || wsPur.to;
+  let cells = '';
+  for (let i = 0; i < firstDow; i++) cells += '<span></span>';
+  for (let d = 1; d <= last; d++) {
+    const iso = wsIso(y, m, d);
+    const inRange = iso >= a && iso <= b;
+    const edge = iso === a || iso === b;
+    const style = `padding:5px 0;border-radius:6px;border:0;cursor:pointer;font-size:12px;${inRange ? `background:${edge ? '#2563eb' : '#dbeafe'};color:${edge ? '#fff' : '#1e3a8a'};` : 'background:transparent;'}${iso === today ? 'outline:1px solid #2563eb;' : ''}`;
+    cells += `<button type="button" data-pur-cal-day="${iso}" style="${style}">${d}</button>`;
+  }
+  const dow = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map((x) => `<span style="font-size:10.5px;color:var(--text-faint);text-align:center">${x}</span>`).join('');
+  return `${head}
+    <div style="border:1px solid var(--border);border-radius:8px;padding:8px;margin:-4px 0 10px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <button type="button" class="btn btn--ghost" data-pur-cal-nav="-1" style="padding:2px 10px">‹</button>
+        <b>${WS_MONTHS[m - 1]} ${y}</b>
+        <button type="button" class="btn btn--ghost" data-pur-cal-nav="1" style="padding:2px 10px">›</button>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;text-align:center">${dow}${cells}</div>
+      <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+        <button type="button" class="btn btn--ghost" data-pur-cal-quick="month" style="padding:3px 8px;font-size:11.5px">Весь месяц</button>
+        <button type="button" class="btn btn--ghost" data-pur-cal-quick="year" style="padding:3px 8px;font-size:11.5px">Весь ${y} год</button>
+        <button type="button" class="btn btn--ghost" data-pur-cal-quick="all" style="padding:3px 8px;font-size:11.5px">Всё время</button>
+      </div>
+      <div style="font-size:10.5px;color:var(--text-faint);margin-top:6px">Нажмите день начала, потом день конца.</div>
+    </div>`;
+}
+
+function wsPurRender() {
+  document.getElementById('wsPurCal').innerHTML = wsPurCalHtml();
+  const d = wsPur.data;
+  if (!d) return;
+  const totals = document.getElementById('wsPurTotals');
+  const per = Object.entries(d.byWholesaler || {}).sort((a, b) => b[1] - a[1]);
+  totals.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <div style="background:var(--surface-2,#f6f6f4);border-radius:8px;padding:8px 10px"><div style="font-size:11.5px;color:var(--text-muted)">Потрачено за период</div><div style="font-size:18px;font-weight:700">${fmtMoney(d.totalPeriod)}</div></div>
+      <div style="background:var(--surface-2,#f6f6f4);border-radius:8px;padding:8px 10px"><div style="font-size:11.5px;color:var(--text-muted)">Всего за всё время</div><div style="font-size:18px;font-weight:700">${fmtMoney(d.totalAll)}</div></div>
+    </div>
+    ${per.length ? `<table style="width:100%;margin-top:8px;font-size:12.5px;border-collapse:collapse">${per.map(([id, sum]) => `<tr><td style="padding:3px 0;color:var(--text-muted)">${wsEsc(wsPurName(id))}</td><td style="padding:3px 0;text-align:right;font-weight:600">${fmtMoney(sum)}</td></tr>`).join('')}</table>` : '<div style="font-size:12px;color:var(--text-faint);margin-top:8px">За этот период закупок нет.</div>'}`;
+  const list = document.getElementById('wsPurList');
+  const items = d.items || [];
+  if (!items.length) { list.innerHTML = ''; return; }
+  const fmtD = (iso) => { const [, m, dd] = String(iso).split('-'); return `${dd}.${m}`; };
+  list.innerHTML = `
+    <button type="button" class="link-btn" data-pur-list-toggle style="margin-top:8px;font-size:12.5px">${wsPur.listOpen ? '▴ Скрыть записи' : `▾ Показать записи (${items.length})`}</button>
+    ${wsPur.listOpen ? `<div style="margin-top:4px;max-height:280px;overflow:auto">${items.map((it) => `
+      <div style="display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
+        <div style="min-width:0"><span style="color:var(--text-faint)">${fmtD(it.date)}</span> · ${wsEsc(wsPurName(it.wholesalerId))}${it.note ? `<div style="font-size:11.5px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis">${wsEsc(it.note)}</div>` : ''}</div>
+        <div style="white-space:nowrap">${fmtMoney(it.amount)}
+          <button type="button" class="link-btn" data-pur-edit="${wsEsc(it.id)}" title="Изменить" style="color:var(--accent)">✎</button>
+          <button type="button" class="link-btn" data-pur-del="${wsEsc(it.id)}" title="Удалить" style="color:var(--loss)">🗑</button>
+        </div>
+      </div>`).join('')}</div>` : ''}`;
+}
+
+function wsPurResetForm() {
+  const form = document.getElementById('wsPurForm');
+  form.reset();
+  form.elements.date.value = wsAlmatyToday();
+  wsPur.editId = null;
+  document.getElementById('wsPurSubmit').textContent = '+ Добавить';
+  document.getElementById('wsPurCancelEdit').hidden = true;
+}
+
+async function wsPurSubmit(e) {
+  e.preventDefault();
+  const form = e.target;
+  const st = document.getElementById('wsPurStatus');
+  const amount = Number(form.elements.amount.value);
+  if (!(amount > 0)) { st.textContent = 'Укажите сумму больше 0'; st.style.color = 'var(--loss)'; return; }
+  const body = {
+    amount,
+    wholesalerId: form.elements.wholesalerId.value || null,
+    note: form.elements.note.value.trim() || null,
+    date: form.elements.date.value || undefined,
+  };
+  const btn = document.getElementById('wsPurSubmit');
+  btn.disabled = true;
+  try {
+    if (wsPur.editId) await api(`/wholesalers/purchases/${encodeURIComponent(wsPur.editId)}`, { method: 'PUT', body: JSON.stringify(body) });
+    else await api('/wholesalers/purchases', { method: 'POST', body: JSON.stringify(body) });
+    st.textContent = wsPur.editId ? 'Сохранено' : `Добавлено: ${fmtMoney(amount)}`;
+    st.style.color = 'var(--gain, #16a34a)';
+    wsPurResetForm();
+    await wsPurLoad();
+  } catch (err) {
+    st.textContent = err.message; st.style.color = 'var(--loss)';
+  } finally { btn.disabled = false; }
+}
+
+async function wsPurClick(e) {
+  const t = e.target.closest('[data-pur-cal-toggle],[data-pur-cal-nav],[data-pur-cal-day],[data-pur-cal-quick],[data-pur-list-toggle],[data-pur-edit],[data-pur-del]');
+  if (!t) return;
+  e.preventDefault();
+  if (t.dataset.purCalToggle !== undefined) { wsPur.cal = !wsPur.cal; wsPur.pickStart = null; return wsPurRender(); }
+  if (t.dataset.purCalNav) {
+    wsPur.m += Number(t.dataset.purCalNav);
+    if (wsPur.m < 1) { wsPur.m = 12; wsPur.y -= 1; }
+    if (wsPur.m > 12) { wsPur.m = 1; wsPur.y += 1; }
+    return wsPurRender();
+  }
+  if (t.dataset.purCalDay) {
+    if (!wsPur.pickStart) { wsPur.pickStart = t.dataset.purCalDay; return wsPurRender(); }
+    [wsPur.from, wsPur.to] = [wsPur.pickStart, t.dataset.purCalDay].sort();
+    wsPur.pickStart = null; wsPur.cal = false;
+    return wsPurLoad();
+  }
+  if (t.dataset.purCalQuick) {
+    const q = t.dataset.purCalQuick;
+    const last = new Date(Date.UTC(wsPur.y, wsPur.m, 0)).getUTCDate();
+    if (q === 'month') { wsPur.from = wsIso(wsPur.y, wsPur.m, 1); wsPur.to = wsIso(wsPur.y, wsPur.m, last); }
+    else if (q === 'year') { wsPur.from = `${wsPur.y}-01-01`; wsPur.to = `${wsPur.y}-12-31`; }
+    else { wsPur.from = '2000-01-01'; wsPur.to = '2100-12-31'; }
+    wsPur.pickStart = null; wsPur.cal = false;
+    return wsPurLoad();
+  }
+  if (t.dataset.purListToggle !== undefined) { wsPur.listOpen = !wsPur.listOpen; return wsPurRender(); }
+  if (t.dataset.purEdit) {
+    const it = (wsPur.data?.items || []).find((x) => x.id === t.dataset.purEdit);
+    if (!it) return;
+    const form = document.getElementById('wsPurForm');
+    form.elements.amount.value = it.amount;
+    form.elements.wholesalerId.value = it.wholesalerId || '';
+    form.elements.note.value = it.note || '';
+    form.elements.date.value = it.date;
+    wsPur.editId = it.id;
+    document.getElementById('wsPurSubmit').textContent = 'Сохранить';
+    document.getElementById('wsPurCancelEdit').hidden = false;
+    form.elements.amount.focus();
+    return;
+  }
+  if (t.dataset.purDel) {
+    const it = (wsPur.data?.items || []).find((x) => x.id === t.dataset.purDel);
+    if (!it || !confirm(`Удалить закупку ${fmtMoney(it.amount)} (${wsPurName(it.wholesalerId)}, ${it.date})?`)) return;
+    try {
+      await api(`/wholesalers/purchases/${encodeURIComponent(it.id)}`, { method: 'DELETE' });
+      if (wsPur.editId === it.id) wsPurResetForm();
+      await wsPurLoad();
+    } catch (err) {
+      alert('Не удалось удалить: ' + err.message);
+    }
+  }
+}
