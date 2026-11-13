@@ -2498,6 +2498,7 @@ function wireMyMarketTabsOnce() {
   document.getElementById('mymarketDownloadTemplateBtn2').addEventListener('click', downloadMyMarketTemplate);
   document.getElementById('mymarketGoUploadBtn').addEventListener('click', () => switchMyMarketTab('upload'));
   document.getElementById('mymarketNewProductBtn').addEventListener('click', () => { myMarketCardShowcaseLink = null; openMyMarketNewProductCard(); });
+  document.getElementById('mmOzonImportBtn').addEventListener('click', runMyMarketOzonImport);
 
   // --- Загрузка Excel: выбор файла (кнопка / перетаскивание) ---
   document.getElementById('mmChooseUploadFileBtn').addEventListener('click', () => document.getElementById('mymarketUploadFile').click());
@@ -9981,4 +9982,48 @@ function wireWowOnce() {
   });
   document.getElementById('wowBulkOn').addEventListener('click', () => wowSetProducts([...wowState.selected], true));
   document.getElementById('wowBulkOff').addEventListener('click', () => wowSetProducts([...wowState.selected], false));
+}
+
+
+/**
+ * My Market → Товары → «Синхронизировать с Ozon»: сначала обновляет список товаров Ozon
+ * (как «↻ Каталог Ozon»), затем добавляет в My Market только новые — пачками.
+ * Уже существующие товары My Market сервер не трогает (см. ozonToMyMarket.service.ts).
+ */
+async function runMyMarketOzonImport() {
+  const btn = document.getElementById('mmOzonImportBtn');
+  const label = btn.textContent;
+  btn.disabled = true;
+  try {
+    btn.textContent = 'Смотрю товары на Ozon…';
+    await api('/sync/ozon-catalog', { method: 'POST' });
+    let cursor = null;
+    let added = 0, noCat = 0, noPrice = 0;
+    const unmapped = new Set();
+    for (let i = 0; i < 200; i++) {
+      btn.textContent = `Добавляю… ${added}`;
+      const part = await api('/shop-admin/ozon-import', { method: 'POST', body: JSON.stringify({ cursor }) });
+      added += part.added; noCat += part.addedWithoutCategory; noPrice += part.skippedNoPrice;
+      (part.unmappedTypes || []).forEach((t) => unmapped.add(t));
+      if (part.done || !part.nextCursor) break;
+      cursor = part.nextCursor;
+    }
+    let msg = added
+      ? `Добавлено новых товаров с Ozon: ${added}.`
+      : 'Новых товаров на Ozon нет — всё уже есть в My Market.';
+    if (added) {
+      msg += `\n\nОни пока не в продаже: в «Общей таблице» найдите их во вкладке «Скрыты» и нажмите «В витрину».`;
+      if (noCat) msg += `\nБез категории: ${noCat} — они во вкладке «Без категории ⚠».`;
+    }
+    if (noPrice) msg += `\n\nПропущено без цены на Ozon: ${noPrice}.`;
+    if (unmapped.size) msg += `\nТипов Ozon без соответствия в словаре: ${unmapped.size} («Товары» → «Словарь типов Ozon → категория My Market»).`;
+    alert(msg);
+    try { await loadMyMarketProducts(); } catch (e) { console.warn(e); }
+    try { await loadMmShelves(); } catch (e) { console.warn(e); }
+  } catch (err) {
+    alert('Ошибка синхронизации с Ozon: ' + err.message);
+  } finally {
+    btn.textContent = label;
+    btn.disabled = false;
+  }
 }

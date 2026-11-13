@@ -556,9 +556,12 @@
 
         <!-- ---- Товары ---- -->
         <div id="mymarketProductsTab" hidden>
-          <div class="seg" id="mmProdViewTabs" style="margin-bottom:12px">
-            <button data-view="shelves" class="is-active">Полки оптовиков</button>
-            <button data-view="table">Общая таблица</button>
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+            <div class="seg" id="mmProdViewTabs" style="margin:0">
+              <button data-view="shelves" class="is-active">Полки оптовиков</button>
+              <button data-view="table">Общая таблица</button>
+            </div>
+            <button class="btn btn--ghost" id="mmOzonImportBtn" title="Берёт товары с Ozon и добавляет в My Market только те, которых здесь ещё нет — с фото, названием и ценой Ozon. Уже добавленные товары не меняются.">↻ Синхронизировать с Ozon</button>
           </div>
           <div id="mmShelvesView">
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">

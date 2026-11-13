@@ -8,6 +8,7 @@ import JSZip from 'jszip';
 import { prisma } from '../db/prisma';
 import { logger } from '../utils/logger';
 import { markShopOrderAsPaid, normalizePhone, notifyWowActivated } from './shop.routes';
+import { importOzonToMyMarket } from '../services/ozonToMyMarket.service';
 import { getWowSettings, membershipSavings, effectiveStatus, addOneMonth, wowPriceOf, normalizeWowPercent, pushToCustomer, WOW_MIN_PERCENT, WOW_MAX_PERCENT } from '../services/wow.service';
 import { getSearchAnalytics, getConversionAnalytics, getSeasonalityAnalytics } from '../services/shopAnalytics.service';
 import { getGeoAnalytics } from '../services/shopGeo.service';
@@ -2381,5 +2382,20 @@ shopAdminRouter.post('/wow/products', async (req, res) => {
   } catch (err: any) {
     logger.error({ err }, '[Wow admin] POST /wow/products упал');
     res.status(500).json({ error: 'Не удалось сохранить скидки', details: String(err?.message ?? err) });
+  }
+});
+
+/**
+ * «Синхронизировать с Ozon» (My Market → Товары): товары Ozon, которых ещё нет в My Market,
+ * становятся карточками витрины (фото, название, цена с Ozon; категория — по словарю).
+ * Уже существующие товары My Market не трогаются. Пачками: фронт вызывает, пока done=false.
+ */
+shopAdminRouter.post('/ozon-import', async (req, res) => {
+  try {
+    const cursor = typeof req.body?.cursor === 'string' && req.body.cursor ? req.body.cursor : undefined;
+    res.json({ ok: true, ...(await importOzonToMyMarket(40, cursor)) });
+  } catch (err: any) {
+    logger.error({ err }, '[Ozon → My Market] ошибка');
+    res.status(500).json({ ok: false, error: 'Не удалось перенести товары с Ozon', details: String(err?.message ?? err) });
   }
 });
