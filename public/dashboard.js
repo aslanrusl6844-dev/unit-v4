@@ -2782,7 +2782,8 @@ function mmShelfHtml(key, title, w, products) {
       ${products.map((p) => `<tr>
         <td><input type="checkbox" data-mm-pick="${wsEsc(p.id)}" ${mmShelf.picked.has(p.id) ? 'checked' : ''} style="width:auto" /></td>
         <td>${p.image ? `<img src="${wsEsc(p.image)}" alt="" style="width:40px;height:40px;object-fit:cover;border-radius:6px" />` : ''}</td>
-        <td>${wsEsc(p.sku)}</td><td>${wsEsc(p.name)}</td>
+        <td>${wsEsc(p.sku)}</td>
+        <td><div style="display:flex;gap:6px;align-items:flex-start"><button class="link-btn" data-mm-edit-product="${wsEsc(p.id)}" title="Редактировать карточку товара" aria-label="Редактировать" style="font-size:15px;line-height:1;padding:2px 4px;color:var(--accent)">✎</button><span>${wsEsc(p.name)}</span></div></td>
         <td>${mmShelfSaleCell(p)}</td>
         <td class="num">${p.price != null ? fmtMoney(p.price) : '—'}</td>
         <td class="num"><input type="number" min="0" step="1" data-mm-stock="${wsEsc(p.id)}" value="${p.stock ?? 0}" style="width:76px;text-align:right" title="Изменить остаток — сохраняется сразу" /></td>
@@ -2891,6 +2892,19 @@ async function mmSetEnabled(ids, enabled) {
 
 function mmWireShelves(root) {
   const shelfProducts = (key) => mmShelf.products.filter((p) => (key === 'none' ? !p.wholesalerId || !mmShelf.wholesalers.some((w) => w.id === p.wholesalerId) : p.wholesalerId === key));
+  // ✎ — открыть карточку товара прямо с полки; после «Сохранить» полки обновятся.
+  root.querySelectorAll('[data-mm-edit-product]').forEach((b) => b.addEventListener('click', async () => {
+    const id = b.dataset.mmEditProduct;
+    b.disabled = true;
+    try {
+      if (!myMarketProductsCache.some((x) => x.id === id)) await loadMyMarketProducts();
+      if (!myMarketProductsCache.some((x) => x.id === id)) { alert('Товар не найден — обновите страницу'); return; }
+      openMyMarketProductCard(id);
+      myMarketCardEditDone = () => loadMmShelves();
+    } catch (err) {
+      alert('Не удалось открыть карточку: ' + err.message);
+    } finally { b.disabled = false; }
+  }));
   root.querySelectorAll('[data-mm-sale]').forEach((b) => b.addEventListener('click', async () => {
     const id = b.dataset.mmSale;
     b.disabled = true;
