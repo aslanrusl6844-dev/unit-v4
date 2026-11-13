@@ -14,6 +14,13 @@ import { z } from 'zod';
  * дефолта (например, базового URL Kaspi API) получится '', из-за чего
  * запросы к API падают с "Invalid URL".
  */
+/** Публичный адрес бакета R2: добавляет https://, если его нет, и убирает «/» в конце. */
+export function normalizePublicUrl(raw: string): string {
+  const v = raw.trim().replace(/\/+$/, '');
+  if (!v) return '';
+  return /^https?:\/\//i.test(v) ? v : `https://${v}`;
+}
+
 function cleanEnvString(value: unknown): unknown {
   if (typeof value !== 'string') return value;
   const trimmed = value.trim();
@@ -79,6 +86,14 @@ const envSchema = z.object({
   // задан, загрузка файлом честно недоступна (см. src/routes/shopMedia.routes.ts) —
   // поле "URL фото" продолжает работать как обычная ссылка.
   BLOB_READ_WRITE_TOKEN: z.preprocess(cleanEnvString, z.string().optional().default('')),
+  // Cloudflare R2 (S3-совместимое хранилище) для фото/видео My Market. Если все пять
+  // заданы — новые загрузки идут в R2 (видео до 50 МБ напрямую из браузера), иначе —
+  // по-старому в Vercel Blob. Старые ссылки на Blob продолжают работать.
+  R2_ACCOUNT_ID: z.preprocess(cleanEnvString, z.string().optional().default('')),
+  R2_ACCESS_KEY_ID: z.preprocess(cleanEnvString, z.string().optional().default('')),
+  R2_SECRET_ACCESS_KEY: z.preprocess(cleanEnvString, z.string().optional().default('')),
+  R2_BUCKET_NAME: z.preprocess(cleanEnvString, z.string().optional().default('')),
+  R2_PUBLIC_URL: z.preprocess(cleanEnvString, z.string().optional().default('')),
   // SMS для курьерского кода выдачи (POST /courier/request-code). Без
   // SMS_API_KEY SMS честно не отправляется, эндпоинт при этом не падает.
   SMS_PROVIDER: z.preprocess(cleanEnvString, z.string().optional().default('smsc')),
@@ -170,6 +185,15 @@ export const env = {
   priceFeedSecret: safeData.PRICE_FEED_SECRET ?? '',
   shopAppKey: safeData.SHOP_APP_KEY ?? '',
   blobToken: safeData.BLOB_READ_WRITE_TOKEN ?? '',
+  r2: {
+    accountId: safeData.R2_ACCOUNT_ID ?? '',
+    accessKeyId: safeData.R2_ACCESS_KEY_ID ?? '',
+    secretAccessKey: safeData.R2_SECRET_ACCESS_KEY ?? '',
+    // Бакет для видео; переменную можно не задавать — по умолчанию mymarket-videos.
+    bucket: safeData.R2_BUCKET_NAME || 'mymarket-videos',
+    // «pub-xxx.r2.dev» без https:// тоже принимаем; хвостовой «/» убираем.
+    publicUrl: normalizePublicUrl(safeData.R2_PUBLIC_URL ?? ''),
+  },
   smsProvider: safeData.SMS_PROVIDER ?? 'smsc',
   smsApiKey: safeData.SMS_API_KEY ?? '',
   telegramBotToken: safeData.TELEGRAM_BOT_TOKEN ?? '',

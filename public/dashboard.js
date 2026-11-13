@@ -3385,7 +3385,10 @@ async function handleMyMarketVideoFile(file) {
   status.textContent = `Загружаю ${file.name}…`;
   status.style.color = 'var(--text-faint)';
   try {
-    const url = await uploadMyMarketFile(file, { video: true });
+    const url = await uploadMyMarketFile(file, {
+      video: true,
+      onProgress: (pct) => { status.textContent = `Загружаю ${file.name}… ${pct}%`; },
+    });
     if (myMarketCardVideos.includes(url)) return fail('Это видео уже добавлено.');
     myMarketCardVideos.push(url);
     status.textContent = 'Видео добавлено — нажмите «Сохранить» в карточке';
@@ -4307,32 +4310,81 @@ async function mmShrinkForPush(file) {
   } catch { return file; }
 }
 
+/** Ответ сервера → понятная ошибка (error + details как есть). */
+async function mmUploadError(res) {
+  let body = null;
+  try { body = await res.json(); } catch { /* тело не JSON */ }
+  const errText = body?.error ?? `HTTP ${res.status}`;
+  const detailsText = body?.details ? ` — ${typeof body.details === 'string' ? body.details : JSON.stringify(body.details)}` : '';
+  const err = new Error(errText + detailsText);
+  err.isBlobMissing = body?.error === 'добавьте Blob';
+  err.reason = body?.reason;
+  return err;
+}
+
+/**
+ * Прямая загрузка ВИДЕО в Cloudflare R2 (мимо Vercel, до 100 МБ): сервер выдаёт одноразовую
+ * ссылку, браузер кладёт файл PUT-запросом. null — R2 на сервере не настроен (грузим по-старому).
+ */
+async function mmUploadDirect(file, purpose, onProgress) {
+  const res = await fetch('/api/shop/admin/upload-url', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ purpose, filename: file.name, contentType: file.type, size: file.size }),
+  });
+  if (res.status === 501) {
+    const err = await mmUploadError(res);
+    if (err.reason === 'no_r2') return null;
+    throw err;
+  }
+  if (!res.ok) throw await mmUploadError(res);
+  const signed = await res.json();
+  await new Promise((resolve, reject) => {
+    // XHR, а не fetch — чтобы показывать проценты загрузки больших видео.
+    const xhr = new XMLHttpRequest();
+    xhr.open('PUT', signed.uploadUrl);
+    Object.entries(signed.headers || {}).forEach(([k, v]) => xhr.setRequestHeader(k, v));
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100)); };
+    xhr.onload = () => (xhr.status >= 200 && xhr.status < 300
+      ? resolve()
+      : reject(new Error(`Cloudflare R2 не принял файл (HTTP ${xhr.status}). Проверьте права ключа R2.`)));
+    xhr.onerror = () => reject(new Error('Не удалось отправить файл в Cloudflare R2. Скорее всего, в бакете не разрешён CORS для этого сайта (см. docs/R2_SETUP.md), либо пропал интернет.'));
+    xhr.send(file);
+  });
+  return signed.url;
+}
+
 async function uploadMyMarketFile(file, opts) {
   const video = !!(opts && opts.video); // видео товара/витрины: только MP4/WEBM
   const banner = !!(opts && opts.banner);
+  const onProgress = opts && opts.onProgress;
   if (video) {
     if (!['video/mp4', 'video/webm'].includes(file.type)) throw new Error('Формат не поддерживается. Нужен MP4 или WEBM');
-    if (file.size > MM_BANNER_MAX_BYTES) {
-      throw new Error(`Файл слишком большой: ${(file.size / 1e6).toFixed(1)} МБ, максимум ${MM_BANNER_MAX_BYTES / 1e6} МБ`);
-    }
   } else if (banner) {
     if (!MM_BANNER_TYPES.includes(file.type)) throw new Error(MM_BANNER_FORMAT_ERROR);
-    if (file.size > MM_BANNER_MAX_BYTES) {
-      throw new Error(`Файл слишком большой: ${(file.size / 1e6).toFixed(1)} МБ, максимум ${MM_BANNER_MAX_BYTES / 1e6} МБ`);
-    }
     if (file.type.startsWith('video/')) {
       const dur = await mmVideoDuration(file);
       if (dur !== null && dur > MM_BANNER_MAX_VIDEO_SEC + 0.5) {
         throw new Error(`Видео слишком длинное: ${dur.toFixed(1)} с, максимум ${MM_BANNER_MAX_VIDEO_SEC} с`);
       }
     }
-  } else {
-    if (!MM_IMAGE_TYPES.includes(file.type)) {
-      throw new Error(`Формат ${file.type || '(неизвестен)'} не поддерживается — нужен JPEG/PNG/WEBP`);
+  } else if (!MM_IMAGE_TYPES.includes(file.type)) {
+    throw new Error(`Формат ${file.type || '(неизвестен)'} не поддерживается — нужен JPEG/PNG/WEBP`);
+  }
+
+  // 1) Видео — напрямую в Cloudflare R2, до 100 МБ (размер проверит сервер).
+  if (file.type.startsWith('video/')) {
+    const directUrl = await mmUploadDirect(file, banner ? 'banner' : 'video', onProgress);
+    if (directUrl) return directUrl;
+  }
+
+  // 2) Фото (и видео, если R2 не настроен) — как раньше: через сервер, с прежними пределами.
+  if (video || banner) {
+    if (file.size > MM_BANNER_MAX_BYTES) {
+      throw new Error(`Файл слишком большой: ${(file.size / 1e6).toFixed(1)} МБ, максимум ${MM_BANNER_MAX_BYTES / 1e6} МБ`);
     }
-    if (file.size > MM_IMAGE_MAX_MB * 1024 * 1024) {
-      throw new Error(`Файл слишком большой: ${(file.size / 1024 / 1024).toFixed(1)} МБ, максимум ${MM_IMAGE_MAX_MB} МБ`);
-    }
+  } else if (file.size > MM_IMAGE_MAX_MB * 1024 * 1024) {
+    throw new Error(`Файл слишком большой: ${(file.size / 1024 / 1024).toFixed(1)} МБ, максимум ${MM_IMAGE_MAX_MB} МБ`);
   }
   const dataBase64 = await readFileAsBase64(file);
   const res = await fetch('/api/shop/admin/upload', {
@@ -4344,17 +4396,8 @@ async function uploadMyMarketFile(file, opts) {
         ? { kind: 'image', purpose: 'video', filename: file.name, contentType: file.type, dataBase64 }
         : { kind: 'image', filename: file.name, contentType: file.type, dataBase64 }),
   });
-  let body = null;
-  try { body = await res.json(); } catch { /* тело не JSON — обработаем ниже по res.ok/статусу */ }
-  if (!res.ok) {
-    // Показываем ИМЕННО то, что прислал сервер — error и details как есть,
-    // а не завёрнутое/урезанное сообщение.
-    const errText = body?.error ?? `HTTP ${res.status}`;
-    const detailsText = body?.details ? ` — ${typeof body.details === 'string' ? body.details : JSON.stringify(body.details)}` : '';
-    const err = new Error(errText + detailsText);
-    err.isBlobMissing = body?.error === 'добавьте Blob';
-    throw err;
-  }
+  if (!res.ok) throw await mmUploadError(res);
+  const body = await res.json();
   return body.url;
 }
 
