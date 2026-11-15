@@ -1180,3 +1180,33 @@ model SupportOperator {
   name      String
   updatedAt DateTime @updatedAt
 }
+
+// Креаторы My Market Live: заявка из приложения («Я креатор» → анкета) и одобренный креатор.
+// Одобряет админ (My Market → Курьеры → «Креаторы») и сразу ставит процент с продаж.
+model CreatorApplication {
+  id            String    @id @default(cuid())
+  phone         String    @unique // нормализованный 7XXXXXXXXXX
+  name          String
+  city          String
+  answers       String    // JSON анкеты (опыт, техника, время, интересы, согласия)
+  trialVideoUrl String?   // пробное видео 30–60 секунд
+  status        String    @default("pending") // pending | approved | rejected
+  rejectReason  String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  reviewedAt    DateTime?
+
+  @@index([status])
+}
+
+model Creator {
+  id            String   @id @default(cuid())
+  phone         String   @unique
+  name          String
+  code          String   @unique // личный код креатора (MM-XXXXX): покупка по нему засчитывается креатору
+  percent       Float    // процент с суммы товаров (без доставки)
+  active        Boolean  @default(true)
+  applicationId String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
