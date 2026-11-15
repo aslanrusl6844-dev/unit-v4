@@ -1252,6 +1252,11 @@ model LiveStream {
   endedAt      DateTime?
   lastBeatAt   DateTime? // креатор «жив»: приложение отмечается во время эфира
   peakViewers  Int       @default(0)
+  // Облачная запись Agora → файлы в R2 (live/<id>/...), mp4 — для «Повторов».
+  recResourceId String?
+  recSid        String?
+  recState      String?   // recording | stopped | failed
+  replayUrl     String?
   createdAt    DateTime  @default(now())
 
   @@index([status])

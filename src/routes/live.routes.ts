@@ -1,4 +1,5 @@
 import express, { Router } from 'express';
+import { waitUntil } from '@vercel/functions';
 import { z } from 'zod';
 import { env } from '../config/env';
 import { prisma } from '../db/prisma';
@@ -7,7 +8,7 @@ import { normalizePhone } from './shop.routes';
 import { isR2Configured, r2CompleteChunks, r2PutChunk, StorageUnavailableError } from '../services/mediaStorage.service';
 import {
   AGORA_APP_ID, activeCreatorByPhone, activeLiveCategories, agoraConfigured, agoraToken, catsFor, cleanSkus, closeStaleStreams, creatorNames, isOnAir,
-  newChannel, parseSkus, shopCategoryBySku, streamDto, videoDto,
+  newChannel, parseSkus, resolveReplays, shopCategoryBySku, startRecording, stopRecording, streamDto, videoDto,
 } from '../services/live.service';
 import { SHOP_CATEGORIES } from '../config/shopCategories';
 
@@ -51,14 +52,16 @@ const phoneOf = (raw: unknown) => normalizePhone(String(raw ?? ''));
 liveRouter.get('/home', async (req, res) => {
   try {
     await closeStaleStreams();
+    await resolveReplays(3).catch(() => undefined);
     const now = Date.now();
-    const [live, upcoming, shorts] = await Promise.all([
+    const [live, upcoming, shorts, replays] = await Promise.all([
       prisma.liveStream.findMany({ where: { status: 'live' }, orderBy: { startedAt: 'desc' }, take: 20 }),
       prisma.liveStream.findMany({ where: { status: 'scheduled', scheduledAt: { gte: new Date(now - 60 * 60_000) } }, orderBy: { scheduledAt: 'asc' }, take: 20 }),
       prisma.creatorVideo.findMany({ where: { status: 'published' }, orderBy: { createdAt: 'desc' }, take: 60 }),
+      prisma.liveStream.findMany({ where: { status: 'ended', replayUrl: { not: null } }, orderBy: { endedAt: 'desc' }, take: 30 }),
     ]);
     const onAir = live.filter((s: any) => isOnAir(s, now));
-    const all = [...onAir, ...upcoming, ...shorts];
+    const all = [...onAir, ...upcoming, ...shorts, ...replays];
     const [names, cats] = await Promise.all([creatorNames(all.map((x: any) => x.creatorId)), activeLiveCategories()]);
     const bySku = await shopCategoryBySku(all.flatMap((x: any) => parseSkus(x.skus)));
     const withCats = (dto: any) => ({ ...dto, cats: catsFor(dto.skus, bySku, cats) });
@@ -67,6 +70,7 @@ liveRouter.get('/home', async (req, res) => {
       live: onAir.map((s: any) => withCats(streamDto(s, names.get(s.creatorId) ?? ''))),
       upcoming: upcoming.map((s: any) => withCats(streamDto(s, names.get(s.creatorId) ?? ''))),
       shorts: shorts.map((v: any) => withCats(videoDto(v, names.get(v.creatorId) ?? ''))),
+      replays: replays.map((s: any) => withCats(streamDto(s, names.get(s.creatorId) ?? ''))),
     });
   } catch (err) {
     logger.error({ err }, '[Live] /home упал');
@@ -318,11 +322,17 @@ liveRouter.post('/creator/streams/start', async (req, res) => {
       const parsed = streamSchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ error: 'Укажите название и хотя бы один товар' });
       // Один эфир за раз: прошлый «висящий» закрываем.
-      await prisma.liveStream.updateMany({ where: { creatorId: creator.id, status: 'live' }, data: { status: 'ended', endedAt: now } });
+      const prev: any[] = await prisma.liveStream.findMany({ where: { creatorId: creator.id, status: 'live' } });
+      for (const p of prev) {
+        await prisma.liveStream.update({ where: { id: p.id }, data: { status: 'ended', endedAt: now } });
+        await stopRecording(p);
+      }
       s = await prisma.liveStream.create({
         data: { creatorId: creator.id, title: parsed.data.title, channel: newChannel(), status: 'live', skus: JSON.stringify(cleanSkus(parsed.data.skus)), startedAt: now, lastBeatAt: now },
       });
     }
+    // Запись повтора — в фоне, чтобы не задерживать старт эфира.
+    if (s.status === 'live' && s.recState !== 'recording') waitUntil(startRecording(s).catch(() => undefined));
     res.json({ ...streamDto(s, creator.name), join: { appId: AGORA_APP_ID, channel: s.channel, token: agoraToken(s.channel, 'host') } });
   } catch (err) {
     logger.error({ err }, '[Live] start упал');
@@ -345,6 +355,8 @@ liveRouter.post('/creator/streams/:id/stop', async (req, res) => {
   const creator = await activeCreatorByPhone(phoneOf(req.body?.phone) ?? '');
   if (!creator) return res.status(403).json({ error: 'Только для креаторов' });
   const r = await prisma.liveStream.updateMany({ where: { id: req.params.id, creatorId: creator.id, status: { in: ['live', 'scheduled'] } }, data: { status: 'ended', endedAt: new Date() } });
+  const s = await prisma.liveStream.findUnique({ where: { id: req.params.id } });
+  if (s) await stopRecording(s);
   res.json({ ok: true, stopped: r.count });
 });
 
@@ -379,6 +391,8 @@ liveAdminRouter.get('/streams', async (_req, res) => {
 /** Остановить эфир из админки (нарушение правил). */
 liveAdminRouter.post('/streams/:id/stop', async (req, res) => {
   const r = await prisma.liveStream.updateMany({ where: { id: req.params.id, status: { in: ['live', 'scheduled'] } }, data: { status: 'ended', endedAt: new Date() } });
+  const s = await prisma.liveStream.findUnique({ where: { id: req.params.id } });
+  if (s) await stopRecording(s);
   res.json({ ok: true, stopped: r.count });
 });
 
