@@ -563,7 +563,7 @@
           <button data-tab="orders">Заказы</button>
           <button data-tab="returns">Возвраты</button>
           <button data-tab="analytics">Аналитика</button>
-          <button data-tab="couriers">Курьеры</button>
+          <button data-tab="couriers">Курьеры и креаторы</button>
           <button data-tab="finance">Финансы</button>
           <button data-tab="upload">Загрузка Excel</button>
         </div>
@@ -1228,6 +1228,47 @@
         </div>
 
         <div id="mymarketCouriersTab" hidden>
+          <!-- Переключатель справа: Курьеры / Креаторы (My Market Live) -->
+          <div style="display:flex;justify-content:flex-end;margin-bottom:12px">
+            <div class="seg" id="mmPeopleSwitch" style="margin:0">
+              <button class="is-active" data-people="couriers">Курьеры</button>
+              <button data-people="creators">Креаторы</button>
+            </div>
+          </div>
+
+          <!-- ---- Креаторы My Market Live ---- -->
+          <div id="mmCreatorsPane" hidden>
+            <div class="panel">
+              <div class="panel__head"><h2 style="font-size:14px">Креаторы My Market Live</h2></div>
+              <p class="panel__hint" style="margin-top:0">Заявки приходят из приложения: Профиль → «Я креатор» → анкета. При одобрении укажите процент с продаж — у креатора появится личный код (MM-XXXXX).</p>
+              <div class="seg" id="mmCreatorTabs" style="margin-bottom:10px">
+                <button class="is-active" data-ctab="pending">Заявки</button>
+                <button data-ctab="creators">Креаторы</button>
+                <button data-ctab="rejected">Отклонённые</button>
+              </div>
+              <input type="text" id="mmCreatorSearch" placeholder="Поиск: имя, телефон, город, код" style="max-width:300px;margin-bottom:10px" />
+              <div class="table-wrap">
+                <table class="table" id="mmCreatorTable">
+                  <thead></thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+              <span id="mmCreatorStatus" class="panel__hint"></span>
+            </div>
+          </div>
+
+          <!-- ---- Анкета креатора ---- -->
+          <div id="mmCreatorCardOverlay" class="modal-overlay" hidden>
+            <div class="modal">
+              <div class="modal__head">
+                <h2>Анкета креатора</h2>
+                <button class="link-btn" id="mmCreatorCardClose">✕</button>
+              </div>
+              <div id="mmCreatorCardBody"></div>
+            </div>
+          </div>
+
+          <div id="mmCouriersPane">
           <div class="panel" style="margin-bottom:14px">
             <div class="panel__head"><h2 style="font-size:14px">Заявки на регистрацию</h2></div>
             <p class="panel__hint" style="margin-top:0">Курьер больше не регистрируется сам — только по одобренной заявке. Без одобрения /courier/register отвечает 403.</p>
@@ -1302,6 +1343,7 @@
               </table>
             </div>
           </div>
+          </div><!-- /mmCouriersPane -->
         </div>
 
         <!-- ---- Карточка курьера ---- -->

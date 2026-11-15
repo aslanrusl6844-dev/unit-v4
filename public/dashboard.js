@@ -2452,6 +2452,27 @@ function wireMyMarketTabsOnce() {
   // отдельного запроса к серверу.
   document.getElementById('mmVariantSearch').addEventListener('input', () => renderMyMarketVariantsTab());
 
+  // Курьеры / Креаторы — переключатель справа вверху вкладки.
+  document.getElementById('mmPeopleSwitch').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-people]');
+    if (!btn) return;
+    mmPeopleView = btn.dataset.people;
+    document.querySelectorAll('#mmPeopleSwitch button').forEach((b) => b.classList.toggle('is-active', b === btn));
+    document.getElementById('mmCouriersPane').hidden = mmPeopleView !== 'couriers';
+    document.getElementById('mmCreatorsPane').hidden = mmPeopleView !== 'creators';
+    if (mmPeopleView === 'creators') loadMmCreators();
+    else { loadMyMarketCouriers(); loadMyMarketCourierApplications(); }
+  });
+  document.getElementById('mmCreatorTabs').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-ctab]');
+    if (!btn) return;
+    mmCreatorTab = btn.dataset.ctab;
+    document.querySelectorAll('#mmCreatorTabs button').forEach((b) => b.classList.toggle('is-active', b === btn));
+    loadMmCreators();
+  });
+  document.getElementById('mmCreatorSearch').addEventListener('input', renderMmCreators);
+  document.getElementById('mmCreatorCardClose').addEventListener('click', () => { document.getElementById('mmCreatorCardOverlay').hidden = true; });
+
   // Заявки курьеров: подвкладки «Заявки»/«Архив», поиск, пачечный перенос.
   document.getElementById('mmCourierAppSubTabs').addEventListener('click', (e) => {
     const btn = e.target.closest('button');
@@ -2661,7 +2682,10 @@ function switchMyMarketTab(tab) {
   if (tab === 'orders') loadMyMarketOrders();
   if (tab === 'returns') loadMyMarketReturns();
   if (tab === 'analytics') loadMyMarketAnalytics();
-  if (tab === 'couriers') { loadMyMarketCouriers(); loadMyMarketCourierApplications(); }
+  if (tab === 'couriers') {
+    if (mmPeopleView === 'creators') loadMmCreators();
+    else { loadMyMarketCouriers(); loadMyMarketCourierApplications(); }
+  }
   if (tab === 'finance') loadMyMarketFinance();
 }
 
@@ -10535,4 +10559,151 @@ async function wsPurClick(e) {
       alert('Не удалось удалить: ' + err.message);
     }
   }
+}
+
+
+// =====================================================================
+// My Market → «Курьеры и креаторы» → Креаторы (My Market Live, шаг 1):
+// заявки из приложения, одобрение с процентом, список креаторов (процент, вкл/выкл).
+// =====================================================================
+let mmPeopleView = 'couriers';
+let mmCreatorTab = 'pending';
+let mmCreatorRows = [];
+
+const MM_CREATOR_ANSWER_LABELS = {
+  ageRange: 'Возраст', language: 'Язык эфиров', socials: 'Соцсети', followers: 'Подписчики',
+  experience: 'Опыт обзоров/продаж', phoneModel: 'Телефон', equipment: 'Штатив / свет', stableInternet: 'Стабильный интернет',
+  hoursPerWeek: 'Часов в неделю', timeOfDay: 'Удобное время', format: 'Формат', interests: 'Интересные товары',
+  kids: 'Дети', motivation: 'Почему хочет стать креатором',
+};
+
+async function loadMmCreators() {
+  const status = document.getElementById('mmCreatorStatus');
+  status.textContent = 'Загружаю…';
+  try {
+    mmCreatorRows = mmCreatorTab === 'creators'
+      ? await api('/shop-admin/creators')
+      : await api(`/shop-admin/creators/applications?status=${mmCreatorTab === 'rejected' ? 'rejected' : 'pending'}`);
+    status.textContent = '';
+  } catch (err) {
+    mmCreatorRows = [];
+    status.textContent = `Ошибка: ${err.message}`;
+  }
+  renderMmCreators();
+}
+
+function mmCreatorDate(v) {
+  return v ? new Date(v).toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit' }) : '—';
+}
+
+function renderMmCreators() {
+  const table = document.getElementById('mmCreatorTable');
+  const q = (document.getElementById('mmCreatorSearch').value || '').trim().toLowerCase();
+  const rows = mmCreatorRows.filter((r) => !q || [r.name, r.phone, r.city, r.code].some((v) => String(v || '').toLowerCase().includes(q)));
+  const thead = table.querySelector('thead');
+  const tbody = table.querySelector('tbody');
+
+  if (mmCreatorTab === 'creators') {
+    thead.innerHTML = '<tr><th>Имя</th><th>Телефон</th><th>Код</th><th>Процент с продаж</th><th>Статус</th><th>С какого числа</th></tr>';
+    tbody.innerHTML = rows.length ? rows.map((c) => `
+      <tr>
+        <td>${mmEsc(c.name)}</td>
+        <td>+${mmEsc(c.phone)}</td>
+        <td><b>${mmEsc(c.code)}</b></td>
+        <td>
+          <input type="number" min="1" max="50" step="0.5" value="${c.percent}" data-creator-percent="${c.id}" style="width:70px" /> %
+          <button class="link-btn" data-creator-save="${c.id}">Сохранить</button>
+        </td>
+        <td>
+          ${c.active ? '<span style="color:var(--accent);font-weight:600">● Активен</span>' : '<span style="color:var(--loss)">● Выключен</span>'}
+          <button class="link-btn" data-creator-toggle="${c.id}" data-active="${c.active ? '1' : '0'}">${c.active ? 'Выключить' : 'Включить'}</button>
+        </td>
+        <td>${mmCreatorDate(c.createdAt)}</td>
+      </tr>`).join('') : '<tr><td colspan="6" style="color:var(--text-faint)">Креаторов пока нет</td></tr>';
+  } else {
+    const pending = mmCreatorTab === 'pending';
+    thead.innerHTML = `<tr><th>Дата</th><th>Имя</th><th>Телефон</th><th>Город</th><th>Формат</th><th>Подписчики</th><th>Пробное видео</th><th></th><th>${pending ? 'Решение' : 'Причина'}</th></tr>`;
+    tbody.innerHTML = rows.length ? rows.map((a) => {
+      const ans = a.answers || {};
+      const video = a.trialVideoUrl ? `<a href="${mmEsc(a.trialVideoUrl)}" target="_blank" rel="noopener">▶ Смотреть</a>` : '<span style="color:var(--text-faint)">нет</span>';
+      const decision = pending
+        ? `<input type="number" min="1" max="50" step="0.5" value="7" data-app-percent="${a.id}" style="width:62px" title="Процент с продаж" /> %
+           <button class="link-btn" data-capp-approve="${a.id}" style="color:var(--accent)">Одобрить</button>
+           <button class="link-btn" data-capp-reject="${a.id}" style="color:var(--loss)">Отказать</button>`
+        : `${mmEsc(a.rejectReason || '—')} <button class="link-btn" data-capp-reopen="${a.id}">Вернуть в заявки</button>`;
+      return `
+        <tr>
+          <td>${mmCreatorDate(a.createdAt)}</td>
+          <td>${mmEsc(a.name)}</td>
+          <td>+${mmEsc(a.phone)}</td>
+          <td>${mmEsc(a.city)}</td>
+          <td>${mmEsc(ans.format || '—')}</td>
+          <td>${mmEsc(ans.followers || '—')}</td>
+          <td>${video}</td>
+          <td><button class="link-btn" data-capp-card="${a.id}">Анкета</button></td>
+          <td style="white-space:nowrap">${decision}</td>
+        </tr>`;
+    }).join('') : `<tr><td colspan="9" style="color:var(--text-faint)">${pending ? 'Новых заявок нет' : 'Отклонённых нет'}</td></tr>`;
+  }
+
+  tbody.querySelectorAll('[data-capp-card]').forEach((b) => b.addEventListener('click', () => openMmCreatorCard(b.dataset.cappCard)));
+  tbody.querySelectorAll('[data-capp-approve]').forEach((b) => b.addEventListener('click', async () => {
+    const id = b.dataset.cappApprove;
+    const percent = Number(tbody.querySelector(`[data-app-percent="${id}"]`)?.value);
+    if (!(percent >= 1 && percent <= 50)) { alert('Процент — от 1 до 50'); return; }
+    b.disabled = true;
+    try {
+      const c = await api(`/shop-admin/creators/applications/${id}/approve`, { method: 'POST', body: JSON.stringify({ percent }) });
+      document.getElementById('mmCreatorStatus').textContent = `Одобрено: ${c.name}, код ${c.code}, ${c.percent}%`;
+      loadMmCreators();
+    } catch (err) { alert(err.message); b.disabled = false; }
+  }));
+  tbody.querySelectorAll('[data-capp-reject]').forEach((b) => b.addEventListener('click', async () => {
+    const reason = prompt('Причина отказа (необязательно):', '');
+    if (reason === null) return;
+    try {
+      await api(`/shop-admin/creators/applications/${b.dataset.cappReject}/reject`, { method: 'POST', body: JSON.stringify({ reason }) });
+      loadMmCreators();
+    } catch (err) { alert(err.message); }
+  }));
+  tbody.querySelectorAll('[data-capp-reopen]').forEach((b) => b.addEventListener('click', async () => {
+    try {
+      await api(`/shop-admin/creators/applications/${b.dataset.cappReopen}/reopen`, { method: 'POST', body: '{}' });
+      loadMmCreators();
+    } catch (err) { alert(err.message); }
+  }));
+  tbody.querySelectorAll('[data-creator-save]').forEach((b) => b.addEventListener('click', async () => {
+    const id = b.dataset.creatorSave;
+    const percent = Number(tbody.querySelector(`[data-creator-percent="${id}"]`)?.value);
+    if (!(percent >= 1 && percent <= 50)) { alert('Процент — от 1 до 50'); return; }
+    try {
+      await api(`/shop-admin/creators/${id}`, { method: 'PATCH', body: JSON.stringify({ percent }) });
+      document.getElementById('mmCreatorStatus').textContent = `Процент сохранён: ${percent}%`;
+      loadMmCreators();
+    } catch (err) { alert(err.message); }
+  }));
+  tbody.querySelectorAll('[data-creator-toggle]').forEach((b) => b.addEventListener('click', async () => {
+    const active = b.dataset.active !== '1';
+    try {
+      await api(`/shop-admin/creators/${b.dataset.creatorToggle}`, { method: 'PATCH', body: JSON.stringify({ active }) });
+      loadMmCreators();
+    } catch (err) { alert(err.message); }
+  }));
+}
+
+function openMmCreatorCard(id) {
+  const a = mmCreatorRows.find((r) => r.id === id);
+  if (!a) return;
+  const ans = a.answers || {};
+  const lines = Object.entries(MM_CREATOR_ANSWER_LABELS)
+    .filter(([k]) => ans[k] !== undefined && ans[k] !== '' && !(Array.isArray(ans[k]) && !ans[k].length))
+    .map(([k, label]) => `<tr><td style="color:var(--text-muted);width:40%">${label}</td><td>${mmEsc(Array.isArray(ans[k]) ? ans[k].join(', ') : ans[k])}</td></tr>`)
+    .join('');
+  const consents = ans.consents ? `Согласия: персональные данные ✓, правила ✓, 18+ ✓ (${mmCreatorDate(ans.consents.at)})` : '';
+  document.getElementById('mmCreatorCardBody').innerHTML = `
+    <p><b>${mmEsc(a.name)}</b> · +${mmEsc(a.phone)} · ${mmEsc(a.city)}</p>
+    ${a.trialVideoUrl ? `<video src="${mmEsc(a.trialVideoUrl)}" controls style="width:100%;max-height:360px;border-radius:10px;background:#000"></video>` : '<p class="panel__hint">Пробного видео нет</p>'}
+    <table class="table" style="margin-top:10px"><tbody>${lines || '<tr><td>Анкета пустая</td></tr>'}</tbody></table>
+    <p class="panel__hint">${consents}</p>`;
+  document.getElementById('mmCreatorCardOverlay').hidden = false;
 }

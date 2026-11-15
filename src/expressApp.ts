@@ -20,6 +20,7 @@ import { nichesRouter } from './routes/niches.routes';
 import { searchAnalyticsRouter } from './routes/searchAnalytics.routes';
 import { adsRouter } from './routes/ads.routes';
 import { assistantRouter } from './routes/assistant.routes';
+import { creatorAdminRouter, creatorRouter } from './routes/creator.routes';
 import { telegramAgentRouter } from './routes/telegramAgent.routes';
 import { shopRouter } from './routes/shop.routes';
 import { shopAdminRouter } from './routes/shopAdmin.routes';
@@ -168,6 +169,9 @@ app.use('/api/shop-admin/showcases', showcasesAdminRouter);
 app.use('/api/shop-admin/city-images', cityImagesAdminRouter);
 // Ассистент — до shopRouter (своя проверка x-app-key, длинный стрим).
 app.use('/api/shop/assistant', assistantRouter);
+// Креаторы My Market Live — до shopRouter (своя проверка x-app-key).
+app.use('/api/shop/creator', creatorRouter);
+app.use('/api/shop-admin/creators', creatorAdminRouter);
 app.use('/api/shop', shopRouter);
 app.use('/api/shop-admin', shopAdminRouter);
 // «Двор» — своя подсистема, свои таблицы, свои заказы, свои деньги. Не
