@@ -8,13 +8,21 @@
  * «Завершить» — чат закрывается, дальше снова отвечает Баурсак.
  */
 import { randomBytes } from 'crypto';
+import { waitUntil } from '@vercel/functions';
 import { prisma } from '../db/prisma';
 import { logger } from '../utils/logger';
-import { allowedChatIds, answerCallback, escapeHtml, isAllowedChat, sendMessage, sendMessageWithId } from '../lib/telegramBot';
+import { allowedChatIds, answerCallback, escapeHtml, isAllowedChat, sendMessage, sendMessageWithId, webhookSecret } from '../lib/telegramBot';
 import { sendBroadcast } from './pushBroadcast.service';
 
 export type SupportStatus = 'waiting' | 'active' | 'closed';
 export const MAX_TEXT = 2000;
+/** Клиент не ответил столько после сообщения оператора — чат с оператором закрывается сам. */
+export const IDLE_MS = 60_000;
+export const IDLE_TEXT = 'Чат с оператором завершён: вы не ответили в течение минуты. Если вопрос остался — напишите, Баурсак на связи 🙂';
+
+let baseUrl = '';
+/** Адрес этого же сервера (ставит вебхук бота) — для проверки «клиент молчит минуту» отдельным вызовом. */
+export function setSupportBaseUrl(url: string) { if (url) baseUrl = url; }
 
 /** Просит ли клиент живого человека. Приложение соединяет только со второй такой просьбы. */
 export function isOperatorRequest(text: string): boolean {
@@ -65,6 +73,69 @@ async function pushCustomer(chat: { id: string; phone?: string | null; pushToken
   } catch (err: any) {
     logger.warn({ err: String(err?.message ?? err) }, '[Support] пуш покупателю не ушёл');
   }
+}
+
+type IdleFields = { status: string; lastOperatorAt?: Date | null; lastCustomerAt?: Date | null };
+
+/** Оператор написал, клиент после этого молчит дольше IDLE_MS. */
+export function idleExpired(chat: IdleFields, now = Date.now()): boolean {
+  if (chat.status !== 'active' || !chat.lastOperatorAt) return false;
+  const op = new Date(chat.lastOperatorAt).getTime();
+  if (chat.lastCustomerAt && new Date(chat.lastCustomerAt).getTime() >= op) return false;
+  return now - op >= IDLE_MS;
+}
+
+/** Закрывает чат, если клиент молчит минуту после оператора. true — закрыли сейчас. */
+export async function closeIfIdle(chatId: string, now = Date.now()): Promise<boolean> {
+  const chat = await prisma.supportChat.findUnique({ where: { id: chatId } });
+  if (!chat || !idleExpired(chat, now)) return false;
+  // Атомарно и только если за это время никто ничего не написал.
+  const r = await prisma.supportChat.updateMany({
+    where: { id: chat.id, status: 'active', lastOperatorAt: chat.lastOperatorAt },
+    data: { status: 'closed', closedAt: new Date(now), closedBy: 'timeout' },
+  });
+  if (!r.count) return false;
+  await prisma.supportMessage.create({ data: { chatId: chat.id, sender: 'system', text: IDLE_TEXT } });
+  await pushCustomer(chat, 'Чат с оператором завершён', 'Вы не ответили в течение минуты. Баурсак на связи');
+  const targets = chat.operatorTgChatId ? [chat.operatorTgChatId] : allowedChatIds();
+  for (const tg of targets) await sendMessage(tg, `⚪️ Чат #${chat.number} закрыт автоматически: клиент не ответил 1 минуту.`).catch(() => undefined);
+  logger.info({ number: chat.number }, '[Support] чат закрыт по тишине клиента');
+  return true;
+}
+
+/**
+ * Через минуту после сообщения оператора проверяет, ответил ли клиент. Функция на Vercel живёт до 60 с,
+ * поэтому ожидание идёт отдельным вызовом этого же сервера (/api/telegram-agent/support-idle).
+ * Нет адреса сервера — чат всё равно закроется при следующем обращении (опрос приложения, сообщение).
+ */
+function scheduleIdleCheck(chatId: string): void {
+  if (!baseUrl) return;
+  waitUntil(
+    fetch(`${baseUrl}/api/telegram-agent/support-idle`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-telegram-bot-api-secret-token': webhookSecret() },
+      body: JSON.stringify({ chatId }),
+      signal: AbortSignal.timeout(10_000),
+    }).then(() => undefined).catch((err) => logger.warn({ err: String(err?.message ?? err) }, '[Support] не удалось запланировать проверку тишины')),
+  );
+}
+
+/**
+ * Вызов /support-idle: ждёт, пока выйдет минута тишины (не дольше ~45 с за вызов, иначе передаёт
+ * ожидание следующему вызову), и закрывает чат, если клиент так и не ответил.
+ */
+export async function runIdleCheck(chatId: string): Promise<void> {
+  const chat = await prisma.supportChat.findUnique({ where: { id: chatId } });
+  if (!chat || chat.status !== 'active' || !chat.lastOperatorAt) return;
+  const dueAt = new Date(chat.lastOperatorAt).getTime() + IDLE_MS + 1_000;
+  const wait = dueAt - Date.now();
+  if (wait > 45_000) {
+    await new Promise((r) => setTimeout(r, 40_000));
+    scheduleIdleCheck(chatId);
+    return;
+  }
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  await closeIfIdle(chatId);
 }
 
 export interface StartInput {
@@ -119,10 +190,11 @@ export type CustomerResult = { ok: true; message: any } | { ok: false; code: 404
 export async function customerMessage(id: string, token: string, rawText: unknown): Promise<CustomerResult> {
   const chat = await chatByToken(id, token);
   if (!chat) return { ok: false, code: 404, error: 'Чат не найден' };
-  if (chat.status === 'closed') return { ok: false, code: 409, error: 'Чат с оператором завершён' };
+  if (chat.status === 'closed' || (await closeIfIdle(chat.id))) return { ok: false, code: 409, error: 'Чат с оператором завершён' };
   const text = cleanText(rawText);
   if (!text) return { ok: false, code: 400, error: 'Пустое сообщение' };
   const message = await prisma.supportMessage.create({ data: { chatId: chat.id, sender: 'customer', text } });
+  await prisma.supportChat.update({ where: { id: chat.id }, data: { lastCustomerAt: new Date() } });
   const targets = chat.status === 'active' && chat.operatorTgChatId ? [chat.operatorTgChatId] : allowedChatIds();
   await notifyOperators(
     chat.id,
@@ -134,8 +206,9 @@ export async function customerMessage(id: string, token: string, rawText: unknow
 }
 
 export async function chatState(id: string, token: string, after = 0) {
-  const chat = await chatByToken(id, token);
+  let chat = await chatByToken(id, token);
   if (!chat) return null;
+  if (await closeIfIdle(chat.id)) chat = (await chatByToken(id, token)) ?? chat;
   const messages = await prisma.supportMessage.findMany({
     where: { chatId: chat.id, id: { gt: Math.max(0, Math.floor(after) || 0) } },
     orderBy: { id: 'asc' },
@@ -234,9 +307,12 @@ async function closeByOperator(chatId: string, tgChatId: string, operatorName: s
 async function operatorReply(chatId: string, tgChatId: string, operatorName: string, rawText: string): Promise<void> {
   const text = cleanText(rawText);
   if (!text) return;
+  if (await closeIfIdle(chatId)) return; // клиент уже минуту молчал — чат закрыт, оператору ушло уведомление
   const chat = await take(chatId, tgChatId, operatorName, true);
   if (!chat) return;
   await prisma.supportMessage.create({ data: { chatId: chat.id, sender: 'operator', text, operatorName } });
+  await prisma.supportChat.update({ where: { id: chat.id }, data: { lastOperatorAt: new Date() } });
+  scheduleIdleCheck(chat.id);
   await pushCustomer(chat, `${operatorName} (оператор)`, text);
   await sendMessage(tgChatId, `✓ Отправлено в чат #${chat.number}`).catch(() => undefined);
 }

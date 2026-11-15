@@ -1138,10 +1138,13 @@ model SupportChat {
   status           String           @default("waiting") // waiting | active | closed
   operatorName     String?
   operatorTgChatId String?
+  // Для автозавершения: клиент не ответил 1 минуту после сообщения оператора — чат закрывается.
+  lastOperatorAt   DateTime?
+  lastCustomerAt   DateTime?
   createdAt        DateTime         @default(now())
   updatedAt        DateTime         @updatedAt
   closedAt         DateTime?
-  closedBy         String?          // operator | customer
+  closedBy         String?          // operator | customer | timeout
   messages         SupportMessage[]
 
   @@index([phone])

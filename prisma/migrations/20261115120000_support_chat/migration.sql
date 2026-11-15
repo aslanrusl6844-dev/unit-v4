@@ -9,6 +9,8 @@ CREATE TABLE "SupportChat" (
     "status" TEXT NOT NULL DEFAULT 'waiting',
     "operatorName" TEXT,
     "operatorTgChatId" TEXT,
+    "lastOperatorAt" TIMESTAMP(3),
+    "lastCustomerAt" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
     "closedAt" TIMESTAMP(3),

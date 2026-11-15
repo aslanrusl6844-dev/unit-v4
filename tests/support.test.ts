@@ -30,7 +30,8 @@ const stub: Record<string, any> = {
     findUnique: async (a: Row) => { const c = chats.find((x) => (a.where.id ? x.id === a.where.id : x.number === a.where.number)); return c ? { ...c } : null; },
     update: async (a: Row) => { const c = chats.find((x) => x.id === a.where.id)!; Object.assign(c, a.data); return { ...c }; },
     updateMany: async (a: Row) => {
-      const c = chats.find((x) => x.id === a.where.id && (!a.where.status || x.status === a.where.status));
+      const c = chats.find((x) => x.id === a.where.id && (!a.where.status || x.status === a.where.status)
+        && (!('lastOperatorAt' in a.where) || +x.lastOperatorAt === +a.where.lastOperatorAt));
       if (!c) return { count: 0 };
       Object.assign(c, a.data);
       return { count: 1 };
@@ -190,6 +191,45 @@ describe('чат с оператором', () => {
     assert.equal((await call('POST', `${BASE}/${r.json.id}/close`, {}, h)).status, 200);
     assert.equal(chats[0].status, 'closed');
     assert.equal(chats[0].closedBy, 'customer');
+  });
+
+  test('клиент молчит минуту после ответа оператора — чат закрывается сам, оператору приходит уведомление', async () => {
+    const r = await start();
+    const h = { 'x-support-token': r.json.token };
+    await support.handleSupportUpdate({ message: { chat: { id: 111 }, from: { id: 1, first_name: 'Аслан' }, text: '#1 Подскажите номер заказа?' } });
+    assert.ok(chats[0].lastOperatorAt);
+    // 30 секунд — ещё открыт.
+    chats[0].lastOperatorAt = new Date(Date.now() - 30_000);
+    assert.equal((await call('GET', `${BASE}/${r.json.id}`, undefined, h)).json.status, 'active');
+    // Прошла минута — закрыт, у клиента служебное сообщение, оператор знает.
+    chats[0].lastOperatorAt = new Date(Date.now() - 61_000);
+    sent = [];
+    const st = await call('GET', `${BASE}/${r.json.id}`, undefined, h);
+    assert.equal(st.json.status, 'closed');
+    assert.equal(chats[0].closedBy, 'timeout');
+    assert.match(st.json.messages.at(-1).text, /не ответили в течение минуты/);
+    assert.ok(tgMessages().some((x) => x.body.chat_id === '111' && /закрыт автоматически/.test(x.body.text)));
+    assert.equal((await call('POST', `${BASE}/${r.json.id}/messages`, { text: 'я тут' }, h)).status, 409);
+  });
+
+  test('клиент ответил — минута не считается; пока оператор не написал — не закрываем', async () => {
+    const r = await start();
+    const h = { 'x-support-token': r.json.token };
+    chats[0].lastOperatorAt = undefined;
+    assert.equal(await support.closeIfIdle(r.json.id), false);
+    await support.handleSupportUpdate({ message: { chat: { id: 111 }, from: { id: 1, first_name: 'Аслан' }, text: '#1 Здравствуйте' } });
+    // Клиент ответил через 30 секунд…
+    chats[0].lastOperatorAt = new Date(Date.now() - 30_000);
+    assert.equal((await call('POST', `${BASE}/${r.json.id}/messages`, { text: 'Заказ MM-1' }, h)).status, 200);
+    // …и даже спустя полторы минуты чат не закрывается: теперь очередь оператора.
+    chats[0].lastOperatorAt = new Date(Date.now() - 90_000);
+    chats[0].lastCustomerAt = new Date(Date.now() - 60_000);
+    assert.equal(await support.closeIfIdle(r.json.id), false);
+    assert.equal(chats[0].status, 'active');
+  });
+
+  test('служебный вызов проверки тишины — только с секретом бота', async () => {
+    assert.equal((await call('POST', '/api/telegram-agent/support-idle', { chatId: 'c1' })).status, 401);
   });
 
   test('чужие сообщения боту (не реплай на чат поддержки) отдаются агенту товаров', async () => {
