@@ -10581,9 +10581,11 @@ async function loadMmCreators() {
   const status = document.getElementById('mmCreatorStatus');
   status.textContent = 'Загружаю…';
   try {
-    mmCreatorRows = mmCreatorTab === 'creators'
-      ? await api('/shop-admin/creators')
-      : await api(`/shop-admin/creators/applications?status=${mmCreatorTab === 'rejected' ? 'rejected' : 'pending'}`);
+    if (mmCreatorTab === 'creators') mmCreatorRows = await api('/shop-admin/creators');
+    else if (mmCreatorTab === 'videos') mmCreatorRows = await api('/shop-admin/live/videos?status=pending');
+    else if (mmCreatorTab === 'published') mmCreatorRows = await api('/shop-admin/live/videos?status=published');
+    else if (mmCreatorTab === 'streams') mmCreatorRows = await api('/shop-admin/live/streams');
+    else mmCreatorRows = await api(`/shop-admin/creators/applications?status=${mmCreatorTab === 'rejected' ? 'rejected' : 'pending'}`);
     status.textContent = '';
   } catch (err) {
     mmCreatorRows = [];
@@ -10599,12 +10601,58 @@ function mmCreatorDate(v) {
 function renderMmCreators() {
   const table = document.getElementById('mmCreatorTable');
   const q = (document.getElementById('mmCreatorSearch').value || '').trim().toLowerCase();
-  const rows = mmCreatorRows.filter((r) => !q || [r.name, r.phone, r.city, r.code].some((v) => String(v || '').toLowerCase().includes(q)));
+  const rows = mmCreatorRows.filter((r) => !q || [r.name, r.phone, r.city, r.code, r.title, r.creatorName].some((v) => String(v || '').toLowerCase().includes(q)));
   const thead = table.querySelector('thead');
   const tbody = table.querySelector('tbody');
 
+  if (mmCreatorTab === 'videos' || mmCreatorTab === 'published') {
+    const pendingTab = mmCreatorTab === 'videos';
+    thead.innerHTML = '<tr><th>Дата</th><th>Креатор</th><th>Название</th><th>Видео</th><th>Товары (артикулы)</th><th class="num">Просмотры</th><th class="num">Лайки</th><th></th></tr>';
+    tbody.innerHTML = rows.length ? rows.map((v) => `
+      <tr>
+        <td>${mmCreatorDate(v.createdAt)}</td>
+        <td>${mmEsc(v.creatorName)}</td>
+        <td>${mmEsc(v.title)}</td>
+        <td><video src="${mmEsc(v.videoUrl)}" controls preload="metadata" style="width:120px;max-height:200px;border-radius:8px;background:#000"></video></td>
+        <td>${(v.skus || []).map(mmEsc).join(', ')}</td>
+        <td class="num">${v.views}</td>
+        <td class="num">${v.likes}</td>
+        <td style="white-space:nowrap">
+          ${pendingTab ? `<button class="link-btn" data-video-status="published" data-video-id="${v.id}" style="color:var(--accent)">Опубликовать</button>` : ''}
+          <button class="link-btn" data-video-status="hidden" data-video-id="${v.id}" style="color:var(--loss)">Скрыть</button>
+        </td>
+      </tr>`).join('') : `<tr><td colspan="8" style="color:var(--text-faint)">${pendingTab ? 'Видео на проверке нет' : 'Опубликованных видео нет'}</td></tr>`;
+    tbody.querySelectorAll('[data-video-status]').forEach((b) => b.addEventListener('click', async () => {
+      try {
+        await api(`/shop-admin/live/videos/${b.dataset.videoId}/status`, { method: 'POST', body: JSON.stringify({ status: b.dataset.videoStatus }) });
+        loadMmCreators();
+      } catch (err) { alert(err.message); }
+    }));
+    return;
+  }
+
+  if (mmCreatorTab === 'streams') {
+    const label = { live: '<span style="color:var(--loss);font-weight:700">● В эфире</span>', scheduled: 'Анонс', ended: 'Завершён' };
+    thead.innerHTML = '<tr><th>Креатор</th><th>Название</th><th>Статус</th><th>Начало / анонс</th><th>Окончание</th><th class="num">Пик зрителей</th><th></th></tr>';
+    tbody.innerHTML = rows.length ? rows.map((s) => `
+      <tr>
+        <td>${mmEsc(s.creatorName)}</td>
+        <td>${mmEsc(s.title)}</td>
+        <td>${label[s.status] || mmEsc(s.status)}</td>
+        <td>${s.startedAt ? new Date(s.startedAt).toLocaleString('ru-RU') : s.scheduledAt ? new Date(s.scheduledAt).toLocaleString('ru-RU') : '—'}</td>
+        <td>${s.endedAt ? new Date(s.endedAt).toLocaleString('ru-RU') : '—'}</td>
+        <td class="num">${s.peakViewers ?? 0}</td>
+        <td>${s.status !== 'ended' ? `<button class="link-btn" data-stream-stop="${s.id}" style="color:var(--loss)">Остановить</button>` : ''}</td>
+      </tr>`).join('') : '<tr><td colspan="7" style="color:var(--text-faint)">Эфиров пока не было</td></tr>';
+    tbody.querySelectorAll('[data-stream-stop]').forEach((b) => b.addEventListener('click', async () => {
+      if (!confirm('Остановить эфир?')) return;
+      try { await api(`/shop-admin/live/streams/${b.dataset.streamStop}/stop`, { method: 'POST', body: '{}' }); loadMmCreators(); } catch (err) { alert(err.message); }
+    }));
+    return;
+  }
+
   if (mmCreatorTab === 'creators') {
-    thead.innerHTML = '<tr><th>Имя</th><th>Телефон</th><th>Код</th><th>Процент с продаж</th><th>Статус</th><th>С какого числа</th></tr>';
+    thead.innerHTML = '<tr><th>Имя</th><th>Телефон</th><th>Код</th><th>Процент с продаж</th><th>Статус</th><th>Видео без проверки</th><th>С какого числа</th></tr>';
     tbody.innerHTML = rows.length ? rows.map((c) => `
       <tr>
         <td>${mmEsc(c.name)}</td>
@@ -10618,8 +10666,9 @@ function renderMmCreators() {
           ${c.active ? '<span style="color:var(--accent);font-weight:600">● Активен</span>' : '<span style="color:var(--loss)">● Выключен</span>'}
           <button class="link-btn" data-creator-toggle="${c.id}" data-active="${c.active ? '1' : '0'}">${c.active ? 'Выключить' : 'Включить'}</button>
         </td>
+        <td><label style="cursor:pointer"><input type="checkbox" data-creator-auto="${c.id}" ${c.autoPublish ? 'checked' : ''} /> сразу в ленту</label></td>
         <td>${mmCreatorDate(c.createdAt)}</td>
-      </tr>`).join('') : '<tr><td colspan="6" style="color:var(--text-faint)">Креаторов пока нет</td></tr>';
+      </tr>`).join('') : '<tr><td colspan="7" style="color:var(--text-faint)">Креаторов пока нет</td></tr>';
   } else {
     const pending = mmCreatorTab === 'pending';
     thead.innerHTML = `<tr><th>Дата</th><th>Имя</th><th>Телефон</th><th>Город</th><th>Формат</th><th>Подписчики</th><th>Пробное видео</th><th></th><th>${pending ? 'Решение' : 'Причина'}</th></tr>`;
@@ -10681,6 +10730,12 @@ function renderMmCreators() {
       document.getElementById('mmCreatorStatus').textContent = `Процент сохранён: ${percent}%`;
       loadMmCreators();
     } catch (err) { alert(err.message); }
+  }));
+  tbody.querySelectorAll('[data-creator-auto]').forEach((b) => b.addEventListener('change', async () => {
+    try {
+      await api(`/shop-admin/creators/${b.dataset.creatorAuto}`, { method: 'PATCH', body: JSON.stringify({ autoPublish: b.checked }) });
+      document.getElementById('mmCreatorStatus').textContent = b.checked ? 'Видео этого креатора будут сразу в ленте' : 'Видео этого креатора — сначала на проверку';
+    } catch (err) { alert(err.message); b.checked = !b.checked; }
   }));
   tbody.querySelectorAll('[data-creator-toggle]').forEach((b) => b.addEventListener('click', async () => {
     const active = b.dataset.active !== '1';

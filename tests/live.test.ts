@@ -1,0 +1,195 @@
+/**
+ * My Market Live: эфиры (токен Agora, «зависший» эфир закрывается), чат (телефоны и ссылки вырезаются),
+ * шортс (лента только опубликованных, лайки), проверка видео в админке. БД — заглушка в памяти.
+ */
+import { test, describe, before, after, beforeEach } from 'node:test';
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import { randomBytes } from 'node:crypto';
+
+const APP_KEY = randomBytes(8).toString('hex');
+const ADMIN_USER = 'admin-test';
+const ADMIN_PASSWORD = randomBytes(12).toString('hex');
+process.env.DATABASE_URL = 'postgresql://stub:stub@127.0.0.1:1/none';
+process.env.SHOP_APP_KEY = APP_KEY;
+process.env.ADMIN_USER = ADMIN_USER;
+process.env.ADMIN_PASSWORD = ADMIN_PASSWORD;
+process.env.AGORA_APP_CERTIFICATE = 'a'.repeat(32);
+
+type Row = Record<string, any>;
+let creators: Row[] = [];
+let streams: Row[] = [];
+let videos: Row[] = [];
+let likes: Row[] = [];
+let chat: Row[] = [];
+let seq = 0;
+
+const match = (x: Row, w: Row = {}): boolean => Object.entries(w).every(([k, v]) => {
+  if (v && typeof v === 'object' && !(v instanceof Date)) {
+    if ('in' in v) return v.in.includes(x[k]);
+    if ('not' in v) return x[k] !== v.not;
+    if ('gt' in v) return x[k] > v.gt;
+    if ('lt' in v) return x[k] != null && x[k] < v.lt;
+    if ('gte' in v) return x[k] != null && x[k] >= v.gte;
+    return true;
+  }
+  return x[k] === v;
+});
+const table = (rows: () => Row[], set: (r: Row[]) => void, idNum = false) => ({
+  findUnique: async (a: Row) => {
+    const w = a.where;
+    if (w.videoId_deviceKey) return rows().find((r) => r.videoId === w.videoId_deviceKey.videoId && r.deviceKey === w.videoId_deviceKey.deviceKey) ?? null;
+    return rows().find((r) => match(r, w)) ?? null;
+  },
+  findMany: async (a: Row = {}) => {
+    let out = rows().filter((r) => match(r, a.where));
+    const ob = a.orderBy && Object.entries(a.orderBy)[0];
+    if (ob) out = [...out].sort((p: Row, q: Row) => (p[ob[0]] > q[ob[0]] ? 1 : -1) * (ob[1] === 'desc' ? -1 : 1));
+    return a.take ? out.slice(0, a.take) : out;
+  },
+  create: async (a: Row) => { const r = { id: idNum ? ++seq : `id${++seq}`, createdAt: new Date(Date.now() + seq), likes: 0, views: 0, peakViewers: 0, ...a.data }; rows().push(r); return { ...r }; },
+  update: async (a: Row) => {
+    const r = rows().find((x) => x.id === a.where.id)!;
+    for (const [k, v] of Object.entries(a.data)) {
+      if (v && typeof v === 'object' && 'increment' in (v as Row)) r[k] = (r[k] ?? 0) + (v as Row).increment;
+      else if (v && typeof v === 'object' && 'decrement' in (v as Row)) r[k] = (r[k] ?? 0) - (v as Row).decrement;
+      else r[k] = v;
+    }
+    return { ...r };
+  },
+  updateMany: async (a: Row) => {
+    let n = 0;
+    rows().forEach((r) => {
+      if (!match(r, a.where)) return;
+      n += 1;
+      for (const [k, v] of Object.entries(a.data)) r[k] = v && typeof v === 'object' && 'increment' in (v as Row) ? (r[k] ?? 0) + (v as Row).increment : v;
+    });
+    return { count: n };
+  },
+  delete: async (a: Row) => { set(rows().filter((r) => r.id !== a.where.id)); return {}; },
+});
+const stub: Record<string, any> = {
+  creator: table(() => creators, (r) => { creators = r; }),
+  liveStream: table(() => streams, (r) => { streams = r; }),
+  creatorVideo: table(() => videos, (r) => { videos = r; }),
+  creatorVideoLike: table(() => likes, (r) => { likes = r; }, true),
+  liveChatMessage: table(() => chat, (r) => { chat = r; }, true),
+};
+class StubPrismaClient {
+  constructor() {
+    return new Proxy(this, {
+      get(_t, key) {
+        if (key === 'then') return undefined;
+        if (key in stub) return stub[key as string];
+        return new Proxy({}, { get: () => async () => [] });
+      },
+    });
+  }
+}
+const prismaPath = require.resolve('@prisma/client');
+require.cache[prismaPath] = { id: prismaPath, filename: prismaPath, loaded: true, exports: { PrismaClient: StubPrismaClient, Prisma: {} } } as any;
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const app = require('../src/expressApp').default;
+
+let port = 0;
+let server: http.Server;
+function call(method: string, path: string, body?: unknown, admin = false): Promise<{ status: number; json: any }> {
+  return new Promise((resolve, reject) => {
+    const payload = body === undefined ? '' : JSON.stringify(body);
+    const headers: Row = { 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(payload)) };
+    if (admin) {
+      headers.authorization = `Basic ${Buffer.from(`${ADMIN_USER}:${ADMIN_PASSWORD}`).toString('base64')}`;
+      headers.origin = `http://127.0.0.1:${port}`;
+    } else headers['x-app-key'] = APP_KEY;
+    const r = http.request({ host: '127.0.0.1', port, method, path, headers }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => {
+        let json: any = null;
+        try { json = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { /* */ }
+        resolve({ status: res.statusCode ?? 0, json });
+      });
+    });
+    r.on('error', reject);
+    if (payload) r.write(payload);
+    r.end();
+  });
+}
+const PHONE = '77011112233';
+
+before(async () => { server = app.listen(0); port = (server.address() as any).port; });
+after(() => server.close());
+beforeEach(() => {
+  creators = [{ id: 'cr1', phone: PHONE, name: 'Айгерим', code: 'MM-ABCDE', percent: 7, active: true, autoPublish: false }];
+  streams = []; videos = []; likes = []; chat = []; seq = 0;
+});
+
+describe('эфиры', () => {
+  test('не креатор эфир начать не может; креатор получает токен ведущего', async () => {
+    assert.equal((await call('POST', '/api/shop/live/creator/streams/start', { phone: '77000000000', title: 'Тест', skus: ['1'] })).status, 403);
+    const r = await call('POST', '/api/shop/live/creator/streams/start', { phone: PHONE, title: 'Кухня', skus: ['1000001', '1000002'] });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.status, 'live');
+    assert.equal(r.json.join.appId, 'eddfb3532542449897a94b234761dbc8');
+    assert.ok(r.json.join.token.length > 50);
+    const home = await call('GET', '/api/shop/live/home');
+    assert.equal(home.json.live.length, 1);
+    assert.deepEqual(home.json.live[0].skus, ['1000001', '1000002']);
+    const viewer = await call('GET', `/api/shop/live/streams/${r.json.id}`);
+    assert.ok(viewer.json.join.token);
+  });
+
+  test('креатор пропал (нет отметок 90 с) — эфир закрывается сам', async () => {
+    const r = await call('POST', '/api/shop/live/creator/streams/start', { phone: PHONE, title: 'Кухня', skus: ['1'] });
+    streams[0].lastBeatAt = new Date(Date.now() - 120_000);
+    const home = await call('GET', '/api/shop/live/home');
+    assert.equal(home.json.live.length, 0);
+    assert.equal(streams[0].status, 'ended');
+    assert.equal((await call('GET', `/api/shop/live/streams/${r.json.id}`)).json.join, null);
+  });
+
+  test('анонс → вкладка «Анонсы», потом старт этого же эфира', async () => {
+    const at = new Date(Date.now() + 3600_000).toISOString();
+    const s = await call('POST', '/api/shop/live/creator/streams/schedule', { phone: PHONE, title: 'Вечерний эфир', skus: ['1'], scheduledAt: at });
+    assert.equal(s.status, 201);
+    assert.equal((await call('GET', '/api/shop/live/home')).json.upcoming.length, 1);
+    const r = await call('POST', '/api/shop/live/creator/streams/start', { phone: PHONE, streamId: s.json.id });
+    assert.equal(r.json.status, 'live');
+    await call('POST', `/api/shop/live/creator/streams/${s.json.id}/stop`, { phone: PHONE });
+    assert.equal(streams[0].status, 'ended');
+  });
+
+  test('чат: телефоны и ссылки вырезаются, после эфира писать нельзя', async () => {
+    const r = await call('POST', '/api/shop/live/creator/streams/start', { phone: PHONE, title: 'Кухня', skus: ['1'] });
+    await call('POST', `/api/shop/live/streams/${r.json.id}/chat`, { name: 'Аня', text: 'Пишите мне +7 701 234 56 78 или wa.me/7701' });
+    await call('POST', `/api/shop/live/streams/${r.json.id}/chat`, { name: 'Айгерим', text: 'Привет всем!', phone: PHONE });
+    const c = await call('GET', `/api/shop/live/streams/${r.json.id}/chat?after=0`);
+    assert.equal(c.json.messages.length, 2);
+    assert.doesNotMatch(c.json.messages[0].text, /701|wa\.me/);
+    assert.equal(c.json.messages[1].fromHost, true);
+    await call('POST', `/api/shop/live/creator/streams/${r.json.id}/stop`, { phone: PHONE });
+    assert.equal((await call('POST', `/api/shop/live/streams/${r.json.id}/chat`, { text: 'ещё' })).status, 409);
+  });
+});
+
+describe('шортс', () => {
+  test('в ленте только одобренные; админ одобряет; лайк ставится и снимается', async () => {
+    videos.push({ id: 'v1', creatorId: 'cr1', title: 'Блендер', videoUrl: 'https://pub/v1.mp4', skus: '["1000001"]', status: 'pending', likes: 0, views: 0, createdAt: new Date() });
+    assert.equal((await call('GET', '/api/shop/live/shorts')).json.items.length, 0);
+    const pending = await call('GET', '/api/shop-admin/live/videos?status=pending', undefined, true);
+    assert.equal(pending.json.length, 1);
+    await call('POST', '/api/shop-admin/live/videos/v1/status', { status: 'published' }, true);
+    const feed = await call('GET', '/api/shop/live/shorts?device=d1');
+    assert.equal(feed.json.items.length, 1);
+    assert.equal(feed.json.items[0].creatorName, 'Айгерим');
+    assert.equal((await call('POST', '/api/shop/live/shorts/v1/like', { device: 'd1' })).json.likes, 1);
+    assert.equal((await call('POST', '/api/shop/live/shorts/v1/like', { device: 'd1' })).json.likes, 1); // повторный лайк не считается
+    assert.equal((await call('GET', '/api/shop/live/shorts?device=d1')).json.items[0].liked, true);
+    assert.equal((await call('POST', '/api/shop/live/shorts/v1/like', { device: 'd1', like: false })).json.likes, 0);
+  });
+
+  test('видео загружает только креатор', async () => {
+    const r = await call('POST', '/api/shop/live/creator/videos', { phone: '77000000000', uploadId: 'abcdefgh12', total: 1, filename: 'a.mp4', contentType: 'video/mp4', title: 'x', skus: ['1'] });
+    assert.equal(r.status, 403);
+  });
+});
