@@ -22,7 +22,7 @@ function limited(ip: string, max = 30): boolean {
 const tokenOf = (req: any) => String(req.header('x-support-token') ?? '');
 
 supportRouter.post('/start', async (req, res) => {
-  if (limited(`start:${req.ip}`, 10)) return res.status(429).json({ error: 'Слишком часто, подождите минуту' });
+  if (limited(`start:${req.ip}`, 20)) return res.status(429).json({ error: 'Слишком часто, подождите минуту' });
   try {
     const b = req.body ?? {};
     const chat = await startChat({ phone: b.phone, customerName: b.customerName, pushToken: b.pushToken, question: b.question, history: b.history });

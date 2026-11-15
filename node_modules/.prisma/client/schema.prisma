@@ -1173,3 +1173,10 @@ model SupportTgRef {
   @@unique([tgChatId, tgMessageId])
   @@index([supportChatId])
 }
+
+// Имя оператора для клиентов («Аслан подключился к чату»). Задаётся в боте командой «/имя Аслан».
+model SupportOperator {
+  tgUserId  String   @id
+  name      String
+  updatedAt DateTime @updatedAt
+}

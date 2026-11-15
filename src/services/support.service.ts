@@ -249,9 +249,24 @@ export type SupportTgUpdate = {
   callback_query?: { id: string; data?: string; from?: { id: number; first_name?: string }; message?: { chat: { id: number } } };
 };
 
-function operatorNameOf(from?: { first_name?: string; username?: string }): string {
-  return (from?.first_name || from?.username || 'Оператор').trim().slice(0, 40);
+/** Имя оператора для клиента: заданное командой «/имя», иначе имя из Telegram (без почты). */
+async function operatorNameOf(from?: { id?: number; first_name?: string; username?: string }): Promise<string> {
+  if (from?.id) {
+    const saved = await prisma.supportOperator.findUnique({ where: { tgUserId: String(from.id) } }).catch(() => null);
+    if (saved?.name) return saved.name;
+  }
+  const raw = (from?.first_name || from?.username || '').trim();
+  const clean = raw.includes('@') ? '' : raw; // в Telegram вместо имени бывает почта — клиенту её не показываем
+  return (clean || 'Оператор').slice(0, 40);
 }
+
+const HELP = [
+  'Это бот поддержки My Market.',
+  '• Новый чат приходит с кнопками «Взять» / «Завершить».',
+  '• Взяли один чат — просто пишите сообщение, оно уйдёт клиенту.',
+  '• Несколько чатов — отвечайте реплаем на сообщение нужного чата или «#номер текст».',
+  '• «/имя Аслан» — как вас увидят клиенты.',
+].join('\n');
 
 async function take(chatId: string, tgChatId: string, operatorName: string, silentIfMine = false): Promise<any | null> {
   const chat = await prisma.supportChat.findUnique({ where: { id: chatId } });
@@ -328,7 +343,7 @@ export async function handleSupportUpdate(update: SupportTgUpdate): Promise<bool
     await answerCallback(cb.id);
     if (!tgChat || !isAllowedChat(tgChat)) return true;
     const [, action, id] = cb.data.split(':');
-    const name = operatorNameOf(cb.from);
+    const name = await operatorNameOf(cb.from);
     if (action === 'take' && id) await take(id, String(tgChat), name);
     if (action === 'close' && id) await closeByOperator(id, String(tgChat), name);
     return true;
@@ -337,7 +352,21 @@ export async function handleSupportUpdate(update: SupportTgUpdate): Promise<bool
   const m = update.message;
   if (!m || !m.text || !isAllowedChat(m.chat.id)) return false;
   const tgChat = String(m.chat.id);
-  const name = operatorNameOf(m.from);
+  const text = m.text.trim();
+
+  // «/имя Аслан» — имя, которое увидят клиенты.
+  const setName = text.match(/^\/(?:имя|name)(?:@\w+)?\s+(.{1,40})$/i);
+  if (setName && m.from?.id) {
+    const name = setName[1].trim();
+    await prisma.supportOperator.upsert({ where: { tgUserId: String(m.from.id) }, create: { tgUserId: String(m.from.id), name }, update: { name } });
+    await sendMessage(tgChat, `Готово: клиенты увидят «${escapeHtml(name)}».`).catch(() => undefined);
+    return true;
+  }
+  if (/^\/(start|help|помощь)\b/i.test(text)) {
+    await sendMessage(tgChat, HELP).catch(() => undefined);
+    return true;
+  }
+  const name = await operatorNameOf(m.from);
 
   // «#125 текст» — ответ в чат по номеру.
   const byNumber = m.text.match(/^#(\d{1,9})\s+([\s\S]+)$/);
@@ -359,6 +388,21 @@ export async function handleSupportUpdate(update: SupportTgUpdate): Promise<bool
       await operatorReply(ref.supportChatId, tgChat, name, m.text);
       return true;
     }
+  }
+
+  // Просто сообщение: если у этого оператора один открытый чат — отправляем в него.
+  const mine = await prisma.supportChat.findMany({
+    where: { status: 'active', operatorTgChatId: tgChat },
+    orderBy: { updatedAt: 'desc' },
+    take: 5,
+  });
+  if (mine.length === 1) {
+    await operatorReply(mine[0].id, tgChat, name, m.text);
+    return true;
+  }
+  if (mine.length > 1) {
+    await sendMessage(tgChat, `У вас открыто ${mine.length} чата (${mine.map((c: any) => '#' + c.number).join(', ')}). Ответьте реплаем на сообщение нужного чата или напишите «#номер текст».`).catch(() => undefined);
+    return true;
   }
   return false;
 }
