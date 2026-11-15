@@ -19,6 +19,7 @@ type Row = Record<string, any>;
 let chats: Row[] = [];
 let messages: Row[] = [];
 let refs: Row[] = [];
+let operators: Row[] = [];
 let chatSeq = 0;
 let msgSeq = 0;
 let tgSeq = 1000;
@@ -29,12 +30,21 @@ const stub: Record<string, any> = {
     create: async (a: Row) => { const c = { id: `c${++chatSeq}`, number: chatSeq, createdAt: new Date(), operatorName: null, operatorTgChatId: null, ...a.data }; chats.push(c); return { ...c }; },
     findUnique: async (a: Row) => { const c = chats.find((x) => (a.where.id ? x.id === a.where.id : x.number === a.where.number)); return c ? { ...c } : null; },
     update: async (a: Row) => { const c = chats.find((x) => x.id === a.where.id)!; Object.assign(c, a.data); return { ...c }; },
+    findMany: async (a: Row) => chats.filter((x) => (!a.where?.status || x.status === a.where.status) && (!a.where?.operatorTgChatId || x.operatorTgChatId === a.where.operatorTgChatId)),
     updateMany: async (a: Row) => {
       const c = chats.find((x) => x.id === a.where.id && (!a.where.status || x.status === a.where.status)
         && (!('lastOperatorAt' in a.where) || +x.lastOperatorAt === +a.where.lastOperatorAt));
       if (!c) return { count: 0 };
       Object.assign(c, a.data);
       return { count: 1 };
+    },
+  },
+  supportOperator: {
+    findUnique: async (a: Row) => operators.find((o) => o.tgUserId === a.where.tgUserId) ?? null,
+    upsert: async (a: Row) => {
+      const o = operators.find((x) => x.tgUserId === a.where.tgUserId);
+      if (o) Object.assign(o, a.update); else operators.push({ ...a.create });
+      return a.create;
     },
   },
   supportMessage: {
@@ -109,7 +119,7 @@ const tgMessages = () => sent.filter((s) => s.method === 'sendMessage');
 
 before(async () => { server = app.listen(0); port = (server.address() as any).port; });
 after(() => { server.close(); globalThis.fetch = realFetch; });
-beforeEach(() => { chats = []; messages = []; refs = []; sent = []; chatSeq = 0; msgSeq = 0; });
+beforeEach(() => { chats = []; messages = []; refs = []; operators = []; sent = []; chatSeq = 0; msgSeq = 0; });
 
 describe('распознавание просьбы', () => {
   test('оператор / менеджер / живой человек', () => {
@@ -230,6 +240,38 @@ describe('чат с оператором', () => {
 
   test('служебный вызов проверки тишины — только с секретом бота', async () => {
     assert.equal((await call('POST', '/api/telegram-agent/support-idle', { chatId: 'c1' })).status, 401);
+  });
+
+  test('взял один чат — обычное сообщение без реплая уходит клиенту; имя из почты клиенту не показываем', async () => {
+    const r = await start();
+    const h = { 'x-support-token': r.json.token };
+    const from = { id: 7, first_name: 'aslanrusl6844@gmail.com' };
+    await support.handleSupportUpdate({ callback_query: { id: 'cb', data: `sup:take:${r.json.id}`, from, message: { chat: { id: 111 } } } });
+    assert.equal(chats[0].operatorName, 'Оператор');
+    assert.equal(await support.handleSupportUpdate({ message: { chat: { id: 111 }, from, text: 'Здравствуйте' } }), true);
+    const st = await call('GET', `${BASE}/${r.json.id}`, undefined, h);
+    assert.equal(st.json.messages.at(-1).sender, 'operator');
+    assert.equal(st.json.messages.at(-1).text, 'Здравствуйте');
+  });
+
+  test('«/имя Аслан» — клиенты видят это имя', async () => {
+    const r = await start();
+    const from = { id: 7, first_name: 'aslanrusl6844@gmail.com' };
+    assert.equal(await support.handleSupportUpdate({ message: { chat: { id: 111 }, from, text: '/имя Аслан' } }), true);
+    await support.handleSupportUpdate({ callback_query: { id: 'cb', data: `sup:take:${r.json.id}`, from, message: { chat: { id: 111 } } } });
+    assert.equal(chats[0].operatorName, 'Аслан');
+    assert.ok(messages.some((m) => /Аслан подключился/.test(m.text)));
+  });
+
+  test('два открытых чата — без реплая бот просит указать, какой', async () => {
+    await start();
+    await start();
+    const from = { id: 7, first_name: 'Аслан' };
+    await support.handleSupportUpdate({ message: { chat: { id: 111 }, from, text: '#1 Добрый день' } });
+    await support.handleSupportUpdate({ message: { chat: { id: 111 }, from, text: '#2 Добрый день' } });
+    sent = [];
+    assert.equal(await support.handleSupportUpdate({ message: { chat: { id: 111 }, from, text: 'Здравствуйте' } }), true);
+    assert.match(tgMessages().at(-1)!.body.text, /#1, #2|#2, #1/);
   });
 
   test('чужие сообщения боту (не реплай на чат поддержки) отдаются агенту товаров', async () => {

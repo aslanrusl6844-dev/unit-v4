@@ -689,6 +689,16 @@ export async function handleUpdate(update: TgUpdate): Promise<void> {
   try {
     // Ответы операторов в чатах поддержки (реплай, «#номер текст», кнопки sup:…) — не черновики товаров.
     if (await handleSupportUpdate(update as SupportTgUpdate)) return;
+    // Агент карточек товаров (инфографика) выключен: бот теперь — чат поддержки.
+    // Включить обратно — переменная окружения TELEGRAM_PRODUCT_AGENT=on.
+    if (process.env.TELEGRAM_PRODUCT_AGENT !== 'on') {
+      const chat = update.message?.chat.id;
+      if (chat && isAllowedChat(chat) && update.message) {
+        await sendMessage(String(chat), 'Сейчас нет открытого чата с клиентом. Новый чат придёт с кнопкой «Взять». Подсказка — /help').catch(() => undefined);
+      }
+      if (update.callback_query) await answerCallback(update.callback_query.id);
+      return;
+    }
     if (update.callback_query) return await handleCallback(update.callback_query);
     const m = update.message;
     if (!m || !isAllowedChat(m.chat.id)) return;
