@@ -264,3 +264,31 @@ export async function viewersOf(channel: string): Promise<number> {
     return hit?.n ?? 0;
   }
 }
+
+
+/** Покупатели с «колокольчиком» на этого креатора получают пуш: эфир начался. */
+export async function notifyFollowers(stream: { id: string; creatorId: string; title: string }, creatorName: string): Promise<number> {
+  try {
+    const rows: any[] = await prisma.liveFollow.findMany({ where: { creatorId: stream.creatorId }, take: 5000 });
+    if (!rows.length) return 0;
+    const phones = rows.filter((r) => !r.pushToken && r.phone).map((r) => r.phone as string);
+    const byPhone: any[] = phones.length ? await prisma.shopCustomerPushToken.findMany({ where: { phone: { in: phones } } }) : [];
+    const tokens = [...rows.map((r) => r.pushToken).filter(Boolean), ...byPhone.map((t) => t.token)] as string[];
+    if (!tokens.length) return 0;
+    const { sendBroadcast } = await import('./pushBroadcast.service');
+    await sendBroadcast({
+      title: `${creatorName || 'Креатор'} в эфире`,
+      body: `«${stream.title}» — заходите, смотрите и покупайте`,
+      tokens,
+      data: { type: 'live', streamId: stream.id },
+    });
+    return tokens.length;
+  } catch (err) {
+    logger.error({ err }, '[Live] пуш подписчикам не ушёл');
+    return 0;
+  }
+}
+
+export function bannerDto(b: any) {
+  return { id: b.id, imageUrl: b.imageUrl, title: b.title ?? '', linkType: b.linkType ?? '', linkValue: b.linkValue ?? '' };
+}

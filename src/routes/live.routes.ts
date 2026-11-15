@@ -7,7 +7,7 @@ import { logger } from '../utils/logger';
 import { normalizePhone } from './shop.routes';
 import { isR2Configured, r2CompleteChunks, r2PutChunk, StorageUnavailableError } from '../services/mediaStorage.service';
 import {
-  AGORA_APP_ID, activeCreatorByPhone, activeLiveCategories, agoraConfigured, agoraToken, catsFor, cleanSkus, closeStaleStreams, creatorNames, isOnAir,
+  AGORA_APP_ID, activeCreatorByPhone, bannerDto, notifyFollowers, activeLiveCategories, agoraConfigured, agoraToken, catsFor, cleanSkus, closeStaleStreams, creatorNames, isOnAir,
   newChannel, parseSkus, resolveReplays, shopCategoryBySku, startRecording, stopRecording, streamDto, videoDto, viewersOf,
 } from '../services/live.service';
 import { SHOP_CATEGORIES } from '../config/shopCategories';
@@ -54,11 +54,12 @@ liveRouter.get('/home', async (req, res) => {
     await closeStaleStreams();
     await resolveReplays(3).catch(() => undefined);
     const now = Date.now();
-    const [live, upcoming, shorts, replays] = await Promise.all([
+    const [live, upcoming, shorts, replays, banners] = await Promise.all([
       prisma.liveStream.findMany({ where: { status: 'live' }, orderBy: { startedAt: 'desc' }, take: 20 }),
       prisma.liveStream.findMany({ where: { status: 'scheduled', scheduledAt: { gte: new Date(now - 60 * 60_000) } }, orderBy: { scheduledAt: 'asc' }, take: 20 }),
       prisma.creatorVideo.findMany({ where: { status: 'published' }, orderBy: { createdAt: 'desc' }, take: 60 }),
       prisma.liveStream.findMany({ where: { status: 'ended', replayUrl: { not: null } }, orderBy: { endedAt: 'desc' }, take: 30 }),
+      prisma.liveBanner.findMany({ where: { active: true }, orderBy: { sort: 'asc' }, take: 50 }),
     ]);
     const onAir = live.filter((s: any) => isOnAir(s, now));
     const all = [...onAir, ...upcoming, ...shorts, ...replays];
@@ -67,6 +68,7 @@ liveRouter.get('/home', async (req, res) => {
     const withCats = (dto: any) => ({ ...dto, cats: catsFor(dto.skus, bySku, cats) });
     res.json({
       categories: cats.map((c) => ({ id: c.id, title: c.title })),
+      banners: (banners as any[]).map(bannerDto),
       live: await Promise.all(onAir.map(async (s: any) => ({ ...withCats(streamDto(s, names.get(s.creatorId) ?? '')), viewers: await viewersOf(s.channel) }))),
       upcoming: upcoming.map((s: any) => withCats(streamDto(s, names.get(s.creatorId) ?? ''))),
       shorts: shorts.map((v: any) => withCats(videoDto(v, names.get(v.creatorId) ?? ''))),
@@ -153,6 +155,15 @@ liveRouter.get('/streams/:id', async (req, res) => {
     const names = await creatorNames([s.creatorId]);
     const dto: any = streamDto(s, names.get(s.creatorId) ?? '');
     if (dto.status === 'live') dto.viewers = await viewersOf(s.channel);
+    const device = String(req.query.device ?? '').trim().slice(0, 80);
+    if (device) {
+      const [lk, fl] = await Promise.all([
+        prisma.creatorVideoLike.findUnique({ where: { videoId_deviceKey: { videoId: `s:${s.id}`, deviceKey: device } } }),
+        prisma.liveFollow.findUnique({ where: { creatorId_deviceKey: { creatorId: s.creatorId, deviceKey: device } } }),
+      ]);
+      dto.liked = !!lk;
+      dto.following = !!fl;
+    }
     const join = dto.status === 'live' && agoraConfigured()
       ? { appId: AGORA_APP_ID, channel: s.channel, token: agoraToken(s.channel, 'audience') }
       : null;
@@ -193,6 +204,30 @@ liveRouter.post('/streams/:id/like', async (req, res) => {
     res.json({ liked: like, likes: Math.max(0, fresh?.likes ?? 0) });
   } catch (err) {
     logger.error({ err }, '[Live] stream like упал');
+    res.status(500).json({ error: 'Не удалось' });
+  }
+});
+
+/** 🔔 «Сообщить о следующем эфире» этого креатора: { device, follow, pushToken?, phone? }. */
+liveRouter.post('/streams/:id/follow', async (req, res) => {
+  const device = String(req.body?.device ?? '').trim().slice(0, 80);
+  if (!device) return res.status(400).json({ error: 'Нет устройства' });
+  if (limited(`follow:${req.ip}`)) return res.status(429).json({ error: 'Слишком часто' });
+  try {
+    const s = await prisma.liveStream.findUnique({ where: { id: req.params.id } });
+    if (!s) return res.status(404).json({ error: 'Эфир не найден' });
+    const follow = req.body?.follow !== false;
+    const key = { creatorId_deviceKey: { creatorId: s.creatorId, deviceKey: device } };
+    const existing = await prisma.liveFollow.findUnique({ where: key });
+    const pushToken = String(req.body?.pushToken ?? '').trim().slice(0, 400) || null;
+    const phone = phoneOf(req.body?.phone);
+    if (follow) {
+      if (existing) await prisma.liveFollow.update({ where: { id: existing.id }, data: { pushToken: pushToken ?? existing.pushToken, phone: phone ?? existing.phone } });
+      else await prisma.liveFollow.create({ data: { creatorId: s.creatorId, deviceKey: device, pushToken, phone } });
+    } else if (existing) await prisma.liveFollow.delete({ where: { id: existing.id } });
+    res.json({ following: follow });
+  } catch (err) {
+    logger.error({ err }, '[Live] follow упал');
     res.status(500).json({ error: 'Не удалось' });
   }
 });
@@ -348,10 +383,12 @@ liveRouter.post('/creator/streams/start', async (req, res) => {
     await closeStaleStreams();
     const now = new Date();
     let s: any;
+    let wasLive = false;
     if (req.body?.streamId) {
       s = await prisma.liveStream.findUnique({ where: { id: String(req.body.streamId) } });
       if (!s || s.creatorId !== creator.id) return res.status(404).json({ error: 'Эфир не найден' });
       if (s.status === 'ended') return res.status(409).json({ error: 'Этот эфир уже завершён' });
+      wasLive = s.status === 'live';
       s = await prisma.liveStream.update({ where: { id: s.id }, data: { status: 'live', startedAt: s.startedAt ?? now, lastBeatAt: now } });
     } else {
       const parsed = streamSchema.safeParse(req.body);
@@ -368,6 +405,8 @@ liveRouter.post('/creator/streams/start', async (req, res) => {
     }
     // Запись повтора — в фоне, чтобы не задерживать старт эфира.
     if (s.status === 'live' && s.recState !== 'recording') waitUntil(startRecording(s).catch(() => undefined));
+    // 🔔 Подписчикам креатора — пуш «эфир начался» (только при настоящем старте, не при повторном входе).
+    if (!wasLive) waitUntil(notifyFollowers(s, creator.name).catch(() => 0));
     res.json({ ...streamDto(s, creator.name), join: { appId: AGORA_APP_ID, channel: s.channel, token: agoraToken(s.channel, 'host') } });
   } catch (err) {
     logger.error({ err }, '[Live] start упал');
@@ -469,5 +508,44 @@ liveAdminRouter.put('/categories/:id', async (req, res) => {
 liveAdminRouter.delete('/categories/:id', async (req, res) => {
   const r = await prisma.liveCategory.deleteMany({ where: { id: req.params.id } });
   if (!r.count) return res.status(404).json({ error: 'Вкладка не найдена' });
+  res.json({ ok: true });
+});
+
+// ---- Баннеры Live: карусель сверху главной Live, количество не ограничено ----
+const bannerSchema = z.object({
+  imageUrl: z.string().trim().url().max(1000),
+  title: z.string().trim().max(80).optional().default(''),
+  linkType: z.enum(['', 'stream', 'sku', 'category']).optional().default(''),
+  linkValue: z.string().trim().max(200).optional().default(''),
+  sort: z.coerce.number().int().min(0).max(10000).optional().default(0),
+  active: z.boolean().optional().default(true),
+});
+const bannerData = (d: z.infer<typeof bannerSchema>) => ({
+  imageUrl: d.imageUrl, title: d.title || null, linkType: d.linkValue ? d.linkType : '', linkValue: d.linkType && d.linkValue ? d.linkValue : null, sort: d.sort, active: d.active,
+});
+
+liveAdminRouter.get('/banners', async (_req, res) => {
+  const rows = await prisma.liveBanner.findMany({ orderBy: [{ sort: 'asc' }, { createdAt: 'asc' }] });
+  res.json({ items: rows });
+});
+
+liveAdminRouter.post('/banners', async (req, res) => {
+  const parsed = bannerSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Нужна картинка баннера' });
+  const row = await prisma.liveBanner.create({ data: bannerData(parsed.data) });
+  res.status(201).json(row);
+});
+
+liveAdminRouter.put('/banners/:id', async (req, res) => {
+  const parsed = bannerSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Нужна картинка баннера' });
+  const r = await prisma.liveBanner.updateMany({ where: { id: req.params.id }, data: bannerData(parsed.data) });
+  if (!r.count) return res.status(404).json({ error: 'Баннер не найден' });
+  res.json({ ok: true });
+});
+
+liveAdminRouter.delete('/banners/:id', async (req, res) => {
+  const r = await prisma.liveBanner.deleteMany({ where: { id: req.params.id } });
+  if (!r.count) return res.status(404).json({ error: 'Баннер не найден' });
   res.json({ ok: true });
 });
