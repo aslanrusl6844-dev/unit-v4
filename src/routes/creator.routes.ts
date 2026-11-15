@@ -171,6 +171,7 @@ creatorAdminRouter.patch('/:id', async (req, res) => {
     data.percent = percent;
   }
   if (req.body?.active !== undefined) data.active = !!req.body.active;
+  if (req.body?.autoPublish !== undefined) data.autoPublish = !!req.body.autoPublish;
   if (!Object.keys(data).length) return res.status(400).json({ error: 'Нечего менять' });
   try {
     const creator = await prisma.creator.update({ where: { id: req.params.id }, data });
