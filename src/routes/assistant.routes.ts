@@ -2,6 +2,7 @@ import express, { Router } from 'express';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
 import { SHOP_CATEGORIES } from '../config/shopCategories';
+import { supportRouter } from './support.routes';
 import { MAX_AUDIO_BYTES, audioMime, transcribeAudio } from '../services/speechToText.service';
 import {
   ChatMessage, DEFAULT_MODEL, buildSystemPrompt, fallbackRelatedSkus, skusFromToolResult, missingProductSkus, diverseSample, extractSkus, loadCatalog, matchShowcases, rankProducts, runAssistant,
@@ -15,6 +16,9 @@ assistantRouter.use((req, res, next) => {
   if (req.header('x-app-key') !== env.shopAppKey) return res.status(401).json({ error: 'Неверный x-app-key' });
   next();
 });
+
+// Чат с живым оператором (ответы через Telegram-бот).
+assistantRouter.use('/support', supportRouter);
 
 // Простейший лимит на IP: 20 запросов в минуту (память функции; от случайных циклов, не от атак).
 const hits = new Map<string, number[]>();

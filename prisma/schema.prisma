@@ -1124,3 +1124,52 @@ model ShopStreet {
   @@unique([city, name])
   @@index([city, key])
 }
+
+// Чат с живым оператором из чата Баурсака. Оператор отвечает в Telegram (тот же бот),
+// ответ попадает в приложение покупателю + пуш.
+model SupportChat {
+  id               String           @id @default(cuid())
+  number           Int              @unique @default(autoincrement())
+  // Секрет чата: приложение передаёт его с каждым запросом — чужую переписку не прочитать.
+  token            String
+  phone            String?
+  customerName     String?
+  pushToken        String?
+  status           String           @default("waiting") // waiting | active | closed
+  operatorName     String?
+  operatorTgChatId String?
+  // Для автозавершения: клиент не ответил 1 минуту после сообщения оператора — чат закрывается.
+  lastOperatorAt   DateTime?
+  lastCustomerAt   DateTime?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  closedAt         DateTime?
+  closedBy         String?          // operator | customer | timeout
+  messages         SupportMessage[]
+
+  @@index([phone])
+  @@index([status])
+}
+
+model SupportMessage {
+  id           Int         @id @default(autoincrement())
+  chatId       String
+  chat         SupportChat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  sender       String      // customer | operator | system
+  text         String
+  operatorName String?
+  createdAt    DateTime    @default(now())
+
+  @@index([chatId, id])
+}
+
+// Какое сообщение бота в Telegram относится к какому чату — чтобы ответ «реплаем» ушёл куда нужно.
+model SupportTgRef {
+  id            Int    @id @default(autoincrement())
+  supportChatId String
+  tgChatId      String
+  tgMessageId   Int
+
+  @@unique([tgChatId, tgMessageId])
+  @@index([supportChatId])
+}

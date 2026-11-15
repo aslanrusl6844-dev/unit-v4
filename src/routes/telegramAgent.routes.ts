@@ -5,6 +5,7 @@ import { env } from '../config/env';
 import { logger } from '../utils/logger';
 import { setWebhook, webhookSecret } from '../lib/telegramBot';
 import { handleSceneJob, handleUpdate, setSelfBaseUrl } from '../services/productDraft.service';
+import { runIdleCheck, setSupportBaseUrl } from '../services/support.service';
 
 export const telegramAgentRouter = Router();
 
@@ -19,7 +20,7 @@ function secretOk(given: string | undefined): boolean {
 telegramAgentRouter.post('/webhook', (req, res) => {
   if (!secretOk(req.header('x-telegram-bot-api-secret-token'))) return res.status(401).json({ ok: false });
   const host = req.header('x-forwarded-host') || req.header('host');
-  if (host) setSelfBaseUrl(`https://${host}`);
+  if (host) { setSelfBaseUrl(`https://${host}`); setSupportBaseUrl(`https://${host}`); }
   res.json({ ok: true }); // Telegram ждёт быстрый ответ; работа идёт дальше в фоне
   waitUntil(handleUpdate(req.body).catch((err) => logger.error({ err: String(err?.message ?? err) }, '[TelegramAgent] webhook')));
 });
@@ -34,6 +35,17 @@ telegramAgentRouter.get('/setup', async (req, res) => {
   } catch (err: any) {
     res.status(502).json({ error: 'Не удалось зарегистрировать вебхук', details: String(err?.message ?? err) });
   }
+});
+
+/** Служебный: чат с оператором — закрыть, если клиент минуту не отвечает (зовёт сам сервер, защита — тот же секрет). */
+telegramAgentRouter.post('/support-idle', (req, res) => {
+  if (!secretOk(req.header('x-telegram-bot-api-secret-token'))) return res.status(401).json({ ok: false });
+  const chatId = req.body?.chatId;
+  if (typeof chatId !== 'string' || !chatId) return res.status(400).json({ ok: false });
+  const host = req.header('x-forwarded-host') || req.header('host');
+  if (host) setSupportBaseUrl(`https://${host}`);
+  res.json({ ok: true });
+  waitUntil(runIdleCheck(chatId).catch((err) => logger.error({ err: String(err?.message ?? err) }, '[Support] idle')));
 });
 
 /** Служебный: рисует одну сцену (зовёт сам сервер, защита — тот же секрет). Отвечает сразу, работа в фоне. */

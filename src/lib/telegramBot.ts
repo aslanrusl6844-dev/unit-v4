@@ -41,6 +41,18 @@ export async function sendMessage(chatId: string, text: string, buttons?: Inline
   });
 }
 
+/** Как sendMessage, но возвращает message_id — чтобы потом узнать, на какое сообщение ответили реплаем. */
+export async function sendMessageWithId(chatId: string, text: string, buttons?: InlineButton[][]): Promise<number> {
+  const result = await call('sendMessage', {
+    chat_id: chatId,
+    text: text.slice(0, 4000),
+    parse_mode: 'HTML',
+    disable_web_page_preview: true,
+    ...(buttons ? { reply_markup: { inline_keyboard: buttons } } : {}),
+  });
+  return Number(result?.message_id ?? 0);
+}
+
 /** Присылает 1–10 картинок по URL (альбомом). */
 export async function sendPhotos(chatId: string, urls: string[]): Promise<void> {
   if (urls.length === 1) return void (await call('sendPhoto', { chat_id: chatId, photo: urls[0] }));

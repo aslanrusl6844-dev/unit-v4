@@ -1,3 +1,4 @@
+import { handleSupportUpdate, type SupportTgUpdate } from './support.service';
 import { waitUntil } from '@vercel/functions';
 import { list, put } from '@vercel/blob';
 import { prisma } from '../db/prisma';
@@ -686,6 +687,8 @@ async function handleCallback(cb: NonNullable<TgUpdate['callback_query']>) {
 /** Точка входа вебхука. Чужие чаты игнорируются молча. */
 export async function handleUpdate(update: TgUpdate): Promise<void> {
   try {
+    // Ответы операторов в чатах поддержки (реплай, «#номер текст», кнопки sup:…) — не черновики товаров.
+    if (await handleSupportUpdate(update as SupportTgUpdate)) return;
     if (update.callback_query) return await handleCallback(update.callback_query);
     const m = update.message;
     if (!m || !isAllowedChat(m.chat.id)) return;
