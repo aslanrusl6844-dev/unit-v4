@@ -11,7 +11,7 @@
  * express.json() это не обходит. Поэтому для них сервер выдаёт одноразовую подписанную
  * ссылку (presigned PUT), и браузер кладёт файл прямо в R2, минуя Vercel.
  */
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectsCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectsCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { put } from '@vercel/blob';
 import { env } from '../config/env';
@@ -54,6 +54,13 @@ function r2Client(): S3Client {
     });
   }
   return client;
+}
+
+/** Ключи объектов R2 по префиксу (до 1000) — например, файлы записи эфира. */
+export async function r2ListKeys(prefix: string): Promise<string[]> {
+  if (!isR2Configured()) return [];
+  const r = await r2Client().send(new ListObjectsV2Command({ Bucket: env.r2.bucket, Prefix: prefix, MaxKeys: 1000 }));
+  return (r.Contents ?? []).map((o) => o.Key ?? '').filter(Boolean);
 }
 
 /** Публичная ссылка на объект R2: `${R2_PUBLIC_URL}/${pathname}` — она и сохраняется в базу. */
