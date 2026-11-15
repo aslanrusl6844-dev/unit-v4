@@ -22,6 +22,11 @@ let streams: Row[] = [];
 let videos: Row[] = [];
 let likes: Row[] = [];
 let chat: Row[] = [];
+let liveCats: Row[] = [];
+const products: Row[] = [
+  { sku: 'ozon-1', shopArticle: '1000001', category: 'Красота и здоровье' },
+  { sku: 'ozon-2', shopArticle: '1000002', category: 'Дом и сад' },
+];
 let seq = 0;
 
 const match = (x: Row, w: Row = {}): boolean => Object.entries(w).every(([k, v]) => {
@@ -74,6 +79,11 @@ const stub: Record<string, any> = {
   creatorVideo: table(() => videos, (r) => { videos = r; }),
   creatorVideoLike: table(() => likes, (r) => { likes = r; }, true),
   liveChatMessage: table(() => chat, (r) => { chat = r; }, true),
+  liveCategory: {
+    ...table(() => liveCats, (r) => { liveCats = r; }),
+    deleteMany: async (a: Row) => { const n = liveCats.length; liveCats = liveCats.filter((c) => c.id !== a.where.id); return { count: n - liveCats.length }; },
+  },
+  product: { findMany: async (a: Row) => { const list = a.where.OR[0].shopArticle.in; return products.filter((p) => list.includes(p.shopArticle) || list.includes(p.sku)); } },
 };
 class StubPrismaClient {
   constructor() {
@@ -121,7 +131,7 @@ before(async () => { server = app.listen(0); port = (server.address() as any).po
 after(() => server.close());
 beforeEach(() => {
   creators = [{ id: 'cr1', phone: PHONE, name: 'Айгерим', code: 'MM-ABCDE', percent: 7, active: true, autoPublish: false }];
-  streams = []; videos = []; likes = []; chat = []; seq = 0;
+  streams = []; videos = []; likes = []; chat = []; liveCats = []; seq = 0;
 });
 
 describe('эфиры', () => {
@@ -191,5 +201,22 @@ describe('шортс', () => {
   test('видео загружает только креатор', async () => {
     const r = await call('POST', '/api/shop/live/creator/videos', { phone: '77000000000', uploadId: 'abcdefgh12', total: 1, filename: 'a.mp4', contentType: 'video/mp4', title: 'x', skus: ['1'] });
     assert.equal(r.status, 403);
+  });
+});
+
+describe('вкладки-категории Live', () => {
+  test('админ создаёт вкладку с разделами каталога — ролики и эфиры попадают в неё по товарам', async () => {
+    assert.equal((await call('POST', '/api/shop-admin/live/categories', { title: 'Красота', categories: ['Нет такого'] }, true)).status, 400);
+    const c = await call('POST', '/api/shop-admin/live/categories', { title: 'Красота', categories: ['Красота и здоровье'], sort: 1 }, true);
+    assert.equal(c.status, 201);
+    videos.push({ id: 'v1', creatorId: 'cr1', title: 'Крем', videoUrl: 'https://p/v1.mp4', skus: '["1000001"]', status: 'published', likes: 0, views: 0, createdAt: new Date(Date.now() - 1000) });
+    videos.push({ id: 'v2', creatorId: 'cr1', title: 'Сушилка', videoUrl: 'https://p/v2.mp4', skus: '["1000002"]', status: 'published', likes: 0, views: 0, createdAt: new Date() });
+    const home = await call('GET', '/api/shop/live/home');
+    assert.deepEqual(home.json.categories, [{ id: c.json.id, title: 'Красота' }]);
+    assert.deepEqual(home.json.shorts.find((v: Row) => v.id === 'v1').cats, [c.json.id]);
+    assert.deepEqual(home.json.shorts.find((v: Row) => v.id === 'v2').cats, []);
+    const feed = await call('GET', `/api/shop/live/shorts?cat=${c.json.id}`);
+    assert.deepEqual(feed.json.items.map((v: Row) => v.id), ['v1']);
+    assert.equal((await call('DELETE', `/api/shop-admin/live/categories/${c.json.id}`, undefined, true)).status, 200);
   });
 });

@@ -6,9 +6,10 @@ import { logger } from '../utils/logger';
 import { normalizePhone } from './shop.routes';
 import { isR2Configured, r2CompleteChunks, r2PutChunk, StorageUnavailableError } from '../services/mediaStorage.service';
 import {
-  AGORA_APP_ID, activeCreatorByPhone, agoraConfigured, agoraToken, cleanSkus, closeStaleStreams, creatorNames, isOnAir,
-  newChannel, streamDto, videoDto,
+  AGORA_APP_ID, activeCreatorByPhone, activeLiveCategories, agoraConfigured, agoraToken, catsFor, cleanSkus, closeStaleStreams, creatorNames, isOnAir,
+  newChannel, parseSkus, shopCategoryBySku, streamDto, videoDto,
 } from '../services/live.service';
+import { SHOP_CATEGORIES } from '../config/shopCategories';
 
 /**
  * My Market Live.
@@ -54,14 +55,18 @@ liveRouter.get('/home', async (req, res) => {
     const [live, upcoming, shorts] = await Promise.all([
       prisma.liveStream.findMany({ where: { status: 'live' }, orderBy: { startedAt: 'desc' }, take: 20 }),
       prisma.liveStream.findMany({ where: { status: 'scheduled', scheduledAt: { gte: new Date(now - 60 * 60_000) } }, orderBy: { scheduledAt: 'asc' }, take: 20 }),
-      prisma.creatorVideo.findMany({ where: { status: 'published' }, orderBy: { createdAt: 'desc' }, take: 12 }),
+      prisma.creatorVideo.findMany({ where: { status: 'published' }, orderBy: { createdAt: 'desc' }, take: 60 }),
     ]);
     const onAir = live.filter((s: any) => isOnAir(s, now));
-    const names = await creatorNames([...onAir, ...upcoming, ...shorts].map((x: any) => x.creatorId));
+    const all = [...onAir, ...upcoming, ...shorts];
+    const [names, cats] = await Promise.all([creatorNames(all.map((x: any) => x.creatorId)), activeLiveCategories()]);
+    const bySku = await shopCategoryBySku(all.flatMap((x: any) => parseSkus(x.skus)));
+    const withCats = (dto: any) => ({ ...dto, cats: catsFor(dto.skus, bySku, cats) });
     res.json({
-      live: onAir.map((s: any) => streamDto(s, names.get(s.creatorId) ?? '')),
-      upcoming: upcoming.map((s: any) => streamDto(s, names.get(s.creatorId) ?? '')),
-      shorts: shorts.map((v: any) => videoDto(v, names.get(v.creatorId) ?? '')),
+      categories: cats.map((c) => ({ id: c.id, title: c.title })),
+      live: onAir.map((s: any) => withCats(streamDto(s, names.get(s.creatorId) ?? ''))),
+      upcoming: upcoming.map((s: any) => withCats(streamDto(s, names.get(s.creatorId) ?? ''))),
+      shorts: shorts.map((v: any) => withCats(videoDto(v, names.get(v.creatorId) ?? ''))),
     });
   } catch (err) {
     logger.error({ err }, '[Live] /home упал');
@@ -78,11 +83,18 @@ liveRouter.get('/shorts', async (req, res) => {
       const last = await prisma.creatorVideo.findUnique({ where: { id: String(req.query.before) } });
       if (last) createdBefore = last.createdAt;
     }
-    const rows = await prisma.creatorVideo.findMany({
+    const cat = String(req.query.cat ?? '');
+    let rows: any[] = await prisma.creatorVideo.findMany({
       where: { status: 'published', ...(createdBefore ? { createdAt: { lt: createdBefore } } : {}) },
       orderBy: { createdAt: 'desc' },
-      take: limit,
+      take: cat ? 200 : limit,
     });
+    if (cat) {
+      // Лента одной вкладки: только ролики с товарами её разделов.
+      const cats = (await activeLiveCategories()).filter((c) => c.id === cat);
+      const bySku = await shopCategoryBySku(rows.flatMap((r) => parseSkus(r.skus)));
+      rows = rows.filter((r) => catsFor(parseSkus(r.skus), bySku, cats).length > 0).slice(0, limit);
+    }
     const device = String(req.query.device ?? '').slice(0, 80);
     const liked = device
       ? new Set((await prisma.creatorVideoLike.findMany({ where: { deviceKey: device, videoId: { in: rows.map((r: any) => r.id) } } })).map((l: any) => l.videoId))
@@ -368,4 +380,45 @@ liveAdminRouter.get('/streams', async (_req, res) => {
 liveAdminRouter.post('/streams/:id/stop', async (req, res) => {
   const r = await prisma.liveStream.updateMany({ where: { id: req.params.id, status: { in: ['live', 'scheduled'] } }, data: { status: 'ended', endedAt: new Date() } });
   res.json({ ok: true, stopped: r.count });
+});
+
+// ---- Вкладки-категории Live ----
+
+const liveCatSchema = z.object({
+  title: z.string().trim().min(1).max(40),
+  categories: z.array(z.string()).min(1).max(30),
+  sort: z.number().int().min(0).max(1000).optional().default(0),
+  active: z.boolean().optional().default(true),
+});
+
+liveAdminRouter.get('/categories', async (_req, res) => {
+  const rows = await prisma.liveCategory.findMany({ orderBy: [{ sort: 'asc' }, { createdAt: 'asc' }] });
+  res.json({ items: rows.map((r: any) => ({ ...r, categories: parseSkus(r.categories) })), shopCategories: SHOP_CATEGORIES });
+});
+
+liveAdminRouter.post('/categories', async (req, res) => {
+  const parsed = liveCatSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Название и хотя бы один раздел каталога' });
+  const d = parsed.data;
+  const categories = d.categories.filter((c) => SHOP_CATEGORIES.includes(c));
+  if (!categories.length) return res.status(400).json({ error: 'Выберите разделы из каталога' });
+  const row = await prisma.liveCategory.create({ data: { title: d.title, categories: JSON.stringify(categories), sort: d.sort, active: d.active } });
+  res.status(201).json({ ...row, categories });
+});
+
+liveAdminRouter.put('/categories/:id', async (req, res) => {
+  const parsed = liveCatSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Название и хотя бы один раздел каталога' });
+  const d = parsed.data;
+  const categories = d.categories.filter((c) => SHOP_CATEGORIES.includes(c));
+  if (!categories.length) return res.status(400).json({ error: 'Выберите разделы из каталога' });
+  const r = await prisma.liveCategory.updateMany({ where: { id: req.params.id }, data: { title: d.title, categories: JSON.stringify(categories), sort: d.sort, active: d.active } });
+  if (!r.count) return res.status(404).json({ error: 'Вкладка не найдена' });
+  res.json({ ok: true });
+});
+
+liveAdminRouter.delete('/categories/:id', async (req, res) => {
+  const r = await prisma.liveCategory.deleteMany({ where: { id: req.params.id } });
+  if (!r.count) return res.status(404).json({ error: 'Вкладка не найдена' });
+  res.json({ ok: true });
 });

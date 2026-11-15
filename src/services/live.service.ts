@@ -88,3 +88,37 @@ export async function creatorNames(ids: string[]): Promise<Map<string, string>> 
   const rows: Array<{ id: string; name: string }> = await prisma.creator.findMany({ where: { id: { in: uniq } }, select: { id: true, name: true } });
   return new Map(rows.map((r) => [r.id, r.name]));
 }
+
+// ---------------------------------------------------------------------------
+// Вкладки-категории Live: эфир/ролик попадает во вкладку по разделу своих товаров.
+// ---------------------------------------------------------------------------
+
+export type LiveCat = { id: string; title: string; categories: string[] };
+
+export async function activeLiveCategories(): Promise<LiveCat[]> {
+  const rows: any[] = await prisma.liveCategory.findMany({ where: { active: true }, orderBy: [{ sort: 'asc' }, { createdAt: 'asc' }] });
+  return rows.map((r) => ({ id: r.id, title: r.title, categories: parseSkus(r.categories) }));
+}
+
+/** Раздел каталога для каждого артикула (артикул витрины или sku). */
+export async function shopCategoryBySku(skus: string[]): Promise<Map<string, string>> {
+  const uniq = Array.from(new Set(skus.filter(Boolean)));
+  if (!uniq.length) return new Map();
+  const rows: Array<{ sku: string; shopArticle: string | null; category: string | null }> = await prisma.product.findMany({
+    where: { OR: [{ shopArticle: { in: uniq } }, { sku: { in: uniq } }] },
+    select: { sku: true, shopArticle: true, category: true },
+  });
+  const map = new Map<string, string>();
+  for (const r of rows) {
+    if (!r.category) continue;
+    if (r.shopArticle) map.set(r.shopArticle, r.category);
+    map.set(r.sku, r.category);
+  }
+  return map;
+}
+
+/** id вкладок, в которые попадает набор товаров. */
+export function catsFor(skus: string[], bySku: Map<string, string>, cats: LiveCat[]): string[] {
+  const shopCats = new Set(skus.map((s) => bySku.get(s)).filter((c): c is string => !!c));
+  return cats.filter((c) => c.categories.some((x) => shopCats.has(x))).map((c) => c.id);
+}

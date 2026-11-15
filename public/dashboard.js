@@ -10585,6 +10585,11 @@ async function loadMmCreators() {
     else if (mmCreatorTab === 'videos') mmCreatorRows = await api('/shop-admin/live/videos?status=pending');
     else if (mmCreatorTab === 'published') mmCreatorRows = await api('/shop-admin/live/videos?status=published');
     else if (mmCreatorTab === 'streams') mmCreatorRows = await api('/shop-admin/live/streams');
+    else if (mmCreatorTab === 'livecats') {
+      const r = await api('/shop-admin/live/categories');
+      mmCreatorRows = r.items;
+      mmLiveShopCats = r.shopCategories;
+    }
     else mmCreatorRows = await api(`/shop-admin/creators/applications?status=${mmCreatorTab === 'rejected' ? 'rejected' : 'pending'}`);
     status.textContent = '';
   } catch (err) {
@@ -10630,6 +10635,8 @@ function renderMmCreators() {
     }));
     return;
   }
+
+  if (mmCreatorTab === 'livecats') { renderMmLiveCats(thead, tbody); return; }
 
   if (mmCreatorTab === 'streams') {
     const label = { live: '<span style="color:var(--loss);font-weight:700">● В эфире</span>', scheduled: 'Анонс', ended: 'Завершён' };
@@ -10761,4 +10768,64 @@ function openMmCreatorCard(id) {
     <table class="table" style="margin-top:10px"><tbody>${lines || '<tr><td>Анкета пустая</td></tr>'}</tbody></table>
     <p class="panel__hint">${consents}</p>`;
   document.getElementById('mmCreatorCardOverlay').hidden = false;
+}
+
+
+// ---- Вкладки Live (как у Coupang Live): название + разделы каталога ----
+let mmLiveShopCats = [];
+let mmLiveCatEditId = null;
+
+function renderMmLiveCats(thead, tbody) {
+  const edit = mmCreatorRows.find((c) => c.id === mmLiveCatEditId) || null;
+  const checked = new Set(edit ? edit.categories : []);
+  thead.innerHTML = '<tr><th>Порядок</th><th>Вкладка</th><th>Разделы каталога</th><th>Показ</th><th></th></tr>';
+  const form = `
+    <tr><td colspan="5" style="background:var(--surface-2, #faf8f4)">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+        <label>Название вкладки<input type="text" id="mmLiveCatTitle" maxlength="40" value="${mmEsc(edit?.title || '')}" placeholder="Например: Красота" style="width:200px" /></label>
+        <label>Порядок<input type="number" id="mmLiveCatSort" min="0" max="1000" value="${edit?.sort ?? (mmCreatorRows.length + 1)}" style="width:70px" /></label>
+        <label style="cursor:pointer"><input type="checkbox" id="mmLiveCatActive" ${edit ? (edit.active ? 'checked' : '') : 'checked'} /> показывать</label>
+        <button class="btn" id="mmLiveCatSave">${edit ? 'Сохранить' : 'Добавить вкладку'}</button>
+        ${edit ? '<button class="btn btn--ghost" id="mmLiveCatCancel">Отмена</button>' : ''}
+      </div>
+      <p class="panel__hint" style="margin:8px 0 4px">Какие разделы каталога входят во вкладку — эфиры и видео с этими товарами появятся в ней сами:</p>
+      <div style="display:flex;flex-wrap:wrap;gap:6px 14px">
+        ${mmLiveShopCats.map((c) => `<label style="cursor:pointer;font-size:13px"><input type="checkbox" data-livecat-shop="${mmEsc(c)}" ${checked.has(c) ? 'checked' : ''} /> ${mmEsc(c)}</label>`).join('')}
+      </div>
+    </td></tr>`;
+  const rows = mmCreatorRows.map((c) => `
+    <tr>
+      <td>${c.sort}</td>
+      <td><b>${mmEsc(c.title)}</b></td>
+      <td>${c.categories.map(mmEsc).join(', ')}</td>
+      <td>${c.active ? '<span style="color:var(--accent)">● да</span>' : '<span style="color:var(--text-faint)">скрыта</span>'}</td>
+      <td style="white-space:nowrap">
+        <button class="link-btn" data-livecat-edit="${c.id}">Изменить</button>
+        <button class="link-btn" data-livecat-del="${c.id}" style="color:var(--loss)">Удалить</button>
+      </td>
+    </tr>`).join('');
+  tbody.innerHTML = form + (rows || '<tr><td colspan="5" style="color:var(--text-faint)">Вкладок пока нет. В приложении будут только «Главная · Анонсы · Шортс».</td></tr>');
+
+  document.getElementById('mmLiveCatSave').addEventListener('click', async () => {
+    const body = {
+      title: document.getElementById('mmLiveCatTitle').value.trim(),
+      sort: Number(document.getElementById('mmLiveCatSort').value) || 0,
+      active: document.getElementById('mmLiveCatActive').checked,
+      categories: [...tbody.querySelectorAll('[data-livecat-shop]:checked')].map((x) => x.dataset.livecatShop),
+    };
+    if (!body.title || !body.categories.length) { alert('Укажите название и отметьте хотя бы один раздел'); return; }
+    try {
+      if (edit) await api(`/shop-admin/live/categories/${edit.id}`, { method: 'PUT', body: JSON.stringify(body) });
+      else await api('/shop-admin/live/categories', { method: 'POST', body: JSON.stringify(body) });
+      mmLiveCatEditId = null;
+      document.getElementById('mmCreatorStatus').textContent = 'Вкладка сохранена — в приложении появится в течение минуты';
+      loadMmCreators();
+    } catch (err) { alert(err.message); }
+  });
+  document.getElementById('mmLiveCatCancel')?.addEventListener('click', () => { mmLiveCatEditId = null; renderMmCreators(); });
+  tbody.querySelectorAll('[data-livecat-edit]').forEach((b) => b.addEventListener('click', () => { mmLiveCatEditId = b.dataset.livecatEdit; renderMmCreators(); }));
+  tbody.querySelectorAll('[data-livecat-del]').forEach((b) => b.addEventListener('click', async () => {
+    if (!confirm('Удалить вкладку? Видео и эфиры останутся.')) return;
+    try { await api(`/shop-admin/live/categories/${b.dataset.livecatDel}`, { method: 'DELETE' }); loadMmCreators(); } catch (err) { alert(err.message); }
+  }));
 }
