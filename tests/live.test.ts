@@ -182,6 +182,19 @@ describe('эфиры', () => {
   });
 });
 
+describe('лайки и просмотры эфира', () => {
+  test('♥ эфира ставится один раз с устройства и снимается; просмотр повтора считается', async () => {
+    const r = await call('POST', '/api/shop/live/creator/streams/start', { phone: PHONE, title: 'Кухня', skus: ['1'] });
+    assert.equal((await call('POST', `/api/shop/live/streams/${r.json.id}/like`, { device: 'd1' })).json.likes, 1);
+    assert.equal((await call('POST', `/api/shop/live/streams/${r.json.id}/like`, { device: 'd1' })).json.likes, 1);
+    assert.equal((await call('POST', `/api/shop/live/streams/${r.json.id}/like`, { device: 'd2' })).json.likes, 2);
+    assert.equal((await call('POST', `/api/shop/live/streams/${r.json.id}/like`, { device: 'd1', like: false })).json.likes, 1);
+    streams[0].replayUrl = 'https://p/r.mp4';
+    await call('POST', `/api/shop/live/streams/${r.json.id}/view`, {});
+    assert.equal(streams[0].views, 1);
+  });
+});
+
 describe('шортс', () => {
   test('в ленте только одобренные; админ одобряет; лайк ставится и снимается', async () => {
     videos.push({ id: 'v1', creatorId: 'cr1', title: 'Блендер', videoUrl: 'https://pub/v1.mp4', skus: '["1000001"]', status: 'pending', likes: 0, views: 0, createdAt: new Date() });

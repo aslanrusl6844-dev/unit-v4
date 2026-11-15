@@ -82,7 +82,7 @@ export function streamDto(s: any, creatorName: string) {
   return {
     id: s.id, title: s.title, status: isOnAir(s) ? 'live' : s.status === 'live' ? 'ended' : s.status,
     skus: parseSkus(s.skus), scheduledAt: s.scheduledAt, startedAt: s.startedAt, endedAt: s.endedAt, creatorName,
-    replayUrl: s.replayUrl ?? null,
+    replayUrl: s.replayUrl ?? null, likes: s.likes ?? 0, views: s.views ?? 0, viewers: 0,
   };
 }
 
@@ -233,5 +233,34 @@ export async function resolveReplays(limit = 5): Promise<void> {
     } catch (err: any) {
       logger.warn({ err: String(err?.message ?? err) }, '[Live] поиск файла повтора');
     }
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// Сколько зрителей сейчас в эфире — у Agora (REST «пользователи канала»), кэш 20 с.
+// ---------------------------------------------------------------------------
+
+const viewersCache = new Map<string, { at: number; n: number }>();
+
+export async function viewersOf(channel: string): Promise<number> {
+  const hit = viewersCache.get(channel);
+  if (hit && Date.now() - hit.at < 20_000) return hit.n;
+  const id = process.env.AGORA_CUSTOMER_ID?.trim();
+  const secret = process.env.AGORA_CUSTOMER_SECRET?.trim();
+  if (!id || !secret) return hit?.n ?? 0;
+  try {
+    const auth = Buffer.from(`${id}:${secret}`).toString('base64');
+    const res = await fetchImpl(`https://api.agora.io/dev/v1/channel/user/${AGORA_APP_ID}/${encodeURIComponent(channel)}`, {
+      headers: { authorization: `Basic ${auth}` },
+      signal: AbortSignal.timeout(5_000),
+    } as any);
+    const data: any = await res.json().catch(() => ({}));
+    const d = data?.data ?? {};
+    const n = Number(d.audience_total ?? (Array.isArray(d.audience) ? d.audience.length : 0)) || 0;
+    viewersCache.set(channel, { at: Date.now(), n });
+    return n;
+  } catch {
+    return hit?.n ?? 0;
   }
 }
