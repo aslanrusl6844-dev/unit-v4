@@ -1279,6 +1279,32 @@ model LiveChatMessage {
 // Вкладки-категории My Market Live (как у Coupang Live: Продукты, Красота, Электроника…).
 // Админ задаёт название и какие разделы каталога в неё входят; эфиры и шортс попадают
 // во вкладку сами — по разделу товаров, которые показывает креатор.
+// Баннеры сверху My Market Live (карусель, сколько угодно). linkType: stream | sku | category | '' (без перехода).
+model LiveBanner {
+  id        String   @id @default(cuid())
+  imageUrl  String
+  title     String?
+  linkType  String   @default("")
+  linkValue String?
+  sort      Int      @default(0)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// «Колокольчик»: сообщить покупателю пушем, когда креатор начнёт следующий эфир.
+model LiveFollow {
+  id        String   @id @default(cuid())
+  creatorId String
+  deviceKey String
+  phone     String?
+  pushToken String?
+  createdAt DateTime @default(now())
+
+  @@unique([creatorId, deviceKey])
+  @@index([creatorId])
+}
+
 model LiveCategory {
   id         String   @id @default(cuid())
   title      String

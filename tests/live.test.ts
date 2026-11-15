@@ -23,6 +23,8 @@ let videos: Row[] = [];
 let likes: Row[] = [];
 let chat: Row[] = [];
 let liveCats: Row[] = [];
+let banners: Row[] = [];
+let follows: Row[] = [];
 const products: Row[] = [
   { sku: 'ozon-1', shopArticle: '1000001', category: 'Красота и здоровье' },
   { sku: 'ozon-2', shopArticle: '1000002', category: 'Дом и сад' },
@@ -83,6 +85,17 @@ const stub: Record<string, any> = {
     ...table(() => liveCats, (r) => { liveCats = r; }),
     deleteMany: async (a: Row) => { const n = liveCats.length; liveCats = liveCats.filter((c) => c.id !== a.where.id); return { count: n - liveCats.length }; },
   },
+  liveBanner: {
+    ...table(() => banners, (r) => { banners = r; }),
+    deleteMany: async (a: Row) => { const n = banners.length; banners = banners.filter((c) => c.id !== a.where.id); return { count: n - banners.length }; },
+  },
+  liveFollow: {
+    ...table(() => follows, (r) => { follows = r; }),
+    findUnique: async (a: Row) => {
+      const k = a.where.creatorId_deviceKey;
+      return k ? follows.find((f) => f.creatorId === k.creatorId && f.deviceKey === k.deviceKey) ?? null : follows.find((f) => f.id === a.where.id) ?? null;
+    },
+  },
   product: { findMany: async (a: Row) => { const list = a.where.OR[0].shopArticle.in; return products.filter((p) => list.includes(p.shopArticle) || list.includes(p.sku)); } },
 };
 class StubPrismaClient {
@@ -131,7 +144,7 @@ before(async () => { server = app.listen(0); port = (server.address() as any).po
 after(() => server.close());
 beforeEach(() => {
   creators = [{ id: 'cr1', phone: PHONE, name: 'Айгерим', code: 'MM-ABCDE', percent: 7, active: true, autoPublish: false }];
-  streams = []; videos = []; likes = []; chat = []; liveCats = []; seq = 0;
+  streams = []; videos = []; likes = []; chat = []; liveCats = []; banners = []; follows = []; seq = 0;
 });
 
 describe('эфиры', () => {
@@ -231,5 +244,35 @@ describe('вкладки-категории Live', () => {
     const feed = await call('GET', `/api/shop/live/shorts?cat=${c.json.id}`);
     assert.deepEqual(feed.json.items.map((v: Row) => v.id), ['v1']);
     assert.equal((await call('DELETE', `/api/shop-admin/live/categories/${c.json.id}`, undefined, true)).status, 200);
+  });
+});
+
+describe('баннеры Live и колокольчик', () => {
+  test('админ добавляет баннеры — они в /home по порядку, скрытые не видны', async () => {
+    assert.equal((await call('POST', '/api/shop-admin/live/banners', { imageUrl: 'не ссылка' }, true)).status, 400);
+    const a = await call('POST', '/api/shop-admin/live/banners', { imageUrl: 'https://cdn/b2.jpg', sort: 2, linkType: 'sku', linkValue: '1000001' }, true);
+    assert.equal(a.status, 201);
+    await call('POST', '/api/shop-admin/live/banners', { imageUrl: 'https://cdn/b1.jpg', sort: 1, title: 'Скидки' }, true);
+    await call('POST', '/api/shop-admin/live/banners', { imageUrl: 'https://cdn/b3.jpg', sort: 3, active: false }, true);
+    const h = await call('GET', '/api/shop/live/home');
+    assert.deepEqual(h.json.banners.map((b: Row) => b.imageUrl), ['https://cdn/b1.jpg', 'https://cdn/b2.jpg']);
+    assert.equal(h.json.banners[1].linkType, 'sku');
+    assert.equal(h.json.banners[1].linkValue, '1000001');
+    assert.equal((await call('DELETE', `/api/shop-admin/live/banners/${a.json.id}`, undefined, true)).status, 200);
+    assert.equal((await call('GET', '/api/shop/live/home')).json.banners.length, 1);
+  });
+
+  test('🔔 подписка на креатора: видна в карточке эфира, снимается', async () => {
+    const r = await call('POST', '/api/shop/live/creator/streams/start', { phone: PHONE, title: 'Кухня', skus: ['1'] });
+    assert.equal((await call('POST', `/api/shop/live/streams/${r.json.id}/follow`, {})).status, 400);
+    assert.equal((await call('POST', `/api/shop/live/streams/${r.json.id}/follow`, { device: 'd1', pushToken: 'tok' })).json.following, true);
+    assert.equal(follows.length, 1);
+    assert.equal(follows[0].creatorId, 'cr1');
+    let g = await call('GET', `/api/shop/live/streams/${r.json.id}?device=d1`);
+    assert.equal(g.json.following, true);
+    assert.equal(g.json.liked, false);
+    await call('POST', `/api/shop/live/streams/${r.json.id}/follow`, { device: 'd1', follow: false });
+    g = await call('GET', `/api/shop/live/streams/${r.json.id}?device=d1`);
+    assert.equal(g.json.following, false);
   });
 });

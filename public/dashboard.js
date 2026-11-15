@@ -10585,6 +10585,7 @@ async function loadMmCreators() {
     else if (mmCreatorTab === 'videos') mmCreatorRows = await api('/shop-admin/live/videos?status=pending');
     else if (mmCreatorTab === 'published') mmCreatorRows = await api('/shop-admin/live/videos?status=published');
     else if (mmCreatorTab === 'streams') mmCreatorRows = await api('/shop-admin/live/streams');
+    else if (mmCreatorTab === 'livebanners') mmCreatorRows = (await api('/shop-admin/live/banners')).items;
     else if (mmCreatorTab === 'livecats') {
       const r = await api('/shop-admin/live/categories');
       mmCreatorRows = r.items;
@@ -10637,6 +10638,7 @@ function renderMmCreators() {
   }
 
   if (mmCreatorTab === 'livecats') { renderMmLiveCats(thead, tbody); return; }
+  if (mmCreatorTab === 'livebanners') { renderMmLiveBanners(thead, tbody); return; }
 
   if (mmCreatorTab === 'streams') {
     const label = { live: '<span style="color:var(--loss);font-weight:700">● В эфире</span>', scheduled: 'Анонс', ended: 'Завершён' };
@@ -10644,7 +10646,7 @@ function renderMmCreators() {
     tbody.innerHTML = rows.length ? rows.map((s) => `
       <tr>
         <td>${mmEsc(s.creatorName)}</td>
-        <td>${mmEsc(s.title)}</td>
+        <td>${mmEsc(s.title)}<br><span style="color:var(--text-faint);font-size:11px">ID: <code>${mmEsc(s.id)}</code></span></td>
         <td>${label[s.status] || mmEsc(s.status)}</td>
         <td>${s.startedAt ? new Date(s.startedAt).toLocaleString('ru-RU') : s.scheduledAt ? new Date(s.scheduledAt).toLocaleString('ru-RU') : '—'}</td>
         <td>${s.endedAt ? new Date(s.endedAt).toLocaleString('ru-RU') : '—'}</td>
@@ -10796,7 +10798,7 @@ function renderMmLiveCats(thead, tbody) {
   const rows = mmCreatorRows.map((c) => `
     <tr>
       <td>${c.sort}</td>
-      <td><b>${mmEsc(c.title)}</b></td>
+      <td><b>${mmEsc(c.title)}</b><br><span style="color:var(--text-faint);font-size:11px">ID: <code>${mmEsc(c.id)}</code></span></td>
       <td>${c.categories.map(mmEsc).join(', ')}</td>
       <td>${c.active ? '<span style="color:var(--accent)">● да</span>' : '<span style="color:var(--text-faint)">скрыта</span>'}</td>
       <td style="white-space:nowrap">
@@ -10827,5 +10829,86 @@ function renderMmLiveCats(thead, tbody) {
   tbody.querySelectorAll('[data-livecat-del]').forEach((b) => b.addEventListener('click', async () => {
     if (!confirm('Удалить вкладку? Видео и эфиры останутся.')) return;
     try { await api(`/shop-admin/live/categories/${b.dataset.livecatDel}`, { method: 'DELETE' }); loadMmCreators(); } catch (err) { alert(err.message); }
+  }));
+}
+
+
+// ---- Баннеры Live (как у Coupang Live): карусель сверху, количество не ограничено ----
+let mmLiveBannerEditId = null;
+let mmLiveBannerImage = '';
+const MM_LIVE_LINK_LABELS = { '': 'Без перехода', stream: 'Эфир / повтор (ID эфира)', sku: 'Товар (артикул)', category: 'Вкладка Live (ID вкладки)' };
+
+function renderMmLiveBanners(thead, tbody) {
+  const edit = mmCreatorRows.find((b) => b.id === mmLiveBannerEditId) || null;
+  if (edit && !mmLiveBannerImage) mmLiveBannerImage = edit.imageUrl;
+  thead.innerHTML = '<tr><th>Порядок</th><th>Баннер</th><th>Текст</th><th>Переход</th><th>Показ</th><th></th></tr>';
+  const opts = Object.entries(MM_LIVE_LINK_LABELS).map(([k, v]) => `<option value="${k}" ${(edit?.linkType || '') === k ? 'selected' : ''}>${v}</option>`).join('');
+  const form = `
+    <tr><td colspan="6" style="background:var(--surface-2, #faf8f4)">
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+        <div>
+          <div id="mmLiveBannerPreview" style="width:240px;height:96px;border-radius:10px;background:#eee center/cover no-repeat;${mmLiveBannerImage ? `background-image:url('${mmEsc(mmLiveBannerImage)}')` : ''};display:flex;align-items:center;justify-content:center;color:#999;font-size:12px">${mmLiveBannerImage ? '' : 'Картинка 1200×480'}</div>
+          <input type="file" id="mmLiveBannerFile" accept="image/jpeg,image/png,image/webp" style="margin-top:6px;font-size:12px" />
+        </div>
+        <label>Текст на баннере (необязательно)<input type="text" id="mmLiveBannerTitle" maxlength="80" value="${mmEsc(edit?.title || '')}" placeholder="Например: Скидки до −40% в эфире" style="width:240px" /></label>
+        <label>Куда ведёт<select id="mmLiveBannerLinkType">${opts}</select></label>
+        <label>Значение<input type="text" id="mmLiveBannerLinkValue" maxlength="200" value="${mmEsc(edit?.linkValue || '')}" placeholder="ID / артикул" style="width:160px" /></label>
+        <label>Порядок<input type="number" id="mmLiveBannerSort" min="0" max="10000" value="${edit?.sort ?? (mmCreatorRows.length + 1)}" style="width:70px" /></label>
+        <label style="cursor:pointer"><input type="checkbox" id="mmLiveBannerActive" ${edit ? (edit.active ? 'checked' : '') : 'checked'} /> показывать</label>
+        <button class="btn" id="mmLiveBannerSave">${edit ? 'Сохранить' : 'Добавить баннер'}</button>
+        ${edit ? '<button class="btn btn--ghost" id="mmLiveBannerCancel">Отмена</button>' : ''}
+      </div>
+      <p class="panel__hint" style="margin:8px 0 0">Баннеры листаются сами сверху главной Live в приложении. ID эфира — во вкладке «Эфиры», ID вкладки — во «Вкладки Live».</p>
+    </td></tr>`;
+  const rows = mmCreatorRows.map((b) => `
+    <tr>
+      <td>${b.sort}</td>
+      <td><img src="${mmEsc(b.imageUrl)}" alt="" style="width:160px;height:64px;object-fit:cover;border-radius:8px" /></td>
+      <td>${mmEsc(b.title || '—')}</td>
+      <td>${b.linkType ? `${mmEsc(MM_LIVE_LINK_LABELS[b.linkType] || b.linkType)}: <code>${mmEsc(b.linkValue || '')}</code>` : '—'}</td>
+      <td>${b.active ? '<span style="color:var(--accent)">● да</span>' : '<span style="color:var(--text-faint)">скрыт</span>'}</td>
+      <td style="white-space:nowrap">
+        <button class="link-btn" data-livebanner-edit="${b.id}">Изменить</button>
+        <button class="link-btn" data-livebanner-del="${b.id}" style="color:var(--loss)">Удалить</button>
+      </td>
+    </tr>`).join('');
+  tbody.innerHTML = form + (rows || '<tr><td colspan="6" style="color:var(--text-faint)">Баннеров пока нет — сверху Live их не будет.</td></tr>');
+
+  document.getElementById('mmLiveBannerFile').addEventListener('change', async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const st = document.getElementById('mmCreatorStatus');
+    st.textContent = 'Загружаю картинку…';
+    try {
+      mmLiveBannerImage = await uploadMyMarketFile(file);
+      const pv = document.getElementById('mmLiveBannerPreview');
+      pv.style.backgroundImage = `url('${mmLiveBannerImage}')`;
+      pv.textContent = '';
+      st.textContent = 'Картинка загружена';
+    } catch (err) { st.textContent = `Ошибка: ${err.message}`; }
+  });
+  document.getElementById('mmLiveBannerSave').addEventListener('click', async () => {
+    if (!mmLiveBannerImage) { alert('Загрузите картинку баннера'); return; }
+    const body = {
+      imageUrl: mmLiveBannerImage,
+      title: document.getElementById('mmLiveBannerTitle').value.trim(),
+      linkType: document.getElementById('mmLiveBannerLinkType').value,
+      linkValue: document.getElementById('mmLiveBannerLinkValue').value.trim(),
+      sort: Number(document.getElementById('mmLiveBannerSort').value) || 0,
+      active: document.getElementById('mmLiveBannerActive').checked,
+    };
+    try {
+      if (edit) await api(`/shop-admin/live/banners/${edit.id}`, { method: 'PUT', body: JSON.stringify(body) });
+      else await api('/shop-admin/live/banners', { method: 'POST', body: JSON.stringify(body) });
+      mmLiveBannerEditId = null; mmLiveBannerImage = '';
+      document.getElementById('mmCreatorStatus').textContent = 'Баннер сохранён — в приложении появится в течение минуты';
+      loadMmCreators();
+    } catch (err) { alert(err.message); }
+  });
+  document.getElementById('mmLiveBannerCancel')?.addEventListener('click', () => { mmLiveBannerEditId = null; mmLiveBannerImage = ''; renderMmCreators(); });
+  tbody.querySelectorAll('[data-livebanner-edit]').forEach((b) => b.addEventListener('click', () => { mmLiveBannerEditId = b.dataset.livebannerEdit; mmLiveBannerImage = ''; renderMmCreators(); }));
+  tbody.querySelectorAll('[data-livebanner-del]').forEach((b) => b.addEventListener('click', async () => {
+    if (!confirm('Удалить баннер?')) return;
+    try { await api(`/shop-admin/live/banners/${b.dataset.livebannerDel}`, { method: 'DELETE' }); loadMmCreators(); } catch (err) { alert(err.message); }
   }));
 }
