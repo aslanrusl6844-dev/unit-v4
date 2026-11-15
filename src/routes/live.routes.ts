@@ -8,7 +8,7 @@ import { normalizePhone } from './shop.routes';
 import { isR2Configured, r2CompleteChunks, r2PutChunk, StorageUnavailableError } from '../services/mediaStorage.service';
 import {
   AGORA_APP_ID, activeCreatorByPhone, activeLiveCategories, agoraConfigured, agoraToken, catsFor, cleanSkus, closeStaleStreams, creatorNames, isOnAir,
-  newChannel, parseSkus, resolveReplays, shopCategoryBySku, startRecording, stopRecording, streamDto, videoDto,
+  newChannel, parseSkus, resolveReplays, shopCategoryBySku, startRecording, stopRecording, streamDto, videoDto, viewersOf,
 } from '../services/live.service';
 import { SHOP_CATEGORIES } from '../config/shopCategories';
 
@@ -67,7 +67,7 @@ liveRouter.get('/home', async (req, res) => {
     const withCats = (dto: any) => ({ ...dto, cats: catsFor(dto.skus, bySku, cats) });
     res.json({
       categories: cats.map((c) => ({ id: c.id, title: c.title })),
-      live: onAir.map((s: any) => withCats(streamDto(s, names.get(s.creatorId) ?? ''))),
+      live: await Promise.all(onAir.map(async (s: any) => ({ ...withCats(streamDto(s, names.get(s.creatorId) ?? '')), viewers: await viewersOf(s.channel) }))),
       upcoming: upcoming.map((s: any) => withCats(streamDto(s, names.get(s.creatorId) ?? ''))),
       shorts: shorts.map((v: any) => withCats(videoDto(v, names.get(v.creatorId) ?? ''))),
       replays: replays.map((s: any) => withCats(streamDto(s, names.get(s.creatorId) ?? ''))),
@@ -151,7 +151,8 @@ liveRouter.get('/streams/:id', async (req, res) => {
     const s = await prisma.liveStream.findUnique({ where: { id: req.params.id } });
     if (!s) return res.status(404).json({ error: 'Эфир не найден' });
     const names = await creatorNames([s.creatorId]);
-    const dto = streamDto(s, names.get(s.creatorId) ?? '');
+    const dto: any = streamDto(s, names.get(s.creatorId) ?? '');
+    if (dto.status === 'live') dto.viewers = await viewersOf(s.channel);
     const join = dto.status === 'live' && agoraConfigured()
       ? { appId: AGORA_APP_ID, channel: s.channel, token: agoraToken(s.channel, 'audience') }
       : null;
@@ -159,6 +160,40 @@ liveRouter.get('/streams/:id', async (req, res) => {
   } catch (err) {
     logger.error({ err }, '[Live] GET stream упал');
     res.status(500).json({ error: 'Не удалось открыть эфир' });
+  }
+});
+
+/** Открыли повтор — +1 просмотр. */
+liveRouter.post('/streams/:id/view', async (req, res) => {
+  try {
+    await prisma.liveStream.updateMany({ where: { id: req.params.id, replayUrl: { not: null } }, data: { views: { increment: 1 } } });
+  } catch { /* не важно */ }
+  res.json({ ok: true });
+});
+
+/** ♥ эфира/повтора: { device, like }. Один лайк с устройства (таблица лайков общая с шортс, ключ s:<id>). */
+liveRouter.post('/streams/:id/like', async (req, res) => {
+  const device = String(req.body?.device ?? '').trim().slice(0, 80);
+  if (!device) return res.status(400).json({ error: 'Нет устройства' });
+  if (limited(`like:${req.ip}`)) return res.status(429).json({ error: 'Слишком часто' });
+  try {
+    const s = await prisma.liveStream.findUnique({ where: { id: req.params.id } });
+    if (!s) return res.status(404).json({ error: 'Эфир не найден' });
+    const key = `s:${s.id}`;
+    const existing = await prisma.creatorVideoLike.findUnique({ where: { videoId_deviceKey: { videoId: key, deviceKey: device } } });
+    const like = req.body?.like !== false;
+    if (like && !existing) {
+      await prisma.creatorVideoLike.create({ data: { videoId: key, deviceKey: device } });
+      await prisma.liveStream.update({ where: { id: s.id }, data: { likes: { increment: 1 } } });
+    } else if (!like && existing) {
+      await prisma.creatorVideoLike.delete({ where: { id: existing.id } });
+      await prisma.liveStream.update({ where: { id: s.id }, data: { likes: { decrement: 1 } } });
+    }
+    const fresh = await prisma.liveStream.findUnique({ where: { id: s.id } });
+    res.json({ liked: like, likes: Math.max(0, fresh?.likes ?? 0) });
+  } catch (err) {
+    logger.error({ err }, '[Live] stream like упал');
+    res.status(500).json({ error: 'Не удалось' });
   }
 });
 
@@ -343,12 +378,12 @@ liveRouter.post('/creator/streams/start', async (req, res) => {
 liveRouter.post('/creator/streams/:id/beat', async (req, res) => {
   const creator = await activeCreatorByPhone(phoneOf(req.body?.phone) ?? '');
   if (!creator) return res.status(403).json({ error: 'Только для креаторов' });
-  const viewers = Math.max(0, Math.min(1_000_000, Number(req.body?.viewers ?? 0) || 0));
   const s = await prisma.liveStream.findUnique({ where: { id: req.params.id } });
+  const viewers = s ? await viewersOf(s.channel) : 0;
   if (!s || s.creatorId !== creator.id) return res.status(404).json({ error: 'Эфир не найден' });
   if (s.status !== 'live') return res.status(409).json({ error: 'Эфир завершён' });
   await prisma.liveStream.update({ where: { id: s.id }, data: { lastBeatAt: new Date(), peakViewers: Math.max(s.peakViewers ?? 0, viewers) } });
-  res.json({ ok: true });
+  res.json({ ok: true, viewers });
 });
 
 liveRouter.post('/creator/streams/:id/stop', async (req, res) => {
