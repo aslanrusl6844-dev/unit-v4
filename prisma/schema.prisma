@@ -1314,3 +1314,23 @@ model LiveCategory {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 }
+
+// Фискальные чеки re:Kassa по заказам My Market: продажа после оплаты и возврат.
+// requestId — X-Request-ID: при повторе того же запроса re:Kassa вернёт уже созданный чек, а не дубль.
+model FiscalReceipt {
+  id           String   @id @default(cuid())
+  orderId      String
+  operation    String   // sell | return
+  requestId    String   @unique
+  status       String   @default("pending") // pending | ok | offline | error
+  ticketId     Int?
+  ticketNumber String?
+  qrUrl        String?
+  total        Float    @default(0)
+  error        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([orderId, operation])
+  @@index([orderId])
+}

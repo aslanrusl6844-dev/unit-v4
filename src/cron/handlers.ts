@@ -61,3 +61,9 @@ export async function runOzonPrices() {
   }
   return { prices, accruals };
 }
+
+/** Раз в сутки закрыть смену онлайн-кассы re:Kassa (смена не может жить больше 24 ч). */
+export async function runRekassaShiftClose() {
+  const { closeRekassaShift } = await import('../services/rekassa.service');
+  return closeRekassaShift();
+}

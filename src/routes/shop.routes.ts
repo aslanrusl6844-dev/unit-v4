@@ -22,6 +22,7 @@ import { searchStreets } from '../services/streets.service';
 import { sendBroadcast } from '../services/pushBroadcast.service';
 import { createHmac, randomInt, timingSafeEqual } from 'node:crypto';
 import { deliveryFeeFor, deliveryFeeOfOrder } from '../config/shopDelivery';
+import { fiscalizeOrder, rekassaAuto } from '../services/rekassa.service';
 import {
   applyWowToItems, activeWowPercent, getWowSettings, getCurrentMembership, membershipSavings, effectiveStatus, wowPriceOf, pushToCustomer,
 } from '../services/wow.service';
@@ -1030,6 +1031,11 @@ export async function markShopOrderAsPaid(orderId: string): Promise<
     await editOrderNotify(shopOrder, 'paid');
   } catch (err: any) {
     logger.error({ err }, '[Telegram] editOrderNotify(paid) не должен был бросить исключение');
+  }
+
+  // Онлайн-касса: чек пробивается сам, только если включено REKASSA_AUTO=on (после подключения оплаты картой).
+  if (rekassaAuto()) {
+    try { await fiscalizeOrder(shopOrder.id, 'sell'); } catch { /* ошибка записана в чек — повтор кнопкой в админке */ }
   }
 
   return { ok: true };
