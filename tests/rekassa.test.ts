@@ -15,7 +15,9 @@ type Row = Record<string, any>;
 let orders: Row[] = [];
 let receipts: Row[] = [];
 let seq = 0;
+let pushes: Row[] = [];
 const stub: Record<string, any> = {
+  shopCustomerPushToken: { findFirst: async (a: Row) => (a.where.phone.in.includes('+77771112233') ? { token: 'tok' } : null) },
   shopOrder: { findUnique: async (a: Row) => orders.find((o) => o.id === a.where.id) ?? null },
   fiscalReceipt: {
     findUnique: async (a: Row) => {
@@ -33,6 +35,8 @@ class StubPrismaClient {
 }
 const prismaPath = require.resolve('@prisma/client');
 require.cache[prismaPath] = { id: prismaPath, filename: prismaPath, loaded: true, exports: { PrismaClient: StubPrismaClient, Prisma: {} } } as any;
+const pbPath = require.resolve('../src/services/pushBroadcast.service');
+require.cache[pbPath] = { id: pbPath, filename: pbPath, loaded: true, exports: { sendBroadcast: async (m: Row) => { pushes.push(m); return {}; } } } as any;
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const rk = require('../src/services/rekassa.service');
 
@@ -48,9 +52,9 @@ function fakeFetch(url: string, init: any) {
 }
 
 beforeEach(() => {
-  orders = [{ id: 'o1', total: 4000, phone: '+7 777 111 22 33', status: 'paid',
+  orders = [{ id: 'o1', number: 'MM-1', total: 4000, phone: '+7 777 111 22 33', status: 'paid', email: null,
     items: JSON.stringify([{ sku: 'a', name: 'Чайник', price: 1500, quantity: 2 }]) }];
-  receipts = []; calls = []; seq = 0;
+  receipts = []; calls = []; seq = 0; pushes = [];
   ticketReply = { status: 200, body: { id: 77, ticketNumber: '123', qrCode: 'https://ofd/check?i=123', offline: false } };
   rk.setRekassaFetch(fakeFetch as any);
 });
@@ -68,7 +72,7 @@ describe('re:Kassa', () => {
     assert.equal(rk.ticketFor({ total: 1, items: '[]' }, 'return').body.operation, 'OPERATION_SELL_RETURN');
   });
 
-  test('чек пробивается один раз; ссылка на чек сохраняется; выдача — на WhatsApp покупателя', async () => {
+  test('чек пробивается один раз; ссылка на чек сохраняется; без почты — выдача ссылкой, пуш покупателю', async () => {
     const r = await rk.fiscalizeOrder('o1', 'sell');
     assert.equal(r.status, 'ok');
     assert.equal(r.qrUrl, 'https://ofd/check?i=123');
@@ -76,7 +80,10 @@ describe('re:Kassa', () => {
     assert.ok(sale.init.headers['X-Request-ID']);
     assert.equal(sale.init.headers.Authorization, 'Bearer T');
     const receipt = calls.find((c) => c.url.endsWith('/tickets/77/receipts'))!;
-    assert.deepEqual(JSON.parse(receipt.init.body), { type: 'WHATSAPP', receiver: { phone: 77771112233 } });
+    assert.deepEqual(JSON.parse(receipt.init.body), { type: 'DOWNLOAD' });
+    assert.equal(pushes.length, 1);
+    assert.match(pushes[0].title, /Чек по заказу/);
+    assert.deepEqual(pushes[0].data, { type: 'order', orderNumber: 'MM-1' });
     const n = calls.length;
     await rk.fiscalizeOrder('o1', 'sell'); // повтор — без нового чека
     assert.equal(calls.length, n);
@@ -93,6 +100,14 @@ describe('re:Kassa', () => {
     assert.equal(r.status, 'offline');
     const ids = calls.filter((c) => c.url.endsWith('/tickets')).map((c) => c.init.headers['X-Request-ID']);
     assert.deepEqual(ids, [firstId, firstId]);
+  });
+
+  test('покупатель оставил e-mail — касса отправляет чек на почту', async () => {
+    orders[0].email = 'buyer@mail.kz';
+    await rk.fiscalizeOrder('o1', 'sell');
+    const receipt = calls.find((c) => c.url.endsWith('/tickets/77/receipts'))!;
+    assert.deepEqual(JSON.parse(receipt.init.body), { type: 'EMAIL', receiver: { email: 'buyer@mail.kz' } });
+    assert.match(pushes[0].body, /почте/);
   });
 
   test('чек возврата — только после чека продажи', async () => {

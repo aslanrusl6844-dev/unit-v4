@@ -401,6 +401,8 @@ model ShopOrder {
 
   customerName  String
   phone         String
+  // E-mail покупателя для фискального чека (необязательно) — re:Kassa пришлёт чек на почту.
+  email         String?
 
   total         Float
   items         String   // JSON: [{ sku, name, price, quantity }, ...]
