@@ -20,6 +20,7 @@ import { ozonTypeKey } from '../services/sync.service';
 import { SHOP_CATALOG_CANON } from '../config/shopCatalogCanon';
 import { hintCategoryByName, hintRuleCatalogPairs, starterCatalogPairs, buildCatalog } from '../services/categoryHints';
 import { editOrderNotify } from '../lib/telegram';
+import { fiscalizeOrder, rekassaStatus, RekassaError } from '../services/rekassa.service';
 import { sendSms } from '../services/sms.service';
 import { sendCourierApprovedPush, sendDeliveryProgressPush } from '../lib/expoPush';
 import { resolveCity, CITY_IMAGE_CITIES } from '../config/cities';
@@ -305,7 +306,13 @@ shopAdminRouter.get('/orders', async (req, res) => {
       take: 500,
       include: { courier: true, payout: true }, // курьер и выплата — только у доставленных, у остальных null
     });
-    res.json(orders.map((o) => ({ ...o, items: JSON.parse(o.items) })));
+    // Чеки re:Kassa по этим заказам (продажа / возврат).
+    const receipts = orders.length
+      ? await prisma.fiscalReceipt.findMany({ where: { orderId: { in: orders.map((o) => o.id) } } })
+      : [];
+    const byOrder = new Map<string, any[]>();
+    for (const r of receipts) byOrder.set(r.orderId, [...(byOrder.get(r.orderId) ?? []), r]);
+    res.json(orders.map((o) => ({ ...o, items: JSON.parse(o.items), receipts: byOrder.get(o.id) ?? [] })));
   } catch (err: any) {
     logger.error({ err }, '[Shop Admin] GET /orders упал');
     res.status(500).json({ error: 'Не удалось получить заказы', details: String(err?.message ?? err) });
@@ -818,6 +825,26 @@ shopAdminRouter.get('/orders/waybills-zip-by-product-city', async (req, res) => 
   } catch (err: any) {
     logger.error({ err }, '[Shop Admin] GET /orders/waybills-zip-by-product-city упал');
     res.status(500).json({ error: 'Не удалось собрать накладные товара', details: String(err?.message ?? err) });
+  }
+});
+
+/** Онлайн-касса re:Kassa: подключена ли, открыта ли смена. */
+shopAdminRouter.get('/rekassa/status', async (_req, res) => {
+  res.json(await rekassaStatus());
+});
+
+/** Пробить чек по заказу вручную: { operation: 'sell' | 'return' }. Повтор после ошибки не задвоит чек. */
+shopAdminRouter.post('/orders/:id/receipt', async (req, res) => {
+  const operation = req.body?.operation === 'return' ? 'return' : 'sell';
+  try {
+    const order = await prisma.shopOrder.findUnique({ where: { id: req.params.id } });
+    if (!order) return res.status(404).json({ error: 'Заказ не найден' });
+    if (operation === 'sell' && order.status === 'pending_payment') return res.status(409).json({ error: 'Заказ ещё не оплачен — чек пробивается после оплаты' });
+    const r = await fiscalizeOrder(order.id, operation);
+    res.json(r);
+  } catch (err: any) {
+    const e = err instanceof RekassaError ? err : null;
+    res.status(e && e.status && e.status < 500 ? 422 : 502).json({ error: e ? `Касса: ${e.message}` : 'Касса не ответила', code: e?.code });
   }
 });
 

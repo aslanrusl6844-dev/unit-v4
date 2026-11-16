@@ -5406,6 +5406,41 @@ async function loadMyMarketOrders() {
   myMarketOrdersCache = orders;
   myMarketSelectedOrderIds.clear();
   renderMyMarketOrdersTable();
+  loadMmRekassaStatus();
+}
+
+/** Онлайн-касса re:Kassa: строка состояния над заказами. */
+async function loadMmRekassaStatus() {
+  const el = document.getElementById('mmRekassaStatus');
+  if (!el) return;
+  try {
+    const s = await api('/shop-admin/rekassa/status');
+    if (!s.configured) { el.textContent = '🧾 Касса re:Kassa не подключена'; return; }
+    if (!s.ok) { el.innerHTML = `🧾 Касса${s.test ? ' (тест)' : ''}: <span style="color:var(--loss)">${mmEsc(s.error || 'ошибка')}</span>`; return; }
+    el.textContent = `🧾 Касса${s.test ? ' (тест)' : ''} ${s.serialNumber || ''}: ${s.shiftOpen ? `смена №${s.shiftNumber} открыта` : 'смена закрыта'}${s.auto ? ' · чеки пробиваются сами' : ' · чеки вручную'}`;
+  } catch { el.textContent = ''; }
+}
+
+/** Ячейка «Чек»: ссылка на фискальный чек, ошибка с повтором, кнопки «Пробить чек» / «Чек возврата». */
+function renderMmReceiptCell(o) {
+  const rs = o.receipts || [];
+  const sell = rs.find((r) => r.operation === 'sell');
+  const ret = rs.find((r) => r.operation === 'return');
+  const okS = (r) => r && (r.status === 'ok' || r.status === 'offline');
+  const line = (r, label) => {
+    if (!r) return '';
+    if (okS(r)) return `<div style="font-size:11px;margin-top:4px">${r.qrUrl ? `<a class="link-btn" href="${mmEsc(r.qrUrl)}" target="_blank" rel="noopener" style="text-decoration:none">🧾 ${label}</a>` : `🧾 ${label}`}${r.status === 'offline' ? ' <span style="color:var(--text-faint)">(офлайн, дошлётся)</span>' : ''}</div>`;
+    return `<div style="font-size:11px;margin-top:4px;color:var(--loss)" title="${mmEsc(r.error || '')}">⚠ ${label}: не пробит</div>`;
+  };
+  let html = line(sell, 'Чек') + line(ret, 'Чек возврата');
+  const paidLike = o.status !== 'pending_payment';
+  if (paidLike && o.status !== 'cancelled' && !okS(sell)) {
+    html += `<button class="link-btn" data-action="receipt" data-op="sell" data-id="${o.id}" style="font-size:11px;margin-top:2px">${sell ? 'Пробить ещё раз' : 'Пробить чек'}</button>`;
+  }
+  if (okS(sell) && !okS(ret) && o.status === 'cancelled') {
+    html += `<button class="link-btn" data-action="receipt" data-op="return" data-id="${o.id}" style="font-size:11px;margin-top:2px">${ret ? 'Возврат ещё раз' : 'Чек возврата'}</button>`;
+  }
+  return html;
 }
 
 /** Фильтрует уже загруженный список по номеру заказа, названию товара и
@@ -5483,7 +5518,7 @@ function renderMyMarketOrdersTable() {
       <td>${statusCell}${truckNote}</td>
       <td>${o.pickupCode}</td>
       <td>${courierCell}</td>
-      <td>${waybillCell}</td>
+      <td>${waybillCell}${renderMmReceiptCell(o)}</td>
     </tr>
   `;
   }).join('');
@@ -5498,6 +5533,21 @@ function renderMyMarketOrdersTable() {
       } catch (err) {
         alert('Не удалось отметить оплаченным: ' + err.message);
         btn.disabled = false;
+      }
+    });
+  });
+
+  tbody.querySelectorAll('button[data-action="receipt"]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const ret = btn.dataset.op === 'return';
+      if (!confirm(ret ? 'Пробить чек возврата по этому заказу?' : 'Пробить фискальный чек по этому заказу?')) return;
+      btn.disabled = true;
+      try {
+        await api(`/shop-admin/orders/${btn.dataset.id}/receipt`, { method: 'POST', body: JSON.stringify({ operation: btn.dataset.op }) });
+        await loadMyMarketOrders();
+      } catch (err) {
+        alert(err.message);
+        await loadMyMarketOrders();
       }
     });
   });
