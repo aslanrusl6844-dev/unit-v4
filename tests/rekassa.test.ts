@@ -17,7 +17,7 @@ let receipts: Row[] = [];
 let seq = 0;
 let pushes: Row[] = [];
 const stub: Record<string, any> = {
-  shopCustomerPushToken: { findFirst: async (a: Row) => (a.where.phone.in.includes('+77771112233') ? { token: 'tok' } : null) },
+  shopCustomerPushToken: { findFirst: async (a: Row) => (a.where.phone.in.includes('77771112233') ? { token: 'tok' } : null) }, // токен записан без «+», как в жизни
   shopOrder: { findUnique: async (a: Row) => orders.find((o) => o.id === a.where.id) ?? null },
   fiscalReceipt: {
     findUnique: async (a: Row) => {

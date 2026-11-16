@@ -120,9 +120,11 @@ export function ticketFor(order: { total: number; items: string }, operation: 's
 
 /** Пуш покупателю: чек по заказу готов (тап — «Мои заказы»). Номер в базе токенов — как в заказе или нормализованный. */
 async function notifyReceipt(phone: string, number: string, operation: 'sell' | 'return', emailed: boolean) {
+  // Токен пуша может быть записан как «77771234567», «+77771234567» или «87771234567» — ищем все варианты.
   const d = String(phone ?? '').replace(/\D/g, '');
-  const norm = d.length === 11 ? '+7' + d.slice(1) : d.length === 10 ? '+7' + d : phone;
-  const device = await prisma.shopCustomerPushToken.findFirst({ where: { phone: { in: [phone, norm] } } });
+  const ten = d.length === 11 ? d.slice(1) : d.length === 10 ? d : '';
+  const variants = ten ? [phone, `7${ten}`, `+7${ten}`, `8${ten}`] : [phone];
+  const device = await prisma.shopCustomerPushToken.findFirst({ where: { phone: { in: variants } } });
   if (!device?.token) return;
   const { sendBroadcast } = await import('./pushBroadcast.service');
   await sendBroadcast({
