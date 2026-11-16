@@ -834,8 +834,16 @@ const createOrderSchema = z.object({
   comment: z.string().optional().nullable(),
   customerName: z.string().min(1),
   phone: z.string().min(1),
+  // Необязательно: e-mail для фискального чека. Пусто / с ошибкой — просто не отправляем на почту.
+  email: z.string().trim().max(120).optional().nullable(),
   items: z.array(orderItemSchema).min(1),
 });
+
+/** E-mail для чека: только похожий на настоящий адрес, иначе null. */
+export function cleanEmail(v: unknown): string | null {
+  const s = String(v ?? '').trim().toLowerCase();
+  return /^[^\s@]+@[^\s@]+\.[a-z]{2,}$/.test(s) && s.length <= 120 ? s : null;
+}
 
 function generateOrderNumber(): string {
   const d = new Date();
@@ -913,6 +921,7 @@ shopRouter.post('/orders', async (req, res) => {
         comment: parsed.data.comment || null,
         customerName: parsed.data.customerName,
         phone: parsed.data.phone,
+        email: cleanEmail(parsed.data.email),
         total,
         items: JSON.stringify(orderItems),
         wowDiscount,
@@ -1194,6 +1203,11 @@ shopRouter.get('/orders', async (req, res) => {
     // этот фильтр, даже если телефон совпадает частично/по формату.
     // Скрытые клиентом («Удалить из списка») в приложение не отдаём; в админке и учёте они остаются.
     const myOrders = allOrders.filter((o: typeof allOrders[number]) => !o.hiddenByCustomer && phonesMatch(phone, o.phone));
+    // Фискальные чеки (продажа / возврат) — кнопка «🧾 Чек» в «Моих заказах».
+    const receiptRows: any[] = myOrders.length
+      ? await prisma.fiscalReceipt.findMany({ where: { orderId: { in: myOrders.map((o) => o.id) }, status: { in: ['ok', 'offline'] } } }).catch(() => [])
+      : [];
+    const receiptOf = (id: string, op: string) => receiptRows.find((r) => r.orderId === id && r.operation === op)?.qrUrl ?? null;
 
     // В заказе хранится только sku/название/цена — картинки нет. Приложению
     // нужна обложка товара (в т.ч. витринных товаров, которых нет в общем
@@ -1246,6 +1260,8 @@ shopRouter.get('/orders', async (req, res) => {
       entrance: o.entrance,
       floor: o.floor,
       intercom: o.intercom,
+      receiptUrl: receiptOf(o.id, 'sell'),
+      returnReceiptUrl: receiptOf(o.id, 'return'),
     })));
   } catch (err: any) {
     logger.error({ err }, '[Shop API] Ошибка получения списка заказов по телефону');

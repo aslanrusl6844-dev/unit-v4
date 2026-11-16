@@ -118,10 +118,19 @@ export function ticketFor(order: { total: number; items: string }, operation: 's
   };
 }
 
-function phoneDigits(phone: string): number | null {
+/** Пуш покупателю: чек по заказу готов (тап — «Мои заказы»). Номер в базе токенов — как в заказе или нормализованный. */
+async function notifyReceipt(phone: string, number: string, operation: 'sell' | 'return', emailed: boolean) {
   const d = String(phone ?? '').replace(/\D/g, '');
-  const n = d.length === 11 && (d.startsWith('7') || d.startsWith('8')) ? '7' + d.slice(1) : d.length === 10 ? '7' + d : '';
-  return n ? Number(n) : null;
+  const norm = d.length === 11 ? '+7' + d.slice(1) : d.length === 10 ? '+7' + d : phone;
+  const device = await prisma.shopCustomerPushToken.findFirst({ where: { phone: { in: [phone, norm] } } });
+  if (!device?.token) return;
+  const { sendBroadcast } = await import('./pushBroadcast.service');
+  await sendBroadcast({
+    title: operation === 'sell' ? `🧾 Чек по заказу ${number}` : `🧾 Чек возврата по заказу ${number}`,
+    body: emailed ? 'Чек в «Моих заказах» и на вашей почте' : 'Откройте «Мои заказы» → «Чек»',
+    tokens: [device.token],
+    data: { type: 'order', orderNumber: number },
+  });
 }
 
 /**
@@ -151,11 +160,14 @@ export async function fiscalizeOrder(orderId: string, operation: 'sell' | 'retur
         ticketNumber: t.ticketNumber ?? t.offlineTicketNumber ?? null, qrUrl: t.qrCode ?? null, total, error: null,
       },
     });
-    // Отметка «чек выдан»: на WhatsApp покупателя (если номер есть), иначе — ссылка на скачивание.
-    const phone = phoneDigits(order.phone);
+    // Выдача чека: на e-mail покупателя (re:Kassa шлёт письмо сама), иначе — отметка «выдан ссылкой».
+    // WhatsApp через API re:Kassa не поддерживает. Ссылка на чек всегда есть в «Моих заказах».
+    const email = (order as any).email as string | null;
     await call((cr) => `/api/crs/${cr}/tickets/${done.ticketId}/receipts`, {
-      method: 'POST', body: phone ? { type: 'WHATSAPP', receiver: { phone } } : { type: 'DOWNLOAD' },
-    }).catch((err) => logger.warn({ err, orderId }, '[re:Kassa] отметка выдачи чека не прошла'));
+      method: 'POST', body: email ? { type: 'EMAIL', receiver: { email } } : { type: 'DOWNLOAD' },
+    }).catch((err) => logger.warn({ err, orderId }, '[re:Kassa] выдача чека не прошла'));
+    // Пуш от My Market: «Чек готов» — открывает «Мои заказы».
+    await notifyReceipt(order.phone, order.number, operation, !!email).catch(() => undefined);
     return done;
   } catch (err: any) {
     const msg = err instanceof RekassaError ? `${err.code}: ${err.message}` : String(err?.message ?? err);
