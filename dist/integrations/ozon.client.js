@@ -1,0 +1,919 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.ozonClient = exports.OzonClient = void 0;
+exports.sellingPrice = sellingPrice;
+exports.ozonFeeKind = ozonFeeKind;
+const axios_1 = __importDefault(require("axios"));
+const env_1 = require("../config/env");
+const logger_1 = require("../utils/logger");
+const prisma_1 = require("../db/prisma");
+const ozon_content_1 = require("./ozon.content");
+async function getOzonCredentials() {
+    const store = await prisma_1.prisma.ozonStore.findFirst({ orderBy: { updatedAt: 'desc' } });
+    if (store?.clientId && store?.apiKey) {
+        return { clientId: store.clientId, apiKey: store.apiKey, baseUrl: env_1.env.ozon.baseUrl };
+    }
+    if (env_1.env.ozon.clientId && env_1.env.ozon.apiKey) {
+        return { clientId: env_1.env.ozon.clientId, apiKey: env_1.env.ozon.apiKey, baseUrl: env_1.env.ozon.baseUrl };
+    }
+    return null;
+}
+/** В v4 цена приходит объектом {amount, currency}, раньше — строкой. */
+function ozonMoney(v) {
+    if (v && typeof v === 'object')
+        return Number(v.amount ?? 0) || 0;
+    return Number(v ?? 0) || 0;
+}
+/**
+ * ВАЖНО (проверено официально, Telegram-канал Ozon Seller API, запись от
+ * 14 июля 2026): методы POST /v3/finance/transaction/list и .../totals
+ * ОТКЛЮЧЕНЫ Ozon 8 сентября 2026 ("obsolete method cannot be used").
+ * Официальная замена — три отдельных метода:
+ *   POST /v1/finance/accrual/postings — начисления по отправлениям
+ *   POST /v1/finance/accrual/types — справочник типов начислений
+ *   POST /v1/finance/accrual/by-day — агрегаты по дням
+ *
+ * Два официальных ограничения нового API (сам Ozon об этом пишет в
+ * документации):
+ *  1. Максимум ~30 дней в одном запросе (было — без ограничений) — поэтому
+ *     ниже период режется на месячные куски, как и у Kaspi с их лимитом.
+ *  2. Дословная цитата из документации Ozon: "Данные могут не соответствовать
+ *     информации в личном кабинете" — это официальная оговорка САМОГО Ozon,
+ *     не наша неточность. Обязательно показываем это предупреждение в
+ *     интерфейсе рядом с цифрами Ozon (см. index.html).
+ *
+ * Точная JSON-схема нового ответа не задокументирована публично так же
+ * подробно, как была у старого метода (независимые разработчики, уже
+ * мигрировавшие, тоже отмечают недостающие поля и нестабильность). Разбор
+ * ниже сделан МАКСИМАЛЬНО терпимым к разным вариантам названий полей —
+ * при любой нестыковке в лог пишется ПОЛНОЕ тело ответа Ozon, чтобы можно
+ * было быстро уточнить точные названия по факту, не гадая заново.
+ */
+/** Ссылки на фото из ответа /v3/product/info/list: primary_image (массив
+ *  или строка) + images, главное первым, без дублей и пустых, до 10 штук. */
+function collectOzonImages(primary, images) {
+    const list = [];
+    const push = (v) => { if (typeof v === 'string' && /^https?:\/\//.test(v.trim()))
+        list.push(v.trim()); };
+    if (Array.isArray(primary))
+        primary.forEach(push);
+    else
+        push(primary);
+    if (Array.isArray(images))
+        images.forEach(push);
+    return Array.from(new Set(list)).slice(0, 10);
+}
+const OZON_ATTR_ID_DESCRIPTION = 4191; // «Аннотация»
+const OZON_ATTR_ID_TYPE = 8229; // «Тип»
+// Имена атрибутов по паре (категория, тип) не меняются — кэшируем в памяти,
+// чтобы не спрашивать их у Ozon на каждой пачке.
+const ozonAttrNamesCache = new Map();
+function pickStr(...vals) {
+    for (const v of vals)
+        if (typeof v === 'string' && v.trim())
+            return v.trim();
+    return '';
+}
+function normalizeOzonReturn(r) {
+    const product = r?.product ?? {};
+    const price = product?.price;
+    return {
+        id: String(r?.id ?? ''),
+        postingNumber: pickStr(r?.posting_number),
+        orderNumber: pickStr(r?.order_number, r?.order_id != null ? String(r.order_id) : ''),
+        schema: pickStr(r?.schema, r?.return_schema),
+        status: pickStr(r?.visual?.status?.display_name, r?.visual?.status?.sys_name, r?.status),
+        statusChangedAt: pickStr(r?.visual?.change_moment) || null,
+        reason: pickStr(r?.return_reason_name, r?.reason),
+        productName: pickStr(product?.name, r?.product_name),
+        offerId: pickStr(product?.offer_id, r?.offer_id),
+        quantity: Number(product?.quantity ?? r?.quantity ?? (Array.isArray(r?.exemplars) ? r.exemplars.length : 1)) || 1,
+        price: Number((price && typeof price === 'object' ? price.price : price) ?? 0) || 0,
+        placeName: pickStr(r?.place?.name),
+        placeAddress: pickStr(r?.place?.address),
+        targetPlaceName: pickStr(r?.target_place?.name),
+        targetPlaceAddress: pickStr(r?.target_place?.address),
+        returnedAt: pickStr(r?.logistic?.final_moment, r?.logistic?.technical_return_moment) || null,
+        statusSysName: pickStr(r?.visual?.status?.sys_name),
+        // Когда возврат приехал на склад: storage.arrived_moment, а если Ozon его не заполнил —
+        // момент смены статуса на «на складе Ozon» (visual.change_moment).
+        arrivedAt: pickStr(r?.storage?.arrived_moment, r?.visual?.change_moment, r?.logistic?.final_moment) || null,
+        storage: r?.storage && typeof r.storage === 'object' ? r.storage : null,
+        raw: r,
+    };
+}
+class OzonClient {
+    async isConfigured() {
+        const creds = await getOzonCredentials();
+        return Boolean(creds?.clientId && creds?.apiKey);
+    }
+    async getHttp() {
+        const creds = await getOzonCredentials();
+        if (!creds) {
+            throw new Error('Ozon API не настроен: добавьте магазин в разделе «Настройки» или задайте OZON_CLIENT_ID/OZON_API_KEY в .env');
+        }
+        const http = axios_1.default.create({
+            baseURL: creds.baseUrl,
+            headers: {
+                'Client-Id': creds.clientId,
+                'Api-Key': creds.apiKey,
+                'Content-Type': 'application/json',
+            },
+            timeout: 20000,
+        });
+        // Ozon ограничивает число запросов В СЕКУНДУ (429 «request rate limit per second»).
+        // Такая ошибка проходит сама через секунду-другую — повторяем запрос до 4 раз с паузой,
+        // а не роняем всю синхронизацию (из-за этого автообновление писало «не вышло: Ozon»).
+        http.interceptors.response.use(undefined, async (err) => {
+            const cfg = err?.config;
+            if (err?.response?.status !== 429 || !cfg)
+                throw err;
+            cfg.__retry429 = (cfg.__retry429 ?? 0) + 1;
+            if (cfg.__retry429 > 4)
+                throw err;
+            await new Promise((r) => setTimeout(r, 1200 * cfg.__retry429));
+            return http.request(cfg);
+        });
+        return http;
+    }
+    /**
+     * Полный каталог товаров, СЕЙЧАС стоящих на продаже (не из заказов, а из
+     * собственного метода Ozon "список товаров"):
+     *   POST /v3/product/list — постранично отдаёт {product_id, offer_id}
+     *     (v2/product/list официально отключён Ozon 09.02.2025 — используем
+     *     актуальную v3-версию, иначе получаем "404 page not found")
+     *   POST /v3/product/info/list — по списку id отдаёт name/статус
+     *     (v2/product/info(/list) официально отключён Ozon 17.02.2025)
+     * filter.visibility — судя по точному тексту ошибки Ozon ("invalid value
+     * for enum field visibility: [" — ошибка ровно на символе "[") это
+     * ОБЫЧНАЯ СТРОКА (enum), а не массив, как я ошибочно поставил в прошлый
+     * раз. Отправляем строкой "VISIBLE" — "сейчас видны покупателям", а не
+     * вообще все когда-либо созданные товары (включая давно снятые с продажи).
+     * Разбор ответа сделан устойчивым к структуре — проверяет и
+     * data.result.items, и data.items — на случай мелких отличий между
+     * версиями API.
+     */
+    async fetchCatalog() {
+        const http = await this.getHttp();
+        const idPairs = [];
+        let lastId = '';
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+            let data;
+            try {
+                const response = await http.post('/v3/product/list', {
+                    filter: { visibility: 'VISIBLE' },
+                    last_id: lastId,
+                    limit: 100,
+                });
+                data = response.data;
+            }
+            catch (err) {
+                const ozonErrorBody = err?.response?.data;
+                logger_1.logger.error({ status: err?.response?.status, body: ozonErrorBody }, '[Ozon] Ошибка запроса списка товаров');
+                throw new Error(`Ozon API вернул ошибку ${err?.response?.status ?? ''} при запросе каталога: ${JSON.stringify(ozonErrorBody) || err?.message}`);
+            }
+            const result = data.result ?? data;
+            const items = result?.items ?? [];
+            items.forEach((i) => idPairs.push({ productId: i.product_id, offerId: i.offer_id }));
+            lastId = result?.last_id ?? '';
+            if (!items.length || !lastId)
+                break;
+        }
+        logger_1.logger.info(`[Ozon] В каталоге товаров (visibility=VISIBLE): ${idPairs.length}`);
+        // Название и точный статус (archived) добираем пачками по 100 через info/list.
+        const catalog = [];
+        for (let i = 0; i < idPairs.length; i += 100) {
+            const chunk = idPairs.slice(i, i + 100);
+            try {
+                const { data } = await http.post('/v3/product/info/list', {
+                    offer_id: chunk.map((c) => c.offerId),
+                });
+                const result = data.result ?? data;
+                const items = result?.items ?? [];
+                items.forEach((item) => {
+                    catalog.push({
+                        offerId: item.offer_id,
+                        name: item.name?.trim() || `Ozon-товар ${item.offer_id}`,
+                        // Если поле archived не пришло — считаем товар активным (лучше
+                        // показать лишний товар, чем незаметно потерять настоящий).
+                        active: item.archived !== true,
+                        // Ozon отдаёт price строкой — переводим в число для расчётов.
+                        price: item.price ? Number(item.price) : undefined,
+                        // Фото только ЧИТАЕМ (то же поле ответа, что уже приходит) —
+                        // ничего на Ozon не меняем. Главное фото первым, без дублей.
+                        images: collectOzonImages(item.primary_image, item.images),
+                    });
+                });
+            }
+            catch (err) {
+                const ozonErrorBody = err?.response?.data;
+                logger_1.logger.error({ status: err?.response?.status, body: ozonErrorBody }, '[Ozon] Ошибка запроса деталей товаров');
+                // Не прерываем всю синхронизацию из-за одной неудачной пачки — просто
+                // пропускаем эти offer_id, остальные всё равно синхронизируются.
+            }
+        }
+        return catalog;
+    }
+    /**
+     * Описание, тип и характеристики товаров Ozon — ТОЛЬКО ЧТЕНИЕ:
+     *   POST /v4/product/info/attributes — атрибуты по списку offer_id (до 1000),
+     *     у каждого: description_category_id, type_id, attributes[{id, values[{value}]}];
+     *   POST /v1/description-category/attribute — имена атрибутов для пары
+     *     (категория, тип), чтобы характеристики получили названия.
+     * Ничего на Ozon не создаётся и не меняется. Если имена атрибутов получить
+     * не удалось — описание и тип всё равно возвращаются, без характеристик.
+     */
+    async fetchProductContent(offerIds) {
+        if (!offerIds.length)
+            return [];
+        const http = await this.getHttp();
+        let items = [];
+        try {
+            const { data } = await http.post('/v4/product/info/attributes', {
+                filter: { offer_id: offerIds, visibility: 'ALL' },
+                limit: Math.min(1000, Math.max(offerIds.length, 1)),
+                sort_dir: 'ASC',
+            });
+            items = (data?.result ?? data?.items ?? []);
+        }
+        catch (err) {
+            const ozonErrorBody = err?.response?.data;
+            logger_1.logger.error({ status: err?.response?.status, body: ozonErrorBody }, '[Ozon] Ошибка запроса атрибутов (/v4/product/info/attributes)');
+            throw new Error(`Ozon API вернул ошибку ${err?.response?.status ?? ''} при запросе описаний: ${JSON.stringify(ozonErrorBody) || err?.message}`);
+        }
+        // Имена атрибутов — по каждой уникальной паре (категория, тип) один раз.
+        const pairs = new Map();
+        for (const it of items) {
+            if (it?.description_category_id && it?.type_id) {
+                pairs.set(`${it.description_category_id}:${it.type_id}`, { categoryId: it.description_category_id, typeId: it.type_id });
+            }
+        }
+        for (const [key, pair] of pairs) {
+            if (ozonAttrNamesCache.has(key))
+                continue;
+            try {
+                const { data } = await http.post('/v1/description-category/attribute', {
+                    description_category_id: pair.categoryId,
+                    type_id: pair.typeId,
+                    language: 'DEFAULT',
+                });
+                const names = new Map();
+                for (const a of (data?.result ?? [])) {
+                    if (a?.id != null && a?.name)
+                        names.set(a.id, a.name);
+                }
+                ozonAttrNamesCache.set(key, names);
+            }
+            catch (err) {
+                logger_1.logger.warn({ status: err?.response?.status, pair: key }, '[Ozon] Не удалось получить названия атрибутов — характеристики этой категории пропущены');
+                ozonAttrNamesCache.set(key, new Map());
+            }
+        }
+        return items.map((it) => {
+            const names = ozonAttrNamesCache.get(`${it.description_category_id}:${it.type_id}`) ?? new Map();
+            let description;
+            let composition;
+            let material;
+            let typeName;
+            for (const attr of (it.attributes ?? [])) {
+                const value = (attr.values ?? []).map((v) => String(v?.value ?? '').trim()).filter(Boolean).join(', ');
+                if (!value)
+                    continue;
+                const name = names.get(attr.id) ?? (attr.id === OZON_ATTR_ID_DESCRIPTION ? 'Аннотация' : attr.id === OZON_ATTR_ID_TYPE ? 'Тип' : undefined);
+                if (attr.id === OZON_ATTR_ID_DESCRIPTION || name?.toLowerCase() === 'аннотация') {
+                    description = (0, ozon_content_1.cleanOzonDescription)(value);
+                }
+                else if (attr.id === OZON_ATTR_ID_TYPE || name?.toLowerCase() === 'тип') {
+                    if (!(0, ozon_content_1.isGarbageValue)(value))
+                        typeName = value;
+                }
+                else if ((0, ozon_content_1.isCompositionAttributeName)(name)) {
+                    composition = (0, ozon_content_1.cleanOzonComposition)(value);
+                }
+                else if ((0, ozon_content_1.isMaterialAttributeName)(name)) {
+                    if (!(0, ozon_content_1.isGarbageValue)(value))
+                        material = value;
+                }
+                // Все остальные атрибуты (бренд, пол, страна, ТН ВЭД, маркировка, код
+                // продавца, хештеги…) сознательно игнорируются — в карточку не идут.
+            }
+            return { offerId: String(it.offer_id), typeName, description, composition, material };
+        });
+    }
+    /**
+     * Тарифная сетка расходов Ozon по каждому товару — POST /v5/product/info/prices.
+     * Это ТА ЖЕ информация, что видна в кабинете Ozon → Цены и акции →
+     * Управление ценами → "Расходы": вознаграждение Ozon (в %), логистика,
+     * последняя миля, обратная логистика, эквайринг.
+     *
+     * ВАЖНО: это ПРЕДВАРИТЕЛЬНАЯ тарифная сетка "если продать по текущей
+     * цене прямо сейчас", а не факт по уже состоявшейся продаже (факт даётся
+     * отдельно — см. fetchFinanceByPosting, уже используется при синхронизации
+     * заказов). Подтверждённый формат ответа (проверено по официальной
+     * документации Ozon и рабочим примерам интеграторов):
+     *   commissions.sales_percent_fbs — ставка вознаграждения Ozon по схеме
+     *     FBS, в процентах КАК ЕСТЬ (27.5 значит 27.5%, без домножения/деления).
+     *   commissions.fbs_direct_flow_trans_min_amount — магистральная логистика, ₸.
+     *   commissions.fbs_deliv_to_customer_amount — последняя миля, ₸.
+     *   commissions.fbs_return_flow_amount — обратная логистика (справочно,
+     *     это стоимость ПРИ ВОЗВРАТЕ — условная, не считаем её в детерминированный
+     *     прогноз прибыли по проданной единице, у нас нет вероятности возврата).
+     *   acquiring — эквайринг, ₸ (верхний уровень ответа, не внутри commissions).
+     * Схема FBS выбрана как основная — самая частая для обычных продавцов.
+     * "Обработка отправления" из кабинета Ozon в этом ответе отдельным полем
+     * НЕ приходит — не выдумываем цифру, просто не показываем эту строку.
+     */
+    async fetchPrices(offerIds) {
+        const http = await this.getHttp();
+        const result = new Map();
+        for (let i = 0; i < offerIds.length; i += 100) {
+            const chunk = offerIds.slice(i, i + 100);
+            try {
+                const { data } = await http.post('/v5/product/info/prices', {
+                    filter: { offer_id: chunk, visibility: 'ALL' },
+                    limit: 100,
+                    cursor: '',
+                });
+                const items = data.items ?? data.result?.items ?? [];
+                let sampled = false;
+                items.forEach((item) => {
+                    const c = item.commissions ?? {};
+                    if (!sampled && item.price?.marketing_actions?.ozon_actions_exist) {
+                        sampled = true;
+                        logger_1.logger.info({ offer: item.offer_id, price: item.price, marketing_actions: item.marketing_actions ?? item.price?.marketing_actions }, '[Ozon] Пример цены товара в акции');
+                    }
+                    result.set(item.offer_id, {
+                        price: sellingPrice(item.price),
+                        productId: item.product_id != null ? String(item.product_id) : undefined,
+                        commissionRatePct: c.sales_percent_fbs != null ? Number(c.sales_percent_fbs) : undefined,
+                        logisticsAmount: c.fbs_direct_flow_trans_min_amount != null ? Number(c.fbs_direct_flow_trans_min_amount) : undefined,
+                        lastMileAmount: c.fbs_deliv_to_customer_amount != null ? Number(c.fbs_deliv_to_customer_amount) : undefined,
+                        returnLogisticsAmount: c.fbs_return_flow_amount != null ? Number(c.fbs_return_flow_amount) : undefined,
+                        acquiringAmount: item.acquiring != null ? Number(item.acquiring) : undefined,
+                    });
+                });
+            }
+            catch (err) {
+                const ozonErrorBody = err?.response?.data;
+                logger_1.logger.error({ status: err?.response?.status, body: ozonErrorBody }, '[Ozon] Ошибка запроса тарифов (/v5/product/info/prices)');
+                // Не прерываем всю синхронизацию из-за одной неудачной пачки — просто
+                // пропускаем эти offer_id, остальные всё равно синхронизируются.
+            }
+        }
+        return result;
+    }
+    /** Текущие цены одного товара на Ozon: продажи, старая (зачёркнутая), минимальная для акций. */
+    async fetchPriceDetails(offerId) {
+        const http = await this.getHttp();
+        const { data } = await http.post('/v5/product/info/prices', { filter: { offer_id: [offerId], visibility: 'ALL' }, limit: 1, cursor: '' });
+        const item = (data.items ?? data.result?.items ?? [])[0];
+        if (!item)
+            return null;
+        const p = item.price ?? {};
+        const num = (v) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : null; };
+        return {
+            offerId: item.offer_id,
+            price: num(p.price),
+            oldPrice: num(p.old_price),
+            minPrice: num(p.min_price),
+            sellingPrice: sellingPrice(p) ?? null,
+            currency: p.currency_code || null,
+        };
+    }
+    /**
+     * Поменять цены товара на Ozon (/v1/product/import/prices). oldPrice = 0 — убрать зачёркнутую цену;
+     * minPrice = undefined — минимальную не трогаем. Возвращает ошибки Ozon текстом (пусто — принято).
+     */
+    async updatePrice(input) {
+        const http = await this.getHttp();
+        const item = {
+            offer_id: input.offerId,
+            price: String(Math.round(input.price)),
+            old_price: String(Math.round(input.oldPrice)),
+        };
+        if (input.minPrice !== undefined)
+            item.min_price = String(Math.round(input.minPrice));
+        if (input.currency)
+            item.currency_code = input.currency;
+        try {
+            const { data } = await http.post('/v1/product/import/prices', { prices: [item] });
+            const r = (data.result ?? [])[0];
+            if (!r)
+                return ['Ozon не вернул ответ по товару'];
+            if (r.updated)
+                return [];
+            return (r.errors ?? []).map((e) => [e.code, e.message].filter(Boolean).join(': ')).filter(Boolean).concat(r.errors?.length ? [] : ['Ozon не обновил цену']);
+        }
+        catch (err) {
+            const status = err?.response?.status;
+            const body = err?.response?.data;
+            logger_1.logger.error({ status, body }, '[Ozon] Ошибка смены цены (/v1/product/import/prices)');
+            if (status === 403)
+                return ['У ключа Ozon нет прав менять цены — нужен ключ с ролью «Admin» или «Цены и остатки» (Настройки → Ozon)'];
+            return [String(body?.message || err?.message || err)];
+        }
+    }
+    async fetchOrders(params) {
+        const http = await this.getHttp();
+        const postings = await this.fetchAllFbsPostings(http, params.dateFrom, params.dateTo);
+        // ВАЖНО: /v1/finance/accrual/postings принимает posting_numbers
+        // (от 1 до 200 штук за раз, НЕ диапазон дат) — Ozon явно вернул ошибку
+        // валидации на пустой/слишком большой список. Поэтому сначала получаем
+        // сами отправления (уже сделано выше), собираем их номера, и только
+        // если список не пуст — идём в финансовый метод, пачками по 200.
+        const postingNumbers = postings.map((p) => p.posting_number).filter(Boolean);
+        const financeByPosting = postingNumbers.length > 0
+            ? await this.fetchFinanceByPosting(http, postingNumbers)
+            : new Map();
+        if (financeByPosting.size > 0) {
+            const ourCommissionTotal = Array.from(financeByPosting.values()).reduce((sum, v) => sum + v.commission, 0);
+            await this.logByDayReconciliation(http, params.dateFrom, params.dateTo, ourCommissionTotal);
+        }
+        const orders = postings.map((posting) => this.toNormalizedOrder(posting, financeByPosting.get(posting.posting_number)));
+        logger_1.logger.info(`[Ozon] Загружено отправлений: ${orders.length}`);
+        return orders;
+    }
+    /** Отправления FBS за период (как пришли от Ozon): статус, срок отгрузки, товары. Для Озон-менеджера. */
+    async fetchFbsPostings(dateFrom, dateTo) {
+        const http = await this.getHttp();
+        const postings = await this.fetchAllFbsPostings(http, dateFrom, dateTo);
+        return postings.map((p) => ({
+            postingNumber: p.posting_number,
+            status: p.status,
+            inProcessAt: p.in_process_at || null,
+            shipmentDate: p.shipment_date || null,
+            products: (p.products ?? []).map((pr) => ({
+                offerId: String(pr?.offer_id ?? ''),
+                name: String(pr?.name ?? ''),
+                quantity: Number(pr?.quantity ?? 1) || 1,
+                price: Number(pr?.price ?? 0) || 0,
+            })),
+        }));
+    }
+    /**
+     * Остатки на складах Ozon (FBO): POST /v2/analytics/stock_on_warehouses,
+     * постранично (limit/offset). Поля ответа разбираются терпимо (rows может
+     * лежать в result.rows или rows).
+     */
+    async fetchFboStocks() {
+        const http = await this.getHttp();
+        const limit = 1000;
+        const out = [];
+        for (let page = 0; page < 30; page++) {
+            let data;
+            try {
+                const response = await http.post('/v2/analytics/stock_on_warehouses', { limit, offset: page * limit, warehouse_type: 'ALL' });
+                data = response.data;
+            }
+            catch (err) {
+                const body = err?.response?.data;
+                logger_1.logger.error({ status: err?.response?.status, body }, '[Ozon] Ошибка запроса остатков FBO');
+                throw new Error(`Ozon API вернул ошибку ${err?.response?.status ?? ''} при запросе остатков FBO: ${JSON.stringify(body) || err?.message || err}`);
+            }
+            const rows = data?.result?.rows ?? data?.rows ?? [];
+            for (const r of rows) {
+                out.push({
+                    sku: String(r?.sku ?? ''),
+                    offerId: pickStr(r?.item_code, r?.offer_id),
+                    name: pickStr(r?.item_name, r?.name),
+                    warehouse: pickStr(r?.warehouse_name),
+                    free: Number(r?.free_to_sell_amount ?? 0) || 0,
+                    reserved: Number(r?.reserved_amount ?? 0) || 0,
+                    promised: Number(r?.promised_amount ?? 0) || 0,
+                });
+            }
+            if (rows.length < limit)
+                break;
+        }
+        return out;
+    }
+    /** Отправления FBO за период: POST /v3/posting/fbo/list (постранично по offset). */
+    async fetchFboPostings(dateFrom, dateTo) {
+        const http = await this.getHttp();
+        const limit = 100; // Ozon: Limit должен быть в диапазоне (0, 100]
+        const out = [];
+        for (let page = 0; page < 200; page++) {
+            let data;
+            try {
+                const response = await http.post('/v3/posting/fbo/list', {
+                    dir: 'ASC',
+                    filter: { since: dateFrom.toISOString(), to: dateTo.toISOString() },
+                    limit,
+                    offset: page * limit,
+                    with: { analytics_data: true, financial_data: false },
+                });
+                data = response.data;
+            }
+            catch (err) {
+                const body = err?.response?.data;
+                logger_1.logger.error({ status: err?.response?.status, body }, '[Ozon] Ошибка запроса отправлений FBO');
+                throw new Error(`Ozon API вернул ошибку ${err?.response?.status ?? ''} при запросе продаж FBO: ${JSON.stringify(body) || err?.message || err}`);
+            }
+            const list = Array.isArray(data?.result) ? data.result : (data?.result?.postings ?? data?.postings ?? []);
+            for (const p of list) {
+                for (const prod of Array.isArray(p?.products) ? p.products : []) {
+                    const price = prod?.price;
+                    out.push({
+                        postingNumber: pickStr(p?.posting_number),
+                        status: pickStr(p?.status),
+                        createdAt: pickStr(p?.created_at, p?.in_process_at) || null,
+                        offerId: pickStr(prod?.offer_id),
+                        name: pickStr(prod?.name),
+                        quantity: Number(prod?.quantity ?? 1) || 1,
+                        price: Number((price && typeof price === 'object' ? price.amount ?? price.price : price) ?? 0) || 0,
+                    });
+                }
+            }
+            if (list.length < limit)
+                break;
+        }
+        return out;
+    }
+    /**
+     * Возвраты Ozon (FBS и FBO): POST /v1/returns/list.
+     * Фильтр — по моменту смены статуса (visual_status_change_moment), пагинация
+     * по last_id (+ has_next). Схема ответа публично описана неполно, поэтому
+     * разбор терпимый, а сырой элемент возврата отдаётся целиком (raw) — чтобы
+     * в интерфейсе можно было показать всё, что вернул Ozon.
+     */
+    async fetchReturns(dateFrom, dateTo) {
+        const http = await this.getHttp();
+        const rows = [];
+        let lastId = 0;
+        for (let page = 0; page < 40; page++) {
+            let data;
+            try {
+                // Без дат — ВСЕ возвраты (для «что лежит на складе возвратов и ждёт забора»).
+                const filter = dateFrom && dateTo
+                    ? { visual_status_change_moment: { time_from: dateFrom.toISOString(), time_to: dateTo.toISOString() } }
+                    : {};
+                const response = await http.post('/v1/returns/list', { filter, limit: 500, last_id: lastId });
+                data = response.data;
+            }
+            catch (err) {
+                const body = err?.response?.data;
+                logger_1.logger.error({ status: err?.response?.status, body }, '[Ozon] Ошибка запроса возвратов (/v1/returns/list)');
+                throw new Error(`Ozon API вернул ошибку ${err?.response?.status ?? ''} при запросе возвратов: ${JSON.stringify(body) || err?.message || err}`);
+            }
+            const body = data?.result && !Array.isArray(data.returns) ? data.result : data;
+            const list = Array.isArray(body?.returns) ? body.returns : [];
+            for (const r of list)
+                rows.push(normalizeOzonReturn(r));
+            // Листаем по last_id до пустой страницы: has_next у Ozon бывает не заполнен.
+            if (!list.length)
+                break;
+            const next = Number(list[list.length - 1]?.id);
+            if (!next || next === lastId)
+                break;
+            lastId = next;
+        }
+        return rows;
+    }
+    /**
+     * Точная форма запроса к Ozon (для диагностики — см. п.1 вопроса):
+     *
+     *   POST {OZON_API_BASE_URL}/v4/posting/fbs/list
+     *   Headers:
+     *     Client-Id: <из формы в Настройках или OZON_CLIENT_ID>
+     *     Api-Key:   <из формы в Настройках или OZON_API_KEY>
+     *     Content-Type: application/json
+     *   Body:
+     *     {
+     *       "cursor": "",
+     *       "filter": { "since": "<ISO-дата>", "to": "<ISO-дата>" },
+     *       "limit": 100,
+     *       "sort_dir": "ASC",
+     *       "with": { "analytics_data": true, "financial_data": false }
+     *     }
+     */
+    async fetchAllFbsPostings(http, dateFrom, dateTo) {
+        // Ozon отключил POST /v3/posting/fbs/list (400 «obsolete method», затем 404).
+        // Замена — POST /v4/posting/fbs/list: постраничность не по offset, а по
+        // курсору (в запросе cursor, в ответе cursor + has_next).
+        const limit = 100;
+        let cursor = '';
+        const all = [];
+        const seenCursors = new Set();
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+            const requestBody = {
+                cursor,
+                filter: {
+                    since: dateFrom.toISOString(),
+                    to: dateTo.toISOString(),
+                },
+                limit,
+                sort_dir: 'ASC',
+                with: { analytics_data: true, financial_data: false },
+            };
+            let data;
+            try {
+                const response = await http.post('/v4/posting/fbs/list', requestBody);
+                data = response.data;
+            }
+            catch (err) {
+                const ozonErrorBody = err?.response?.data;
+                logger_1.logger.error({ status: err?.response?.status, body: ozonErrorBody, requestBody }, '[Ozon] Ошибка запроса заказов (v4/posting/fbs/list)');
+                throw new Error(`Ozon API вернул ошибку ${err?.response?.status ?? ''} при запросе заказов: ` +
+                    `${JSON.stringify(ozonErrorBody) || err?.message || err}`);
+            }
+            // Ответ может прийти как {postings,...} или в обёртке {result:{postings,...}}.
+            const body = data?.result && !Array.isArray(data.postings) ? data.result : data;
+            const postings = Array.isArray(body?.postings) ? body.postings : [];
+            all.push(...postings);
+            const nextCursor = typeof body?.cursor === 'string' ? body.cursor : '';
+            const hasNext = body?.has_next === true;
+            if (!hasNext || !nextCursor || postings.length === 0 || seenCursors.has(nextCursor))
+                break;
+            seenCursors.add(nextCursor);
+            cursor = nextCursor;
+        }
+        return all;
+    }
+    /**
+     * Финансовые транзакции содержат фактическую комиссию за продажу,
+     * стоимость логистики/обратной логистики и доп. услуги (упаковка,
+     * эквайринг и т.д.), сгруппированные по posting_number.
+     *
+     * ВАЖНО (уточнено по точной ошибке валидации от самого Ozon):
+     * /v1/finance/accrual/postings принимает поле "posting_numbers" —
+     * СПИСОК номеров отправлений, а не диапазон дат. Ограничение — от 1 до
+     * 200 номеров за один запрос. Если список пуст (заказов за период нет) —
+     * метод вызывать вообще не нужно, Ozon в любом случае откажет с ошибкой
+     * валидации на пустом массиве.
+     */
+    /**
+     * Цены в акциях Ozon, в которых товар СЕЙЧАС участвует: GET /v1/actions (участвуем, акция идёт)
+     * → POST /v2/actions/products (action_price — цена продавца в акции). product_id → минимальная цена.
+     * Это та цена, по которой товар реально продаётся, пока идёт акция (на 500–1000 ₸ ниже обычной).
+     */
+    async fetchActionPrices() {
+        const http = await this.getHttp();
+        const out = new Map();
+        let actions = [];
+        try {
+            const { data } = await http.get('/v1/actions');
+            actions = data?.result ?? [];
+        }
+        catch (err) {
+            logger_1.logger.warn({ status: err?.response?.status, body: err?.response?.data }, '[Ozon] Не удалось получить список акций');
+            return out;
+        }
+        const now = Date.now();
+        const active = actions.filter((a) => a.is_participating && Number(a.participating_products_count) > 0
+            && (!a.date_start || Date.parse(a.date_start) <= now) && (!a.date_end || Date.parse(a.date_end) >= now));
+        const money = (v) => Number(typeof v === 'object' && v ? v.amount : v) || 0;
+        for (const a of active) {
+            let lastId = '';
+            for (let page = 0; page < 50; page++) {
+                let data;
+                try {
+                    ({ data } = await http.post('/v2/actions/products', { action_id: Number(a.id), limit: 100, last_id: lastId }));
+                }
+                catch (err) {
+                    logger_1.logger.warn({ action: a.id, status: err?.response?.status, body: err?.response?.data }, '[Ozon] Не удалось получить товары акции');
+                    break;
+                }
+                const products = data?.products ?? data?.result?.products ?? [];
+                if (page === 0 && products.length)
+                    logger_1.logger.info({ action: a.id, sample: products.slice(0, 2) }, '[Ozon] Пример товара в акции');
+                for (const p of products) {
+                    const price = money(p.action_price) || money(p.website_prices?.price);
+                    if (price <= 0)
+                        continue;
+                    // Ключи на всякий случай все: product_id, id, sku, offer_id — сверяем с тем, что есть у товара.
+                    for (const k of [p.product_id, p.id, p.sku, p.offer_id]) {
+                        if (k == null || k === '')
+                            continue;
+                        const id = String(k);
+                        const prev = out.get(id);
+                        if (prev == null || price < prev)
+                            out.set(id, price);
+                    }
+                }
+                const next = String(data?.last_id ?? data?.result?.last_id ?? '');
+                if (!products.length || !next || next === lastId)
+                    break;
+                lastId = next;
+            }
+        }
+        logger_1.logger.info({ actions: active.map((a) => ({ id: a.id, title: a.title })), products: out.size }, '[Ozon] Цены в акциях');
+        return out;
+    }
+    /** Начисления по списку отправлений (для уже сохранённых заказов). */
+    async fetchFinanceForPostings(postingNumbers) {
+        const http = await this.getHttp();
+        return this.fetchFinanceByPosting(http, postingNumbers);
+    }
+    /** Статусы FBS-отправлений за период (для обновления старых заказов: в пути → доставлен/отменён). */
+    async fetchPostingStatuses(dateFrom, dateTo) {
+        const http = await this.getHttp();
+        const postings = await this.fetchAllFbsPostings(http, dateFrom, dateTo);
+        return new Map(postings.map((p) => [p.posting_number, p.status]));
+    }
+    /** Справочник видов начислений Ozon (id → название), кэш на время жизни функции. */
+    accrualTypes = null;
+    async fetchAccrualTypes(http) {
+        if (this.accrualTypes)
+            return this.accrualTypes;
+        const h = http ?? (await this.getHttp());
+        const map = new Map();
+        try {
+            const { data } = await h.post('/v1/finance/accrual/types', {});
+            for (const t of data?.accrual_types ?? data?.result?.accrual_types ?? [])
+                map.set(Number(t.id), String(t.name ?? t.description ?? ''));
+            logger_1.logger.info({ types: Array.from(map.entries()) }, '[Ozon] Справочник начислений');
+        }
+        catch (err) {
+            logger_1.logger.warn({ status: err?.response?.status, body: err?.response?.data }, '[Ozon] Не удалось получить справочник начислений');
+        }
+        this.accrualTypes = map;
+        return map;
+    }
+    /**
+     * Начисления по отправлениям: POST /v1/finance/accrual/postings (до 200 номеров за раз).
+     * Ответ: posting_accruals[] → { posting_number, accruals[] { accrual_date, accrued{amount}, type_id, sku, quantity, seller_price } }.
+     * Сумма accrued по отправлению = сколько Ozon начислил продавцу (выручка «+», удержания «−»),
+     * т.е. это и есть «к выплате» по заказу. Вид удержания определяем по названию из справочника.
+     */
+    async fetchFinanceByPosting(http, postingNumbers) {
+        const result = new Map();
+        if (postingNumbers.length === 0)
+            return result;
+        const types = await this.fetchAccrualTypes(http);
+        const BATCH_SIZE = 200;
+        let logged = false;
+        for (let i = 0; i < postingNumbers.length; i += BATCH_SIZE) {
+            const batch = postingNumbers.slice(i, i + BATCH_SIZE);
+            let data;
+            try {
+                const response = await http.post('/v1/finance/accrual/postings', { posting_numbers: batch });
+                data = response.data;
+            }
+            catch (err) {
+                const ozonErrorBody = err?.response?.data;
+                logger_1.logger.error({ status: err?.response?.status, body: ozonErrorBody, batchSize: batch.length }, '[Ozon] Ошибка запроса начислений (/v1/finance/accrual/postings)');
+                throw new Error(`Ozon API вернул ошибку ${err?.response?.status ?? ''} при запросе начислений: ${JSON.stringify(ozonErrorBody) || err?.message || err}.`);
+            }
+            const postings = data?.posting_accruals ?? data?.result?.posting_accruals ?? data?.postings ?? [];
+            if (!logged && postings.some((p) => (p.accruals ?? []).length)) {
+                logged = true;
+                logger_1.logger.info({ sample: postings.find((p) => (p.accruals ?? []).length) }, '[Ozon] Пример начислений по отправлению');
+            }
+            for (const posting of postings) {
+                const postingNumber = posting.posting_number;
+                const accruals = posting.accruals ?? [];
+                if (!postingNumber || accruals.length === 0)
+                    continue;
+                // В начислениях по отправлению Ozon присылает только УДЕРЖАНИЯ (со знаком «−»): комиссию
+                // за продажу (появляется при доставке покупателю), логистику, штрафы и т.п. Выручки там нет —
+                // её берём из самого заказа. Названия видов — английские (Acquiring, LastMile, ...).
+                const f = { commission: 0, logistics: 0, acquiring: 0, other: 0, revenue: 0, payout: 0, settledAt: null };
+                for (const acc of accruals) {
+                    const amount = Number(acc?.accrued?.amount ?? acc?.amount ?? 0) || 0;
+                    if (!amount)
+                        continue;
+                    const name = types.get(Number(acc.type_id)) ?? '';
+                    const date = acc.accrual_date ? new Date(acc.accrual_date) : null;
+                    if (amount > 0 && /sale|revenue|выручк|продаж/i.test(name) && !/commission/i.test(name)) {
+                        f.revenue += amount;
+                        continue;
+                    }
+                    const fee = -amount; // удержание «−» → положительная сумма; возврат удержания «+» → уменьшает
+                    const kind = ozonFeeKind(name);
+                    f[kind] += fee;
+                    // Комиссия за продажу начисляется, когда покупатель получил товар, — это и есть дата продажи.
+                    if (kind === 'commission' && date && !isNaN(+date) && (!f.settledAt || date < f.settledAt))
+                        f.settledAt = date;
+                }
+                // К выплате без выручки: −(все удержания). Выручку прибавит тот, кто знает сумму заказа.
+                f.payout = Math.round(-(f.commission + f.logistics + f.acquiring + f.other) * 100) / 100;
+                result.set(postingNumber, f);
+            }
+        }
+        return result;
+    }
+    /** Финансовый отчёт по периодам выплат (1–15 и 16–конец месяца): POST /v1/finance/cash-flow-statement/list. */
+    async fetchCashFlows(from, to) {
+        const http = await this.getHttp();
+        const out = [];
+        for (let page = 1; page <= 20; page++) {
+            const { data } = await http.post('/v1/finance/cash-flow-statement/list', {
+                date: { from: from.toISOString(), to: to.toISOString() },
+                with_details: true,
+                page,
+                page_size: 1,
+            });
+            const r = data?.result ?? {};
+            for (const c of r.cash_flows ?? []) {
+                const d = r.details ?? {};
+                out.push({
+                    periodId: String(c.period?.id ?? ''),
+                    begin: c.period?.begin ?? null,
+                    end: c.period?.end ?? null,
+                    ordersAmount: Number(c.orders_amount) || 0,
+                    returnsAmount: Number(c.returns_amount) || 0,
+                    commissionAmount: Number(c.commission_amount) || 0,
+                    servicesAmount: Number(c.services_amount) || 0,
+                    deliveryAndReturnAmount: Number(c.item_delivery_and_return_amount) || 0,
+                    payments: (d.payments ?? []).reduce((s, p) => s + (Number(p.payment) || 0), 0),
+                    beginBalance: d.begin_balance_amount != null ? Number(d.begin_balance_amount) : null,
+                    endBalance: d.end_balance_amount != null ? Number(d.end_balance_amount) : null,
+                    currency: c.currency_code ?? null,
+                });
+            }
+            if (page >= Number(r.page_count ?? data?.page_count ?? 1))
+                break;
+        }
+        return out;
+    }
+    /** Баланс за период до 30 дней: POST /v1/finance/balance (Финансы → Баланс в кабинете). */
+    async fetchBalance(from, to) {
+        const http = await this.getHttp();
+        const { data } = await http.post('/v1/finance/balance', { date_from: from.toISOString().slice(0, 10), date_to: to.toISOString().slice(0, 10) });
+        const t = data?.total ?? data?.result?.total ?? {};
+        const v = (x) => (x?.value != null ? Number(x.value) : null);
+        return {
+            opening: v(t.opening_balance),
+            closing: v(t.closing_balance),
+            accrued: v(t.accrued),
+            paid: (t.payments ?? []).reduce((s, p) => s + Math.abs(Number(p?.value) || 0), 0),
+            currency: t.closing_balance?.currency_code ?? null,
+        };
+    }
+    /**
+     * Агрегаты по дням — /v1/finance/accrual/by-day. Используем как СВЕРКУ
+     * (не как основной источник данных): сравниваем сумму комиссии, которую
+     * насчитали по отдельным отправлениям, с тем, что Ozon агрегирует сам по
+     * дням за тот же период. Если сильно расходится — это подтверждает
+     * официальную оговорку самого Ozon ("данные могут не соответствовать
+     * личному кабинету") и стоит записать в лог, но НЕ должно ронять всю
+     * синхронизацию — это диагностика, а не обязательный шаг.
+     */
+    async logByDayReconciliation(http, dateFrom, dateTo, ourCommissionTotal) {
+        try {
+            const { data } = await http.post('/v1/finance/accrual/by-day', {
+                date: { from: dateFrom.toISOString().slice(0, 10), to: dateTo.toISOString().slice(0, 10) },
+            });
+            const days = data.days ?? data.result?.days ?? data.items ?? [];
+            const byDayTotal = days.reduce((sum, d) => sum + Math.abs(Number(d.sale_commission ?? d.commission ?? d.amount ?? 0)), 0);
+            if (byDayTotal > 0 && Math.abs(byDayTotal - ourCommissionTotal) / byDayTotal > 0.05) {
+                logger_1.logger.warn({ byDayTotal, ourCommissionTotal }, '[Ozon] Сумма комиссии по отправлениям заметно отличается от агрегата /accrual/by-day за тот же период — это ожидаемо (Ozon сам предупреждает, что данные API могут не совпадать с личным кабинетом)');
+            }
+        }
+        catch (err) {
+            // Это сверка, а не обязательный шаг — не роняем синхронизацию, если
+            // by-day недоступен или вернул неожиданный формат.
+            logger_1.logger.warn({ status: err?.response?.status }, '[Ozon] Не удалось сверить итоги по /accrual/by-day (не критично)');
+        }
+    }
+    toNormalizedOrder(posting, finance) {
+        const items = (posting.products ?? []).map((p) => ({
+            externalSku: p.offer_id,
+            name: p.name,
+            quantity: p.quantity,
+            price: ozonMoney(p.price),
+        }));
+        const totalRevenue = items.reduce((sum, i) => sum + i.price * i.quantity, 0);
+        return {
+            externalId: posting.posting_number,
+            marketplace: 'OZON',
+            status: posting.status,
+            orderDate: new Date(posting.in_process_at ?? posting.shipment_date),
+            deliveryType: posting.analytics_data?.delivery_type ?? posting.delivery_method?.name,
+            city: posting.analytics_data?.city,
+            totalRevenue,
+            marketplaceCommission: finance?.commission ?? 0,
+            logisticsCost: finance?.logistics ?? 0,
+            acquiringCost: finance?.acquiring ?? 0,
+            otherFees: finance?.other ?? 0,
+            settledAt: finance?.settledAt ?? null,
+            payoutAmount: finance ? finance.payout : null,
+            items,
+            raw: posting,
+        };
+    }
+}
+exports.OzonClient = OzonClient;
+exports.ozonClient = new OzonClient();
+function sellingPrice(p) {
+    const base = Number(p?.price) || 0;
+    const promo = Number(p?.marketing_seller_price) || 0;
+    const v = promo > 0 && (base <= 0 || promo < base) ? promo : base;
+    return v > 0 ? v : undefined;
+}
+/** Вид удержания Ozon по английскому названию из справочника /v1/finance/accrual/types. */
+function ozonFeeKind(name) {
+    if (/commission/i.test(name))
+        return 'commission';
+    if (/acquiring|installment/i.test(name))
+        return 'acquiring';
+    if (/logistic|lastmile|last mile|drop-?off|pick-?up|crossdock|fulfillment|shipment|delivery|packing|return|placement|storage/i.test(name))
+        return 'logistics';
+    return 'other';
+}
+//# sourceMappingURL=ozon.client.js.map

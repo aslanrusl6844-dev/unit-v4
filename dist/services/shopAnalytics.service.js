@@ -1,0 +1,288 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.KZ_CITY_WHITELIST = void 0;
+exports.normalizeKzCity = normalizeKzCity;
+exports.getSearchAnalytics = getSearchAnalytics;
+exports.getConversionAnalytics = getConversionAnalytics;
+exports.getSeasonalityAnalytics = getSeasonalityAnalytics;
+const prisma_1 = require("../db/prisma");
+const DAY_MS = 24 * 60 * 60 * 1000;
+function daysAgo(n) {
+    const d = new Date();
+    d.setDate(d.getDate() - n);
+    d.setHours(0, 0, 0, 0);
+    return d;
+}
+function dayKey(d) {
+    return d.toISOString().slice(0, 10);
+}
+function round2(n) {
+    return Math.round(n * 100) / 100;
+}
+function round1(n) {
+    return Math.round(n * 10) / 10;
+}
+/**
+ * Белый список городов приложения — ТОЛЬКО эти 14, как в адресе заказа.
+ * Регистр не важен, "Нур-Султан" — алиас на "Астана". Всё остальное —
+ * не из списка, считается "без города" (см. normalizeKzCity) — город не
+ * выдумываем, если его нет в этом списке.
+ */
+exports.KZ_CITY_WHITELIST = [
+    'Алматы', 'Астана', 'Шымкент', 'Караганда', 'Актобе', 'Тараз', 'Павлодар',
+    'Усть-Каменогорск', 'Семей', 'Атырау', 'Костанай', 'Кызылорда', 'Актау', 'Уральск',
+];
+const KZ_CITY_LOOKUP = new Map();
+for (const c of exports.KZ_CITY_WHITELIST)
+    KZ_CITY_LOOKUP.set(c.toLowerCase(), c);
+KZ_CITY_LOOKUP.set('нур-султан', 'Астана');
+/** trim + регистр не важен; не из списка (или пусто) -> null ("без города"). */
+function normalizeKzCity(raw) {
+    if (!raw)
+        return null;
+    const key = raw.trim().toLowerCase();
+    if (!key)
+        return null;
+    return KZ_CITY_LOOKUP.get(key) ?? null;
+}
+/**
+ * Заказы канала APP за период — читаем ShopOrder напрямую (не через
+ * ShopEvent), т.к. заказ как факт уже пишется туда при POST /orders и не
+ * дублируется отдельным событием (см. shop.routes.ts POST /events).
+ * "Оплаченный" здесь — статус не pending_payment и не cancelled.
+ */
+async function getAppOrdersInRange(from) {
+    return prisma_1.prisma.shopOrder.findMany({
+        where: { createdAt: { gte: from } },
+        select: { id: true, phone: true, city: true, total: true, status: true, createdAt: true, items: true },
+    });
+}
+function isPaidStatus(status) {
+    return status !== 'pending_payment' && status !== 'cancelled';
+}
+/**
+ * А) Поисковые запросы — под каждой строкой одна подстрока с городами
+ * ЭТОГО запроса: только из белого списка, формат "Город N · Город N",
+ * сортировка по числу людей убыв., затем "Всего по РК: N" (сумма только
+ * по белому списку), и если есть события с городом не из списка/пустым —
+ * отдельной пометкой "без города: N" в конце (город не выдумываем).
+ */
+async function getSearchAnalytics(days) {
+    const from = daysAgo(days);
+    const [searchEvents, orders] = await Promise.all([
+        prisma_1.prisma.shopEvent.findMany({ where: { type: 'search', createdAt: { gte: from } } }),
+        getAppOrdersInRange(from),
+    ]);
+    const byQuery = new Map();
+    for (const e of searchEvents) {
+        if (!e.query)
+            continue; // search без query не должно было записаться, но на всякий случай не считаем такие
+        if (!byQuery.has(e.query))
+            byQuery.set(e.query, []);
+        byQuery.get(e.query).push(e);
+    }
+    const rows = Array.from(byQuery.entries()).map(([query, events]) => {
+        const searchCount = events.length;
+        // Уникальные люди: по телефону, но без телефона — каждый search как отдельный человек.
+        const uniqueKeySet = new Set(events.map((e) => (e.phone ? `p:${e.phone}` : `e:${e.id}`)));
+        const uniquePeople = uniqueKeySet.size;
+        // Заказали после поиска: тот же phone, ShopOrder создан в течение 24ч
+        // ПОСЛЕ хотя бы одного search-события с этим запросом.
+        const phonesWithSearch = Array.from(new Set(events.filter((e) => e.phone).map((e) => e.phone)));
+        const orderedPhones = new Set();
+        const matchedOrderIds = new Set();
+        for (const phone of phonesWithSearch) {
+            const searchTimes = events.filter((e) => e.phone === phone).map((e) => e.createdAt.getTime());
+            const matches = orders.filter((o) => {
+                if (o.phone !== phone)
+                    return false;
+                const ot = o.createdAt.getTime();
+                return searchTimes.some((t) => ot >= t && ot <= t + DAY_MS);
+            });
+            if (matches.length) {
+                orderedPhones.add(phone);
+                matches.forEach((o) => matchedOrderIds.add(o.id));
+            }
+        }
+        const orderedRevenue = orders.filter((o) => matchedOrderIds.has(o.id)).reduce((s, o) => s + o.total, 0);
+        const resultsCounts = events.filter((e) => e.resultsCount != null).map((e) => e.resultsCount);
+        const avgResultsCount = resultsCounts.length ? resultsCounts.reduce((a, b) => a + b, 0) / resultsCounts.length : null;
+        const zeroResultsCount = events.filter((e) => e.resultsCount === 0).length;
+        // Города этого запроса — ТОЛЬКО из белого списка.
+        const cityMap = new Map();
+        const noCityKeys = new Set();
+        for (const e of events) {
+            const uniqueKey = e.phone ? `p:${e.phone}` : `e:${e.id}`;
+            const canonical = normalizeKzCity(e.city);
+            if (canonical) {
+                if (!cityMap.has(canonical))
+                    cityMap.set(canonical, new Set());
+                cityMap.get(canonical).add(uniqueKey);
+            }
+            else {
+                noCityKeys.add(uniqueKey);
+            }
+        }
+        const cityBreakdown = Array.from(cityMap.entries())
+            .map(([city, keys]) => ({ city, count: keys.size }))
+            .filter((c) => c.count > 0)
+            .sort((a, b) => b.count - a.count);
+        const totalRk = cityBreakdown.reduce((s, c) => s + c.count, 0);
+        return {
+            query,
+            searchCount,
+            uniquePeople,
+            orderedAfterSearch: orderedPhones.size,
+            orderedRevenue: round2(orderedRevenue),
+            avgResultsCount: avgResultsCount != null ? round1(avgResultsCount) : null,
+            zeroResultsCount,
+            cityBreakdown, // [{ city, count }] — уже только не-нулевые, отсортированы убыв.
+            totalRk,
+            noCityCount: noCityKeys.size,
+        };
+    });
+    rows.sort((a, b) => b.searchCount - a.searchCount);
+    return rows;
+}
+/** Б) Конверсия по SKU — товары без событий (ни view, ни cart) не показываем. */
+async function getConversionAnalytics(days) {
+    const from = daysAgo(days);
+    const [viewEvents, cartEvents, orders] = await Promise.all([
+        prisma_1.prisma.shopEvent.findMany({ where: { type: 'view', createdAt: { gte: from }, sku: { not: null } } }),
+        prisma_1.prisma.shopEvent.findMany({ where: { type: 'cart', createdAt: { gte: from }, sku: { not: null } } }),
+        getAppOrdersInRange(from),
+    ]);
+    const skuSet = new Set([
+        ...viewEvents.map((e) => e.sku),
+        ...cartEvents.map((e) => e.sku),
+    ]);
+    if (!skuSet.size)
+        return [];
+    // события трекинга (view/cart) могли прийти с shopArticle вместо внутреннего
+    // sku — с тех пор, как /shop/products отдаёт в sku именно его. Ищем по обоим,
+    // иначе в отчёте вместо названия товара был бы сам артикул.
+    const products = await prisma_1.prisma.product.findMany({
+        where: { OR: [{ sku: { in: Array.from(skuSet) } }, { shopArticle: { in: Array.from(skuSet) } }] },
+        select: { sku: true, shopArticle: true, name: true },
+    });
+    const nameBySku = new Map();
+    for (const p of products) {
+        nameBySku.set(p.sku, p.name);
+        if (p.shopArticle)
+            nameBySku.set(p.shopArticle, p.name);
+    }
+    const rows = Array.from(skuSet).map((sku) => {
+        const views = viewEvents.filter((e) => e.sku === sku).length;
+        const cart = cartEvents.filter((e) => e.sku === sku).length;
+        let ordersCount = 0;
+        let payments = 0;
+        for (const o of orders) {
+            let items = [];
+            try {
+                items = JSON.parse(o.items);
+            }
+            catch {
+                items = [];
+            }
+            if (items.some((i) => i.sku === sku)) {
+                ordersCount += 1;
+                if (isPaidStatus(o.status))
+                    payments += 1;
+            }
+        }
+        return {
+            sku,
+            name: nameBySku.get(sku) ?? sku,
+            views,
+            cart,
+            orders: ordersCount,
+            payments,
+            cartPct: views > 0 ? round1((cart / views) * 100) : 0,
+            orderPct: cart > 0 ? round1((ordersCount / cart) * 100) : 0,
+        };
+    });
+    rows.sort((a, b) => b.views - a.views);
+    return rows;
+}
+/** В) Сезонность по дням + отдельная таблица городов (белый список). */
+async function getSeasonalityAnalytics(days) {
+    // ВАЖНО: "days" суток, ЗАКАНЧИВАЯ сегодняшним (не вчерашним). Раньше
+    // "from" было ровно daysAgo(days) и цикл шёл на "days" дней вперёд от
+    // него, из-за чего последний день оказывался вчера — сегодняшняя дата
+    // не попадала в "По дням". Теперь from = сегодня минус (days-1) суток.
+    const from = daysAgo(days - 1);
+    const [searchEvents, cartEvents, orders] = await Promise.all([
+        prisma_1.prisma.shopEvent.findMany({ where: { type: 'search', createdAt: { gte: from } } }),
+        prisma_1.prisma.shopEvent.findMany({ where: { type: 'cart', createdAt: { gte: from } } }),
+        getAppOrdersInRange(from),
+    ]);
+    const dayMap = new Map();
+    for (let i = 0; i < days; i++) {
+        const d = new Date(from);
+        d.setDate(d.getDate() + i);
+        dayMap.set(dayKey(d), { searches: 0, cart: 0, orders: 0, paidRevenue: 0 });
+    }
+    for (const e of searchEvents) {
+        const bucket = dayMap.get(dayKey(e.createdAt));
+        if (bucket)
+            bucket.searches += 1;
+    }
+    for (const e of cartEvents) {
+        const bucket = dayMap.get(dayKey(e.createdAt));
+        if (bucket)
+            bucket.cart += 1;
+    }
+    for (const o of orders) {
+        const bucket = dayMap.get(dayKey(o.createdAt));
+        if (bucket) {
+            bucket.orders += 1;
+            if (isPaidStatus(o.status))
+                bucket.paidRevenue += o.total;
+        }
+    }
+    const daily = Array.from(dayMap.entries()).map(([date, v]) => ({
+        date,
+        searches: v.searches,
+        cart: v.cart,
+        orders: v.orders,
+        paidRevenue: round2(v.paidRevenue),
+    }));
+    // Города — ТОЛЬКО из белого списка (не "без города" бакет — только эти
+    // 14, и только там, где реально есть события или заказы APP).
+    // Поиски/уникальные — из ShopEvent.city, заказы/сумма — из ShopOrder.city
+    // (адрес доставки), т.к. заказ отдельным событием city не дублируется.
+    const cityStats = new Map();
+    function ensureCity(city) {
+        if (!cityStats.has(city))
+            cityStats.set(city, { searches: 0, uniqueKeys: new Set(), orders: 0, revenue: 0 });
+        return cityStats.get(city);
+    }
+    for (const e of searchEvents) {
+        const canonical = normalizeKzCity(e.city);
+        if (!canonical)
+            continue;
+        const bucket = ensureCity(canonical);
+        bucket.searches += 1;
+        bucket.uniqueKeys.add(e.phone ? `p:${e.phone}` : `e:${e.id}`);
+    }
+    for (const o of orders) {
+        const canonical = normalizeKzCity(o.city);
+        if (!canonical)
+            continue;
+        const bucket = ensureCity(canonical);
+        bucket.orders += 1;
+        if (isPaidStatus(o.status))
+            bucket.revenue += o.total;
+    }
+    const cities = Array.from(cityStats.entries())
+        .map(([city, v]) => ({
+        city,
+        searches: v.searches,
+        uniquePeople: v.uniqueKeys.size,
+        orders: v.orders,
+        revenue: round2(v.revenue),
+    }))
+        .sort((a, b) => b.searches - a.searches);
+    return { daily, cities };
+}
+//# sourceMappingURL=shopAnalytics.service.js.map

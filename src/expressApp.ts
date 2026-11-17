@@ -23,6 +23,7 @@ import { assistantRouter } from './routes/assistant.routes';
 import { creatorAdminRouter, creatorRouter } from './routes/creator.routes';
 import { liveAdminRouter, liveRouter } from './routes/live.routes';
 import { telegramAgentRouter } from './routes/telegramAgent.routes';
+import { ozonBotRouter } from './routes/ozonBot.routes';
 import { shopRouter } from './routes/shop.routes';
 import { shopAdminRouter } from './routes/shopAdmin.routes';
 import { shopMediaRouter } from './routes/shopMedia.routes';
@@ -104,6 +105,7 @@ app.use((req, res, next) => {
     || req.url.startsWith('/api/ozon-returns')
     || req.url.startsWith('/api/shop/assistant')
     || req.url.startsWith('/api/telegram-agent')
+    || req.url.startsWith('/api/ozon-bot')
     // Загрузка улиц города из OpenStreetMap — внешний запрос на 10–40 секунд.
     || req.url.startsWith('/api/shop-admin/streets/import');
   const timeoutMs = isSyncRoute ? 55000 : 8000;
@@ -187,6 +189,7 @@ app.use('/api/yard-admin', yardAdminRouter);
 app.use('/api/push-admin', pushAdminRouter);
 // Telegram-бот для заведения товаров (вебхук публичный по секрету, /setup — админский).
 app.use('/api/telegram-agent', telegramAgentRouter);
+app.use('/api/ozon-bot', ozonBotRouter);
 // Оптовики раздела «Товары» — полки по оптовикам, перенос товара, накладные (PDF/ZIP).
 app.use('/api/wholesalers', wholesalersRouter);
 

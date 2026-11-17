@@ -131,6 +131,7 @@ function isApiPath(path: string): boolean {
 export function isPublicApiPath(path: string): boolean {
   if (path === '/api/health') return true;
   if (path === '/api/kaspi/price-feed.xml') return true;
+  if (path === '/api/ozon-bot/webhook') return true; // отдельный Озон-бот: защита — секрет Telegram в заголовке
   if (path === '/api/telegram-agent/webhook' || path === '/api/telegram-agent/scene' || path === '/api/telegram-agent/support-idle') return true; // защита — секрет Telegram в заголовке
   if (path.startsWith('/api/shop/')) {
     const isAdminTree = path === '/api/shop/admin' || path.startsWith('/api/shop/admin/');
