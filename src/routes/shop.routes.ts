@@ -22,7 +22,7 @@ import { searchStreets } from '../services/streets.service';
 import { sendBroadcast } from '../services/pushBroadcast.service';
 import { createHmac, randomInt, timingSafeEqual } from 'node:crypto';
 import { deliveryFeeFor, deliveryFeeOfOrder } from '../config/shopDelivery';
-import { fiscalizeOrder, rekassaAuto } from '../services/rekassa.service';
+import { fiscalizeOrder, ofdReceiptUrl, rekassaAuto } from '../services/rekassa.service';
 import {
   applyWowToItems, activeWowPercent, getWowSettings, getCurrentMembership, membershipSavings, effectiveStatus, wowPriceOf, pushToCustomer,
 } from '../services/wow.service';
@@ -1207,7 +1207,7 @@ shopRouter.get('/orders', async (req, res) => {
     const receiptRows: any[] = myOrders.length
       ? await prisma.fiscalReceipt.findMany({ where: { orderId: { in: myOrders.map((o) => o.id) }, status: { in: ['ok', 'offline'] } } }).catch(() => [])
       : [];
-    const receiptOf = (id: string, op: string) => receiptRows.find((r) => r.orderId === id && r.operation === op)?.qrUrl ?? null;
+    const receiptOf = (id: string, op: string) => ofdReceiptUrl(receiptRows.find((r) => r.orderId === id && r.operation === op)?.qrUrl);
 
     // В заказе хранится только sku/название/цена — картинки нет. Приложению
     // нужна обложка товара (в т.ч. витринных товаров, которых нет в общем

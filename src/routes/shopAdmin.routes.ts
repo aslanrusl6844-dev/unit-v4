@@ -20,7 +20,7 @@ import { ozonTypeKey } from '../services/sync.service';
 import { SHOP_CATALOG_CANON } from '../config/shopCatalogCanon';
 import { hintCategoryByName, hintRuleCatalogPairs, starterCatalogPairs, buildCatalog } from '../services/categoryHints';
 import { editOrderNotify } from '../lib/telegram';
-import { fiscalizeOrder, rekassaStatus, RekassaError } from '../services/rekassa.service';
+import { fiscalizeOrder, ofdReceiptUrl, rekassaStatus, RekassaError } from '../services/rekassa.service';
 import { sendSms } from '../services/sms.service';
 import { sendCourierApprovedPush, sendDeliveryProgressPush } from '../lib/expoPush';
 import { resolveCity, CITY_IMAGE_CITIES } from '../config/cities';
@@ -311,7 +311,7 @@ shopAdminRouter.get('/orders', async (req, res) => {
       ? await prisma.fiscalReceipt.findMany({ where: { orderId: { in: orders.map((o) => o.id) } } })
       : [];
     const byOrder = new Map<string, any[]>();
-    for (const r of receipts) byOrder.set(r.orderId, [...(byOrder.get(r.orderId) ?? []), r]);
+    for (const r of receipts) byOrder.set(r.orderId, [...(byOrder.get(r.orderId) ?? []), { ...r, qrUrl: ofdReceiptUrl(r.qrUrl) }]);
     res.json(orders.map((o) => ({ ...o, items: JSON.parse(o.items), receipts: byOrder.get(o.id) ?? [] })));
   } catch (err: any) {
     logger.error({ err }, '[Shop Admin] GET /orders упал');
