@@ -69,24 +69,69 @@ const escH = (v: string) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g,
  * Товары фотографиями: одно фото = один товар, подпись — название и КОЛИЧЕСТВО крупно (удобно
  * переслать оптовику). Без фото — одной общей строкой в конце. Закупочные цены в подпись не пишем.
  */
+let imgFetch: TgFetch = (...a) => fetch(...a);
+export function setOzonBotImageFetch(f: TgFetch | null) { imgFetch = f ?? ((...a) => fetch(...a)); }
+
+/** Скачать фото товара сами (Telegram не всегда может забрать картинку с CDN Ozon по ссылке). */
+async function loadImage(url: string): Promise<Blob | null> {
+  try {
+    const r = await imgFetch(url, { headers: { Accept: 'image/jpeg,image/png,image/*' }, signal: AbortSignal.timeout(8000) } as any);
+    if (!r.ok) return null;
+    const type = r.headers?.get?.('content-type') ?? 'image/jpeg';
+    if (!/^image\/(jpe?g|png|webp)/i.test(type)) return null;
+    const buf = await r.arrayBuffer();
+    if (!buf.byteLength || buf.byteLength > 9_000_000) return null;
+    return new Blob([buf], { type });
+  } catch {
+    return null;
+  }
+}
+
+/** sendPhoto файлом (multipart) — так фото доходит всегда, если мы смогли его скачать. */
+async function sendPhotoFile(chatId: string, img: Blob, caption: string): Promise<void> {
+  const form = new FormData();
+  form.append('chat_id', chatId);
+  form.append('caption', caption);
+  form.append('parse_mode', 'HTML');
+  form.append('photo', img, 'item.jpg');
+  const r = await tgFetch(`https://api.telegram.org/bot${token()}/sendPhoto`, { method: 'POST', body: form } as any);
+  const data: any = await r.json().catch(() => ({}));
+  if (!r.ok || !data?.ok) throw new Error(`telegram sendPhoto: ${data?.description ?? r.status}`);
+}
+
 export async function sendPhotoCards(chatId: string, title: string, cards: PhotoCard[]): Promise<void> {
+  const started = Date.now();
   const total = cards.reduce((s, c) => s + c.qty, 0);
   if (!cards.length) { await sendOzonBot(chatId, `${title}\nПока ничего нет 👍`); return; }
   await sendOzonBot(chatId, `<b>${escH(title)}</b>\n${cards.length} товаров, всего ${total} шт`);
   const noPhoto: PhotoCard[] = [];
-  for (const c of cards.slice(0, 40)) {
-    if (!c.photo) { noPhoto.push(c); continue; }
+  const list = cards.slice(0, 30);
+  // Фото качаем заранее, по 5 параллельно, а отправляем по порядку (сначала самые ходовые).
+  const images: (Blob | null)[] = new Array(list.length).fill(null);
+  for (let i = 0; i < list.length; i += 5) {
+    const chunk = list.slice(i, i + 5);
+    const got = await Promise.all(chunk.map((c) => (c.photo ? loadImage(c.photo) : Promise.resolve(null))));
+    got.forEach((b, j) => { images[i + j] = b; });
+    if (Date.now() - started > 30_000) break;
+  }
+  for (let i = 0; i < list.length; i++) {
+    const c = list[i];
+    // Лимит функции — 60 с: если не успеваем, остальное — списком.
+    if (!c.photo || Date.now() - started > 45_000) { noPhoto.push(c); continue; }
     const caption = `<b>${c.qty} шт</b> — ${escH(c.name.slice(0, 180))}${c.offerId ? `\nАртикул: ${escH(c.offerId)}` : ''}`;
     try {
-      await tg('sendPhoto', { chat_id: chatId, photo: c.photo, caption, parse_mode: 'HTML' });
-    } catch {
-      noPhoto.push(c); // Telegram не смог скачать фото по ссылке
+      const img = images[i];
+      if (img) await sendPhotoFile(chatId, img, caption);
+      else await tg('sendPhoto', { chat_id: chatId, photo: c.photo, caption, parse_mode: 'HTML' });
+    } catch (err: any) {
+      logger.warn({ err: String(err?.message ?? err), photo: c.photo }, '[OzonBot] фото не отправилось');
+      noPhoto.push(c);
     }
   }
+  noPhoto.push(...cards.slice(30));
   if (noPhoto.length) {
     await sendOzonBot(chatId, ['<b>Без фото:</b>', ...noPhoto.map((c) => `• <b>${c.qty} шт</b> — ${escH(c.name.slice(0, 120))}${c.offerId ? ` (${escH(c.offerId)})` : ''}`)].join('\n'));
   }
-  if (cards.length > 40) await sendOzonBot(chatId, `…и ещё ${cards.length - 40} товаров`);
 }
 setOzonBotPhotoSender(sendPhotoCards);
 
