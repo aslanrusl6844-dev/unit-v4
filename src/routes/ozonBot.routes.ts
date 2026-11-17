@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { createHash, timingSafeEqual } from 'crypto';
 import { waitUntil } from '@vercel/functions';
 import { prisma } from '../db/prisma';
-import { buildCollage } from '../services/photoCollage';
+import { buildQtyCard } from '../services/photoCollage';
 import { logger } from '../utils/logger';
 import {
   askOzonManager, daySales, eveningReport, fbsToShip, fboStock, morningReport, photoCards, purchaseNeeds, returnsList,
@@ -92,8 +92,7 @@ async function loadImage(url: string): Promise<Blob | null> {
 async function sendPhotoFile(chatId: string, img: Blob, caption: string): Promise<void> {
   const form = new FormData();
   form.append('chat_id', chatId);
-  form.append('caption', caption);
-  form.append('parse_mode', 'HTML');
+  if (caption) { form.append('caption', caption); form.append('parse_mode', 'HTML'); }
   form.append('photo', img, 'item.jpg');
   const r = await tgFetch(`https://api.telegram.org/bot${token()}/sendPhoto`, { method: 'POST', body: form } as any);
   const data: any = await r.json().catch(() => ({}));
@@ -111,20 +110,20 @@ export async function sendPhotoCards(chatId: string, title: string, cards: Photo
     const got = await Promise.all(list.slice(i, i + 6).map((c) => (c.photo ? loadImage(c.photo) : Promise.resolve(null))));
     for (let j = 0; j < got.length; j++) images[i + j] = got[j] ? Buffer.from(await got[j]!.arrayBuffer()) : null;
   }
-  // Коллажи по 9 товаров: плитка ≈ 1/3 ширины, крупно «N шт», номер позиции; подпись — список с номерами.
-  for (let i = 0; i < list.length; i += 9) {
-    const part = list.slice(i, i + 9);
-    const items = part.map((c, j) => ({ qty: c.qty, name: c.name, image: images[i + j], index: i + j + 1 }));
-    const head = i === 0 ? `<b>${escH(title)}</b>\n${cards.length} товаров, всего ${total} шт\n` : '';
-    const lines = part.map((c, j) => `${i + j + 1}) <b>${c.qty} шт</b> — ${escH(c.name.slice(0, 55))}${c.offerId ? ` · ${escH(c.offerId)}` : ''}`);
-    let caption = head + lines.join('\n');
-    if (caption.length > 1000) caption = head + lines.map((l) => l.replace(/ · [^·]*$/, '')).join('\n').slice(0, 1000);
+  // Столбиком: одно сообщение = одна узкая картинка (фото ≈1/3 ширины + крупно «N шт»), без подписей.
+  await sendOzonBot(chatId, `<b>${escH(title)}</b>: ${cards.length} товаров, ${total} шт`);
+  for (let i = 0; i < list.length; i++) {
+    const c = list[i];
+    if (Date.now() - started > 50_000) {
+      await sendOzonBot(chatId, ['<b>Не успел отправить фото:</b>', ...list.slice(i).map((x) => `• <b>${x.qty} шт</b> — ${escH(x.name.slice(0, 80))}`)].join('\n'));
+      break;
+    }
     try {
-      const jpeg = await buildCollage(items);
-      await sendPhotoFile(chatId, new Blob([jpeg], { type: 'image/jpeg' }), caption);
+      const jpeg = await buildQtyCard(images[i], c.qty, images[i] ? '' : c.name);
+      await sendPhotoFile(chatId, new Blob([jpeg], { type: 'image/jpeg' }), '');
     } catch (err: any) {
-      logger.warn({ err: String(err?.message ?? err) }, '[OzonBot] коллаж не собрался — шлю списком');
-      await sendOzonBot(chatId, caption);
+      logger.warn({ err: String(err?.message ?? err) }, '[OzonBot] карточка не отправилась');
+      await sendOzonBot(chatId, `<b>${c.qty} шт</b> — ${escH(c.name.slice(0, 80))}`).catch(() => undefined);
     }
   }
   if (cards.length > list.length) {

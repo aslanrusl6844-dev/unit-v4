@@ -155,15 +155,12 @@ describe('Озон-менеджер', () => {
     assert.equal(claudeCalls[0].messages.at(-1).content, '[Айгерим] как дела?');
   });
 
-  test('/collect: один коллаж на 9 товаров — плитки с «N шт», подпись со списком; цен закупки нет', async () => {
+  test('/collect: столбиком — по картинке на товар, без подписи; одинаковые сложены; цен нет', async () => {
     await bot.handleOzonBotUpdate({ message: { chat: { id: 111 }, text: '/collect' } });
-    assert.equal(photos.length, 1);
-    assert.ok(photos[0].file instanceof Blob);
-    assert.ok(photos[0].file.size > 1000); // настоящий JPEG-коллаж
-    assert.match(photos[0].caption, /2 товаров, всего 5 шт/);
-    assert.match(photos[0].caption, /1\) <b>3 шт<\/b> — Кружка/);
-    assert.match(photos[0].caption, /2\) <b>2 шт<\/b> — Чайник/);
-    assert.doesNotMatch(photos[0].caption, /₸/);
+    assert.equal(photos.length, 2); // Кружка ×3, Чайник ×2
+    assert.ok(photos.every((p) => p.file instanceof Blob && p.file.size > 1000 && !p.caption));
+    assert.match(sent[0].text, /2 товаров, 5 шт/);
+    assert.doesNotMatch(sent.map((x) => x.text).join(' '), /₸/);
   });
 
   test('«покажи с фото, что собрать» — Claude зовёт show_photos, фото уходят в этот чат', async () => {
@@ -172,7 +169,7 @@ describe('Озон-менеджер', () => {
       { status: 200, body: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Отправил фото: 2 товара, 5 шт' }] } },
     ];
     await bot.handleOzonBotUpdate({ message: { chat: { id: 111 }, text: 'покажи фотками что собрать у оптовиков' } });
-    assert.equal(photos.length, 1);
+    assert.equal(photos.length, 2);
     assert.equal(String(photos[0].chat_id), '111');
     assert.match(claudeCalls[1].messages.at(-1).content[0].content, /"sent":true/);
   });
@@ -185,11 +182,11 @@ describe('Озон-менеджер', () => {
     assert.equal(a.photo, 'https://cdn/a.jpg');
   });
 
-  test('фото не скачалось — плитка «нет фото», коллаж всё равно уходит', async () => {
+  test('фото не скачалось — картинка всё равно уходит (с названием вместо фото)', async () => {
     bot.setOzonBotImageFetch((async () => ({ ok: false, status: 403 })) as any);
     await bot.sendPhotoCards('111', 'Тест', [{ offerId: 'A', name: 'Чайник', qty: 2, photo: 'https://cdn/a.jpg' }]);
     assert.equal(photos.length, 1);
-    assert.match(photos[0].caption, /1\) <b>2 шт<\/b> — Чайник/);
+    assert.ok(photos[0].file.size > 1000);
   });
 
   test('без владельца бот присылает chat id для настройки', async () => {

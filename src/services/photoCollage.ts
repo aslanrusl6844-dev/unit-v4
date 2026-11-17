@@ -83,3 +83,35 @@ export async function buildCollage(items: CollageItem[]): Promise<Buffer> {
     })))
     .jpeg({ quality: 82 }).toBuffer();
 }
+
+/**
+ * Карточка товара «столбиком»: широкая картинка 3:1 — слева фото товара (≈1/3 ширины сообщения),
+ * справа крупно «N шт». Telegram показывает её узкой полосой, поэтому фото выходят маленькими.
+ */
+export async function buildQtyCard(image: Buffer | null, qty: number, nameIfNoPhoto = ''): Promise<Buffer> {
+  const H = 300;
+  const W = 900;
+  const layers: { input: Buffer; top: number; left: number }[] = [];
+  let hasPhoto = false;
+  if (image) {
+    try {
+      layers.push({ input: await sharp(image, { failOn: 'none' }).rotate().resize(H, H, { fit: 'contain', background: '#ffffff' }).png().toBuffer(), top: 0, left: 0 });
+      hasPhoto = true;
+    } catch { /* битое фото */ }
+  }
+  if (!hasPhoto) {
+    // Без фото — вместо картинки короткое название, чтобы было понятно, что это за товар.
+    const label = nameIfNoPhoto ? escMarkup(nameIfNoPhoto.slice(0, 80)) : 'нет фото';
+    let ph = await textImage(label, { size: nameIfNoPhoto ? 24 : 30, color: nameIfNoPhoto ? '#333333' : '#999999', width: H - 30 });
+    const m0 = await sharp(ph).metadata();
+    if ((m0.height ?? 0) > H - 20) ph = await sharp(ph).extract({ left: 0, top: 0, width: m0.width ?? H - 30, height: H - 20 }).png().toBuffer();
+    const m = await sharp(ph).metadata();
+    layers.push({ input: ph, top: Math.round(H / 2 - (m.height ?? 30) / 2), left: Math.round(H / 2 - (m.width ?? 120) / 2) });
+  }
+  const qtyImg = await textImage(`${qty} шт`, { bold: true, size: 130, color: '#E53935' });
+  const qm = await sharp(qtyImg).metadata();
+  layers.push({ input: qtyImg, top: Math.round(H / 2 - (qm.height ?? 130) / 2), left: H + Math.round((W - H - (qm.width ?? 300)) / 2) });
+  return sharp({ create: { width: W, height: H, channels: 3, background: '#ffffff' } })
+    .composite([...(hasPhoto ? [] : [{ input: await sharp({ create: { width: H, height: H, channels: 3, background: '#eeeeee' } }).png().toBuffer(), top: 0, left: 0 }]), ...layers])
+    .jpeg({ quality: 85 }).toBuffer();
+}
