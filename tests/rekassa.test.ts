@@ -75,7 +75,7 @@ describe('re:Kassa', () => {
   test('чек пробивается один раз; ссылка на чек сохраняется; без почты — выдача ссылкой, пуш покупателю', async () => {
     const r = await rk.fiscalizeOrder('o1', 'sell');
     assert.equal(r.status, 'ok');
-    assert.equal(r.qrUrl, 'https://ofd/check?i=123');
+    assert.equal(r.qrUrl, 'https://ofd/check?i=123'); // чужой адрес не трогаем
     const sale = calls.find((c) => c.url.endsWith('/api/crs/555/tickets'))!;
     assert.ok(sale.init.headers['X-Request-ID']);
     assert.equal(sale.init.headers.Authorization, 'Bearer T');
@@ -108,6 +108,13 @@ describe('re:Kassa', () => {
     const receipt = calls.find((c) => c.url.endsWith('/tickets/77/receipts'))!;
     assert.deepEqual(JSON.parse(receipt.init.body), { type: 'EMAIL', receiver: { email: 'buyer@mail.kz' } });
     assert.match(pushes[0].body, /почте/);
+  });
+
+  test('ссылка на чек: старый адрес 4ek.kz → ofd(-test).rekassa.kz/portal/', () => {
+    assert.equal(rk.ofdReceiptUrl('https://test.4ek.kz/?o=rekassa&i=1&f=2&s=3.0&t=4'), 'https://ofd-test.rekassa.kz/portal/?o=rekassa&i=1&f=2&s=3.0&t=4');
+    assert.equal(rk.ofdReceiptUrl('https://4ek.kz/?i=1'), 'https://ofd.rekassa.kz/portal/?i=1');
+    assert.equal(rk.ofdReceiptUrl('https://ofd.rekassa.kz/portal/?i=1'), 'https://ofd.rekassa.kz/portal/?i=1');
+    assert.equal(rk.ofdReceiptUrl(null), null);
   });
 
   test('чек возврата — только после чека продажи', async () => {

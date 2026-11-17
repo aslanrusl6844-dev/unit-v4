@@ -24,6 +24,23 @@ export function rekassaIsTest(): boolean {
   return baseUrl().includes('app-test');
 }
 
+/**
+ * Ссылка на чек в ОФД. Касса ещё отдаёт старый адрес *.4ek.kz — re:Kassa просит использовать только
+ * ofd-test.rekassa.kz (тест) и ofd.rekassa.kz (бой), страница чека — /portal/.
+ */
+export function ofdReceiptUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    const u = new URL(url);
+    if (u.hostname === 'test.4ek.kz') u.hostname = 'ofd-test.rekassa.kz';
+    else if (u.hostname === '4ek.kz' || u.hostname === 'www.4ek.kz') u.hostname = 'ofd.rekassa.kz';
+    if (/^ofd(-test)?\.rekassa\.kz$/.test(u.hostname) && (u.pathname === '/' || u.pathname === '')) u.pathname = '/portal/';
+    return u.toString();
+  } catch {
+    return null;
+  }
+}
+
 export class RekassaError extends Error {
   constructor(public code: string, message: string, public status = 0) { super(message); }
 }
@@ -159,7 +176,7 @@ export async function fiscalizeOrder(orderId: string, operation: 'sell' | 'retur
       where: { id: rec.id },
       data: {
         status: t.offline ? 'offline' : 'ok', ticketId: Number(t.id) || null,
-        ticketNumber: t.ticketNumber ?? t.offlineTicketNumber ?? null, qrUrl: t.qrCode ?? null, total, error: null,
+        ticketNumber: t.ticketNumber ?? t.offlineTicketNumber ?? null, qrUrl: ofdReceiptUrl(t.qrCode), total, error: null,
       },
     });
     // Выдача чека: на e-mail покупателя (re:Kassa шлёт письмо сама), иначе — отметка «выдан ссылкой».
