@@ -210,6 +210,7 @@ export async function morningReport(): Promise<string> {
     out.push('', `🛒 <b>Закупка под заказы</b>: ${money(buy.totalPurchase)} по закупочной цене (${buy.positions} поз.)`);
     out.push(...buy.items.slice(0, 10).map((i) => `• ${esc(i.name.slice(0, 60))} — ${i.qty} шт × ${i.unitCost ? money(i.unitCost) : '<i>нет закупочной цены</i>'}`));
     if (buy.missingCost.length) out.push(`⚠️ Нет закупочной цены у ${buy.missingCost.length} товаров — сумма закупки неполная (заполните в «Товарах»)`);
+    if (buy.items.length) out.push('📸 /collect — те же товары фотографиями с количеством, чтобы показать оптовикам');
   } catch (err: any) {
     out.push('', `⚠️ Отгрузки/закупка: не получилось спросить Ozon (${esc(String(err?.message ?? err).slice(0, 120))})`);
   }
@@ -257,6 +258,68 @@ export async function eveningReport(): Promise<string> {
   return out.join('\n');
 }
 
+// ---------------------------------------------------------------- карточки с фото (для оптовиков)
+
+export type PhotoCard = { offerId: string; name: string; qty: number; photo: string | null };
+
+/** Первое фото товара: витрина My Market, иначе фото с площадки. */
+async function photosByOffer(offerIds: string[]): Promise<Map<string, string>> {
+  const ids = [...new Set(offerIds.filter(Boolean))];
+  if (!ids.length) return new Map();
+  const rows = await prisma.product.findMany({
+    where: { OR: [{ ozonOfferId: { in: ids } }, { sku: { in: ids } }] },
+    select: { sku: true, ozonOfferId: true, images: true, marketImages: true },
+  });
+  const first = (json: string | null) => {
+    try { const a = JSON.parse(json ?? '[]'); return Array.isArray(a) ? a.find((u: unknown) => typeof u === 'string' && /^https?:\/\//.test(u)) ?? null : null; } catch { return null; }
+  };
+  const m = new Map<string, string>();
+  for (const r of rows) {
+    const url = first(r.images) ?? first(r.marketImages);
+    if (!url) continue;
+    if (r.ozonOfferId) m.set(r.ozonOfferId, url);
+    if (!m.has(r.sku)) m.set(r.sku, url);
+  }
+  return m;
+}
+
+/**
+ * Товары одной картинкой на позицию: «collect» — что собрать у оптовиков (несобранные FBS-заказы),
+ * «sold» — что продалось за день (FBS + FBO). Одинаковые товары сложены в одну строку с общим количеством.
+ */
+export async function photoCards(kind: 'collect' | 'sold', dateStr?: string): Promise<{ title: string; cards: PhotoCard[] }> {
+  const agg = new Map<string, { offerId: string; name: string; qty: number }>();
+  const add = (offerId: string, name: string, qty: number) => {
+    const key = offerId || name;
+    const cur = agg.get(key) ?? { offerId, name, qty: 0 };
+    cur.qty += qty;
+    agg.set(key, cur);
+  };
+  let title: string;
+  if (kind === 'collect') {
+    const need = await purchaseNeeds();
+    for (const i of need.items) add(i.offerId, i.name, i.qty);
+    title = '🛒 Собрать у оптовиков (несобранные заказы FBS)';
+  } else {
+    const { date, from, to } = dayBounds(dateStr);
+    try { await syncOzonOrders(dayjs(from).subtract(1, 'day').toDate(), to); } catch { /* берём что есть в базе */ }
+    const orders = await prisma.order.findMany({ where: { marketplace: 'OZON', orderDate: { gte: from, lte: to } }, include: { items: true } });
+    for (const o of orders.filter((x) => !NON_SALE_STATUSES.includes(x.status))) for (const i of o.items) add(i.externalSku, i.name, i.quantity);
+    try {
+      for (const r of await ozonClient.fetchFboPostings(from, to)) if (!/cancel/i.test(r.status)) add(r.offerId, r.name, r.quantity);
+    } catch { /* FBO может быть не подключён */ }
+    title = `📦 Продано ${dayjs(date).format('DD.MM')} (FBS + FBO)`;
+  }
+  const photos = await photosByOffer([...agg.values()].map((x) => x.offerId));
+  const cards = [...agg.values()].sort((a, b) => b.qty - a.qty).map((x) => ({ ...x, photo: photos.get(x.offerId) ?? null }));
+  return { title, cards };
+}
+
+/** Кто отправляет фото в чат — задаёт Telegram-модуль бота (сервис о Telegram не знает). */
+type PhotoSender = (chatId: string, title: string, cards: PhotoCard[]) => Promise<void>;
+let photoSender: PhotoSender | null = null;
+export function setOzonBotPhotoSender(fn: PhotoSender | null) { photoSender = fn; }
+
 // ---------------------------------------------------------------- «мозг»: Claude с инструментами
 
 export const OZON_TOOLS = [
@@ -266,10 +329,17 @@ export const OZON_TOOLS = [
   { name: 'purchase_needs', description: 'Сколько товара и денег по закупочной (оптовой) цене нужно, чтобы собрать ещё не собранные FBS-заказы.', input_schema: { type: 'object', properties: {} } },
   { name: 'returns', description: 'Возвраты Ozon за последние N дней: статус, причина, где сейчас, сумма.', input_schema: { type: 'object', properties: { days: { type: 'number' } } } },
   { name: 'fbo_stock', description: 'Остатки на складах Ozon (FBO) и на сколько дней хватит; что заканчивается.', input_schema: { type: 'object', properties: {} } },
+  { name: 'show_photos', description: 'Отправить в чат товары ФОТОГРАФИЯМИ с количеством (одно фото на товар, одинаковые сложены): kind=collect — что собрать у оптовиков под несобранные заказы; kind=sold — что продалось за день. Используй, когда просят «покажи с фото», «что собрать у оптовиков», «какие товары продались». После вызова фото уже в чате — напиши только короткий итог.', input_schema: { type: 'object', properties: { kind: { type: 'string', enum: ['collect', 'sold'] }, date: { type: 'string', description: 'YYYY-MM-DD для sold, пусто — сегодня' } }, required: ['kind'] } },
 ] as const;
 
-export async function runTool(name: string, input: any): Promise<unknown> {
+export async function runTool(name: string, input: any, ctx: { chatId?: string } = {}): Promise<unknown> {
   switch (name) {
+    case 'show_photos': {
+      const { title, cards } = await photoCards(input?.kind === 'sold' ? 'sold' : 'collect', input?.date);
+      if (!ctx.chatId || !photoSender) return { error: 'фото сейчас отправить нельзя', cards };
+      await photoSender(ctx.chatId, title, cards);
+      return { sent: true, positions: cards.length, totalQty: cards.reduce((s, c) => s + c.qty, 0), withoutPhoto: cards.filter((c) => !c.photo).map((c) => c.name) };
+    }
     case 'day_sales': return daySales(input?.date);
     case 'period_report': return periodReport(String(input?.from ?? ''), String(input?.to ?? ''));
     case 'fbs_to_ship': return fbsToShip();
@@ -312,7 +382,7 @@ const WEB_SEARCH_TOOL = { type: 'web_search_20250305', name: 'web_search', max_u
 export type OzonBotImage = { mediaType: string; base64: string };
 
 /** Ответ на вопрос владельца: Claude сам вызывает инструменты (до 8 шагов) и пишет ответ. Фото товара — для анализа конкурентов. */
-export async function askOzonManager(history: Msg[], question: string, image?: OzonBotImage): Promise<string> {
+export async function askOzonManager(history: Msg[], question: string, image?: OzonBotImage, ctx: { chatId?: string } = {}): Promise<string> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return 'Мозг бота не подключён: нет ANTHROPIC_API_KEY в Vercel.';
   // Модели по очереди: если аккаунту Anthropic какая-то недоступна (not_found) — берём следующую.
@@ -352,7 +422,7 @@ export async function askOzonManager(history: Msg[], question: string, image?: O
     const results: Block[] = [];
     for (const c of calls) {
       let out: unknown;
-      try { out = await runTool(c.name, c.input); } catch (err: any) { out = { error: String(err?.message ?? err).slice(0, 300) }; }
+      try { out = await runTool(c.name, c.input, ctx); } catch (err: any) { out = { error: String(err?.message ?? err).slice(0, 300) }; }
       results.push({ type: 'tool_result', tool_use_id: c.id, content: JSON.stringify(out).slice(0, 30000) });
     }
     messages.push({ role: 'user', content: results });

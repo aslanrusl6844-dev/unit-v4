@@ -14,8 +14,8 @@ process.env.ANTHROPIC_API_KEY = 'k';
 type Row = Record<string, any>;
 let botMessages: Row[] = [];
 const products: Row[] = [
-  { sku: 'A', ozonOfferId: 'A', costPrice: 1000, packagingCost: 50, name: 'Чайник' },
-  { sku: 'B', ozonOfferId: 'B', costPrice: 0, packagingCost: 0, name: 'Кружка' },
+  { sku: 'A', ozonOfferId: 'A', costPrice: 1000, packagingCost: 50, name: 'Чайник', images: '["https://cdn/a.jpg"]', marketImages: null },
+  { sku: 'B', ozonOfferId: 'B', costPrice: 0, packagingCost: 0, name: 'Кружка', images: null, marketImages: '[]' },
 ];
 const stub: Record<string, any> = {
   product: { findMany: async () => products },
@@ -42,11 +42,12 @@ const bot = require('../src/routes/ozonBot.routes');
 
 const H = 3600_000;
 let sent: { chat: string; text: string }[] = [];
+let photos: Row[] = [];
 let claudeCalls: any[] = [];
 let claudeReplies: any[] = [];
 
 beforeEach(() => {
-  botMessages = []; sent = []; claudeCalls = []; claudeReplies = [];
+  botMessages = []; sent = []; claudeCalls = []; claudeReplies = []; photos = [];
   const now = Date.now();
   ozonClient.fetchFbsPostings = async () => [
     { postingNumber: 'P-late', status: 'awaiting_packaging', inProcessAt: null, shipmentDate: new Date(now - 2 * H).toISOString(), products: [{ offerId: 'A', name: 'Чайник', quantity: 2, price: 5000 }] },
@@ -57,6 +58,7 @@ beforeEach(() => {
   bot.setOzonBotTelegramFetch((async (url: string, init: any) => {
     const body = init?.body ? JSON.parse(init.body) : {};
     if (url.endsWith('/sendMessage')) sent.push({ chat: String(body.chat_id), text: body.text });
+    if (url.endsWith('/sendPhoto')) photos.push(body);
     if (url.endsWith('/getFile')) return { ok: true, status: 200, json: async () => ({ ok: true, result: { file_path: 'photos/x.jpg' } }) };
     if (url.includes('/file/bot')) return { ok: true, status: 200, arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer };
     return { ok: true, status: 200, json: async () => ({ ok: true, result: {} }) };
@@ -146,6 +148,27 @@ describe('Озон-менеджер', () => {
     assert.match(sent[0].text, /Отгрузка FBS/);
     assert.equal(sent[0].chat, '-100500');
     assert.equal(claudeCalls[0].messages.at(-1).content, '[Айгерим] как дела?');
+  });
+
+  test('/collect: одно фото на товар с количеством; без фото — списком; цены закупки не видно', async () => {
+    await bot.handleOzonBotUpdate({ message: { chat: { id: 111 }, text: '/collect' } });
+    assert.equal(photos.length, 1);
+    assert.equal(photos[0].photo, 'https://cdn/a.jpg');
+    assert.match(photos[0].caption, /^<b>2 шт<\/b> — Чайник/);
+    assert.doesNotMatch(photos[0].caption, /₸/);
+    assert.match(sent[0].text, /2 товаров, всего 5 шт/);
+    assert.match(sent.at(-1)!.text, /Без фото:[\s\S]*3 шт<\/b> — Кружка/);
+  });
+
+  test('«покажи с фото, что собрать» — Claude зовёт show_photos, фото уходят в этот чат', async () => {
+    claudeReplies = [
+      { status: 200, body: { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 't1', name: 'show_photos', input: { kind: 'collect' } }] } },
+      { status: 200, body: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Отправил фото: 2 товара, 5 шт' }] } },
+    ];
+    await bot.handleOzonBotUpdate({ message: { chat: { id: 111 }, text: 'покажи фотками что собрать у оптовиков' } });
+    assert.equal(photos.length, 1);
+    assert.equal(String(photos[0].chat_id), '111');
+    assert.match(claudeCalls[1].messages.at(-1).content[0].content, /"sent":true/);
   });
 
   test('без владельца бот присылает chat id для настройки', async () => {
