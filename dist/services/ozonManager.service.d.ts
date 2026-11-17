@@ -124,6 +124,23 @@ export declare function fboStock(): Promise<{
 }>;
 export declare function morningReport(): Promise<string>;
 export declare function eveningReport(): Promise<string>;
+export type PhotoCard = {
+    offerId: string;
+    name: string;
+    qty: number;
+    photo: string | null;
+};
+/**
+ * Товары одной картинкой на позицию: «collect» — что собрать у оптовиков (несобранные FBS-заказы),
+ * «sold» — что продалось за день (FBS + FBO). Одинаковые товары сложены в одну строку с общим количеством.
+ */
+export declare function photoCards(kind: 'collect' | 'sold', dateStr?: string): Promise<{
+    title: string;
+    cards: PhotoCard[];
+}>;
+/** Кто отправляет фото в чат — задаёт Telegram-модуль бота (сервис о Telegram не знает). */
+type PhotoSender = (chatId: string, title: string, cards: PhotoCard[]) => Promise<void>;
+export declare function setOzonBotPhotoSender(fn: PhotoSender | null): void;
 export declare const OZON_TOOLS: readonly [{
     readonly name: "day_sales";
     readonly description: "Продажи Ozon за день (по умолчанию сегодня, Алматы): FBS-заказы с выручкой, закупкой, комиссиями Ozon, прибылью по каждому; FBO-продажи; отмены.";
@@ -185,8 +202,27 @@ export declare const OZON_TOOLS: readonly [{
         readonly type: "object";
         readonly properties: {};
     };
+}, {
+    readonly name: "show_photos";
+    readonly description: "Отправить в чат товары ФОТОГРАФИЯМИ с количеством (одно фото на товар, одинаковые сложены): kind=collect — что собрать у оптовиков под несобранные заказы; kind=sold — что продалось за день. Используй, когда просят «покажи с фото», «что собрать у оптовиков», «какие товары продались». После вызова фото уже в чате — напиши только короткий итог.";
+    readonly input_schema: {
+        readonly type: "object";
+        readonly properties: {
+            readonly kind: {
+                readonly type: "string";
+                readonly enum: readonly ["collect", "sold"];
+            };
+            readonly date: {
+                readonly type: "string";
+                readonly description: "YYYY-MM-DD для sold, пусто — сегодня";
+            };
+        };
+        readonly required: readonly ["kind"];
+    };
 }];
-export declare function runTool(name: string, input: any): Promise<unknown>;
+export declare function runTool(name: string, input: any, ctx?: {
+    chatId?: string;
+}): Promise<unknown>;
 type Block = {
     type: string;
     [k: string]: any;
@@ -201,5 +237,7 @@ export type OzonBotImage = {
     base64: string;
 };
 /** Ответ на вопрос владельца: Claude сам вызывает инструменты (до 8 шагов) и пишет ответ. Фото товара — для анализа конкурентов. */
-export declare function askOzonManager(history: Msg[], question: string, image?: OzonBotImage): Promise<string>;
+export declare function askOzonManager(history: Msg[], question: string, image?: OzonBotImage, ctx?: {
+    chatId?: string;
+}): Promise<string>;
 export {};
