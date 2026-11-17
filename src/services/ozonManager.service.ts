@@ -6,6 +6,7 @@ import { getByProduct, getSummary, NON_SALE_STATUSES } from './analytics.service
 import { syncOzonOrders } from './sync.service';
 import { getTaxRatePct } from '../handlers/taxSettings';
 import { ALMATY_TZ, almatyEndOfDay, almatyNow, almatyStartOfDay } from '../utils/timezone';
+import { DEFAULT_MODEL } from './assistant.service';
 
 /**
  * «Озон-менеджер» — отдельный Telegram-бот владельца: продажи и маржа за день/период, что отгрузить
@@ -314,7 +315,10 @@ export type OzonBotImage = { mediaType: string; base64: string };
 export async function askOzonManager(history: Msg[], question: string, image?: OzonBotImage): Promise<string> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return 'Мозг бота не подключён: нет ANTHROPIC_API_KEY в Vercel.';
-  const model = process.env.OZON_BOT_MODEL || 'claude-sonnet-4-5';
+  // Модели по очереди: если аккаунту Anthropic какая-то недоступна (not_found) — берём следующую.
+  // Последняя — та же, на которой уже работает Баурсак.
+  const models = [...new Set([process.env.OZON_BOT_MODEL, 'claude-sonnet-4-5-20250929', 'claude-sonnet-4-20250514', DEFAULT_MODEL].filter(Boolean) as string[])];
+  let model = models.shift()!;
   let webSearch = (process.env.OZON_BOT_WEB_SEARCH ?? 'on').toLowerCase() !== 'off';
   const userContent: string | Block[] = image
     ? [{ type: 'image', source: { type: 'base64', media_type: image.mediaType, data: image.base64 } }, { type: 'text', text: question || 'Проанализируй этот товар для Ozon.' }]
@@ -330,6 +334,10 @@ export async function askOzonManager(history: Msg[], question: string, image?: O
     if (!r.ok) {
       // Поиск в интернете не включён у аккаунта Anthropic — продолжаем без него.
       if (webSearch && /web.?search/i.test(String(body?.error?.message ?? ''))) { webSearch = false; step--; continue; }
+      if ((body?.error?.type === 'not_found_error' || /^model:/i.test(String(body?.error?.message ?? ''))) && models.length) {
+        logger.warn({ model }, '[OzonBot] модель недоступна — пробую следующую');
+        model = models.shift()!; step--; continue;
+      }
       logger.error({ status: r.status, err: body?.error }, '[OzonBot] Claude ответил ошибкой');
       return `Не получилось подумать (${body?.error?.message ?? r.status}). Попробуйте ещё раз.`;
     }

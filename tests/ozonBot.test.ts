@@ -118,6 +118,16 @@ describe('Озон-менеджер', () => {
     assert.ok(!claudeCalls[1].tools.some((t: Row) => t.name === 'web_search'));
   });
 
+  test('модель недоступна аккаунту — бот берёт следующую', async () => {
+    claudeReplies = [
+      { status: 404, body: { error: { type: 'not_found_error', message: 'model: claude-sonnet-4-5-20250929' } } },
+      { status: 200, body: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Работаю' }] } },
+    ];
+    const a = await om.askOzonManager([], 'привет');
+    assert.equal(a, 'Работаю');
+    assert.notEqual(claudeCalls[0].model, claudeCalls[1].model);
+  });
+
   test('фото товара уходит в Claude картинкой вместе с подписью', async () => {
     await bot.handleOzonBotUpdate({ message: { chat: { id: 111 }, caption: 'Чайник, закупка 3000', photo: [{ file_id: 's' }, { file_id: 'big' }] } });
     const content = claudeCalls[0].messages.at(-1).content;
