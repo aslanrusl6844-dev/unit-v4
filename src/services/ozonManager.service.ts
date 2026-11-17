@@ -16,6 +16,11 @@ import { DEFAULT_MODEL } from './assistant.service';
 
 const money = (n: number) => `${Math.round(n).toLocaleString('ru-RU').replace(/,/g, ' ')} ₸`;
 const esc = (v: string) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+/** Крупные 4 цифры со стикера Ozon (последние 4 цифры scanit); нет scanit — пусто. */
+export const stickerCode = (scanit?: string | null) => {
+  const d = String(scanit ?? '').replace(/\D/g, '');
+  return d.length >= 4 ? d.slice(-4) : '';
+};
 const fmtTime = (iso: string | null) => (iso ? dayjs(iso).tz(ALMATY_TZ).format('DD.MM HH:mm') : '—');
 
 /** Статусы FBS, которые мы ещё не передали Ozon (нужно собрать / отгрузить). */
@@ -65,6 +70,7 @@ export async function fbsToShip() {
     .map((p) => ({
       postingNumber: p.postingNumber, status: p.status, shipBy: p.shipmentDate, bucket: bucket(p),
       needPacking: FBS_TO_PACK.includes(p.status),
+      sticker: stickerCode(p.scanit),
       items: p.products.map((x) => ({ offerId: x.offerId, name: x.name, qty: x.quantity, price: x.price })),
     }))
     .sort((a, b) => String(a.shipBy).localeCompare(String(b.shipBy)));
@@ -75,11 +81,12 @@ export async function fbsToShip() {
 /** Закупка под заказы FBS, которые ещё не собраны: сколько штук каждого товара и сколько денег по закупочной цене. */
 export async function purchaseNeeds() {
   const ship = await fbsToShip();
-  const need = new Map<string, { offerId: string; name: string; qty: number; postings: number }>();
+  const need = new Map<string, { offerId: string; name: string; qty: number; postings: number; stickers: string[] }>();
   for (const p of ship.postings.filter((x) => x.needPacking)) {
     for (const it of p.items) {
-      const cur = need.get(it.offerId) ?? { offerId: it.offerId, name: it.name, qty: 0, postings: 0 };
+      const cur = need.get(it.offerId) ?? { offerId: it.offerId, name: it.name, qty: 0, postings: 0, stickers: [] };
       cur.qty += it.qty; cur.postings += 1;
+      if (p.sticker && !cur.stickers.includes(p.sticker)) cur.stickers.push(p.sticker);
       need.set(it.offerId, cur);
     }
   }
@@ -260,7 +267,8 @@ export async function eveningReport(): Promise<string> {
 
 // ---------------------------------------------------------------- карточки с фото (для оптовиков)
 
-export type PhotoCard = { offerId: string; name: string; qty: number; photo: string | null };
+/** stickers — крупные 4 цифры со стикеров Ozon тех отправлений, где есть этот товар. */
+export type PhotoCard = { offerId: string; name: string; qty: number; photo: string | null; stickers?: string[] };
 
 /** Первое фото товара: витрина My Market, иначе фото с площадки. */
 async function photosByOffer(offerIds: string[]): Promise<Map<string, string>> {
@@ -288,23 +296,24 @@ async function photosByOffer(offerIds: string[]): Promise<Map<string, string>> {
  * «sold» — что продалось за день (FBS + FBO). Одинаковые товары сложены в одну строку с общим количеством.
  */
 export async function photoCards(kind: 'collect' | 'sold', dateStr?: string): Promise<{ title: string; cards: PhotoCard[] }> {
-  const agg = new Map<string, { offerId: string; name: string; qty: number }>();
-  const add = (offerId: string, name: string, qty: number) => {
+  const agg = new Map<string, { offerId: string; name: string; qty: number; stickers: string[] }>();
+  const add = (offerId: string, name: string, qty: number, stickers: string[] = []) => {
     const key = offerId || name;
-    const cur = agg.get(key) ?? { offerId, name, qty: 0 };
+    const cur = agg.get(key) ?? { offerId, name, qty: 0, stickers: [] };
     cur.qty += qty;
+    for (const s of stickers) if (s && !cur.stickers.includes(s)) cur.stickers.push(s);
     agg.set(key, cur);
   };
   let title: string;
   if (kind === 'collect') {
     const need = await purchaseNeeds();
-    for (const i of need.items) add(i.offerId, i.name, i.qty);
+    for (const i of need.items) add(i.offerId, i.name, i.qty, i.stickers);
     title = '🛒 Собрать у оптовиков (несобранные заказы FBS)';
   } else {
     const { date, from, to } = dayBounds(dateStr);
     // Прямо из Ozon (без тяжёлой синхронизации финансов) — быстро, укладываемся в лимит времени.
     const fbs = await ozonClient.fetchFbsPostings(from, to);
-    for (const p of fbs.filter((x) => !NON_SALE_STATUSES.includes(x.status))) for (const i of p.products) add(i.offerId, i.name, i.quantity);
+    for (const p of fbs.filter((x) => !NON_SALE_STATUSES.includes(x.status))) for (const i of p.products) add(i.offerId, i.name, i.quantity, [stickerCode(p.scanit)]);
     try {
       for (const r of await ozonClient.fetchFboPostings(from, to)) if (!/cancel/i.test(r.status)) add(r.offerId, r.name, r.quantity);
     } catch { /* FBO может быть не подключён */ }

@@ -119,7 +119,7 @@ export async function sendPhotoCards(chatId: string, title: string, cards: Photo
       break;
     }
     try {
-      const jpeg = await buildQtyCard(images[i], c.qty, images[i] ? '' : c.name);
+      const jpeg = await buildQtyCard(images[i], c.qty, images[i] ? '' : c.name, c.stickers ?? []);
       await sendPhotoFile(chatId, new Blob([jpeg], { type: 'image/jpeg' }), '');
     } catch (err: any) {
       logger.warn({ err: String(err?.message ?? err) }, '[OzonBot] карточка не отправилась');
