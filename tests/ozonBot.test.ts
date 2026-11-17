@@ -56,13 +56,18 @@ beforeEach(() => {
     { postingNumber: 'P-done', status: 'delivering', inProcessAt: null, shipmentDate: new Date(now - 48 * H).toISOString(), products: [{ offerId: 'A', name: 'Чайник', quantity: 1, price: 5000 }] },
   ];
   bot.setOzonBotTelegramFetch((async (url: string, init: any) => {
-    const body = init?.body ? JSON.parse(init.body) : {};
+    const body: Row = init?.body instanceof FormData
+      ? { chat_id: init.body.get('chat_id'), caption: init.body.get('caption'), file: init.body.get('photo') }
+      : init?.body ? JSON.parse(init.body) : {};
     if (url.endsWith('/sendMessage')) sent.push({ chat: String(body.chat_id), text: body.text });
     if (url.endsWith('/sendPhoto')) photos.push(body);
     if (url.endsWith('/getFile')) return { ok: true, status: 200, json: async () => ({ ok: true, result: { file_path: 'photos/x.jpg' } }) };
     if (url.includes('/file/bot')) return { ok: true, status: 200, arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer };
     return { ok: true, status: 200, json: async () => ({ ok: true, result: {} }) };
   }) as any);
+  bot.setOzonBotImageFetch((async (url: string) => ({
+    ok: true, status: 200, headers: { get: () => 'image/jpeg' }, arrayBuffer: async () => new Uint8Array([9, 9, 9]).buffer, url,
+  })) as any);
   om.setOzonBotFetch((async (_url: string, init: any) => {
     const body = JSON.parse(init.body);
     claudeCalls.push(body);
@@ -153,7 +158,7 @@ describe('Озон-менеджер', () => {
   test('/collect: одно фото на товар с количеством; без фото — списком; цены закупки не видно', async () => {
     await bot.handleOzonBotUpdate({ message: { chat: { id: 111 }, text: '/collect' } });
     assert.equal(photos.length, 1);
-    assert.equal(photos[0].photo, 'https://cdn/a.jpg');
+    assert.ok(photos[0].file instanceof Blob); // фото скачали сами и загрузили файлом
     assert.match(photos[0].caption, /^<b>2 шт<\/b> — Чайник/);
     assert.doesNotMatch(photos[0].caption, /₸/);
     assert.match(sent[0].text, /2 товаров, всего 5 шт/);
@@ -169,6 +174,20 @@ describe('Озон-менеджер', () => {
     assert.equal(photos.length, 1);
     assert.equal(String(photos[0].chat_id), '111');
     assert.match(claudeCalls[1].messages.at(-1).content[0].content, /"sent":true/);
+  });
+
+  test('/sold: что продалось сегодня — прямо из Ozon, отмены не считаются', async () => {
+    ozonClient.fetchFboPostings = async () => [{ postingNumber: 'F1', status: 'delivered', createdAt: null, offerId: 'A', name: 'Чайник', quantity: 1, price: 5000 }];
+    const r = await om.photoCards('sold');
+    const a = r.cards.find((c: Row) => c.offerId === 'A');
+    assert.equal(a.qty, 5); // FBS: 2 + 1 + 1 (delivering) + FBO 1
+    assert.equal(a.photo, 'https://cdn/a.jpg');
+  });
+
+  test('фото не скачалось — пробуем ссылкой, не вышло — в список «Без фото»', async () => {
+    bot.setOzonBotImageFetch((async () => ({ ok: false, status: 403 })) as any);
+    await bot.sendPhotoCards('111', 'Тест', [{ offerId: 'A', name: 'Чайник', qty: 2, photo: 'https://cdn/a.jpg' }]);
+    assert.equal(photos[0].photo, 'https://cdn/a.jpg'); // запасной путь — по ссылке
   });
 
   test('без владельца бот присылает chat id для настройки', async () => {

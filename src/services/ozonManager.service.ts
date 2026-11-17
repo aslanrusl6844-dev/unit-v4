@@ -302,9 +302,9 @@ export async function photoCards(kind: 'collect' | 'sold', dateStr?: string): Pr
     title = '🛒 Собрать у оптовиков (несобранные заказы FBS)';
   } else {
     const { date, from, to } = dayBounds(dateStr);
-    try { await syncOzonOrders(dayjs(from).subtract(1, 'day').toDate(), to); } catch { /* берём что есть в базе */ }
-    const orders = await prisma.order.findMany({ where: { marketplace: 'OZON', orderDate: { gte: from, lte: to } }, include: { items: true } });
-    for (const o of orders.filter((x) => !NON_SALE_STATUSES.includes(x.status))) for (const i of o.items) add(i.externalSku, i.name, i.quantity);
+    // Прямо из Ozon (без тяжёлой синхронизации финансов) — быстро, укладываемся в лимит времени.
+    const fbs = await ozonClient.fetchFbsPostings(from, to);
+    for (const p of fbs.filter((x) => !NON_SALE_STATUSES.includes(x.status))) for (const i of p.products) add(i.offerId, i.name, i.quantity);
     try {
       for (const r of await ozonClient.fetchFboPostings(from, to)) if (!/cancel/i.test(r.status)) add(r.offerId, r.name, r.quantity);
     } catch { /* FBO может быть не подключён */ }
