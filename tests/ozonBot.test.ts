@@ -50,9 +50,9 @@ beforeEach(() => {
   botMessages = []; sent = []; claudeCalls = []; claudeReplies = []; photos = [];
   const now = Date.now();
   ozonClient.fetchFbsPostings = async () => [
-    { postingNumber: 'P-late', status: 'awaiting_packaging', inProcessAt: null, shipmentDate: new Date(now - 2 * H).toISOString(), products: [{ offerId: 'A', name: 'Чайник', quantity: 2, price: 5000 }] },
+    { postingNumber: 'P-late', status: 'awaiting_packaging', scanit: 'ii50173001436', inProcessAt: null, shipmentDate: new Date(now - 2 * H).toISOString(), products: [{ offerId: 'A', name: 'Чайник', quantity: 2, price: 5000 }] },
     { postingNumber: 'P-later', status: 'awaiting_deliver', inProcessAt: null, shipmentDate: new Date(now + 72 * H).toISOString(), products: [{ offerId: 'A', name: 'Чайник', quantity: 1, price: 5000 }] },
-    { postingNumber: 'P-b', status: 'awaiting_packaging', inProcessAt: null, shipmentDate: new Date(now + 72 * H).toISOString(), products: [{ offerId: 'B', name: 'Кружка', quantity: 3, price: 900 }] },
+    { postingNumber: 'P-b', status: 'awaiting_packaging', scanit: 'ii50173002383', inProcessAt: null, shipmentDate: new Date(now + 72 * H).toISOString(), products: [{ offerId: 'B', name: 'Кружка', quantity: 3, price: 900 }] },
     { postingNumber: 'P-done', status: 'delivering', inProcessAt: null, shipmentDate: new Date(now - 48 * H).toISOString(), products: [{ offerId: 'A', name: 'Чайник', quantity: 1, price: 5000 }] },
   ];
   bot.setOzonBotTelegramFetch((async (url: string, init: any) => {
@@ -90,6 +90,9 @@ describe('Озон-менеджер', () => {
     assert.equal(b.totalPurchase, 2 * 1050); // 2 чайника (третий уже собран), кружки без цены
     assert.deepEqual(b.missingCost, ['B']);
     assert.equal(b.items.find((i: Row) => i.offerId === 'A').qty, 2);
+    assert.deepEqual(b.items.find((i: Row) => i.offerId === 'A').stickers, ['1436']); // 4 цифры со стикера Ozon
+    assert.equal(om.stickerCode('ii50173002383'), '2383');
+    assert.equal(om.stickerCode(''), '');
   });
 
   test('чужим бот не отвечает; /buy владельцу — сумма закупки', async () => {

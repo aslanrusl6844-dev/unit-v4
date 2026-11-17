@@ -217,7 +217,7 @@ function normalizeOzonReturn(r: any): OzonReturnRow {
 }
 
 export interface OzonFbsPostingBrief {
-  postingNumber: string; status: string; inProcessAt: string | null; shipmentDate: string | null;
+  postingNumber: string; status: string; inProcessAt: string | null; shipmentDate: string | null; scanit?: string;
   products: { offerId: string; name: string; quantity: number; price: number }[];
 }
 export interface OzonFboStockRow { sku: string; offerId: string; name: string; warehouse: string; free: number; reserved: number; promised: number }
@@ -571,6 +571,8 @@ export class OzonClient {
       status: p.status,
       inProcessAt: p.in_process_at || null,
       shipmentDate: p.shipment_date || null,
+      // Номер на стикере Ozon (scanit, напр. «ii50173001436») — крупные 4 цифры внизу этикетки = последние 4.
+      scanit: String((p as any).scanit ?? ''),
       products: (p.products ?? []).map((pr: any) => ({
         offerId: String(pr?.offer_id ?? ''),
         name: String(pr?.name ?? ''),

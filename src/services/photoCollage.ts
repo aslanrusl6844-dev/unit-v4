@@ -17,7 +17,7 @@ export type CollageItem = { qty: number; name: string; image: Buffer | null; ind
 
 const escMarkup = (v: string) => v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-async function textImage(markup: string, opts: { bold?: boolean; size: number; width?: number; color?: string }): Promise<Buffer> {
+async function textImage(markup: string, opts: { bold?: boolean; size: number; width?: number; color?: string; align?: 'left' | 'centre' }): Promise<Buffer> {
   return sharp({
     text: {
       text: `<span foreground="${opts.color ?? '#111111'}">${markup}</span>`,
@@ -25,6 +25,7 @@ async function textImage(markup: string, opts: { bold?: boolean; size: number; w
       font: `${opts.bold ? 'DejaVu Sans Bold' : 'DejaVu Sans'} ${opts.size}`,
       width: opts.width,
       wrap: 'word',
+      align: opts.align ?? 'left',
       rgba: true,
       dpi: 72,
     },
@@ -88,7 +89,7 @@ export async function buildCollage(items: CollageItem[]): Promise<Buffer> {
  * Карточка товара «столбиком»: широкая картинка 3:1 — слева фото товара (≈1/3 ширины сообщения),
  * справа крупно «N шт». Telegram показывает её узкой полосой, поэтому фото выходят маленькими.
  */
-export async function buildQtyCard(image: Buffer | null, qty: number, nameIfNoPhoto = ''): Promise<Buffer> {
+export async function buildQtyCard(image: Buffer | null, qty: number, nameIfNoPhoto = '', stickers: string[] = []): Promise<Buffer> {
   const H = 300;
   const W = 900;
   const layers: { input: Buffer; top: number; left: number }[] = [];
@@ -108,9 +109,26 @@ export async function buildQtyCard(image: Buffer | null, qty: number, nameIfNoPh
     const m = await sharp(ph).metadata();
     layers.push({ input: ph, top: Math.round(H / 2 - (m.height ?? 30) / 2), left: Math.round(H / 2 - (m.width ?? 120) / 2) });
   }
-  const qtyImg = await textImage(`${qty} шт`, { bold: true, size: 130, color: '#E53935' });
+  // Справа: крупно «N шт», под ним — 4 цифры со стикеров Ozon (как внизу этикетки), через « · ».
+  const codes = stickers.filter(Boolean);
+  const qtyImg = await textImage(`${qty} шт`, { bold: true, size: codes.length ? 110 : 130, color: '#E53935' });
   const qm = await sharp(qtyImg).metadata();
-  layers.push({ input: qtyImg, top: Math.round(H / 2 - (qm.height ?? 130) / 2), left: H + Math.round((W - H - (qm.width ?? 300)) / 2) });
+  const qh = qm.height ?? 120;
+  let codesImg: Buffer | null = null;
+  let ch = 0;
+  if (codes.length) {
+    const size = codes.length <= 3 ? 52 : codes.length <= 6 ? 40 : 30;
+    codesImg = await textImage(codes.join('   '), { bold: true, size, color: '#111111', width: W - H - 40, align: 'centre' });
+    const cm = await sharp(codesImg).metadata();
+    if ((cm.height ?? 0) > H - qh - 40) codesImg = await sharp(codesImg).extract({ left: 0, top: 0, width: cm.width ?? W - H - 40, height: H - qh - 40 }).png().toBuffer();
+    ch = (await sharp(codesImg).metadata()).height ?? 0;
+  }
+  const top0 = Math.round((H - qh - (codesImg ? ch + 18 : 0)) / 2);
+  layers.push({ input: qtyImg, top: top0, left: H + Math.round((W - H - (qm.width ?? 300)) / 2) });
+  if (codesImg) {
+    const cw = (await sharp(codesImg).metadata()).width ?? 300;
+    layers.push({ input: codesImg, top: top0 + qh + 18, left: H + Math.round((W - H - cw) / 2) });
+  }
   return sharp({ create: { width: W, height: H, channels: 3, background: '#ffffff' } })
     .composite([...(hasPhoto ? [] : [{ input: await sharp({ create: { width: H, height: H, channels: 3, background: '#eeeeee' } }).png().toBuffer(), top: 0, left: 0 }]), ...layers])
     .jpeg({ quality: 85 }).toBuffer();
