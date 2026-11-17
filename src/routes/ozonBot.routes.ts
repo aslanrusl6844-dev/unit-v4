@@ -14,7 +14,9 @@ import {
 export const ozonBotRouter = Router();
 
 const token = () => (process.env.OZON_BOT_TOKEN ?? '').trim();
-const ownerId = () => (process.env.OZON_BOT_OWNER_ID ?? '').trim();
+/** Кому бот отвечает: chat id владельца и/или семейной группы (через запятую). Отчёты — в первый. */
+const allowedIds = () => (process.env.OZON_BOT_OWNER_ID ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+const ownerId = () => allowedIds()[0] ?? '';
 export const ozonBotSecret = () => createHash('sha256').update('ozon-bot:' + token()).digest('hex').slice(0, 32);
 
 type TgFetch = typeof fetch;
@@ -128,10 +130,10 @@ export async function handleOzonBotUpdate(update: any): Promise<void> {
   const photo: any[] | undefined = Array.isArray(msg?.photo) ? msg.photo : undefined;
   if (!chatId || (!text && !photo?.length)) return;
   if (!ownerId()) {
-    await sendOzonBot(chatId, `Бот ещё не привязан к владельцу.\nВаш chat id: <b>${chatId}</b>\nДобавьте его в Vercel как OZON_BOT_OWNER_ID и сделайте Redeploy.`);
+    await sendOzonBot(chatId, `Бот ещё не привязан.\nChat id ${msg?.chat?.type === 'private' ? 'этого чата' : 'этой группы'}: <b>${chatId}</b>\nДобавьте его в Vercel как OZON_BOT_OWNER_ID и сделайте Redeploy.`);
     return;
   }
-  if (chatId !== ownerId()) return; // чужим — молчим
+  if (!allowedIds().includes(chatId)) return; // чужим — молчим
   const cmd = text.split(/[\s@]/)[0].toLowerCase();
   if (cmd === '/start' || cmd === '/help') { await sendOzonBot(chatId, HELP); return; }
   if (cmd === '/new') {
@@ -147,7 +149,9 @@ export async function handleOzonBotUpdate(update: any): Promise<void> {
     const history = rows.reverse().map((r) => ({ role: r.role as 'user' | 'assistant', content: r.content }));
     const image = photo?.length ? await downloadPhoto(photo[photo.length - 1].file_id).catch(() => undefined) : undefined;
     if (photo?.length) await sendOzonBot(chatId, '🔎 Смотрю товар и ищу конкурентов на Ozon — это займёт до минуты…');
-    const answer = await askOzonManager(history, text, image);
+    // В группе бот видит, кто спрашивает (владелец или жена) — чтобы отвечать по имени.
+    const who = msg?.chat?.type !== 'private' && msg?.from?.first_name ? `[${String(msg.from.first_name).slice(0, 30)}] ` : '';
+    const answer = await askOzonManager(history, who + text, image);
     await prisma.ozonBotMessage.createMany({ data: [{ chatId, role: 'user', content: ((photo?.length ? '[фото товара] ' : '') + text).slice(0, 4000) }, { chatId, role: 'assistant', content: answer.slice(0, 4000) }] });
     await sendOzonBot(chatId, answer);
   } catch (err: any) {

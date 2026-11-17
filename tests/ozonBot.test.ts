@@ -127,6 +127,17 @@ describe('Озон-менеджер', () => {
     assert.match(sent[0].text, /ищу конкурентов/);
   });
 
+  test('семейная группа: отвечает в группе из списка, отчёты — первому в списке', async () => {
+    const prev = process.env.OZON_BOT_OWNER_ID;
+    process.env.OZON_BOT_OWNER_ID = '-100500, 111';
+    await bot.handleOzonBotUpdate({ message: { chat: { id: -100500, type: 'supergroup' }, from: { first_name: 'Айгерим' }, text: '/ship@MyOzonBot' } });
+    await bot.handleOzonBotUpdate({ message: { chat: { id: -100500, type: 'supergroup' }, from: { first_name: 'Айгерим' }, text: 'как дела?' } });
+    process.env.OZON_BOT_OWNER_ID = prev;
+    assert.match(sent[0].text, /Отгрузка FBS/);
+    assert.equal(sent[0].chat, '-100500');
+    assert.equal(claudeCalls[0].messages.at(-1).content, '[Айгерим] как дела?');
+  });
+
   test('без владельца бот присылает chat id для настройки', async () => {
     const prev = process.env.OZON_BOT_OWNER_ID;
     delete process.env.OZON_BOT_OWNER_ID;
