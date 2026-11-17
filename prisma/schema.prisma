@@ -1336,3 +1336,14 @@ model FiscalReceipt {
   @@unique([orderId, operation])
   @@index([orderId])
 }
+
+// Озон-менеджер (отдельный Telegram-бот): короткая история диалога — чтобы бот помнил контекст.
+model OzonBotMessage {
+  id        String   @id @default(cuid())
+  chatId    String
+  role      String   // user | assistant
+  content   String
+  createdAt DateTime @default(now())
+
+  @@index([chatId, createdAt])
+}

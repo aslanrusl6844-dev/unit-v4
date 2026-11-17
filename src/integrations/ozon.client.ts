@@ -216,6 +216,10 @@ function normalizeOzonReturn(r: any): OzonReturnRow {
   };
 }
 
+export interface OzonFbsPostingBrief {
+  postingNumber: string; status: string; inProcessAt: string | null; shipmentDate: string | null;
+  products: { offerId: string; name: string; quantity: number; price: number }[];
+}
 export interface OzonFboStockRow { sku: string; offerId: string; name: string; warehouse: string; free: number; reserved: number; promised: number }
 export interface OzonFboPosting { postingNumber: string; status: string; createdAt: string | null; offerId: string; name: string; quantity: number; price: number }
 
@@ -556,6 +560,24 @@ export class OzonClient {
 
     logger.info(`[Ozon] Загружено отправлений: ${orders.length}`);
     return orders;
+  }
+
+  /** Отправления FBS за период (как пришли от Ozon): статус, срок отгрузки, товары. Для Озон-менеджера. */
+  async fetchFbsPostings(dateFrom: Date, dateTo: Date): Promise<OzonFbsPostingBrief[]> {
+    const http = await this.getHttp();
+    const postings = await this.fetchAllFbsPostings(http, dateFrom, dateTo);
+    return postings.map((p) => ({
+      postingNumber: p.posting_number,
+      status: p.status,
+      inProcessAt: p.in_process_at || null,
+      shipmentDate: p.shipment_date || null,
+      products: (p.products ?? []).map((pr: any) => ({
+        offerId: String(pr?.offer_id ?? ''),
+        name: String(pr?.name ?? ''),
+        quantity: Number(pr?.quantity ?? 1) || 1,
+        price: Number(pr?.price ?? 0) || 0,
+      })),
+    }));
   }
 
   /**

@@ -1,0 +1,20 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.SHOP_TYPE_REQUIRED_FOR_SALE = void 0;
+/**
+ * Должен ли быть заполнен type, чтобы товар вышел в продажу в приложении.
+ *
+ *  false — достаточно category + цены + ручного «В продаже». Товар без типа
+ *          виден в общей ленте своей категории, но не попадает ни в одну
+ *          плитку типа (плитки строятся только по заполненным type).
+ *  true  — (сейчас) без type товар в продажу не включить — явное требование
+ *          «не включать продажу без category и type» из задачи про артикул
+ *          витрины. Раньше было false — если нужно вернуть, поменять здесь.
+ *
+ * Используется в PUT /products/:id (проверка при включении продажи) и в
+ * фильтре видимости API приложения (routes/shop.routes.ts). Такой же
+ * переключатель есть в public/dashboard.js (MY_MARKET_TYPE_REQUIRED_FOR_SALE) —
+ * менять нужно оба.
+ */
+exports.SHOP_TYPE_REQUIRED_FOR_SALE = true;
+//# sourceMappingURL=shopRules.js.map

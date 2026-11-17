@@ -67,3 +67,9 @@ export async function runRekassaShiftClose() {
   const { closeRekassaShift } = await import('../services/rekassa.service');
   return closeRekassaShift();
 }
+
+/** Озон-менеджер: утренний / вечерний отчёт владельцу в Telegram. */
+export async function runOzonBotReport(kind: 'morning' | 'evening') {
+  const { sendOzonBotReport } = await import('../routes/ozonBot.routes');
+  return sendOzonBotReport(kind);
+}

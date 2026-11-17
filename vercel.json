@@ -33,12 +33,31 @@
     }
   },
   "rewrites": [
-    { "source": "/api/:path*", "destination": "/api/index" }
+    {
+      "source": "/api/:path*",
+      "destination": "/api/index"
+    }
   ],
   "crons": [
-    { "path": "/api/cron/sync", "schedule": "0 3 * * *" },
-    { "path": "/api/cron/reprice", "schedule": "0 4 * * *" },
-    { "path": "/api/cron/cart-reminder", "schedule": "7 12 * * *" }
+    {
+      "path": "/api/cron/sync",
+      "schedule": "0 3 * * *"
+    },
+    {
+      "path": "/api/cron/reprice",
+      "schedule": "0 4 * * *"
+    },
+    {
+      "path": "/api/cron/cart-reminder",
+      "schedule": "7 12 * * *"
+    },
+    {
+      "path": "/api/cron/ozon-report?kind=morning",
+      "schedule": "30 3 * * *"
+    },
+    {
+      "path": "/api/cron/ozon-report?kind=evening",
+      "schedule": "0 16 * * *"
+    }
   ]
 }
-

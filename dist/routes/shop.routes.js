@@ -1,0 +1,2290 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.SHOP_VISIBLE_WHERE = exports.SHOP_VISIBLE_IN_SHOWCASE_WHERE = exports.shopRouter = void 0;
+exports.toShopProduct = toShopProduct;
+exports.ensureShopArticle = ensureShopArticle;
+exports.getReviewStatsMap = getReviewStatsMap;
+exports.getProductVariantsMap = getProductVariantsMap;
+exports.cleanEmail = cleanEmail;
+exports.markShopOrderAsPaid = markShopOrderAsPaid;
+exports.normalizePhone = normalizePhone;
+exports.notifyWowActivated = notifyWowActivated;
+const banners_1 = require("../config/banners");
+const express_1 = require("express");
+const zod_1 = require("zod");
+const multer_1 = __importDefault(require("multer"));
+const blob_1 = require("@vercel/blob");
+const prisma_1 = require("../db/prisma");
+const productExtras_1 = require("../services/productExtras");
+const searchSuggestions_service_1 = require("../services/searchSuggestions.service");
+const cities_1 = require("../config/cities");
+const env_1 = require("../config/env");
+const logger_1 = require("../utils/logger");
+const waybill_service_1 = require("../services/waybill.service");
+const sms_service_1 = require("../services/sms.service");
+const shopRules_1 = require("../config/shopRules");
+const ozon_content_1 = require("../integrations/ozon.content");
+const shopArticle_1 = require("../services/shopArticle");
+const shopCategories_1 = require("../config/shopCategories");
+const telegram_1 = require("../lib/telegram");
+const expoPush_1 = require("../lib/expoPush");
+const deliveryProgress_1 = require("../services/deliveryProgress");
+const streets_service_1 = require("../services/streets.service");
+const pushBroadcast_service_1 = require("../services/pushBroadcast.service");
+const node_crypto_1 = require("node:crypto");
+const shopDelivery_1 = require("../config/shopDelivery");
+const rekassa_service_1 = require("../services/rekassa.service");
+const wow_service_1 = require("../services/wow.service");
+exports.shopRouter = (0, express_1.Router)();
+/**
+ * Все /api/shop/* маршруты защищены заголовком x-app-key — сравниваем с
+ * SHOP_APP_KEY из переменных окружения. Если ключ не настроен на сервере —
+ * честно отказываем всем запросам (не открываем API "по умолчанию").
+ */
+exports.shopRouter.use((req, res, next) => {
+    if (!env_1.env.shopAppKey) {
+        return res.status(503).json({ error: 'SHOP_APP_KEY не настроен на сервере — API My Market недоступен' });
+    }
+    const key = req.header('x-app-key');
+    if (key !== env_1.env.shopAppKey) {
+        return res.status(401).json({ error: 'Неверный или отсутствующий заголовок x-app-key' });
+    }
+    next();
+});
+/** Товар как его видит приложение — ТОЛЬКО поля витрины, цена = shopPrice. */
+/**
+ * Товар виден в приложении ТОЛЬКО если продажу включили вручную (shopActive),
+ * он не в архиве витрины и заполнены category и shopPrice (и type — если он обязателен, см. config/shopRules.ts). Один
+ * общий фильтр для списка, карточки и категорий — чтобы правило нельзя было
+ * обойти, включив продажу другим путём (Excel, старые данные и т.п.).
+ */
+const SHOP_VISIBLE_BASE = {
+    shopActive: true,
+    shopArchived: false,
+    category: { not: null },
+    shopPrice: { not: null },
+};
+// type в фильтре — только если он обязателен для продажи (config/shopRules.ts).
+// Иначе товар без типа виден в общей ленте категории, но в плитки типа не попадает.
+const SHOP_VISIBLE_ANYWHERE = shopRules_1.SHOP_TYPE_REQUIRED_FOR_SALE
+    ? { ...SHOP_VISIBLE_BASE, type: { not: null } }
+    : SHOP_VISIBLE_BASE;
+/** Видимость товара ВНУТРИ витрины: те же правила, но включая товары «только для витрин» (showcaseOnly). */
+exports.SHOP_VISIBLE_IN_SHOWCASE_WHERE = SHOP_VISIBLE_ANYWHERE;
+/**
+ * Видимость в ОБЩЕМ каталоге My Market (список, категории, поиск, подсказки):
+ * товары, созданные внутри витрины (showcaseOnly), сюда не попадают.
+ */
+exports.SHOP_VISIBLE_WHERE = { ...SHOP_VISIBLE_ANYWHERE, showcaseOnly: false };
+function toShopProduct(p) {
+    let images = [];
+    try {
+        images = p.images ? JSON.parse(p.images) : [];
+    }
+    catch {
+        images = [];
+    }
+    // Страховка при чтении: то, что синк Ozon записал ДО чистки, в приложение не
+    // уходит — не надо ждать следующего синка. Вписанное руками не трогаем.
+    const description = p.descriptionSource === 'ozon' ? ((0, ozon_content_1.cleanOzonDescription)(p.description) || null) : p.description;
+    const composition = (0, ozon_content_1.looksLikeAttributeDump)(p.composition) ? null : p.composition;
+    // Характеристики для покупателя — только Тип / Материал / Артикул. «Артикул»
+    // здесь — ТОЛЬКО shopArticle (свой, 7 цифр), НЕ ozonOfferId/nmId/kaspiSku —
+    // артикул маркетплейса покупателю не показываем нигде.
+    let stored = [];
+    try {
+        stored = p.characteristics ? JSON.parse(p.characteristics) : [];
+    }
+    catch {
+        stored = [];
+    }
+    let characteristics = (0, ozon_content_1.sanitizeCharacteristics)(stored).filter((c) => c.name !== 'Артикул');
+    const typeChar = characteristics.length ? [] : (0, ozon_content_1.sanitizeCharacteristics)([{ name: 'Тип', value: p.ozonType }]);
+    if (p.shopArticle)
+        characteristics = [...typeChar, ...characteristics, { name: 'Артикул', value: p.shopArticle }];
+    else
+        characteristics = [...typeChar, ...characteristics];
+    return {
+        // ВАЖНО: покупателю (и приложению) в sku тоже отдаём shopArticle, если он
+        // есть — иначе приложение само подставляет "ozon-..." там, где ждёт sku
+        // (это и был баг). Внутренний ozon-.../wb-.../kaspi-... остаётся только
+        // в БД и в синке; наружу такой sku теперь не уходит вообще, пока у
+        // товара есть свой артикул витрины (а у видимого товара он есть всегда —
+        // см. ensureShopArticle ниже).
+        sku: p.shopArticle ?? p.sku,
+        // Артикул витрины — ТОЛЬКО shopArticle (7 цифр, свой, не производная от sku
+        // и не артикул площадки). Пока не сгенерирован (цена/продажа ещё не
+        // задавались) — null, а не какая-либо часть sku.
+        article: p.shopArticle ?? null,
+        name: p.name,
+        category: p.category,
+        subcategory: p.subcategory,
+        type: p.type,
+        price: p.shopPrice,
+        oldPrice: p.shopOldPrice,
+        // Подписка «Вау»: процент и цена для подписчика (null — товар без метки «Вау»).
+        // Показывать ли вообще — приложение решает по GET /wow/settings (enabled).
+        // Нет галочки или срок прошёл — null: в карточке обычные кнопки, без «Купить со скидкой Вау».
+        wowPercent: (0, wow_service_1.activeWowPercent)(p),
+        wowPrice: (0, wow_service_1.activeWowPercent)(p) && p.shopPrice != null ? (0, wow_service_1.wowPriceOf)(p.shopPrice, (0, wow_service_1.activeWowPercent)(p)) : null,
+        wowUntil: (0, wow_service_1.activeWowPercent)(p) ? (p.wowUntil ?? null) : null,
+        stock: p.shopStock,
+        description,
+        composition,
+        characteristics,
+        images,
+        video: p.shopVideo ?? null,
+        videoUrl: p.videoUrl ?? null,
+        delivery: p.shopDelivery,
+        banner: p.banner,
+        bannerTitle: p.bannerTitle,
+        bannerSubtitle: p.bannerSubtitle,
+        // Варианты количества [{quantity, unit, price}] и «Детали» [{type, url}]. Пусто — [].
+        // Отдельные ключи: существующий `variants` (цвет/размер) не трогаем.
+        quantityVariants: (0, productExtras_1.parseQuantityVariants)(p.quantityVariants),
+        details: (0, productExtras_1.parseDetails)(p.details),
+        // До 3 видео товара (URL); нет видео — [].
+        videos: (0, productExtras_1.parseVideos)(p.videos),
+    };
+}
+/**
+ * Ищет видимый товар по внутреннему sku ИЛИ по артикулу витрины (shopArticle) —
+ * оба ТОЧНЫМ совпадением. Раньше здесь ещё подбирались варианты с префиксами
+ * площадок (ozon-/wb-/kaspi- + то, что ввели) — это фактически позволяло искать
+ * по артикулу МАРКЕТПЛЕЙСА, что как раз запрещено; убрано.
+ */
+async function findVisibleProductBySkuOrArticle(param) {
+    const trimmed = String(param ?? '').trim();
+    if (!trimmed)
+        return null;
+    const lookup = [{ sku: trimmed }, { shopArticle: trimmed }, { id: trimmed }];
+    const product = await prisma_1.prisma.product.findFirst({ where: { OR: lookup, ...exports.SHOP_VISIBLE_WHERE } });
+    if (product)
+        return ensureShopArticle(product);
+    // Товар «только для витрины» открывается карточкой, только если он привязан к опубликованной витрине.
+    const only = await prisma_1.prisma.product.findFirst({ where: { OR: lookup, ...exports.SHOP_VISIBLE_IN_SHOWCASE_WHERE, showcaseOnly: true } });
+    if (!only)
+        return null;
+    const links = await prisma_1.prisma.showcaseProduct.findMany({ where: { productId: only.id }, select: { showcaseId: true } });
+    if (!links.length)
+        return null;
+    const published = await prisma_1.prisma.showcase.findFirst({ where: { id: { in: links.map((l) => l.showcaseId) }, published: true } });
+    return published ? ensureShopArticle(only) : null;
+}
+/**
+ * Добор артикула для товаров, ставших видимыми (цена + «В продаже») ДО того,
+ * как для них сработала генерация — например, если товар был активен ещё
+ * до появления shopArticle в системе, или включён в продажу каким-то путём
+ * в обход обычного сохранения карточки. Видимый товар (уже прошёл
+ * SHOP_VISIBLE_WHERE — значит и цена, и активность на месте) обязан иметь
+ * артикул; если его почему-то нет — генерируем прямо здесь, один раз,
+ * той же функцией и по тому же правилу, что и при сохранении карточки.
+ * Без этого приложению просто нечего было бы подставить в sku/article
+ * кроме внутреннего ozon-.../wb-.../kaspi-... — собственно тот самый баг.
+ */
+async function ensureShopArticle(product) {
+    if (product.shopArticle)
+        return product;
+    const article = await (0, shopArticle_1.maybeGenerateShopArticle)({
+        currentShopArticle: null,
+        effectivePrice: product.shopPrice,
+        effectiveActive: product.shopActive,
+    });
+    if (!article)
+        return product; // теоретически недостижимо для видимого товара, но не падаем зря
+    await prisma_1.prisma.product.update({ where: { id: product.id }, data: { shopArticle: article } });
+    return { ...product, shopArticle: article };
+}
+/**
+ * Рейтинг и число отзывов для списка товаров — ОДИН groupBy на всех сразу
+ * (не запрос на каждый товар), считая по обеим формам sku товара
+ * (внутренний sku И shopArticle — так же, как ищет GET /reviews), иначе
+ * отзывы, сохранённые под ozon-..., не попадут в рейтинг витрины.
+ * rating — среднее, округлённое до 1 знака, нет отзывов → null.
+ * reviewCount — число отзывов, нет → 0.
+ */
+async function getReviewStatsMap(products) {
+    const result = new Map();
+    for (const p of products)
+        result.set(p.id, { rating: null, reviewCount: 0 });
+    if (!products.length)
+        return result;
+    // Один sku-кандидат может (в теории) принадлежать нескольким товарам сразу
+    // только при дублирующихся sku/shopArticle в базе — не должно случаться,
+    // но карта candidate -> [productId] на этот случай не теряет ни одного.
+    const candidateToProductIds = new Map();
+    for (const p of products) {
+        for (const candidate of [p.sku, p.shopArticle].filter((s) => !!s)) {
+            if (!candidateToProductIds.has(candidate))
+                candidateToProductIds.set(candidate, []);
+            candidateToProductIds.get(candidate).push(p.id);
+        }
+    }
+    const allCandidates = Array.from(candidateToProductIds.keys());
+    if (!allCandidates.length)
+        return result;
+    const grouped = await prisma_1.prisma.shopReview.groupBy({
+        by: ['sku'],
+        where: { sku: { in: allCandidates } },
+        _sum: { rating: true },
+        _count: { rating: true },
+    });
+    // Суммируем по ТОВАРУ (не по sku-кандидату) — у одного товара отзывы могли
+    // накопиться и под внутренним sku, и под shopArticle одновременно.
+    const sumByProduct = new Map();
+    const countByProduct = new Map();
+    for (const g of grouped) {
+        for (const productId of candidateToProductIds.get(g.sku) ?? []) {
+            sumByProduct.set(productId, (sumByProduct.get(productId) ?? 0) + (g._sum.rating ?? 0));
+            countByProduct.set(productId, (countByProduct.get(productId) ?? 0) + g._count.rating);
+        }
+    }
+    for (const p of products) {
+        const reviewCount = countByProduct.get(p.id) ?? 0;
+        const sum = sumByProduct.get(p.id) ?? 0;
+        result.set(p.id, {
+            reviewCount,
+            rating: reviewCount > 0 ? Math.round((sum / reviewCount) * 10) / 10 : null,
+        });
+    }
+    return result;
+}
+/**
+ * Варианты одной витрины (цвет/размер) — другие товары с тем же
+ * variantGroup, ТОЛЬКО видимые (shopActive, не архив). Текущий товар тоже
+ * входит в свой собственный массив (если сам видим). Нет группы -> [].
+ * Один запрос на весь список сразу (по всем встреченным variantGroup),
+ * не по одному на товар.
+ */
+function variantToDto(m) {
+    let images = [];
+    try {
+        images = m.images ? JSON.parse(m.images) : [];
+    }
+    catch {
+        images = [];
+    }
+    return {
+        sku: m.shopArticle ?? m.sku,
+        name: m.name,
+        variantLabel: m.variantLabel,
+        price: m.shopPrice,
+        oldPrice: m.shopOldPrice,
+        stock: m.shopStock,
+        image: images[0] ?? null,
+    };
+}
+async function getProductVariantsMap(products) {
+    const result = new Map();
+    for (const p of products)
+        result.set(p.id, []);
+    const groups = Array.from(new Set(products.map((p) => p.variantGroup).filter((g) => !!g)));
+    if (!groups.length)
+        return result;
+    const members = await prisma_1.prisma.product.findMany({
+        // Видимые (shopActive, не архив) И с заполненной подписью — без подписи
+        // товар в ряд вариантов не попадает (так просили: «иначе под миниатюрой
+        // будет непонятно что показывать» — именно это мы и не хотим показывать).
+        where: { variantGroup: { in: groups }, shopActive: true, shopArchived: false, showcaseOnly: false, variantLabel: { not: null } },
+    });
+    const byGroup = new Map();
+    for (const m of members) {
+        if (!m.variantGroup || !m.variantLabel)
+            continue; // двойная страховка — не только в where
+        if (!byGroup.has(m.variantGroup))
+            byGroup.set(m.variantGroup, []);
+        byGroup.get(m.variantGroup).push(m);
+    }
+    for (const p of products) {
+        if (!p.variantGroup)
+            continue;
+        result.set(p.id, (byGroup.get(p.variantGroup) ?? []).map(variantToDto));
+    }
+    return result;
+}
+exports.shopRouter.get('/products', async (_req, res) => {
+    try {
+        const products = await prisma_1.prisma.product.findMany({ where: exports.SHOP_VISIBLE_WHERE });
+        const withArticles = await Promise.all(products.map(ensureShopArticle));
+        const statsMap = await getReviewStatsMap(withArticles);
+        const variantsMap = await getProductVariantsMap(withArticles);
+        res.json(withArticles.map((p) => ({ ...toShopProduct(p), ...statsMap.get(p.id), variants: variantsMap.get(p.id) })));
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop API] GET /products упал');
+        res.status(500).json({ error: 'Не удалось получить товары', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * Подсказки поиска: GET /api/shop/search/suggestions?q=косм → до 10 штук
+ * { text, type: category|type|popular|product }. Подсказки не критичны:
+ * при сбое БД отдаём пустой список, а не ошибку — поиск от этого не страдает.
+ */
+exports.shopRouter.get('/search/suggestions', async (req, res) => {
+    try {
+        const suggestions = await (0, searchSuggestions_service_1.getSearchSuggestions)(req.query.q, exports.SHOP_VISIBLE_WHERE);
+        res.json({ suggestions });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop API] GET /search/suggestions упал');
+        res.json({ suggestions: [] });
+    }
+});
+/**
+ * Картинки города (слайды): GET /api/shop/city-images?city=Алматы → ["https://…", …]
+ * в порядке показа (до 10), [] если картинок нет или города нет в списке.
+ * GET /api/shop/city-image — прежний ответ { imageUrl } с первой картинкой.
+ * Название города — без учёта регистра/ё/дефисов. Некритично: при сбое БД — пусто.
+ */
+async function cityImageUrls(raw) {
+    const city = (0, cities_1.resolveCity)(raw);
+    if (!city)
+        return [];
+    const rows = await prisma_1.prisma.cityImageSlide.findMany({
+        where: { city }, orderBy: [{ position: 'asc' }, { createdAt: 'asc' }], take: cities_1.MAX_CITY_IMAGES,
+    });
+    return rows.map((r) => r.imageUrl);
+}
+/** Причина вылета приложения (присылает само приложение при следующем запуске) — в журнал сервера. */
+exports.shopRouter.post('/app-crash', (req, res) => {
+    const text = String(req.body?.text ?? '').slice(0, 12000);
+    if (!text)
+        return res.status(400).json({ error: 'Пустой отчёт' });
+    logger_1.logger.error({ version: String(req.body?.version ?? '').slice(0, 40), device: String(req.body?.device ?? '').slice(0, 120), crash: text }, '[App crash] Приложение упало');
+    res.json({ ok: true });
+});
+/** Подсказки улиц: GET /streets?city=Алматы&q=аб → ["улица Абая", ...]. Пусто, если улицы города ещё не загружены. */
+exports.shopRouter.get('/streets', async (req, res) => {
+    try {
+        const city = (0, cities_1.resolveCity)(req.query.city);
+        const q = String(req.query.q ?? '');
+        if (!city || q.trim().length < 2)
+            return res.json({ streets: [] });
+        res.json({ streets: await (0, streets_service_1.searchStreets)(city, q) });
+    }
+    catch (err) {
+        logger_1.logger.warn({ err }, 'streets search failed');
+        res.json({ streets: [] }); // подсказки не обязательны — ввод вручную работает всегда
+    }
+});
+exports.shopRouter.get('/city-images', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        res.json(await cityImageUrls(req.query.city));
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop API] GET /city-images упал');
+        res.json([]);
+    }
+});
+exports.shopRouter.get('/city-image', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+        res.json({ imageUrl: (await cityImageUrls(req.query.city))[0] ?? null });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop API] GET /city-image упал');
+        res.json({ imageUrl: null });
+    }
+});
+exports.shopRouter.get('/products/:sku', async (req, res) => {
+    try {
+        const product = await findVisibleProductBySkuOrArticle(req.params.sku);
+        if (!product)
+            return res.status(404).json({ error: 'Товар не найден' });
+        const statsMap = await getReviewStatsMap([product]);
+        const variantsMap = await getProductVariantsMap([product]);
+        res.json({ ...toShopProduct(product), ...statsMap.get(product.id), variants: variantsMap.get(product.id) });
+    }
+    catch (err) {
+        res.status(500).json({ error: 'Не удалось получить товар', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * Категории — ТОЛЬКО из явно проставленных полей category/subcategory/type
+ * (форма редактирования или загрузка Excel в разделе «My Market»). Никакого
+ * автоматического угадывания категории по названию — если поле пустое,
+ * товар просто не попадёт ни в одну категорию.
+ */
+exports.shopRouter.get('/categories', async (_req, res) => {
+    try {
+        const products = await prisma_1.prisma.product.findMany({
+            where: exports.SHOP_VISIBLE_WHERE,
+            select: { category: true, subcategory: true, type: true },
+        });
+        const tree = new Map();
+        for (const p of products) {
+            // Жёсткий список разделов витрины (config/shopCategories.ts) — сюда
+            // никогда не попадает то, чего нет в списке: ни старые значения
+            // («украшение», «Кухня», нижний регистр), ни что-либо угаданное из
+            // Ozon. normalizeShopCategory терпим к регистру/пробелам, но не
+            // придумывает раздел — вне списка просто пропускаем.
+            const category = (0, shopCategories_1.normalizeShopCategory)(p.category);
+            if (!category)
+                continue;
+            if (!tree.has(category))
+                tree.set(category, new Map());
+            const subMap = tree.get(category);
+            const subKey = p.subcategory ?? '';
+            if (!subMap.has(subKey))
+                subMap.set(subKey, new Set());
+            if (p.type)
+                subMap.get(subKey).add(p.type);
+        }
+        // Порядок — как в SHOP_CATEGORIES, не как попались товары.
+        const result = shopCategories_1.SHOP_CATEGORIES.filter((c) => tree.has(c)).map((category) => ({
+            category,
+            subcategories: Array.from(tree.get(category).entries())
+                .filter(([sub]) => sub !== '')
+                .map(([subcategory, types]) => ({ subcategory, types: Array.from(types) })),
+        }));
+        res.json(result);
+    }
+    catch (err) {
+        res.status(500).json({ error: 'Не удалось получить категории', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * Справочник типов каталога (ведёт продавец в админке My Market → «Каталог»).
+ * Только active=true, сгруппировано по разделу, внутри — по sortOrder. Типы
+ * отдаются, даже если товаров с таким типом ещё нет; Product.category/type не
+ * трогаются. Разделы идут в порядке SHOP_CATEGORIES, пустые не выводятся.
+ */
+exports.shopRouter.get('/catalog-types', async (_req, res) => {
+    try {
+        const rows = await prisma_1.prisma.catalogType.findMany({
+            where: { active: true },
+            orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+            select: { category: true, type: true, imageUrl: true, sortOrder: true },
+        });
+        const byCategory = new Map();
+        for (const r of rows) {
+            if (!byCategory.has(r.category))
+                byCategory.set(r.category, []);
+            byCategory.get(r.category).push({ type: r.type, imageUrl: r.imageUrl, sortOrder: r.sortOrder });
+        }
+        const result = {};
+        for (const c of shopCategories_1.SHOP_CATEGORIES)
+            if (byCategory.has(c))
+                result[c] = byCategory.get(c);
+        res.setHeader('Cache-Control', 'no-store');
+        res.json(result);
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop] GET /catalog-types упал');
+        res.status(500).json({ error: 'Не удалось получить типы каталога', details: String(err?.message ?? err) });
+    }
+});
+/** Настройки вида главной: какой переход у карусели баннеров. */
+exports.shopRouter.get('/ui-settings', async (_req, res) => {
+    try {
+        const s = await prisma_1.prisma.shopUiSettings.findUnique({ where: { id: 'main' } });
+        res.json({ bannerTransition: (0, banners_1.normalizeTransition)(s?.bannerTransition), showcaseTransition: (0, banners_1.normalizeTransition)(s?.showcaseTransition), captionEffect: (0, banners_1.normalizeCaption)(s?.captionEffect) });
+    }
+    catch {
+        res.json({ bannerTransition: 'slide', showcaseTransition: 'slide', captionEffect: 'rise' });
+    }
+});
+exports.shopRouter.get('/banners', async (_req, res) => {
+    try {
+        // Слайды карусели — отдельная сущность ShopBanner (не поле товара),
+        // т.к. баннер может вести и на конкретный товар, и на категорию.
+        // Отдаём только включённые (active=true) и хотя бы с картинкой —
+        // пустой "выключенный" слот приложению не нужен.
+        const banners = await prisma_1.prisma.shopBanner.findMany({
+            // Слоты 4..9 («под витринами» и запас) в карусель не попадают — у них свои маршруты.
+            where: { active: true, imageUrl: { not: null }, slot: { notIn: banners_1.RESERVED_SLOTS } },
+            orderBy: { slot: 'asc' },
+        });
+        // Диагностика — сколько слайдов реально ушло в ответ. Формат ответа —
+        // обычный массив [...], НЕ {banners:[...]}; это уже так и должно так
+        // оставаться (см. обсуждение) — меняется тут только логирование.
+        logger_1.logger.info({ count: banners.length }, '[Shop API] GET /banners — отдано слайдов');
+        res.json(banners.map((b) => ({
+            imageUrl: b.imageUrl,
+            title: b.title,
+            subtitle: b.subtitle,
+            linkType: b.linkType,
+            linkValue: b.linkValue,
+        })));
+    }
+    catch (err) {
+        res.status(500).json({ error: 'Не удалось получить баннеры', details: String(err?.message ?? err) });
+    }
+});
+/** Реклама под витринами: одна широкая полоса. Нет/выключена/без картинки — null (приложение полосу не рисует). */
+exports.shopRouter.get('/banners/under-showcase', async (_req, res) => {
+    try {
+        const b = await prisma_1.prisma.shopBanner.findUnique({ where: { slot: banners_1.UNDER_SHOWCASE_SLOT } });
+        res.setHeader('Cache-Control', 'no-store');
+        if (!b || !b.active || !b.imageUrl)
+            return res.json(null);
+        res.json({ imageUrl: b.imageUrl, linkType: b.linkType, linkValue: b.linkValue });
+    }
+    catch (err) {
+        res.status(500).json({ error: 'Не удалось получить рекламу под витринами', details: String(err?.message ?? err) });
+    }
+});
+exports.shopRouter.get('/products/:sku/reviews', async (req, res) => {
+    try {
+        const param = req.params.sku;
+        // GET не ломаем: старое поведение (точное совпадение sku) — частный
+        // случай нового. Резолвим параметр по товару (sku ИЛИ shopArticle, как
+        // и везде в приложении) и ищем отзывы по ВСЕМ формам, которыми товар
+        // мог быть известен — включая сырой параметр как есть (чтобы старые
+        // записи, сохранённые кем угодно в любом формате, не потерялись).
+        const product = await prisma_1.prisma.product.findFirst({ where: { OR: [{ sku: param }, { shopArticle: param }] } });
+        const skuCandidates = Array.from(new Set([param, product?.sku, product?.shopArticle].filter((s) => !!s)));
+        const reviews = await prisma_1.prisma.shopReview.findMany({ where: { sku: { in: skuCandidates } }, orderBy: { date: 'desc' } });
+        // photos — только новое поле; старые отзывы (photos=null) отдают [], а
+        // не null, чтобы карточке не пришлось отдельно проверять null vs массив.
+        res.json(reviews.map((r) => {
+            let photos = [];
+            try {
+                photos = r.photos ? JSON.parse(r.photos) : [];
+            }
+            catch {
+                photos = [];
+            }
+            return { ...r, photos };
+        }));
+    }
+    catch (err) {
+        res.status(500).json({ error: 'Не удалось получить отзывы', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * Склеивает текст отзыва из приложения в одно поле text — чтобы старый GET
+ * и карточка товара, которые показывают один текст, ничего не теряли.
+ * Пустые части пропускаются; если пусто всё — отзыв всё равно не будет
+ * пустым: подставляется оценка.
+ */
+function buildReviewText(parts, rating) {
+    const lines = [];
+    if (parts.textPros?.trim())
+        lines.push(`Плюсы: ${parts.textPros.trim()}`);
+    if (parts.textCons?.trim())
+        lines.push(`Минусы: ${parts.textCons.trim()}`);
+    if (parts.comment?.trim())
+        lines.push(parts.comment.trim());
+    if (parts.tags?.trim())
+        lines.push(`Теги: ${parts.tags.trim()}`);
+    const text = lines.join('\n').trim();
+    return text || `Оценка: ${rating}/5`; // «text не пустой» — гарантируем это здесь, а не отклоняем отзыв без текста
+}
+const REVIEW_PHOTO_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+const REVIEW_PHOTO_MAX_MB = 6;
+const REVIEW_PHOTO_MAX_BYTES = REVIEW_PHOTO_MAX_MB * 1024 * 1024;
+const reviewPhotoUpload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage(), limits: { fileSize: REVIEW_PHOTO_MAX_BYTES } });
+/**
+ * Загрузка одного фото отзыва — multipart/form-data, поле файла "file",
+ * поле "sku" (товар, к которому пишут отзыв — определяет путь в Blob).
+ * Тот же принцип, что и /courier/upload-photo: multer вызван вручную (не
+ * как обычный middleware в цепочке), чтобы его ошибки (например, размер)
+ * попадали в try/catch этого хендлера, а не в общий обработчик Express.
+ * Отдаёт только { url } — сохранение в сам отзыв (до 3 таких url) делает
+ * отдельный POST /reviews.
+ */
+exports.shopRouter.post('/reviews/upload-photo', (req, res, next) => {
+    reviewPhotoUpload.single('file')(req, res, (err) => {
+        if (err) {
+            if (err.code === 'LIMIT_FILE_SIZE') {
+                return res.status(413).json({ error: `Файл слишком большой, максимум ${REVIEW_PHOTO_MAX_MB} МБ` });
+            }
+            logger_1.logger.error({ err }, '[Shop API] Ошибка чтения multipart-запроса при загрузке фото отзыва');
+            return res.status(400).json({ error: 'Не удалось прочитать файл', details: String(err?.message ?? err) });
+        }
+        next();
+    });
+}, async (req, res) => {
+    const sku = req.body?.sku;
+    if (!sku || typeof sku !== 'string') {
+        return res.status(400).json({ error: 'Поле sku обязательно (товар, к которому фото)' });
+    }
+    const file = req.file;
+    if (!file)
+        return res.status(400).json({ error: 'Файл не передан (поле "file")' });
+    if (!env_1.env.blobToken) {
+        return res.status(501).json({ error: 'добавьте Blob', details: 'BLOB_READ_WRITE_TOKEN не задан в переменных окружения — загрузка фото недоступна.' });
+    }
+    if (!REVIEW_PHOTO_TYPES.includes(file.mimetype)) {
+        return res.status(400).json({ error: `Недопустимый формат файла: ${file.mimetype}. Разрешено: ${REVIEW_PHOTO_TYPES.join(', ')}` });
+    }
+    try {
+        // sku может содержать что угодно (внутренний sku с точками/слэшами не
+        // ждём, но подчищаем на всякий случай) — путь в Blob должен остаться
+        // предсказуемым и безопасным независимо от того, что передали.
+        const safeSku = sku.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const random = Math.random().toString(36).slice(2, 10);
+        const pathname = `reviews/${safeSku}/${random}.jpg`;
+        const blob = await (0, blob_1.put)(pathname, file.buffer, { access: 'public', contentType: file.mimetype, token: env_1.env.blobToken });
+        res.json({ url: blob.url });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop API] Ошибка загрузки фото отзыва');
+        res.status(500).json({ error: 'Не удалось загрузить фото', details: String(err?.message ?? err) });
+    }
+});
+const RETURN_PHOTO_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+const RETURN_PHOTO_MAX_MB = 6;
+const RETURN_PHOTO_MAX_BYTES = RETURN_PHOTO_MAX_MB * 1024 * 1024;
+const returnPhotoUpload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage(), limits: { fileSize: RETURN_PHOTO_MAX_BYTES } });
+/**
+ * Загрузка одного фото к заявке на возврат — тот же принцип, что и у фото
+ * отзыва: multipart/form-data, поле "file", поле "orderNumber" задаёт путь
+ * в Blob. Отдаёт только { url }; сохранение в саму заявку делает POST /returns.
+ */
+exports.shopRouter.post('/returns/upload-photo', (req, res, next) => {
+    returnPhotoUpload.single('file')(req, res, (err) => {
+        if (err) {
+            if (err.code === 'LIMIT_FILE_SIZE') {
+                return res.status(413).json({ error: `Файл слишком большой, максимум ${RETURN_PHOTO_MAX_MB} МБ` });
+            }
+            logger_1.logger.error({ err }, '[Shop API] Ошибка чтения multipart-запроса при загрузке фото возврата');
+            return res.status(400).json({ error: 'Не удалось прочитать файл', details: String(err?.message ?? err) });
+        }
+        next();
+    });
+}, async (req, res) => {
+    const orderNumber = req.body?.orderNumber;
+    if (!orderNumber || typeof orderNumber !== 'string') {
+        return res.status(400).json({ error: 'Поле orderNumber обязательно' });
+    }
+    const file = req.file;
+    if (!file)
+        return res.status(400).json({ error: 'Файл не передан (поле "file")' });
+    if (!env_1.env.blobToken) {
+        return res.status(501).json({ error: 'добавьте Blob', details: 'BLOB_READ_WRITE_TOKEN не задан в переменных окружения — загрузка фото недоступна.' });
+    }
+    if (!RETURN_PHOTO_TYPES.includes(file.mimetype)) {
+        return res.status(400).json({ error: `Недопустимый формат файла: ${file.mimetype}. Разрешено: ${RETURN_PHOTO_TYPES.join(', ')}` });
+    }
+    try {
+        const safeOrderNumber = orderNumber.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const random = Math.random().toString(36).slice(2, 10);
+        const pathname = `returns/${safeOrderNumber}/${random}.jpg`;
+        const blob = await (0, blob_1.put)(pathname, file.buffer, { access: 'public', contentType: file.mimetype, token: env_1.env.blobToken });
+        res.json({ url: blob.url });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop API] Ошибка загрузки фото возврата');
+        res.status(500).json({ error: 'Не удалось загрузить фото', details: String(err?.message ?? err) });
+    }
+});
+const createShopReturnSchema = zod_1.z.object({
+    orderNumber: zod_1.z.string().min(1),
+    name: zod_1.z.string().min(1),
+    phone: zod_1.z.string().min(1),
+    sku: zod_1.z.string().min(1),
+    reason: zod_1.z.string().min(1),
+    photos: zod_1.z.array(zod_1.z.string().url().startsWith('https://', 'Фото должно быть https-ссылкой')).max(5).optional(),
+    packageOpened: zod_1.z.boolean().optional().default(false),
+});
+/**
+ * Заявка на возврат — пишется СРАЗУ, без проверки заказа/телефона/остатков
+ * (заказы и остатки эта заявка не трогает вообще, см. задачу). productName
+ * — снимок названия товара на момент заявки (по sku ИЛИ shopArticle, как
+ * и везде), чтобы таблица в админке не делала join при каждом чтении;
+ * если товар не нашёлся — просто остаётся null, заявка всё равно пишется.
+ */
+exports.shopRouter.post('/returns', async (req, res) => {
+    const parsed = createShopReturnSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+    const normalizedPhone = normalizePhone(parsed.data.phone);
+    if (!normalizedPhone)
+        return res.status(400).json({ error: 'Некорректный номер телефона' });
+    try {
+        const product = await prisma_1.prisma.product.findFirst({ where: { OR: [{ sku: parsed.data.sku }, { shopArticle: parsed.data.sku }] } });
+        const ret = await prisma_1.prisma.shopReturn.create({
+            data: {
+                orderNumber: parsed.data.orderNumber,
+                customerName: parsed.data.name,
+                customerPhone: normalizedPhone,
+                sku: parsed.data.sku,
+                productName: product?.name ?? null,
+                reason: parsed.data.reason,
+                photos: parsed.data.photos?.length ? JSON.stringify(parsed.data.photos) : null,
+                packageOpened: parsed.data.packageOpened,
+            },
+        });
+        res.status(201).json({ ...ret, photos: parsed.data.photos ?? [] });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop API] POST /returns упал');
+        res.status(500).json({ error: 'Не удалось отправить заявку на возврат', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * Заявки на возврат покупателя — только по его телефону, ничего о чужих.
+ * approved не скрывается — все три статуса видны. Поля — минимум для
+ * экрана покупателя (не адрес, не фото: это для его собственной истории
+ * обращений, не карточка для админа).
+ */
+exports.shopRouter.get('/returns', async (req, res) => {
+    const normalizedPhone = normalizePhone(String(req.query.phone ?? ''));
+    if (!normalizedPhone)
+        return res.status(400).json({ error: 'Некорректный номер телефона' });
+    try {
+        const returns = await prisma_1.prisma.shopReturn.findMany({
+            where: { customerPhone: normalizedPhone },
+            orderBy: { createdAt: 'desc' },
+            select: { orderNumber: true, sku: true, productName: true, reason: true, status: true, rejectReason: true },
+        });
+        res.json(returns);
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop API] GET /returns упал');
+        res.status(500).json({ error: 'Не удалось получить заявки на возврат', details: String(err?.message ?? err) });
+    }
+});
+const createShopReviewSchema = zod_1.z.object({
+    sku: zod_1.z.string().min(1),
+    orderId: zod_1.z.string().min(1),
+    rating: zod_1.z.number(),
+    textPros: zod_1.z.string().optional().nullable(),
+    textCons: zod_1.z.string().optional().nullable(),
+    comment: zod_1.z.string().optional().nullable(),
+    tags: zod_1.z.union([zod_1.z.string(), zod_1.z.array(zod_1.z.string())]).optional().nullable(),
+    authorName: zod_1.z.string().optional().nullable(),
+    authorPhone: zod_1.z.string().min(1),
+    // 0–3 ссылки на фото с нашего Blob (результат /reviews/upload-photo) —
+    // именно https, не абы какая строка: без валидной ссылки фото не сохранится.
+    photos: zod_1.z.array(zod_1.z.string().url().startsWith('https://', 'Фото должно быть https-ссылкой')).max(3, 'Не больше 3 фото').optional(),
+});
+/**
+ * Отзыв из приложения My Market. Проверки по порядку: rating 1..5, товар
+ * найден (по sku ИЛИ shopArticle — «как в заказах»), заказ существует и
+ * выдан (delivered), телефон совпадает с заказом (после нормализации), этот
+ * товар реально есть в заказе, и такой тройки автор+заказ+товар ещё не было.
+ */
+exports.shopRouter.post('/reviews', async (req, res) => {
+    const parsed = createShopReviewSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: parsed.error.flatten() });
+    const data = parsed.data;
+    if (!Number.isInteger(data.rating) || data.rating < 1 || data.rating > 5) {
+        return res.status(400).json({ error: 'rating должен быть целым числом от 1 до 5' });
+    }
+    try {
+        const product = await prisma_1.prisma.product.findFirst({ where: { OR: [{ sku: data.sku }, { shopArticle: data.sku }] } });
+        if (!product)
+            return res.status(404).json({ error: 'Товар не найден' });
+        const order = await prisma_1.prisma.shopOrder.findUnique({ where: { id: data.orderId } });
+        if (!order)
+            return res.status(404).json({ error: 'Заказ не найден' });
+        if (order.status !== 'delivered') {
+            return res.status(400).json({ error: 'Отзыв можно оставить только на выданный заказ' });
+        }
+        if (!phonesMatch(data.authorPhone, order.phone)) {
+            return res.status(400).json({ error: 'Телефон не совпадает с заказом' });
+        }
+        let orderItems = [];
+        try {
+            orderItems = JSON.parse(order.items);
+        }
+        catch {
+            orderItems = [];
+        }
+        // Позиция заказа могла быть сохранена по внутреннему sku ИЛИ по
+        // shopArticle (см. фикс покупки) — сверяем с обеими формами товара.
+        const inOrder = orderItems.some((i) => i.sku === product.sku || (product.shopArticle && i.sku === product.shopArticle));
+        if (!inOrder) {
+            return res.status(400).json({ error: 'Этого товара нет в заказе' });
+        }
+        const normalizedPhone = normalizePhone(data.authorPhone);
+        if (!normalizedPhone)
+            return res.status(400).json({ error: 'Некорректный телефон' });
+        // Повтор той же тройки автор+заказ+товар — сравниваем orderId и sku
+        // напрямую (уже наши канонические значения) и телефон — ТОЛЬКО в
+        // нормализованном виде (raw-строки сравнивать нельзя, формат записи
+        // может отличаться при том же номере).
+        const existing = await prisma_1.prisma.shopReview.findFirst({
+            where: { sku: product.sku, orderId: data.orderId, authorPhone: normalizedPhone },
+        });
+        if (existing)
+            return res.status(409).json({ error: 'Отзыв уже оставлен' });
+        const tags = Array.isArray(data.tags) ? data.tags.filter(Boolean).join(', ') : (data.tags?.trim() || null);
+        const text = buildReviewText({ textPros: data.textPros, textCons: data.textCons, comment: data.comment, tags }, data.rating);
+        const review = await prisma_1.prisma.shopReview.create({
+            data: {
+                sku: product.sku,
+                name: data.authorName?.trim() || 'Покупатель',
+                rating: data.rating,
+                text,
+                textPros: data.textPros?.trim() || null,
+                textCons: data.textCons?.trim() || null,
+                tags,
+                orderId: data.orderId,
+                authorPhone: normalizedPhone,
+                // Текстовый отзыв без фото по-прежнему нормален — photos тогда null,
+                // не "[]" (то же самое для чтения, но null честнее отражает "фото не было").
+                photos: data.photos?.length ? JSON.stringify(data.photos) : null,
+            },
+        });
+        res.status(201).json({ ...review, photos: data.photos ?? [] });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop API] POST /reviews упал');
+        res.status(500).json({ error: 'Не удалось сохранить отзыв', details: String(err?.message ?? err) });
+    }
+});
+const orderItemSchema = zod_1.z.object({
+    sku: zod_1.z.string().min(1),
+    name: zod_1.z.string().min(1),
+    price: zod_1.z.number().nonnegative(),
+    quantity: zod_1.z.number().int().positive(),
+});
+const createOrderSchema = zod_1.z.object({
+    city: zod_1.z.string().min(1),
+    street: zod_1.z.string().min(1),
+    house: zod_1.z.string().min(1),
+    apartment: zod_1.z.string().optional().nullable(),
+    entrance: zod_1.z.string().optional().nullable(),
+    floor: zod_1.z.string().optional().nullable(),
+    intercom: zod_1.z.string().optional().nullable(),
+    comment: zod_1.z.string().optional().nullable(),
+    customerName: zod_1.z.string().min(1),
+    phone: zod_1.z.string().min(1),
+    // Необязательно: e-mail для фискального чека. Пусто / с ошибкой — просто не отправляем на почту.
+    email: zod_1.z.string().trim().max(120).optional().nullable(),
+    items: zod_1.z.array(orderItemSchema).min(1),
+});
+/** E-mail для чека: только похожий на настоящий адрес, иначе null. */
+function cleanEmail(v) {
+    const s = String(v ?? '').trim().toLowerCase();
+    return /^[^\s@]+@[^\s@]+\.[a-z]{2,}$/.test(s) && s.length <= 120 ? s : null;
+}
+function generateOrderNumber() {
+    const d = new Date();
+    // Формат MM-ГГММДД-XXXX (2 цифры года, не 4).
+    const yy = String(d.getFullYear()).slice(-2);
+    const datePart = `${yy}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+    const randPart = String(Math.floor(Math.random() * 10000)).padStart(4, '0');
+    return `MM-${datePart}-${randPart}`;
+}
+exports.shopRouter.post('/orders', async (req, res) => {
+    const parsed = createOrderSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: 'Неверные данные заказа', details: parsed.error.flatten() });
+    try {
+        const itemsSubtotal = parsed.data.items.reduce((sum, i) => sum + i.price * i.quantity, 0);
+        // Доставка: до 10 000 ₸ — 1 000 ₸, от 10 000 ₸ — бесплатно (правило считает только сервер).
+        // Считается по сумме ДО скидки «Вау» — подписчик не теряет бесплатную доставку из-за скидки.
+        const deliveryFee = (0, shopDelivery_1.deliveryFeeFor)(itemsSubtotal);
+        // Подписка «Вау»: если у номера есть подписка (активная или ожидает оплаты) — скидка
+        // на товары с меткой «Вау». Цены позиций сразу со скидкой, чтобы учёт/накладная сходились.
+        let orderItems = parsed.data.items;
+        let wowDiscount = 0;
+        let membershipId = null;
+        const wow = await (0, wow_service_1.getWowSettings)();
+        const buyerPhone = normalizePhone(parsed.data.phone);
+        if (wow.enabled && buyerPhone) {
+            const membership = await (0, wow_service_1.getCurrentMembership)(buyerPhone);
+            if (membership) {
+                const skus = parsed.data.items.map((i) => i.sku);
+                const prods = await prisma_1.prisma.product.findMany({
+                    where: { OR: [{ sku: { in: skus } }, { shopArticle: { in: skus } }], wowPercent: { not: null } },
+                    select: { sku: true, shopArticle: true, wowPercent: true, wowUntil: true },
+                });
+                const percentBySku = new Map();
+                for (const p of prods) {
+                    const pct = (0, wow_service_1.activeWowPercent)(p);
+                    if (!pct)
+                        continue;
+                    percentBySku.set(p.sku, pct);
+                    if (p.shopArticle)
+                        percentBySku.set(p.shopArticle, pct);
+                }
+                const applied = (0, wow_service_1.applyWowToItems)(parsed.data.items, percentBySku);
+                if (applied.discount > 0) {
+                    orderItems = applied.items;
+                    wowDiscount = applied.discount;
+                    membershipId = membership.id;
+                }
+            }
+        }
+        const total = itemsSubtotal - wowDiscount + deliveryFee;
+        // Гарантируем уникальность номера — крайне маловероятная коллизия, но
+        // проверяем, а не полагаемся вслепую на рандом.
+        let number = generateOrderNumber();
+        for (let attempt = 0; attempt < 5; attempt++) {
+            const exists = await prisma_1.prisma.shopOrder.findUnique({ where: { number } });
+            if (!exists)
+                break;
+            number = generateOrderNumber();
+        }
+        // Код выдачи здесь НЕ создаётся — только по запросу курьера
+        // (/api/shop/courier/request-code), непосредственно перед выдачей.
+        const order = await prisma_1.prisma.shopOrder.create({
+            data: {
+                number,
+                status: 'pending_payment',
+                city: parsed.data.city,
+                street: parsed.data.street,
+                house: parsed.data.house,
+                apartment: parsed.data.apartment || null,
+                entrance: parsed.data.entrance || null,
+                floor: parsed.data.floor || null,
+                intercom: parsed.data.intercom || null,
+                comment: parsed.data.comment || null,
+                customerName: parsed.data.customerName,
+                phone: parsed.data.phone,
+                email: cleanEmail(parsed.data.email),
+                total,
+                items: JSON.stringify(orderItems),
+                wowDiscount,
+                membershipId,
+            },
+        });
+        // Telegram — одно сообщение на заказ. На Vercel serverless-лямбда может
+        // усыпляться сразу после res.json(), и фоновый (не await) вызов просто не
+        // успевает уйти — sendPhoto обрывается на середине. Поэтому ЖДЁМ здесь,
+        // ДО ответа клиенту. Заказ при этом уже создан в БД строкой выше: сбой
+        // Telegram (нет токена, таймаут, ошибка API — sendOrderNotify сама ловит
+        // всё внутри) не отменяет заказ и не меняет код ответа — try/catch ниже
+        // на всякий случай ловит и то, чего сама функция в теории не должна бросать.
+        try {
+            await (0, telegram_1.sendOrderNotify)(order);
+        }
+        catch (err) {
+            logger_1.logger.error({ err }, '[Telegram] sendOrderNotify не должен был бросить исключение');
+        }
+        res.status(201).json({ id: order.id, number: order.number, total: order.total, deliveryFee, wowDiscount, status: order.status });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop API] Ошибка создания заказа');
+        res.status(500).json({ error: 'Не удалось создать заказ', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * Подтверждение оплаты — сейчас вызывается продавцом вручную после того,
+ * как проверил QR/перевод (веб-хук платёжной системы можно подключить сюда
+ * же позже, эндпоинт для этого уже есть). При оплате:
+ *  1) статус ShopOrder -> paid, списывается остаток (shopStock).
+ *  2) создаётся Order+OrderItem с marketplace=APP — чтобы заказ сразу
+ *     попал в общую юнит-экономику (Обзор/Финансы/Товары), без отдельного
+ *     параллельного пути отчётности.
+ */
+/**
+ * Общая логика перехода ShopOrder в paid — списание остатка + создание
+ * Order/OrderItem для юнит-экономики. Используется и клиентским
+ * /orders/:id/paid (пока — ручное подтверждение продавцом, в будущем —
+ * вебхук эквайринга), и админской кнопкой «Отметить оплаченным» — ОДИН
+ * код на оба пути, поэтому повторное списание физически невозможно: и там,
+ * и там первым делом проверяется, что заказ ещё pending_payment.
+ */
+async function markShopOrderAsPaid(orderId) {
+    const shopOrder = await prisma_1.prisma.shopOrder.findUnique({ where: { id: orderId } });
+    if (!shopOrder)
+        return { ok: false, reason: 'not_found' };
+    if (shopOrder.status !== 'pending_payment') {
+        return { ok: false, reason: 'wrong_status', status: shopOrder.status };
+    }
+    const items = JSON.parse(shopOrder.items);
+    // Позиция заказа могла прийти с внутренним sku (ozon-...) ИЛИ с shopArticle
+    // (7 цифр) — с тех пор, как /shop/products стал отдавать в sku именно
+    // shopArticle, приложение обычно эхом присылает уже его. Ищем по обоим.
+    const findOrderedProduct = (sku) => prisma_1.prisma.product.findFirst({ where: { OR: [{ sku }, { shopArticle: sku }] } });
+    // Списываем остаток по каждой позиции — не даём уйти в минус.
+    for (const item of items) {
+        const product = await findOrderedProduct(item.sku);
+        if (product) {
+            await prisma_1.prisma.product.update({
+                where: { id: product.id },
+                data: { shopStock: Math.max(0, product.shopStock - item.quantity) },
+            });
+        }
+    }
+    // Логистика заказа (если проставлена вручную в админке) распределяется
+    // между позициями пропорционально их доле в выручке заказа — тот же
+    // принцип, что уже используется для распределения расходов на рекламу.
+    const orderRevenue = items.reduce((sum, i) => sum + i.price * i.quantity, 0) || 1;
+    const orderItemsData = await Promise.all(items.map(async (item) => {
+        const product = await findOrderedProduct(item.sku);
+        const itemRevenue = item.price * item.quantity;
+        const itemLogistics = (itemRevenue / orderRevenue) * shopOrder.logisticsCost;
+        return {
+            productId: product?.id ?? null,
+            externalSku: item.sku,
+            name: item.name,
+            quantity: item.quantity,
+            price: item.price,
+            // Себестоимость для канала APP — приоритетно shopCost (своя цена
+            // закупа для витрины), иначе общая costPrice, иначе 0.
+            costPrice: product?.shopCost ?? product?.costPrice ?? 0,
+            commission: 0, // канал APP — своя витрина, комиссии площадки нет
+            itemLogistics: Math.round(itemLogistics * 100) / 100,
+        };
+    }));
+    await prisma_1.prisma.$transaction([
+        prisma_1.prisma.shopOrder.update({ where: { id: shopOrder.id }, data: { status: 'paid', paidAt: new Date() } }),
+        prisma_1.prisma.order.create({
+            data: {
+                marketplace: 'APP',
+                externalId: shopOrder.number,
+                status: 'paid',
+                orderDate: new Date(),
+                totalRevenue: shopOrder.total,
+                marketplaceCommission: 0,
+                logisticsCost: shopOrder.logisticsCost,
+                items: { create: orderItemsData },
+            },
+        }),
+    ]);
+    // Правим то же Telegram-сообщение (если оно было отправлено) — не шлём
+    // новое. Ждём здесь же (см. комментарий в POST /orders про serverless) —
+    // оплата (транзакция выше) уже прошла и результат функции от Telegram не
+    // зависит: сбой ловится внутри editOrderNotify и здесь же, на всякий случай.
+    try {
+        await (0, telegram_1.editOrderNotify)(shopOrder, 'paid');
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Telegram] editOrderNotify(paid) не должен был бросить исключение');
+    }
+    // Онлайн-касса: чек пробивается сам, только если включено REKASSA_AUTO=on (после подключения оплаты картой).
+    if ((0, rekassa_service_1.rekassaAuto)()) {
+        try {
+            await (0, rekassa_service_1.fiscalizeOrder)(shopOrder.id, 'sell');
+        }
+        catch { /* ошибка записана в чек — повтор кнопкой в админке */ }
+    }
+    return { ok: true };
+}
+exports.shopRouter.post('/orders/:id/paid', async (req, res) => {
+    try {
+        const result = await markShopOrderAsPaid(req.params.id);
+        if (!result.ok) {
+            if (result.reason === 'not_found')
+                return res.status(404).json({ error: 'Заказ не найден' });
+            return res.status(409).json({ error: `Заказ уже в статусе "${result.status}" — повторно оплатить нельзя` });
+        }
+        res.json({ ok: true, status: 'paid' });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop API] Ошибка подтверждения оплаты');
+        res.status(500).json({ error: 'Не удалось подтвердить оплату', details: String(err?.message ?? err) });
+    }
+});
+/** Сравнение телефонов только по цифрам (последние 10) — терпимо к
+ *  разным форматам записи (+7 xxx, 8xxx, пробелы/дефисы и т.п.). */
+/**
+ * Нормализация номера телефона к канонической форме "7XXXXXXXXXX" (11 цифр,
+ * без +/пробелов/скобок/дефисов). 8XXXXXXXXXX, 7XXXXXXXXXX и +7XXXXXXXXXX —
+ * один и тот же номер, приводятся к одному виду. Возвращает null, если
+ * после нормализации не получился похожий на телефон номер (не 10-11 цифр).
+ */
+function normalizePhone(raw) {
+    const digits = raw.replace(/\D/g, '');
+    if (digits.length === 11 && digits[0] === '8')
+        return '7' + digits.slice(1);
+    if (digits.length === 11 && digits[0] === '7')
+        return digits;
+    if (digits.length === 10)
+        return '7' + digits; // без кода страны — считаем, что это +7
+    return null;
+}
+/** Сравнение телефонов ТОЛЬКО после нормализации — сырые строки никогда
+ *  не сравниваются напрямую (разный формат записи — это один и тот же
+ *  номер, если совпадает после normalizePhone). */
+function phonesMatch(a, b) {
+    const normA = normalizePhone(a);
+    const normB = normalizePhone(b);
+    return normA !== null && normA === normB;
+}
+/**
+ * Отмена заказа покупателем — разрешена ТОЛЬКО из pending_payment (ещё не
+ * оплачен) или paid (оплачен, но ещё не собран/выдан). Из любого другого
+ * статуса (assembled/delivered/cancelled) — 409, уже нельзя отменить.
+ *
+ * Если заказ был paid — остаток shopStock уже был списан в момент оплаты
+ * (см. /orders/:id/paid), значит здесь его нужно вернуть обратно. Заодно
+ * убираем связанный Order/OrderItem (созданный на этапе paid для общей
+ * юнит-экономики) — иначе выручка и себестоимость отменённого заказа
+ * продолжили бы засчитываться в «Финансы»/«Обзор» (общий запрос отчётов
+ * не фильтрует заказы по статусу — специально не трогаю эту логику,
+ * она общая с Kaspi/Ozon/WB). Order→OrderItem удаляется каскадно.
+ */
+exports.shopRouter.post('/orders/:id/cancel', async (req, res) => {
+    try {
+        const order = await prisma_1.prisma.shopOrder.findUnique({ where: { id: req.params.id } });
+        if (!order)
+            return res.status(404).json({ error: 'Заказ не найден' });
+        const phone = String(req.body?.phone ?? '');
+        if (!phone || !phonesMatch(phone, order.phone)) {
+            return res.status(403).json({ error: 'Номер телефона не совпадает с заказом' });
+        }
+        if (order.status !== 'pending_payment' && order.status !== 'paid') {
+            return res.status(409).json({ error: 'уже нельзя отменить' });
+        }
+        if (order.status === 'paid') {
+            const items = JSON.parse(order.items);
+            for (const item of items) {
+                // Тот же резерв, что и при оплате: позиция могла прийти по
+                // shopArticle, а не по внутреннему sku.
+                const product = await prisma_1.prisma.product.findFirst({ where: { OR: [{ sku: item.sku }, { shopArticle: item.sku }] } });
+                if (product) {
+                    await prisma_1.prisma.product.update({
+                        where: { id: product.id },
+                        data: { shopStock: product.shopStock + item.quantity },
+                    });
+                }
+            }
+            await prisma_1.prisma.order.deleteMany({ where: { marketplace: 'APP', externalId: order.number } });
+        }
+        await prisma_1.prisma.shopOrder.update({ where: { id: order.id }, data: { status: 'cancelled' } });
+        // Ждём правку сообщения ДО ответа (см. комментарий в POST /orders) —
+        // статус заказа уже сменён строкой выше, сбой Telegram ответ не портит.
+        try {
+            await (0, telegram_1.editOrderNotify)(order, 'cancelled');
+        }
+        catch (err) {
+            logger_1.logger.error({ err }, '[Telegram] editOrderNotify(cancelled) не должен был бросить исключение');
+        }
+        res.json({ ok: true, status: 'cancelled' });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop API] Ошибка отмены заказа');
+        res.status(500).json({ error: 'Не удалось отменить заказ', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * «Удалить из списка» в приложении: убирает ПОЛУЧЕННЫЙ или ОТМЕНЁННЫЙ заказ из списка клиента.
+ * Только флаг видимости — статус, деньги, остатки и отчёты не трогаем. Активный заказ скрыть нельзя.
+ */
+exports.shopRouter.post('/orders/:id/hide', async (req, res) => {
+    try {
+        const order = await prisma_1.prisma.shopOrder.findUnique({ where: { id: req.params.id } });
+        if (!order)
+            return res.status(404).json({ error: 'Заказ не найден' });
+        const phone = String(req.body?.phone ?? '');
+        if (!phone || !phonesMatch(phone, order.phone)) {
+            return res.status(403).json({ error: 'Номер телефона не совпадает с заказом' });
+        }
+        if (order.status !== 'delivered' && order.status !== 'cancelled') {
+            return res.status(409).json({ error: 'Убрать из списка можно только полученный или отменённый заказ' });
+        }
+        await prisma_1.prisma.shopOrder.update({ where: { id: order.id }, data: { hiddenByCustomer: true } });
+        res.json({ ok: true });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop API] Ошибка скрытия заказа');
+        res.status(500).json({ error: 'Не удалось убрать заказ из списка', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * Служебная проверка настройки Telegram — под тем же x-app-key, что и весь
+ * /api/shop/*. Тело не нужно. Токен в ответе никогда не отдаётся.
+ */
+exports.shopRouter.post('/telegram-test', async (_req, res) => {
+    try {
+        const result = await (0, telegram_1.sendTelegramTestMessage)();
+        res.json(result);
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Telegram] /telegram-test упал');
+        res.json({ ok: false, chatCount: 0, error: 'unexpected_error' });
+    }
+});
+/**
+ * Список заказов "Мои заказы" по телефону — БАГ-ФИКС: раньше приложение
+ * показывало список заказов, не фильтруя их по покупателю, и чужие заказы
+ * оказывались видны кому попало. Возвращает ТОЛЬКО заказы, чей телефон
+ * совпадает с переданным через ту же phonesMatch/normalizePhone, что и
+ * у одиночного /orders/:id и накладной — единая логика сравнения номеров.
+ * Это НЕ админский /api/shop-admin/orders (тот отдаёт вообще все заказы,
+ * для админки, и его не трогаю).
+ */
+exports.shopRouter.get('/orders', async (req, res) => {
+    try {
+        const phone = String(req.query.phone ?? '');
+        if (!phone)
+            return res.status(400).json({ error: 'Не указан номер телефона' });
+        const allOrders = await prisma_1.prisma.shopOrder.findMany({ orderBy: { createdAt: 'desc' } });
+        // Сравнение строго через phonesMatch — чужой заказ никогда не пройдёт
+        // этот фильтр, даже если телефон совпадает частично/по формату.
+        // Скрытые клиентом («Удалить из списка») в приложение не отдаём; в админке и учёте они остаются.
+        const myOrders = allOrders.filter((o) => !o.hiddenByCustomer && phonesMatch(phone, o.phone));
+        // Фискальные чеки (продажа / возврат) — кнопка «🧾 Чек» в «Моих заказах».
+        const receiptRows = myOrders.length
+            ? await prisma_1.prisma.fiscalReceipt.findMany({ where: { orderId: { in: myOrders.map((o) => o.id) }, status: { in: ['ok', 'offline'] } } }).catch(() => [])
+            : [];
+        const receiptOf = (id, op) => (0, rekassa_service_1.ofdReceiptUrl)(receiptRows.find((r) => r.orderId === id && r.operation === op)?.qrUrl);
+        // В заказе хранится только sku/название/цена — картинки нет. Приложению
+        // нужна обложка товара (в т.ч. витринных товаров, которых нет в общем
+        // каталоге), поэтому подкладываем image по артикулу. Ошибка поиска
+        // картинок список заказов не ломает — просто будет без фото.
+        const parsedItems = new Map();
+        for (const o of myOrders) {
+            try {
+                parsedItems.set(o.id, JSON.parse(o.items));
+            }
+            catch {
+                parsedItems.set(o.id, []);
+            }
+        }
+        const covers = new Map();
+        try {
+            const skus = Array.from(new Set(Array.from(parsedItems.values()).flat().map((it) => String(it?.sku ?? '')).filter(Boolean)));
+            if (skus.length) {
+                const prods = await prisma_1.prisma.product.findMany({
+                    where: { OR: [{ shopArticle: { in: skus } }, { sku: { in: skus } }] },
+                    select: { sku: true, shopArticle: true, images: true },
+                });
+                for (const p of prods) {
+                    let first;
+                    try {
+                        first = (p.images ? JSON.parse(p.images) : [])[0];
+                    }
+                    catch {
+                        first = undefined;
+                    }
+                    if (!first)
+                        continue;
+                    if (p.shopArticle)
+                        covers.set(p.shopArticle, first);
+                    covers.set(p.sku, first);
+                }
+            }
+        }
+        catch (e) {
+            logger_1.logger.warn({ err: e }, '[Shop API] GET /orders: не удалось подобрать картинки товаров');
+        }
+        res.json(myOrders.map((o) => ({
+            id: o.id,
+            number: o.number,
+            status: o.status,
+            pickupCode: o.pickupCode,
+            total: o.total,
+            deliveryFee: (0, shopDelivery_1.deliveryFeeOfOrder)(o.total, parsedItems.get(o.id) ?? []),
+            wowDiscount: o.wowDiscount ?? 0,
+            items: (parsedItems.get(o.id) ?? []).map((it) => ({
+                ...it,
+                image: it?.image || covers.get(String(it?.sku ?? '')) || undefined,
+            })),
+            createdAt: o.createdAt,
+            delivery: (0, deliveryProgress_1.buildDelivery)(o),
+            city: o.city,
+            street: o.street,
+            house: o.house,
+            apartment: o.apartment,
+            entrance: o.entrance,
+            floor: o.floor,
+            intercom: o.intercom,
+            receiptUrl: receiptOf(o.id, 'sell'),
+            returnReceiptUrl: receiptOf(o.id, 'return'),
+        })));
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop API] Ошибка получения списка заказов по телефону');
+        res.status(500).json({ error: 'Не удалось получить заказы', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * Заказ "как есть" для приложения — только СВОЙ заказ: номер телефона в
+ * query должен совпадать с телефоном в заказе (простая, но реальная
+ * проверка "это точно тот же покупатель", без отдельной системы токенов).
+ * Код выдачи (4 цифры) здесь ЕСТЬ — приложение показывает его в "Мои
+ * заказы", это НЕ то же самое, что накладная (там код печатать нельзя).
+ */
+exports.shopRouter.get('/orders/:id', async (req, res) => {
+    try {
+        const order = await prisma_1.prisma.shopOrder.findUnique({ where: { id: req.params.id } });
+        if (!order)
+            return res.status(404).json({ error: 'Заказ не найден' });
+        const phone = String(req.query.phone ?? '');
+        if (!phone || !phonesMatch(phone, order.phone)) {
+            return res.status(403).json({ error: 'Номер телефона не совпадает с заказом' });
+        }
+        res.json({
+            number: order.number,
+            status: order.status,
+            pickupCode: order.pickupCode,
+            total: order.total,
+            items: JSON.parse(order.items),
+            createdAt: order.createdAt,
+        });
+    }
+    catch (err) {
+        res.status(500).json({ error: 'Не удалось получить заказ', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * Та же накладная, что и в админке (см. shopMedia.routes.ts), но с
+ * авторизацией под конкретного покупателя — x-app-key (уже проверен общим
+ * middleware выше) ПЛЮС номер телефона должен совпадать с заказом.
+ */
+exports.shopRouter.get('/orders/:id/waybill', async (req, res) => {
+    try {
+        const order = await prisma_1.prisma.shopOrder.findUnique({ where: { id: req.params.id } });
+        if (!order)
+            return res.status(404).json({ error: 'Заказ не найден' });
+        const phone = String(req.query.phone ?? '');
+        if (!phone || !phonesMatch(phone, order.phone)) {
+            return res.status(403).json({ error: 'Номер телефона не совпадает с заказом' });
+        }
+        let items = [];
+        try {
+            items = JSON.parse(order.items)
+                .map((i) => ({ sku: i.sku, name: i.name, quantity: i.quantity }));
+        }
+        catch {
+            items = [];
+        }
+        const pdfBuffer = await (0, waybill_service_1.generateWaybillPdf)({
+            number: order.number,
+            customerName: order.customerName,
+            phone: order.phone,
+            city: order.city,
+            street: order.street,
+            house: order.house,
+            apartment: order.apartment,
+            entrance: order.entrance,
+            floor: order.floor,
+            intercom: order.intercom,
+            items,
+        });
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename="waybill-${order.number}.pdf"`);
+        res.send(pdfBuffer);
+    }
+    catch (err) {
+        if (err instanceof waybill_service_1.WaybillAddressError) {
+            return res.status(400).json({ error: 'не заполнен адрес' });
+        }
+        logger_1.logger.error({ err }, '[Shop API] Ошибка генерации накладной (клиент)');
+        res.status(500).json({ error: 'Не удалось сформировать накладную', details: String(err?.message ?? err) });
+    }
+});
+// =====================================================================
+// Курьер My Market — работает ТОЛЬКО через этот API (x-app-key, тот же,
+// что у покупателя). Никакого отдельного логина в саму админку unit-v4
+// для курьера нет и не предусмотрено.
+//
+// Новая цепочка статусов заказа:
+//   pending_payment → paid → picked (курьер забрал) → in_transit (в пути)
+//   → delivered (выдан), и параллельно pending_payment/paid → cancelled.
+// "assembled" из старой версии здесь больше не используется — вместо
+// одного промежуточного статуса теперь два, привязанных к реальным
+// действиям курьера (scan/start), а не к абстрактной "сборке".
+// =====================================================================
+const CODE_MAX_ATTEMPTS = 5;
+const DEFAULT_COURIER_PAYOUT = 2000;
+function generatePickupCode5() {
+    return String(Math.floor(10000 + Math.random() * 90000)); // 5 цифр, 10000–99999
+}
+/**
+ * Номер заказа со стикера может прийти как есть ("MM-260922-0282") или
+ * без разделителей, как его иногда отдают сканеры штрихкодов
+ * ("MM2609220282") — приводим ко второй форме к канонической с дефисами,
+ * чтобы искать по уникальному полю number как обычно.
+ */
+/**
+ * Номер заказа со стикера может прийти как есть ("MM-260922-0282") или
+ * без разделителей, как его иногда отдают сканеры штрихкодов
+ * ("MM2609220282"). Плюс — заказы, созданные ДО перехода на 2-значный год
+ * в номере, хранятся в старом формате ("MM-20260922-0282", 8 цифр даты
+ * вместо 6) — если проверять только новый формат, такие старые заказы
+ * никогда не найдутся, хотя реально существуют. Возвращает ВСЕ разумные
+ * варианты канонического номера — вызывающий код пробует их по очереди.
+ */
+function buildOrderNumberCandidates(raw) {
+    const clean = raw.trim().toUpperCase();
+    const candidates = new Set();
+    if (/^MM-\d{6}-\d{4}$/.test(clean) || /^MM-\d{8}-\d{4}$/.test(clean)) {
+        candidates.add(clean);
+    }
+    const stripped = clean.replace(/[^A-Z0-9]/g, '');
+    const shortMatch = stripped.match(/^MM(\d{6})(\d{4})$/); // новый формат: MM + YYMMDD + XXXX
+    if (shortMatch)
+        candidates.add(`MM-${shortMatch[1]}-${shortMatch[2]}`);
+    const longMatch = stripped.match(/^MM(\d{8})(\d{4})$/); // старый формат: MM + YYYYMMDD + XXXX
+    if (longMatch)
+        candidates.add(`MM-${longMatch[1]}-${longMatch[2]}`);
+    if (candidates.size === 0)
+        candidates.add(clean); // не удалось распознать — пробуем как есть
+    return Array.from(candidates);
+}
+/** Ищет ShopOrder по номеру, перебирая все разумные варианты формата
+ *  (см. buildOrderNumberCandidates) — не только "как ввели буквально". */
+async function findShopOrderByNumberLoosely(raw) {
+    for (const candidate of buildOrderNumberCandidates(raw)) {
+        const order = await prisma_1.prisma.shopOrder.findUnique({ where: { number: candidate } });
+        if (order)
+            return order;
+    }
+    return null;
+}
+const courierApplySchema = zod_1.z.object({
+    phone: zod_1.z.string().min(1),
+    city: zod_1.z.string().min(1),
+});
+/**
+ * Статус заявки по телефону — "none", если заявки нет вовсе. Ответ только
+ * по ЭТОМУ телефону, ничего о чужих заявках. Одобрение/отказ не меняет —
+ * чисто чтение.
+ */
+exports.shopRouter.get('/courier/application', async (req, res) => {
+    const normalizedPhone = normalizePhone(String(req.query.phone ?? ''));
+    if (!normalizedPhone)
+        return res.status(400).json({ error: 'Некорректный номер телефона' });
+    try {
+        const application = await prisma_1.prisma.shopCourierApplication.findUnique({ where: { phone: normalizedPhone } });
+        res.json({ status: application?.status ?? 'none' });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop API] GET /courier/application упал');
+        res.status(500).json({ error: 'Не удалось получить статус заявки', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * Полный статус курьера по телефону — "none"/"pending"/"approved"/"rejected"
+ * (как в /courier/application) ПЛЮС "registered", когда заявка approved И
+ * в таблице курьеров уже есть активный профиль с ИИН и обоими фото —
+ * то есть регистрация (POST /courier/register) реально прошла. Одобрение
+ * заявки само по себе курьера не создаёт — это отдельный, более поздний шаг,
+ * поэтому approved и registered различаются. Ответ только по этому
+ * телефону, ничего о чужих.
+ */
+exports.shopRouter.get('/courier/me', async (req, res) => {
+    const normalizedPhone = normalizePhone(String(req.query.phone ?? ''));
+    if (!normalizedPhone)
+        return res.status(400).json({ error: 'Некорректный номер телефона' });
+    try {
+        const application = await prisma_1.prisma.shopCourierApplication.findUnique({ where: { phone: normalizedPhone } });
+        if (!application)
+            return res.json({ status: 'none' });
+        if (application.status !== 'approved')
+            return res.json({ status: application.status });
+        const courier = await prisma_1.prisma.courier.findUnique({ where: { phone: normalizedPhone } });
+        const isRegistered = !!courier && courier.active && !!courier.iin && !!courier.idPhotoUrl && !!courier.facePhotoUrl;
+        res.json({ status: isRegistered ? 'registered' : 'approved' });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop API] GET /courier/me упал');
+        res.status(500).json({ error: 'Не удалось получить статус курьера', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * Возвраты, которые курьеру ещё нужно забрать — ТОЛЬКО approved (ни pending,
+ * ни rejected, ни уже collected). Адрес — тот же, что у заказа; заказа нет —
+ * address: null, заявку не роняем (та же логика, что в админском списке).
+ */
+exports.shopRouter.get('/courier/returns', async (_req, res) => {
+    try {
+        const returns = await prisma_1.prisma.shopReturn.findMany({
+            where: { status: 'approved' },
+            orderBy: { createdAt: 'asc' },
+            select: { id: true, orderNumber: true, productName: true },
+        });
+        const orderNumbers = Array.from(new Set(returns.map((r) => r.orderNumber)));
+        const orders = orderNumbers.length
+            ? await prisma_1.prisma.shopOrder.findMany({
+                where: { number: { in: orderNumbers } },
+                select: { number: true, city: true, street: true, house: true, apartment: true, entrance: true, floor: true, intercom: true, phone: true },
+            })
+            : [];
+        const orderByNumber = new Map(orders.map((o) => [o.number, o]));
+        res.json(returns.map((r) => {
+            const order = orderByNumber.get(r.orderNumber);
+            return {
+                id: r.id,
+                orderNumber: r.orderNumber,
+                productName: r.productName,
+                address: order
+                    ? { city: order.city, street: order.street, house: order.house, apartment: order.apartment, entrance: order.entrance, floor: order.floor, intercom: order.intercom }
+                    : null,
+                phone: order?.phone ?? null,
+            };
+        }));
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop API] GET /courier/returns упал');
+        res.status(500).json({ error: 'Не удалось получить возвраты для курьера', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * Курьер забрал товар — approved -> collected. Повторно нельзя: если заявка
+ * уже не approved (неважно, collected, pending или rejected), ответ 409,
+ * статус не трогаем. Заказ и остатки эта кнопка не меняет — только статус
+ * самой заявки на возврат.
+ */
+exports.shopRouter.post('/courier/returns/:id/collect', async (req, res) => {
+    try {
+        const ret = await prisma_1.prisma.shopReturn.findUnique({ where: { id: req.params.id } });
+        if (!ret)
+            return res.status(404).json({ error: 'Заявка не найдена' });
+        if (ret.status !== 'approved') {
+            return res.status(409).json({ error: 'Заявка не в статусе approved — забрать нельзя', status: ret.status });
+        }
+        const updated = await prisma_1.prisma.shopReturn.update({ where: { id: req.params.id }, data: { status: 'collected' } });
+        res.json({ id: updated.id, status: updated.status });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop API] POST /courier/returns/:id/collect упал');
+        res.status(500).json({ error: 'Не удалось отметить забор возврата', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * Вакансия на этот телефон — только она, ничего о чужих. Нет вакансии —
+ * пустой ответ (null), а не 404: это нормальное состояние «сервер ещё не
+ * приглашал этот номер», не ошибка.
+ */
+exports.shopRouter.get('/courier/invite', async (req, res) => {
+    const normalizedPhone = normalizePhone(String(req.query.phone ?? ''));
+    if (!normalizedPhone)
+        return res.status(400).json({ error: 'Некорректный номер телефона' });
+    try {
+        const invite = await prisma_1.prisma.shopCourierInvite.findUnique({ where: { phone: normalizedPhone } });
+        res.json(invite ?? null);
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop API] GET /courier/invite упал');
+        res.status(500).json({ error: 'Не удалось получить вакансию', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * Заявка на регистрацию курьера — ПЕРВЫЙ шаг, до POST /courier/register.
+ * Курьер больше не подаёт заявку сам «с улицы» — без вакансии (приглашения)
+ * на этот телефон отвечаем 403. Имя, фамилия и ИИН берутся из самой
+ * вакансии, не из того, что прислал бы курьер — так заявка в «Заявки»
+ * приходит уже с этими данными; анкету (адрес, авто, фото и т.п.) курьер
+ * заполняет только ПОСЛЕ одобрения, через отдельный POST /courier/register.
+ * Одна заявка на телефон: повторная с того же номера не создаёт вторую
+ * строку, а только освежает город, ПОКА заявка ещё pending (решённую
+ * заявку задним числом не трогаем — админ уже принял решение по ней).
+ * Ответ отдаёт статус ТОЛЬКО этого телефона — ничего о чужих заявках.
+ */
+exports.shopRouter.post('/courier/apply', async (req, res) => {
+    const parsed = courierApplySchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+    const normalizedPhone = normalizePhone(parsed.data.phone);
+    if (!normalizedPhone)
+        return res.status(400).json({ error: 'Некорректный номер телефона' });
+    try {
+        const invite = await prisma_1.prisma.shopCourierInvite.findUnique({ where: { phone: normalizedPhone } });
+        if (!invite) {
+            return res.status(403).json({ error: 'На этот телефон нет вакансии — заявка недоступна' });
+        }
+        const name = `${invite.firstName} ${invite.lastName}`.trim();
+        const existing = await prisma_1.prisma.shopCourierApplication.findUnique({ where: { phone: normalizedPhone } });
+        if (existing) {
+            if (existing.status === 'pending') {
+                const updated = await prisma_1.prisma.shopCourierApplication.update({
+                    where: { phone: normalizedPhone },
+                    data: { name, city: parsed.data.city, iin: invite.iin },
+                });
+                return res.json({ status: updated.status });
+            }
+            // approved/rejected — решение уже принято, повторная заявка его не меняет.
+            return res.json({ status: existing.status });
+        }
+        const created = await prisma_1.prisma.shopCourierApplication.create({
+            data: { phone: normalizedPhone, name, city: parsed.data.city, iin: invite.iin, status: 'pending' },
+        });
+        res.status(201).json({ status: created.status });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop API] POST /courier/apply упал');
+        res.status(500).json({ error: 'Не удалось отправить заявку', details: String(err?.message ?? err) });
+    }
+});
+const courierRegisterSchema = zod_1.z.object({
+    firstName: zod_1.z.string().min(1),
+    lastName: zod_1.z.string().min(1),
+    phone: zod_1.z.string().min(1),
+    requisitesType: zod_1.z.enum(['kaspi', 'card']),
+    requisitesValue: zod_1.z.string().min(1),
+    iin: zod_1.z.string().min(1),
+    address: zod_1.z.string().min(1),
+    vehicle: zod_1.z.string().min(1),
+    // Без этих двух URL — регистрация не пройдёт (400). Их получают ЗАРАНЕЕ
+    // через POST /courier/upload-photo, здесь только принимаем готовые ссылки.
+    // Строго URL, не просто непустая строка — "без живого url анкета не
+    // сохранится" означает и защиту от пустышки/заглушки на бэкенде, не
+    // только на клиенте.
+    idPhotoUrl: zod_1.z.string().url('idPhotoUrl должен быть настоящей ссылкой (результат upload-photo)'),
+    facePhotoUrl: zod_1.z.string().url('facePhotoUrl должен быть настоящей ссылкой (результат upload-photo)'),
+});
+/**
+ * Регистрация курьера — имя, фамилия, телефон, реквизиты для выплат
+ * (Kaspi-перевод по номеру телефона или номер карты), ИИН, адрес, авто,
+ * фото удостоверения и лица (оба обязательны — без них 400 через zod).
+ * Повторная регистрация с уже известным телефоном обновляет данные
+ * (upsert), а не создаёт дубликат. Дата согласия (agreeContractAt)
+ * проставляется автоматически моментом регистрации — считаем, что
+ * заполнение формы регистрации и есть момент согласия с офертой.
+ */
+exports.shopRouter.post('/courier/register', async (req, res) => {
+    // Логируем КАЖДУЮ попытку регистрации — телефон и есть ли фото — ещё до
+    // валидации, чтобы при любом отказе (400) в логах было видно, что вообще
+    // пришло, а не только факт "не получилось".
+    const rawPhone = req.body?.phone;
+    const hasIdPhoto = Boolean(req.body?.idPhotoUrl);
+    const hasFacePhoto = Boolean(req.body?.facePhotoUrl);
+    logger_1.logger.info({ phone: rawPhone, hasIdPhoto, hasFacePhoto }, '[Shop API] POST /courier/register — попытка регистрации');
+    const parsed = courierRegisterSchema.safeParse(req.body);
+    if (!parsed.success) {
+        const reason = JSON.stringify(parsed.error.flatten().fieldErrors);
+        logger_1.logger.warn({ phone: rawPhone, hasIdPhoto, hasFacePhoto, reason }, '[Shop API] /courier/register отклонён — неверные данные (400)');
+        return res.status(400).json({ error: 'Неверные данные регистрации', details: parsed.error.flatten() });
+    }
+    const normalizedPhone = normalizePhone(parsed.data.phone);
+    if (!normalizedPhone) {
+        logger_1.logger.warn({ phone: rawPhone }, '[Shop API] /courier/register отклонён — некорректный номер телефона (400)');
+        return res.status(400).json({ error: 'Некорректный номер телефона' });
+    }
+    // Курьер больше не регистрируется сам — только по одобренной заявке
+    // (POST /courier/apply + «Одобрить» в админке). Отказ и отсутствие заявки
+    // ведут себя одинаково: 403, регистрация закрыта.
+    const application = await prisma_1.prisma.shopCourierApplication.findUnique({ where: { phone: normalizedPhone } });
+    if (!application || application.status !== 'approved') {
+        logger_1.logger.warn({ phone: normalizedPhone, applicationStatus: application?.status ?? 'none' }, '[Shop API] /courier/register отклонён — телефон не одобрен (403)');
+        return res.status(403).json({ error: 'Телефон не одобрен для регистрации курьера' });
+    }
+    try {
+        const name = `${parsed.data.firstName} ${parsed.data.lastName}`.trim();
+        const commonData = {
+            name,
+            requisitesType: parsed.data.requisitesType,
+            requisitesValue: parsed.data.requisitesValue,
+            iin: parsed.data.iin,
+            address: parsed.data.address,
+            vehicle: parsed.data.vehicle,
+            idPhotoUrl: parsed.data.idPhotoUrl,
+            facePhotoUrl: parsed.data.facePhotoUrl,
+        };
+        const courier = await prisma_1.prisma.courier.upsert({
+            where: { phone: normalizedPhone },
+            update: commonData, // agreeContractAt НЕ трогаем при повторной регистрации — дата согласия должна быть первой, не последней
+            create: { ...commonData, phone: normalizedPhone, agreeContractAt: new Date() },
+        });
+        logger_1.logger.info({ phone: normalizedPhone, courierId: courier.id }, '[Shop API] /courier/register — успешно сохранён');
+        res.status(201).json({ id: courier.id, name: courier.name, phone: courier.phone });
+    }
+    catch (err) {
+        logger_1.logger.error({ err, phone: normalizedPhone }, '[Shop API] Ошибка регистрации курьера (500)');
+        res.status(500).json({ error: 'Не удалось зарегистрировать курьера', details: String(err?.message ?? err) });
+    }
+});
+const COURIER_PHOTO_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+const COURIER_PHOTO_MAX_MB = 2;
+const COURIER_PHOTO_MAX_BYTES = COURIER_PHOTO_MAX_MB * 1024 * 1024; // 2 МБ — с запасом под реальный предел тела запроса на Vercel (~4.5 МБ)
+const courierPhotoUpload = (0, multer_1.default)({ storage: multer_1.default.memoryStorage(), limits: { fileSize: COURIER_PHOTO_MAX_BYTES } });
+/**
+ * Загрузка фото курьера (удостоверение или лицо) — multipart/form-data,
+ * поле файла "file", поле "type" = "id" | "face". Сохраняется туда же,
+ * куда фото товаров (Vercel Blob) — тот же токен, тот же принцип. Без
+ * настроенного Blob — честный 501 "добавьте Blob", как и для фото товаров.
+ *
+ * ВАЖНО: multer подключён НЕ как обычный middleware в цепочке роута, а
+ * вызван вручную с колбэком — если запускать его как middleware напрямую
+ * (upload.single('file') третьим аргументом у router.post), его ошибки
+ * (например, превышение лимита размера) уходят прямо в общий обработчик
+ * ошибок Express, МИМО try/catch в самом хендлере — получался неясный
+ * ответ вместо понятного "файл слишком большой". Так — ловим сами.
+ */
+exports.shopRouter.post('/courier/upload-photo', (req, res, next) => {
+    courierPhotoUpload.single('file')(req, res, (err) => {
+        if (err) {
+            if (err.code === 'LIMIT_FILE_SIZE') {
+                return res.status(413).json({ error: `Файл слишком большой, максимум ${COURIER_PHOTO_MAX_MB} МБ` });
+            }
+            logger_1.logger.error({ err }, '[Shop API] Ошибка чтения multipart-запроса при загрузке фото курьера');
+            return res.status(400).json({ error: 'Не удалось прочитать файл', details: String(err?.message ?? err) });
+        }
+        next();
+    });
+}, async (req, res) => {
+    const type = req.body?.type;
+    if (type !== 'id' && type !== 'face') {
+        return res.status(400).json({ error: 'Поле type должно быть "id" или "face"' });
+    }
+    const file = req.file;
+    if (!file)
+        return res.status(400).json({ error: 'Файл не передан (поле "file")' });
+    if (!env_1.env.blobToken) {
+        return res.status(501).json({ error: 'добавьте Blob', details: 'BLOB_READ_WRITE_TOKEN не задан в переменных окружения — загрузка фото недоступна.' });
+    }
+    if (!COURIER_PHOTO_TYPES.includes(file.mimetype)) {
+        return res.status(400).json({ error: `Недопустимый формат файла: ${file.mimetype}. Разрешено: ${COURIER_PHOTO_TYPES.join(', ')}` });
+    }
+    try {
+        const pathname = `courier/${type}/${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+        const blob = await (0, blob_1.put)(pathname, file.buffer, { access: 'public', contentType: file.mimetype, token: env_1.env.blobToken });
+        res.json({ url: blob.url });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop API] Ошибка загрузки фото курьера');
+        res.status(500).json({ error: 'Не удалось загрузить фото', details: String(err?.message ?? err) });
+    }
+});
+/** Ищет активного курьера по телефону — общая часть для всех эндпоинтов
+ *  ниже, отдаёт понятную ошибку, если курьера нет или он заблокирован.
+ *  Возвращает полную запись (включая поля верификации) — так вызывающий
+ *  код может проверить полноту профиля (см. isCourierProfileComplete). */
+async function findActiveCourierOrFail(rawPhone, res) {
+    const normalizedPhone = normalizePhone(rawPhone);
+    if (!normalizedPhone) {
+        res.status(400).json({ error: 'Некорректный номер телефона курьера' });
+        return null;
+    }
+    const courier = await prisma_1.prisma.courier.findUnique({ where: { phone: normalizedPhone } });
+    if (!courier || !courier.active) {
+        res.status(403).json({ error: 'Курьер не зарегистрирован или заблокирован' });
+        return null;
+    }
+    return courier;
+}
+/** Профиль курьера считается заполненным, только если есть оба фото, ИИН
+ *  и дата согласия — проверяется перед scan (см. п.5 запроса). */
+function isCourierProfileComplete(courier) {
+    return !!(courier.idPhotoUrl && courier.facePhotoUrl && courier.iin && courier.agreeContractAt);
+}
+const courierScanSchema = zod_1.z.object({
+    courierPhone: zod_1.z.string().min(1),
+    barcode: zod_1.z.string().min(1),
+});
+/**
+ * Курьер сканирует стикер на складе — заказ переходит paid → picked и
+ * закрепляется за этим курьером. Разрешено только для paid (ещё никем не
+ * забран) и только не для собственного заказа курьера (антифрод: курьер
+ * не может "забрать" покупку, оформленную на свой же телефон).
+ */
+exports.shopRouter.post('/courier/scan', async (req, res) => {
+    const parsed = courierScanSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+    try {
+        const courier = await findActiveCourierOrFail(parsed.data.courierPhone, res);
+        if (!courier)
+            return;
+        if (!isCourierProfileComplete(courier)) {
+            return res.status(403).json({ error: 'Профиль курьера не заполнен полностью — нужны оба фото, ИИН и согласие с договором' });
+        }
+        const order = await findShopOrderByNumberLoosely(parsed.data.barcode);
+        if (!order) {
+            // Логируем ВСЁ, что пробовали — если это повторится, в логах будет
+            // видно точную причину (опечатка, лишний символ, реально другой
+            // номер), а не только результат "не нашли".
+            logger_1.logger.warn({ rawBarcode: parsed.data.barcode, triedCandidates: buildOrderNumberCandidates(parsed.data.barcode) }, '[Shop API] /courier/scan: заказ не найден ни по одному варианту номера');
+            return res.status(404).json({ error: 'Заказ не найден' });
+        }
+        if (order.status === 'pending_payment') {
+            return res.status(409).json({ error: 'Заказ не оплачен' });
+        }
+        if (order.status !== 'paid') {
+            return res.status(409).json({ error: `Заказ в статусе "${order.status}" — забрать можно только оплаченный заказ` });
+        }
+        if (phonesMatch(courier.phone, order.phone)) {
+            return res.status(403).json({ error: 'Нельзя забрать собственный заказ' });
+        }
+        await prisma_1.prisma.shopOrder.update({ where: { id: order.id }, data: { status: 'picked', courierId: courier.id } });
+        res.json({ ok: true, status: 'picked', orderNumber: order.number });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop API] Ошибка сканирования заказа курьером');
+        res.status(500).json({ error: 'Не удалось забрать заказ', details: String(err?.message ?? err) });
+    }
+});
+const courierOrderRefSchema = zod_1.z.object({
+    courierPhone: zod_1.z.string().min(1),
+    orderNumber: zod_1.z.string().min(1),
+});
+/** Курьер выехал с заказом — picked → in_transit. Только для СВОЕГО заказа. */
+exports.shopRouter.post('/courier/start', async (req, res) => {
+    const parsed = courierOrderRefSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+    try {
+        const courier = await findActiveCourierOrFail(parsed.data.courierPhone, res);
+        if (!courier)
+            return;
+        const order = await findShopOrderByNumberLoosely(parsed.data.orderNumber);
+        if (!order)
+            return res.status(404).json({ error: 'Заказ не найден' });
+        if (order.courierId !== courier.id)
+            return res.status(403).json({ error: 'Это не ваш заказ' });
+        if (order.status !== 'picked') {
+            return res.status(409).json({ error: `Заказ в статусе "${order.status}" — начать доставку можно только из "Курьер забрал"` });
+        }
+        await prisma_1.prisma.shopOrder.update({ where: { id: order.id }, data: { status: 'in_transit' } });
+        res.json({ ok: true, status: 'in_transit' });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop API] Ошибка старта доставки');
+        res.status(500).json({ error: 'Не удалось начать доставку', details: String(err?.message ?? err) });
+    }
+});
+const pushTokenSchema = zod_1.z.object({
+    phone: zod_1.z.string().min(1),
+    token: zod_1.z.string().min(1),
+});
+/**
+ * Регистрация Expo push-токена покупателя — привязывается к номеру телефона
+ * (нормализованному так же, как у заказов), не к конкретному заказу. Один
+ * номер — один токен: повторная регистрация с того же телефона просто
+ * обновляет token (последнее устройство побеждает).
+ */
+exports.shopRouter.post('/profile/push-token', async (req, res) => {
+    const parsed = pushTokenSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+    const phone = normalizePhone(parsed.data.phone);
+    if (!phone)
+        return res.status(400).json({ error: 'Некорректный телефон' });
+    try {
+        await prisma_1.prisma.shopCustomerPushToken.upsert({
+            where: { phone },
+            update: { token: parsed.data.token },
+            create: { phone, token: parsed.data.token },
+        });
+        res.json({ ok: true });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop API] Не удалось сохранить push-токен');
+        res.status(500).json({ error: 'Не удалось сохранить push-токен', details: String(err?.message ?? err) });
+    }
+});
+// --- Код входа покупателя -------------------------------------------------------------------------
+const LOGIN_CODE_TTL_MS = 5 * 60_000;
+const LOGIN_CODE_RESEND_MS = 30_000;
+const LOGIN_CODE_MAX_ATTEMPTS = 5;
+const loginCodeHash = (phone, code) => (0, node_crypto_1.createHmac)('sha256', env_1.env.shopAppKey || 'no-key').update(`${phone}:${code}`).digest('hex');
+/**
+ * ТЕСТОВЫЕ НОМЕРА (временно, пока не подключено платное SMS): env LOGIN_TEST_CODES="77001112233:4821,77005556677:1234".
+ * Для перечисленных номеров код входа заранее известен владельцу, SMS и пуш не отправляются. Любого другого номера
+ * это не касается. Отключается удалением переменной в Vercel (+ Redeploy).
+ */
+const loginTestCode = (phone) => {
+    for (const entry of (process.env.LOGIN_TEST_CODES ?? '').split(',')) {
+        const [p, c] = entry.split(':').map((x) => x.trim());
+        if (p && c && /^\d{4}$/.test(c) && normalizePhone(p) === phone)
+            return c;
+    }
+    return null;
+};
+const loginCodeRequestSchema = zod_1.z.object({ phone: zod_1.z.string().min(1) });
+const loginCodeVerifySchema = zod_1.z.object({ phone: zod_1.z.string().min(1), code: zod_1.z.string().regex(/^\d{4}$/) });
+/**
+ * Запрос кода входа. Код создаёт СЕРВЕР и доставляет его владельцу введённого номера:
+ *  - пуш на устройство, где этот номер уже входил (ShopCustomerPushToken) — бесплатно;
+ *  - SMS на сам номер (SMSC.kz) — только если пуша нет или он не принят (первый вход, новый телефон).
+ * Раньше приложение само придумывало код и показывало его на том же телефоне, поэтому он «приходил» при
+ * любом, даже выдуманном номере. Код в ответе НИКОГДА не возвращается. Повтор — не чаще раза в 30 с.
+ * Не ушло ни SMS, ни пуш — 502, код стирается.
+ */
+exports.shopRouter.post('/auth/request-code', async (req, res) => {
+    const parsed = loginCodeRequestSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: 'Неверные данные' });
+    const phone = normalizePhone(parsed.data.phone);
+    if (!phone)
+        return res.status(400).json({ error: 'Некорректный номер телефона', reason: 'invalid_phone' });
+    try {
+        const existing = await prisma_1.prisma.shopLoginCode.findUnique({ where: { phone } });
+        if (existing && Date.now() - existing.sentAt.getTime() < LOGIN_CODE_RESEND_MS) {
+            const wait = Math.ceil((LOGIN_CODE_RESEND_MS - (Date.now() - existing.sentAt.getTime())) / 1000);
+            return res.status(429).json({ error: `Код уже отправлен. Повторить можно через ${wait} с`, reason: 'too_soon', retryAfter: wait });
+        }
+        const testCode = loginTestCode(phone);
+        if (testCode) {
+            const tdata = { codeHash: loginCodeHash(phone, testCode), expiresAt: new Date(Date.now() + LOGIN_CODE_TTL_MS), attempts: 0, sentAt: new Date() };
+            await prisma_1.prisma.shopLoginCode.upsert({ where: { phone }, update: tdata, create: { phone, ...tdata } });
+            logger_1.logger.warn({ phone: phone.slice(-4) }, '[LoginCode] тестовый номер: код заранее известен, SMS/пуш не отправляются');
+            return res.json({ ok: true, expiresIn: Math.round(LOGIN_CODE_TTL_MS / 1000), sms: false, push: false, test: true });
+        }
+        const device = await prisma_1.prisma.shopCustomerPushToken.findUnique({ where: { phone } });
+        const code = String((0, node_crypto_1.randomInt)(1000, 10000));
+        const data = { codeHash: loginCodeHash(phone, code), expiresAt: new Date(Date.now() + LOGIN_CODE_TTL_MS), attempts: 0, sentAt: new Date() };
+        await prisma_1.prisma.shopLoginCode.upsert({ where: { phone }, update: data, create: { phone, ...data } });
+        // Пуш бесплатный — сначала он. SMS (платное) уходит только когда пуша нет: номер входит впервые,
+        // сменил телефон или устройство не приняло пуш.
+        let pushOk = false;
+        if (device?.token) {
+            try {
+                const r = await (0, pushBroadcast_service_1.sendBroadcast)({ title: 'My Market', body: `Код входа: ${code}. Никому его не сообщайте`, tokens: [device.token], data: { type: 'login_code', code } });
+                pushOk = r.sent > 0;
+                if (!pushOk) {
+                    logger_1.logger.warn({ phone: phone.slice(-4), expo: r.expoTokens, fcm: r.fcmTokens, failed: r.failed, notRegistered: r.notRegistered, fcmError: r.fcmError }, '[LoginCode] пуш не принят');
+                }
+            }
+            catch (err) {
+                logger_1.logger.error({ phone: phone.slice(-4), err: String(err?.message ?? err) }, '[LoginCode] пуш упал');
+            }
+        }
+        else {
+            logger_1.logger.info({ phone: phone.slice(-4) }, '[LoginCode] для номера нет устройства — пуш невозможен');
+        }
+        const smsOk = pushOk ? false : await (0, sms_service_1.sendSms)(phone, `My Market: код входа ${code}. Никому его не сообщайте`);
+        if (!smsOk && !pushOk) {
+            await prisma_1.prisma.shopLoginCode.deleteMany({ where: { phone } });
+            logger_1.logger.error({ phone: phone.slice(-4), hadDevice: !!device?.token }, '[LoginCode] код не удалось доставить ни SMS, ни пушем');
+            return res.status(502).json({ error: 'Не удалось отправить код на этот номер. Проверьте номер и попробуйте ещё раз', reason: 'delivery_failed' });
+        }
+        logger_1.logger.info({ phone: phone.slice(-4), sms: smsOk, push: pushOk }, '[LoginCode] код отправлен');
+        res.json({ ok: true, expiresIn: Math.round(LOGIN_CODE_TTL_MS / 1000), sms: smsOk, push: pushOk });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[LoginCode] POST /auth/request-code упал');
+        res.status(500).json({ error: 'Не удалось отправить код', details: String(err?.message ?? err) });
+    }
+});
+/** Проверка кода входа: 5 попыток на код, срок 5 минут, после успеха код сгорает. */
+exports.shopRouter.post('/auth/verify-code', async (req, res) => {
+    const parsed = loginCodeVerifySchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: 'Неверные данные', reason: 'wrong_code' });
+    const phone = normalizePhone(parsed.data.phone);
+    if (!phone)
+        return res.status(400).json({ error: 'Некорректный номер телефона', reason: 'invalid_phone' });
+    try {
+        const row = await prisma_1.prisma.shopLoginCode.findUnique({ where: { phone } });
+        if (!row || row.expiresAt.getTime() < Date.now()) {
+            return res.status(400).json({ error: 'Код истёк или не запрашивался. Запросите новый', reason: 'expired' });
+        }
+        if (row.attempts >= LOGIN_CODE_MAX_ATTEMPTS) {
+            return res.status(429).json({ error: 'Слишком много попыток. Запросите новый код', reason: 'too_many' });
+        }
+        const given = Buffer.from(loginCodeHash(phone, parsed.data.code));
+        const stored = Buffer.from(row.codeHash);
+        if (given.length !== stored.length || !(0, node_crypto_1.timingSafeEqual)(given, stored)) {
+            await prisma_1.prisma.shopLoginCode.update({ where: { phone }, data: { attempts: row.attempts + 1 } });
+            return res.status(400).json({ error: 'Неверный код', reason: 'wrong_code' });
+        }
+        await prisma_1.prisma.shopLoginCode.deleteMany({ where: { phone } });
+        res.json({ ok: true });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[LoginCode] POST /auth/verify-code упал');
+        res.status(500).json({ error: 'Не удалось проверить код', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * Курьер запрашивает код выдачи — генерируется ЗДЕСЬ, впервые (не при
+ * оплате). Только для своего заказа в picked/in_transit. Код уходит ТОЛЬКО покупателю
+ * (SMS и пуш, ниже); в ответе курьеру его нет — курьер вводит код, который назвал покупатель.
+ */
+exports.shopRouter.post('/courier/request-code', async (req, res) => {
+    const parsed = courierOrderRefSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+    try {
+        const courier = await findActiveCourierOrFail(parsed.data.courierPhone, res);
+        if (!courier)
+            return;
+        const order = await findShopOrderByNumberLoosely(parsed.data.orderNumber);
+        if (!order)
+            return res.status(404).json({ error: 'Заказ не найден' });
+        if (order.courierId !== courier.id)
+            return res.status(403).json({ error: 'Это не ваш заказ' });
+        if (order.status !== 'picked' && order.status !== 'in_transit') {
+            return res.status(409).json({ error: `Заказ в статусе "${order.status}" — код выдачи запросить нельзя` });
+        }
+        const pickupCode = generatePickupCode5();
+        await prisma_1.prisma.shopOrder.update({ where: { id: order.id }, data: { pickupCode } });
+        // SMS покупателю (order.phone — телефон КЛИЕНТА, не курьера) — ровно
+        // здесь и только здесь: не при оплате, не при скане. Повторный запрос
+        // кода — новый код выше и новое SMS ниже, как договаривались. Сбой
+        // шлюза НЕ ломает эндпоинт: код уже сохранён строкой выше, sendSms
+        // сама ловит все свои ошибки и просто логирует — код всё равно уйдёт
+        // курьеру в ответе, даже если SMS не доставится.
+        const customerPhone = normalizePhone(order.phone);
+        if (customerPhone) {
+            const smsText = `My Market. Kod vydachi ${pickupCode}. Nazovite tolko kureru. Zakaz ${order.number}.`;
+            await (0, sms_service_1.sendSms)(customerPhone, smsText);
+            // Expo push — тем же покупателю, тот же код. Нет токена или Expo
+            // ответил ошибкой — sendPickupCodePush сама ловит это и пишет в лог,
+            // не бросая исключение: pickupCode и SMS от этого никак не страдают.
+            await (0, expoPush_1.sendPickupCodePush)(customerPhone, pickupCode, order.number);
+        }
+        else {
+            logger_1.logger.warn({ orderNumber: order.number, phone: order.phone }, '[Shop API] Не удалось нормализовать телефон покупателя для SMS');
+        }
+        // Код курьеру НЕ возвращаем: он уходит только покупателю (SMS и пуш выше). Иначе курьер мог бы прочитать код
+        // из ответа сервера и закрыть заказ без покупателя. Курьер вводит код, который назвал покупатель у двери.
+        res.json({ ok: true });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop API] Ошибка запроса кода выдачи');
+        res.status(500).json({ error: 'Не удалось получить код выдачи', details: String(err?.message ?? err) });
+    }
+});
+const courierDeliverSchema = zod_1.z.object({
+    courierPhone: zod_1.z.string().min(1),
+    orderNumber: zod_1.z.string().min(1),
+    code: zod_1.z.string().regex(/^\d{4,5}$/, 'Код должен состоять из 4 или 5 цифр'),
+});
+/**
+ * Подтверждение выдачи курьером.
+ *  - Только СВОЙ заказ (courierId должен совпадать) — не тот же самый, что
+ *    и антифрод-проверка на scan (курьер ≠ покупатель), но здесь ещё и
+ *    "не чужой заказ другого курьера".
+ *  - Не больше 5 неверных попыток — на 5-й ошибке блокируется КУРЬЕР
+ *    целиком (Courier.active = false), не только этот заказ — дальше он
+ *    не пройдёт даже findActiveCourierOrFail ни в одном из эндпоинтов.
+ *  - Верный код → delivered + создаётся CourierPayout (сумма —
+ *    logisticsCost заказа, если больше 0, иначе фиксированные 2000).
+ */
+exports.shopRouter.post('/courier/deliver', async (req, res) => {
+    const parsed = courierDeliverSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+    try {
+        const courier = await findActiveCourierOrFail(parsed.data.courierPhone, res);
+        if (!courier)
+            return;
+        const order = await findShopOrderByNumberLoosely(parsed.data.orderNumber);
+        if (!order)
+            return res.status(404).json({ error: 'Заказ с таким номером не найден' });
+        if (order.courierId !== courier.id)
+            return res.status(403).json({ error: 'Это не ваш заказ' });
+        if (phonesMatch(courier.phone, order.phone))
+            return res.status(403).json({ error: 'Нельзя выдать собственный заказ' });
+        if (order.status !== 'picked' && order.status !== 'in_transit') {
+            return res.status(409).json({ error: `Заказ в статусе "${order.status}" — выдача недоступна` });
+        }
+        if (!order.pickupCode) {
+            return res.status(400).json({ error: 'Код выдачи ещё не запрошен для этого заказа (см. /courier/request-code)' });
+        }
+        if (order.codeAttempts >= CODE_MAX_ATTEMPTS) {
+            return res.status(423).json({ error: 'Курьер заблокирован из-за превышения числа неверных попыток' });
+        }
+        if (order.pickupCode !== parsed.data.code) {
+            const attempts = order.codeAttempts + 1;
+            await prisma_1.prisma.shopOrder.update({ where: { id: order.id }, data: { codeAttempts: attempts } });
+            if (attempts >= CODE_MAX_ATTEMPTS) {
+                await prisma_1.prisma.courier.update({ where: { id: courier.id }, data: { active: false } });
+                return res.status(423).json({ error: 'Код неверный. Попытки исчерпаны — курьер заблокирован.' });
+            }
+            return res.status(400).json({ error: `Код неверный. Осталось попыток: ${CODE_MAX_ATTEMPTS - attempts}` });
+        }
+        const payoutAmount = order.logisticsCost && order.logisticsCost > 0 ? order.logisticsCost : DEFAULT_COURIER_PAYOUT;
+        await prisma_1.prisma.$transaction([
+            prisma_1.prisma.shopOrder.update({ where: { id: order.id }, data: { status: 'delivered', deliveredAt: new Date() } }),
+            // Синхронизируем и связанный Order (для отчётности) в тот же статус.
+            prisma_1.prisma.order.updateMany({ where: { marketplace: 'APP', externalId: order.number }, data: { status: 'delivered' } }),
+            prisma_1.prisma.courierPayout.create({
+                data: { orderId: order.id, courierId: courier.id, amount: payoutAmount, status: 'pending' },
+            }),
+        ]);
+        res.json({ ok: true, status: 'delivered' });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop API] Ошибка подтверждения выдачи курьером');
+        res.status(500).json({ error: 'Не удалось подтвердить выдачу', details: String(err?.message ?? err) });
+    }
+});
+/** Список заказов курьера — для его собственного экрана "Мои заказы". */
+exports.shopRouter.get('/courier/my-orders', async (req, res) => {
+    try {
+        const phone = String(req.query.phone ?? '');
+        const normalizedPhone = normalizePhone(phone);
+        if (!normalizedPhone)
+            return res.status(400).json({ error: 'Некорректный номер телефона' });
+        const courier = await prisma_1.prisma.courier.findUnique({ where: { phone: normalizedPhone } });
+        if (!courier)
+            return res.status(404).json({ error: 'Курьер не найден' });
+        const orders = await prisma_1.prisma.shopOrder.findMany({
+            where: { courierId: courier.id },
+            orderBy: { createdAt: 'desc' },
+        });
+        res.json(orders.map((o) => {
+            let items = [];
+            try {
+                items = JSON.parse(o.items).map((i) => ({ sku: i.sku, name: i.name }));
+            }
+            catch {
+                items = [];
+            }
+            return {
+                number: o.number,
+                status: o.status,
+                items,
+                canDeliver: (o.status === 'picked' || o.status === 'in_transit') && !!o.pickupCode,
+            };
+        }));
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop API] Ошибка получения заказов курьера');
+        res.status(500).json({ error: 'Не удалось получить заказы', details: String(err?.message ?? err) });
+    }
+});
+// =====================================================================
+// Аналитика витрины — события поиска/просмотра/корзины/заказа/оплаты.
+// Заказ APP как факт уже пишется в ShopOrder при /orders — это событие
+// НЕ дублирует его; нужно для воронки и разбивки по городам/запросам.
+// =====================================================================
+const shopEventSchema = zod_1.z.object({
+    type: zod_1.z.enum(['search', 'view', 'cart', 'order', 'paid']),
+    query: zod_1.z.string().optional().nullable(),
+    sku: zod_1.z.string().optional().nullable(),
+    phone: zod_1.z.string().optional().nullable(),
+    city: zod_1.z.string().optional().nullable(),
+    resultsCount: zod_1.z.number().int().optional().nullable(),
+    amount: zod_1.z.number().int().optional().nullable(),
+    // search: поиск запущен выбором подсказки (true) или вводом/кнопкой (false/не передано)
+    fromSuggestion: zod_1.z.boolean().optional().nullable(),
+});
+exports.shopRouter.post('/events', async (req, res) => {
+    const parsed = shopEventSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: 'Неверные данные события', details: parsed.error.flatten() });
+    const { type, sku, phone, resultsCount, amount, fromSuggestion } = parsed.data;
+    // city: trim, пустая строка -> null.
+    const city = parsed.data.city?.trim() || null;
+    const query = parsed.data.query?.trim() || null;
+    // search без query не пишем — это невалидное событие, не тихо
+    // игнорируемое, а честная ошибка 400 (та же логика, что и остальная
+    // валидация здесь).
+    if (type === 'search' && !query) {
+        return res.status(400).json({ error: 'search без query не пишется' });
+    }
+    try {
+        // Гостей без телефона тоже сохраняем — phone намеренно необязателен.
+        await prisma_1.prisma.shopEvent.create({
+            data: {
+                type,
+                query,
+                sku: sku || null,
+                phone: phone || null,
+                city,
+                resultsCount: resultsCount ?? null,
+                amount: amount ?? null,
+                // undefined → колонка не попадает в INSERT (события без этого поля пишутся как раньше)
+                fromSuggestion: type === 'search' ? (fromSuggestion ?? undefined) : undefined,
+            },
+        });
+        res.status(201).json({ ok: true });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop API] Ошибка записи события аналитики');
+        res.status(500).json({ error: 'Не удалось записать событие', details: String(err?.message ?? err) });
+    }
+});
+// ---------------------------------------------------------------------------
+// Подписка «Вау» (как Coupang WOW). Покупатель определяется по номеру телефона —
+// так же, как «Мои заказы». Скидку считает только сервер (см. POST /orders).
+// ---------------------------------------------------------------------------
+/** Настройки для приложения: включена ли, цена в месяц, процент по умолчанию, как оплатить. */
+exports.shopRouter.get('/wow/settings', async (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(await (0, wow_service_1.getWowSettings)());
+});
+async function wowStatusFor(phone) {
+    const settings = await (0, wow_service_1.getWowSettings)();
+    const rows = await prisma_1.prisma.wowMembership.findMany({ where: { phone }, orderBy: { createdAt: 'desc' }, take: 5 });
+    const current = rows.find((m) => ['active', 'pending_payment', 'refund_requested'].includes((0, wow_service_1.effectiveStatus)(m))) ?? null;
+    const savings = await (0, wow_service_1.membershipSavings)(current ? [current.id] : []);
+    const s = current ? savings.get(current.id) : { saved: 0, orders: 0 };
+    return {
+        enabled: settings.enabled,
+        monthlyPrice: settings.monthlyPrice,
+        payInstructions: settings.payInstructions,
+        // none | pending_payment | active | refund_requested
+        status: current ? (0, wow_service_1.effectiveStatus)(current) : 'none',
+        // Скидка работает и пока оплата ждёт подтверждения (админ проверяет заказ и подписку вместе).
+        discountActive: !!current && ['active', 'pending_payment'].includes((0, wow_service_1.effectiveStatus)(current)) && settings.enabled,
+        membershipId: current?.id ?? null,
+        startsAt: current?.startsAt ?? null,
+        endsAt: current?.endsAt ?? null,
+        willRenew: !!current && !current.cancelRequested,
+        savedTotal: Math.round(s.saved),
+        discountedOrders: s.orders,
+    };
+}
+/** Статус подписки покупателя: GET /wow/status?phone=... */
+exports.shopRouter.get('/wow/status', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    const phone = normalizePhone(String(req.query.phone ?? ''));
+    if (!phone)
+        return res.status(400).json({ error: 'Некорректный номер телефона' });
+    try {
+        res.json(await wowStatusFor(phone));
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Wow] GET /wow/status упал');
+        res.status(500).json({ error: 'Не удалось получить подписку', details: String(err?.message ?? err) });
+    }
+});
+const wowSubscribeSchema = zod_1.z.object({ phone: zod_1.z.string().min(1), name: zod_1.z.string().optional().nullable() });
+/**
+ * «Получить скидку и оплатить»: создаёт подписку в ожидании оплаты (или возвращает уже
+ * существующую — повторное нажатие не плодит строки). Скидка в заказах работает сразу.
+ */
+exports.shopRouter.post('/wow/subscribe', async (req, res) => {
+    const parsed = wowSubscribeSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: 'Неверные данные' });
+    const phone = normalizePhone(parsed.data.phone);
+    if (!phone)
+        return res.status(400).json({ error: 'Некорректный номер телефона' });
+    try {
+        const settings = await (0, wow_service_1.getWowSettings)();
+        if (!settings.enabled)
+            return res.status(409).json({ error: 'Подписка «Вау» пока недоступна', reason: 'disabled' });
+        const existing = await (0, wow_service_1.getCurrentMembership)(phone);
+        if (!existing) {
+            await prisma_1.prisma.wowMembership.create({
+                data: { phone, customerName: parsed.data.name?.trim() || null, status: 'pending_payment', price: settings.monthlyPrice },
+            });
+        }
+        res.status(existing ? 200 : 201).json(await wowStatusFor(phone));
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Wow] POST /wow/subscribe упал');
+        res.status(500).json({ error: 'Не удалось подключить подписку', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * Отказ от подписки («Отменить в любой момент»):
+ *  - ещё не оплачена → просто отменяется;
+ *  - оплачена, но покупок со скидкой не было → скидка выключается сразу, деньги вернёт админ (refund_requested);
+ *  - покупки со скидкой были → денег не возвращаем, подписка работает до конца месяца и не продлевается.
+ */
+exports.shopRouter.post('/wow/cancel', async (req, res) => {
+    const phone = normalizePhone(String(req.body?.phone ?? ''));
+    if (!phone)
+        return res.status(400).json({ error: 'Некорректный номер телефона' });
+    try {
+        const m = await (0, wow_service_1.getCurrentMembership)(phone);
+        if (!m)
+            return res.status(404).json({ error: 'Активной подписки нет' });
+        let result;
+        if (m.status === 'pending_payment') {
+            await prisma_1.prisma.wowMembership.update({ where: { id: m.id }, data: { status: 'cancelled', cancelledAt: new Date() } });
+            result = 'cancelled';
+        }
+        else {
+            const s = (await (0, wow_service_1.membershipSavings)([m.id])).get(m.id);
+            if (s.orders === 0) {
+                await prisma_1.prisma.wowMembership.update({ where: { id: m.id }, data: { status: 'refund_requested', cancelledAt: new Date(), cancelRequested: true } });
+                result = 'refund_requested';
+            }
+            else {
+                await prisma_1.prisma.wowMembership.update({ where: { id: m.id }, data: { cancelRequested: true } });
+                result = 'no_renew';
+            }
+        }
+        const messages = {
+            cancelled: 'Подписка отменена.',
+            refund_requested: 'Подписка отменена. Покупок со скидкой не было — вернём деньги полностью.',
+            no_renew: 'Продление отключено. Скидка работает до конца оплаченного месяца, деньги за него не возвращаются, так как были покупки со скидкой.',
+        };
+        res.json({ result, message: messages[result], ...(await wowStatusFor(phone)) });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Wow] POST /wow/cancel упал');
+        res.status(500).json({ error: 'Не удалось отменить подписку', details: String(err?.message ?? err) });
+    }
+});
+/** Уведомить покупателя о подтверждении подписки (используется админкой). */
+async function notifyWowActivated(phone, endsAt) {
+    const d = endsAt.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', timeZone: 'Asia/Almaty' });
+    await (0, wow_service_1.pushToCustomer)(phone, 'Подписка Вау подключена', `Скидки Вау действуют до ${d}. Приятных покупок!`);
+}
+//# sourceMappingURL=shop.routes.js.map

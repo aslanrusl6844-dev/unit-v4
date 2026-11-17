@@ -1,0 +1,340 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.teezClient = void 0;
+exports.mapTeezStatus = mapTeezStatus;
+exports.mapTeezOrder = mapTeezOrder;
+const axios_1 = __importDefault(require("axios"));
+const env_1 = require("../config/env");
+const logger_1 = require("../utils/logger");
+const prisma_1 = require("../db/prisma");
+/**
+ * Клиент Teez Seller API (маркетплейс Teez / Freedom Market, teez.kz).
+ * Документация: https://api-docs.teez.kz/
+ * Адрес API (с осени 2026): https://api.teez.kz — старый seller-api.teez.kz отвечает 404.
+ *
+ * Что умеет API (и что НЕТ — важно не обещать лишнего):
+ * - заказы (POST /api/seller/v1/orders/list): продажи, возвраты, комиссия и
+ *   сумма к выплате по каждой строке;
+ * - товары (POST /api/seller/v1/products/list и /products/details): статус,
+ *   остаток, число продаж, цена;
+ * - справочники (категории, бренды, характеристики).
+ * Поисковой аналитики, показов и рекламы в API Teez НЕТ.
+ *
+ * Авторизация: POST /api/v1/auth/token с { clientId, clientSecret } → JWT на
+ * 1 час (Bearer). Лимиты: токен — 30 запросов в минуту, остальное — 100 в
+ * минуту на один clientId.
+ *
+ * Ключи берутся из формы «Настройки» (таблица TeezStore), как у остальных
+ * площадок.
+ */
+const MAX_PAGES_SAFETY = 100;
+const PAGE_SIZE = 100;
+const PACING_DELAY_MS = 650; // 100 запросов/мин = 1 запрос на 0.6 с
+const MAX_429_RETRIES = 3;
+const REQUEST_TIMEOUT_MS = 30_000;
+const TOKEN_SAFETY_MARGIN_MS = 60_000;
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+const num = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+};
+const round2 = (n) => Math.round(n * 100) / 100;
+/** Статус Teez → наши статусы (те же слова, что у Kaspi, чтобы работали подписи и фильтры в панели). */
+function mapTeezStatus(statusKey, netQuantity) {
+    const key = String(statusKey ?? '').toLowerCase();
+    if (key === 'canceled' || key === 'cancelled')
+        return 'CANCELLED';
+    // Всё возвращено — это не продажа (NON_SALE_STATUSES исключает RETURNED из выручки).
+    if (netQuantity <= 0)
+        return 'RETURNED';
+    if (key === 'received')
+        return 'COMPLETED';
+    return 'NEW'; // pending («В обработке») и любые неизвестные
+}
+/**
+ * Одна строка заказа Teez → нормализованный заказ.
+ * Деньги берём ровно те, что вернул Teez (комиссия и выплата посчитаны
+ * площадкой), ничего не выдумываем. При частичном возврате считаем только
+ * оставшиеся штуки.
+ */
+function mapTeezOrder(row) {
+    const externalId = String(row.orderGuid || row.orderNumber || row.orderId || '').trim();
+    if (!externalId || !row.createdDate)
+        return null;
+    const quantity = Math.max(1, Math.round(num(row.quantity)) || 1);
+    const returned = Math.min(quantity, Math.max(0, Math.round(num(row.quantityReturned))));
+    const netQuantity = quantity - returned;
+    const unitPrice = num(row.price) || (quantity > 0 ? num(row.totalPrice) / quantity : 0);
+    const unitCommission = row.commissionAmount != null
+        ? num(row.commissionAmount)
+        : quantity > 0
+            ? num(row.totalCommissionAmount) / quantity
+            : 0;
+    // Для отменённого/полностью возвращённого заказа деньги не считаем продажей,
+    // но саму строку сохраняем (она видна в «Заказах» зачёркнутой).
+    const effectiveQty = netQuantity > 0 ? netQuantity : quantity;
+    const status = mapTeezStatus(row.statusKey, netQuantity);
+    return {
+        externalId,
+        marketplace: 'TEEZ',
+        status,
+        orderDate: new Date(row.createdDate),
+        deliveryType: undefined,
+        city: undefined,
+        totalRevenue: round2(unitPrice * effectiveQty),
+        marketplaceCommission: round2(unitCommission * effectiveQty),
+        logisticsCost: 0,
+        acquiringCost: 0,
+        otherFees: 0,
+        // К выплате — ровно то, что посчитал Teez; продажа засчитана, когда покупатель получил заказ.
+        payoutAmount: netQuantity > 0 && (row.payoutAmount != null || row.totalPayoutAmount != null)
+            ? round2(row.payoutAmount != null ? num(row.payoutAmount) * netQuantity : num(row.totalPayoutAmount) * (netQuantity / quantity))
+            : null,
+        settledAt: status === 'COMPLETED' && row.receivedDate ? new Date(row.receivedDate) : null,
+        items: [
+            {
+                externalSku: String(row.barcode || row.orderNumber || externalId),
+                name: String(row.productName || `Товар Teez ${row.barcode ?? ''}`).trim(),
+                quantity: effectiveQty,
+                price: unitPrice,
+            },
+        ],
+        raw: row,
+    };
+}
+class TeezClient {
+    token = null;
+    async getCredentials() {
+        const store = await prisma_1.prisma.teezStore.findFirst({ orderBy: { updatedAt: 'desc' } });
+        if (store?.clientId && store.clientSecret)
+            return { clientId: store.clientId, clientSecret: store.clientSecret };
+        return null;
+    }
+    async isConfigured() {
+        return (await this.getCredentials()) != null;
+    }
+    /** Сбросить кэш токена (после смены ключей в «Настройках»). */
+    resetToken() {
+        this.token = null;
+    }
+    /** Токен авторизации; кэшируется до истечения (живёт ~1 час). */
+    async getToken(creds) {
+        const credentials = creds ?? (await this.getCredentials());
+        if (!credentials)
+            throw new Error('Teez: ключи не заданы — добавьте Client ID и ключ в разделе «Настройки».');
+        if (this.token &&
+            this.token.clientId === credentials.clientId &&
+            this.token.expiresAt - TOKEN_SAFETY_MARGIN_MS > Date.now()) {
+            return this.token.value;
+        }
+        try {
+            const res = await axios_1.default.post(`${env_1.env.teez.baseUrl}/api/v1/auth/token`, { clientId: credentials.clientId, clientSecret: credentials.clientSecret }, { timeout: REQUEST_TIMEOUT_MS, headers: { 'Content-Type': 'application/json' } });
+            const accessToken = String(res.data?.accessToken ?? '');
+            if (!accessToken)
+                throw new Error('Teez не вернул токен авторизации');
+            const expiresInSec = num(res.data?.expiresIn) || 3600;
+            this.token = { value: accessToken, expiresAt: Date.now() + expiresInSec * 1000, clientId: credentials.clientId };
+            return accessToken;
+        }
+        catch (err) {
+            const status = err?.response?.status;
+            if (status === 400 || status === 401 || status === 403) {
+                throw new Error('Teez отклонил Client ID или ключ — проверьте, что ключ создан в Настройки → Ключи API и скопирован целиком.');
+            }
+            if (status === 429)
+                throw new Error('Teez временно ограничил запросы токена (не более 30 в минуту), подождите минуту.');
+            // Показываем, что именно ответил сервер Teez (статус и начало тела), иначе по «404» не понять причину.
+            let body = '';
+            try {
+                const raw = err?.response?.data;
+                body = raw == null ? '' : typeof raw === 'string' ? raw : JSON.stringify(raw);
+            }
+            catch {
+                body = '';
+            }
+            const bodyPart = body ? ` — ответ Teez: ${body.slice(0, 300)}` : ' — тело ответа пустое';
+            const probe = status === 404 ? await this.probeEndpoints() : '';
+            const hint = status === 404
+                ? ' Teez ответил «не найдено»: проверьте Client ID (колонка «ID клиента» в Настройки → Ключи API) и что ключ создан/не отключён.'
+                : '';
+            throw new Error(`Не удалось получить токен Teez (${status ?? 'нет ответа'}): ${String(err?.message ?? err)}${bodyPart}.${hint}${probe}`);
+        }
+    }
+    /**
+     * Диагностика при 404 на токене: три безопасных запроса БЕЗ настоящих ключей
+     * (тестовые значения) — по ним видно, доступен ли сервер Teez с нашего хостинга
+     * и существует ли путь. Возвращает короткую строку для сообщения об ошибке.
+     */
+    async probeEndpoints() {
+        const base = env_1.env.teez.baseUrl;
+        const one = async (label, run) => {
+            try {
+                const res = await run();
+                return `${label}=${res.status}`;
+            }
+            catch (err) {
+                const r = err?.response;
+                if (!r)
+                    return `${label}=нет ответа (${String(err?.code ?? err?.message ?? err).slice(0, 40)})`;
+                const server = r.headers?.server ? ` server:${String(r.headers.server).slice(0, 30)}` : '';
+                const raw = typeof r.data === 'string' ? r.data : r.data == null ? '' : JSON.stringify(r.data);
+                const snippet = raw ? ` «${raw.replace(/\s+/g, ' ').slice(0, 80)}»` : ' пусто';
+                return `${label}=${r.status}${server}${snippet}`;
+            }
+        };
+        const cfg = { timeout: 8000, headers: { 'Content-Type': 'application/json' } };
+        const parts = await Promise.all([
+            one('токен(тест-ключи)', () => axios_1.default.post(`${base}/api/v1/auth/token`, { clientId: 'probe', clientSecret: 'probe1234' }, cfg)),
+            one('корень', () => axios_1.default.get(`${base}/`, { timeout: 8000 })),
+            one('категории(без токена)', () => axios_1.default.get(`${base}/api/seller/v1/categories`, { timeout: 8000 })),
+        ]);
+        return ` Диагностика: ${parts.join('; ')}.`;
+    }
+    /** Проверка ключей: удалось ли получить токен. Не бросает исключение. */
+    async testConnection(creds) {
+        try {
+            this.token = null;
+            await this.getToken(creds);
+            return { ok: true };
+        }
+        catch (err) {
+            return { ok: false, error: String(err?.message ?? err) };
+        }
+    }
+    async post(path, body, context) {
+        for (let attempt = 0; attempt <= MAX_429_RETRIES; attempt++) {
+            const token = await this.getToken();
+            try {
+                const res = await axios_1.default.post(`${env_1.env.teez.baseUrl}${path}`, body, {
+                    timeout: REQUEST_TIMEOUT_MS,
+                    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+                });
+                return res.data;
+            }
+            catch (err) {
+                const status = err?.response?.status;
+                if (status === 401 && attempt === 0) {
+                    // Токен мог истечь раньше срока — берём новый и повторяем один раз.
+                    this.token = null;
+                    continue;
+                }
+                if (status === 429) {
+                    if (attempt >= MAX_429_RETRIES) {
+                        throw new Error('Teez временно ограничил запросы (лимит 100 в минуту), подождите минуту и повторите синхронизацию.');
+                    }
+                    const waitSec = Number(err.response?.headers?.['retry-after']) > 0 ? Number(err.response.headers['retry-after']) : 20;
+                    logger_1.logger.warn(`[Teez] 429 (${context}) — жду ${waitSec}с, попытка ${attempt + 1}/${MAX_429_RETRIES}`);
+                    await sleep(waitSec * 1000);
+                    continue;
+                }
+                const details = err?.response?.data?.errorMessage ?? err?.response?.data?.message ?? err?.message ?? err;
+                const wrapped = new Error(`Teez (${context}): ${String(details)}`);
+                wrapped.status = status;
+                throw wrapped;
+            }
+        }
+        throw new Error(`Teez (${context}): не удалось выполнить запрос`);
+    }
+    /** Одна страница заказов; при отказе формата сортировки пробуем запасные варианты. */
+    async fetchOrdersPage(pageNumber, sortVariant) {
+        const sortings = [
+            { sortBy: 'createdDate', sortDirection: 'Desc' },
+            { sortBy: 'CreatedDate', sortDirection: 'desc' },
+            {}, // без сортировки — читаем все страницы
+        ];
+        const body = { pageNumber, pageSize: PAGE_SIZE, ...sortings[sortVariant] };
+        const data = await this.post('/api/seller/v1/orders/list', body, 'заказы');
+        return { orders: data.orders ?? [], totalPages: num(data.totalPages) };
+    }
+    /**
+     * Заказы за период. У API нет фильтра по датам — идём по страницам от новых
+     * к старым и останавливаемся, когда страница целиком старше dateFrom.
+     * Если сортировку сервер не принял, читаем всё и фильтруем у себя.
+     */
+    async fetchOrders(opts) {
+        const result = [];
+        let sortVariant = 0;
+        let page = 1;
+        while (page <= MAX_PAGES_SAFETY) {
+            let data;
+            try {
+                data = await this.fetchOrdersPage(page, sortVariant);
+            }
+            catch (err) {
+                // 400 на первой странице — вероятно, формат сортировки; пробуем следующий вариант.
+                if (err?.status === 400 && page === 1 && sortVariant < 2) {
+                    sortVariant += 1;
+                    logger_1.logger.warn(`[Teez] Сервер не принял сортировку заказов, пробую вариант ${sortVariant}`);
+                    continue;
+                }
+                throw err;
+            }
+            let oldestOnPage = Infinity;
+            for (const row of data.orders) {
+                const created = row.createdDate ? new Date(row.createdDate).getTime() : NaN;
+                if (Number.isFinite(created))
+                    oldestOnPage = Math.min(oldestOnPage, created);
+                if (!Number.isFinite(created))
+                    continue;
+                if (created < opts.dateFrom.getTime() || created > opts.dateTo.getTime())
+                    continue;
+                const mapped = mapTeezOrder(row);
+                if (mapped)
+                    result.push(mapped);
+            }
+            const lastPage = data.orders.length === 0 || (data.totalPages > 0 && page >= data.totalPages);
+            const passedRange = sortVariant < 2 && oldestOnPage < opts.dateFrom.getTime();
+            if (lastPage || passedRange)
+                break;
+            page += 1;
+            await sleep(PACING_DELAY_MS);
+        }
+        return result;
+    }
+    /**
+     * Детали товаров: POST /api/seller/v1/products/details (до 30 id за раз).
+     * У каждого товара — SKU со штрихкодом (по нему приходят заказы), ценой и фото.
+     */
+    async fetchProductDetails(productIds) {
+        const out = [];
+        for (let i = 0; i < productIds.length; i += 30) {
+            const batch = productIds.slice(i, i + 30);
+            const data = await this.post('/api/seller/v1/products/details', { productIds: batch }, 'детали товаров');
+            for (const p of data.products ?? []) {
+                const name = String(p?.name?.rus || p?.name?.kaz || '').trim();
+                for (const sku of p.skus ?? []) {
+                    out.push({
+                        productId: Number(p.productId),
+                        name,
+                        skuId: Number(sku.skuId),
+                        barcode: sku.skuBarcode ? String(sku.skuBarcode).trim() : null,
+                        price: sku.price != null ? Number(sku.price) : null,
+                        photos: (sku.photos ?? []).slice().sort((a, b) => (a.order ?? 0) - (b.order ?? 0)).map((x) => x.url).filter(Boolean),
+                    });
+                }
+            }
+            if (i + 30 < productIds.length)
+                await sleep(PACING_DELAY_MS);
+        }
+        return out;
+    }
+    /** Список товаров магазина (статус, остаток, число продаж) — постранично, до конца. */
+    async fetchProducts() {
+        const products = [];
+        for (let page = 1; page <= MAX_PAGES_SAFETY; page++) {
+            const data = await this.post('/api/seller/v1/products/list', { pageNumber: page, pageSize: PAGE_SIZE, sortBy: 'Id', sortDirection: 'Asc' }, 'товары');
+            products.push(...(data.products ?? []));
+            if (!data.products?.length || page >= num(data.totalPages))
+                break;
+            await sleep(PACING_DELAY_MS);
+        }
+        return products;
+    }
+}
+exports.teezClient = new TeezClient();
+//# sourceMappingURL=teez.client.js.map

@@ -1,0 +1,2493 @@
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.shopAdminRouter = void 0;
+const banners_1 = require("../config/banners");
+const express_1 = __importStar(require("express"));
+const blob_1 = require("@vercel/blob");
+const env_1 = require("../config/env");
+const crypto_1 = require("crypto");
+const zod_1 = require("zod");
+const jszip_1 = __importDefault(require("jszip"));
+const prisma_1 = require("../db/prisma");
+const logger_1 = require("../utils/logger");
+const shop_routes_1 = require("./shop.routes");
+const ozonToMyMarket_service_1 = require("../services/ozonToMyMarket.service");
+const wow_service_1 = require("../services/wow.service");
+const shopAnalytics_service_1 = require("../services/shopAnalytics.service");
+const shopGeo_service_1 = require("../services/shopGeo.service");
+const waybill_service_1 = require("../services/waybill.service");
+const shopAnalytics_service_2 = require("../services/shopAnalytics.service");
+const shopArticle_1 = require("../services/shopArticle");
+const shopCategories_1 = require("../config/shopCategories");
+const sync_service_1 = require("../services/sync.service");
+const shopCatalogCanon_1 = require("../config/shopCatalogCanon");
+const categoryHints_1 = require("../services/categoryHints");
+const telegram_1 = require("../lib/telegram");
+const rekassa_service_1 = require("../services/rekassa.service");
+const sms_service_1 = require("../services/sms.service");
+const expoPush_1 = require("../lib/expoPush");
+const cities_1 = require("../config/cities");
+const streets_service_1 = require("../services/streets.service");
+const delivery_1 = require("../config/delivery");
+const catalogTypeImport_1 = require("../services/catalogTypeImport");
+exports.shopAdminRouter = (0, express_1.Router)();
+/**
+ * Статистика для вкладки «Главная» My Market — ТОЛЬКО данные ShopOrder
+ * (канал APP), никогда не подмешивает заказы Kaspi/Ozon/WB. Возврат
+ * пока считается по статусу "cancelled" на уровне ShopOrder — отдельной
+ * модели возвратов в этой версии нет, честно так и считаем (не выдумываем
+ * более сложную модель возвратов сверх того, что реально есть).
+ */
+exports.shopAdminRouter.get('/dashboard', async (_req, res) => {
+    try {
+        const since = new Date();
+        since.setDate(since.getDate() - 13); // включая сегодня — 14 дней
+        since.setHours(0, 0, 0, 0);
+        const orders = await prisma_1.prisma.shopOrder.findMany({ where: { createdAt: { gte: since } } });
+        // График по дням — считаем по дате СОЗДАНИЯ заказа (это ближе к "заказано",
+        // а не к дате оплаты/выдачи).
+        const byDay = new Map();
+        for (let i = 0; i < 14; i++) {
+            const d = new Date(since);
+            d.setDate(d.getDate() + i);
+            byDay.set(d.toISOString().slice(0, 10), { count: 0, revenue: 0 });
+        }
+        for (const o of orders) {
+            const key = o.createdAt.toISOString().slice(0, 10);
+            const bucket = byDay.get(key);
+            if (bucket) {
+                bucket.count += 1;
+                bucket.revenue += o.total;
+            }
+        }
+        const allOrders = await prisma_1.prisma.shopOrder.findMany();
+        const totalRevenue = allOrders.reduce((sum, o) => sum + o.total, 0);
+        const totalItems = allOrders.reduce((sum, o) => {
+            try {
+                const items = JSON.parse(o.items);
+                return sum + items.reduce((s, i) => s + i.quantity, 0);
+            }
+            catch {
+                return sum;
+            }
+        }, 0);
+        res.json({
+            chart: Array.from(byDay.entries()).map(([date, v]) => ({ date, ...v })),
+            totalRevenue,
+            totalItems,
+            awaitingAssembly: allOrders.filter((o) => o.status === 'paid').length,
+            // "В доставке" теперь — сумма picked (курьер забрал) и in_transit
+            // (в пути), т.к. отдельного статуса "assembled" в новой цепочке нет.
+            inDelivery: allOrders.filter((o) => o.status === 'picked' || o.status === 'in_transit').length,
+            delivered: allOrders.filter((o) => o.status === 'delivered').length,
+            cancelled: allOrders.filter((o) => o.status === 'cancelled').length,
+        });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] GET /dashboard упал');
+        res.status(500).json({ error: 'Не удалось получить статистику', details: String(err?.message ?? err) });
+    }
+});
+// Список заказов приложения — для вкладки «My Market» в админке.
+/**
+ * Баннеры карусели главной: сколько угодно слайдов (до MAX_CAROUSEL_BANNERS). Первые четыре (0..3)
+ * отдаются всегда — пустые «выключенные» заготовки, если их ещё нет; новые добавляются кнопкой.
+ */
+exports.shopAdminRouter.get('/banners', async (_req, res) => {
+    try {
+        const existing = (await prisma_1.prisma.shopBanner.findMany({ orderBy: { slot: 'asc' } })).filter((b) => (0, banners_1.isCarouselSlot)(b.slot));
+        const bySlot = new Map(existing.map((b) => [b.slot, b]));
+        const base = Array.from({ length: banners_1.CAROUSEL_LAST_SLOT + 1 }, (_, slot) => bySlot.get(slot) ?? {
+            slot, imageUrl: null, title: null, subtitle: null, linkType: null, linkValue: null, active: false,
+        });
+        res.json([...base, ...existing.filter((b) => b.slot > banners_1.CAROUSEL_LAST_SLOT)]);
+    }
+    catch (err) {
+        res.status(500).json({ error: 'Не удалось получить баннеры', details: String(err?.message ?? err) });
+    }
+});
+/** Переход карусели баннеров в приложении. */
+exports.shopAdminRouter.get('/ui-settings', async (_req, res) => {
+    const s = await prisma_1.prisma.shopUiSettings.findUnique({ where: { id: 'main' } }).catch(() => null);
+    res.json({ bannerTransition: (0, banners_1.normalizeTransition)(s?.bannerTransition), showcaseTransition: (0, banners_1.normalizeTransition)(s?.showcaseTransition), captionEffect: (0, banners_1.normalizeCaption)(s?.captionEffect) });
+});
+exports.shopAdminRouter.put('/ui-settings', async (req, res) => {
+    try {
+        const data = {};
+        if (req.body?.bannerTransition !== undefined)
+            data.bannerTransition = (0, banners_1.normalizeTransition)(req.body.bannerTransition);
+        if (req.body?.showcaseTransition !== undefined)
+            data.showcaseTransition = (0, banners_1.normalizeTransition)(req.body.showcaseTransition);
+        if (req.body?.captionEffect !== undefined)
+            data.captionEffect = (0, banners_1.normalizeCaption)(req.body.captionEffect);
+        const saved = await prisma_1.prisma.shopUiSettings.upsert({ where: { id: 'main' }, create: { id: 'main', ...data }, update: data });
+        res.json({ bannerTransition: saved.bannerTransition, showcaseTransition: saved.showcaseTransition, captionEffect: saved.captionEffect });
+    }
+    catch (err) {
+        res.status(500).json({ error: 'Не удалось сохранить', details: String(err?.message ?? err) });
+    }
+});
+/** Новый пустой слайд в конец карусели. */
+exports.shopAdminRouter.post('/banners', async (_req, res) => {
+    try {
+        const all = await prisma_1.prisma.shopBanner.findMany({ select: { slot: true } });
+        const used = all.map((b) => b.slot);
+        const count = new Set([...used.filter(banners_1.isCarouselSlot), 0, 1, 2, 3]).size;
+        if (count >= banners_1.MAX_CAROUSEL_BANNERS)
+            return res.status(400).json({ error: `Не больше ${banners_1.MAX_CAROUSEL_BANNERS} баннеров` });
+        const slot = (0, banners_1.nextCarouselSlot)([...used, banners_1.CAROUSEL_LAST_SLOT]);
+        const banner = await prisma_1.prisma.shopBanner.create({ data: { slot, active: false } });
+        res.json(banner);
+    }
+    catch (err) {
+        res.status(500).json({ error: 'Не удалось добавить баннер', details: String(err?.message ?? err) });
+    }
+});
+/** Удалить слайд. Первые четыре после удаления становятся пустыми заготовками. */
+exports.shopAdminRouter.delete('/banners/:slot', async (req, res) => {
+    const slot = Number(req.params.slot);
+    if (!(0, banners_1.isCarouselSlot)(slot))
+        return res.status(400).json({ error: 'Неверный номер баннера' });
+    try {
+        await prisma_1.prisma.shopBanner.deleteMany({ where: { slot } });
+        res.json({ ok: true });
+    }
+    catch (err) {
+        res.status(500).json({ error: 'Не удалось удалить баннер', details: String(err?.message ?? err) });
+    }
+});
+const bannerSchema = zod_1.z.object({
+    imageUrl: zod_1.z.string().optional().nullable(),
+    title: zod_1.z.string().optional().nullable(),
+    subtitle: zod_1.z.string().optional().nullable(),
+    linkType: zod_1.z.enum(['sku', 'category']).optional().nullable(),
+    linkValue: zod_1.z.string().optional().nullable(),
+    active: zod_1.z.boolean().optional(),
+});
+exports.shopAdminRouter.put('/banners/:slot', async (req, res) => {
+    const slot = Number(req.params.slot);
+    if (!(0, banners_1.isCarouselSlot)(slot)) {
+        return res.status(400).json({ error: 'Неверный номер баннера' });
+    }
+    const parsed = bannerSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: parsed.error.flatten() });
+    try {
+        const banner = await prisma_1.prisma.shopBanner.upsert({
+            where: { slot },
+            update: parsed.data,
+            create: { slot, ...parsed.data },
+        });
+        res.json(banner);
+    }
+    catch (err) {
+        res.status(500).json({ error: 'Не удалось сохранить баннер', details: String(err?.message ?? err) });
+    }
+});
+/** Реклама под витринами (слот 4): одна полоса. GET отдаёт запись или пустую заготовку. */
+exports.shopAdminRouter.get('/under-showcase-banner', async (_req, res) => {
+    try {
+        const b = await prisma_1.prisma.shopBanner.findUnique({ where: { slot: banners_1.UNDER_SHOWCASE_SLOT } });
+        res.json(b ?? { slot: banners_1.UNDER_SHOWCASE_SLOT, imageUrl: null, linkType: null, linkValue: null, active: false });
+    }
+    catch (err) {
+        res.status(500).json({ error: 'Не удалось получить рекламу под витринами', details: String(err?.message ?? err) });
+    }
+});
+const underShowcaseSchema = zod_1.z.object({
+    imageUrl: zod_1.z.string().optional().nullable(),
+    linkType: zod_1.z.enum(['sku', 'category']).optional().nullable(),
+    linkValue: zod_1.z.string().optional().nullable(),
+    active: zod_1.z.boolean().optional(),
+});
+exports.shopAdminRouter.put('/under-showcase-banner', async (req, res) => {
+    const parsed = underShowcaseSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: parsed.error.flatten() });
+    try {
+        const banner = await prisma_1.prisma.shopBanner.upsert({
+            where: { slot: banners_1.UNDER_SHOWCASE_SLOT },
+            update: parsed.data,
+            create: { slot: banners_1.UNDER_SHOWCASE_SLOT, ...parsed.data },
+        });
+        res.json(banner);
+    }
+    catch (err) {
+        res.status(500).json({ error: 'Не удалось сохранить рекламу под витринами', details: String(err?.message ?? err) });
+    }
+});
+/** Улицы по городам: сколько загружено из OpenStreetMap. */
+exports.shopAdminRouter.get('/streets/stats', async (_req, res) => {
+    try {
+        const grouped = await prisma_1.prisma.shopStreet.groupBy({ by: ['city'], _count: { _all: true } });
+        const byCity = new Map(grouped.map((g) => [g.city, g._count._all]));
+        res.json({ cities: cities_1.CITY_IMAGE_CITIES.map((city) => ({ city, count: byCity.get(city) ?? 0 })) });
+    }
+    catch (err) {
+        res.status(500).json({ error: 'Не удалось получить число улиц', details: String(err?.message ?? err) });
+    }
+});
+/** Загрузка улиц одного города из OpenStreetMap (по одному городу за запрос — укладываемся во время функции). */
+exports.shopAdminRouter.post('/streets/import', async (req, res) => {
+    const city = (0, cities_1.resolveCity)(req.body?.city);
+    if (!city)
+        return res.status(400).json({ error: 'Неизвестный город' });
+    try {
+        const names = await (0, streets_service_1.fetchCityStreets)(city);
+        const count = await (0, streets_service_1.saveCityStreets)(city, names);
+        res.json({ city, count });
+    }
+    catch (err) {
+        logger_1.logger.error({ err, city }, 'streets import failed');
+        res.status(502).json({ error: `Не удалось загрузить улицы: ${String(err?.message ?? err)}` });
+    }
+});
+/** Пример напоминания «вы смотрели / вы оставили» на один номер (кнопки в «Рассылке»). */
+exports.shopAdminRouter.post('/reminders/test', async (req, res) => {
+    const kind = req.body?.kind === 'cart' ? 'cart' : 'view';
+    try {
+        const { sendTestReminder } = await Promise.resolve().then(() => __importStar(require('../services/cartReminder.service')));
+        const r = await sendTestReminder(kind, String(req.body?.phone ?? ''));
+        res.status(r.ok ? 200 : 400).json(r.ok ? r : { error: r.message });
+    }
+    catch (err) {
+        res.status(500).json({ error: String(err?.message ?? err) });
+    }
+});
+// Число отзывов по списку sku разом — для колонки "Отзывы" в таблице
+// товаров My Market (без x-app-key, это админский путь).
+exports.shopAdminRouter.get('/reviews-count', async (req, res) => {
+    try {
+        const skusParam = String(req.query.skus ?? '');
+        const skus = skusParam.split(',').map((s) => s.trim()).filter(Boolean);
+        if (!skus.length)
+            return res.json({});
+        const grouped = await prisma_1.prisma.shopReview.groupBy({ by: ['sku'], where: { sku: { in: skus } }, _count: { sku: true } });
+        const result = {};
+        grouped.forEach((g) => { result[g.sku] = g._count.sku; });
+        res.json(result);
+    }
+    catch (err) {
+        res.status(500).json({ error: 'Не удалось получить число отзывов', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * Счётчики по статусам заказа — для значков на вкладках. Один groupBy на
+ * все статусы сразу, не по запросу на каждую вкладку. "Все"/"В пути" сюда
+ * не входят — бейджи нужны только на пяти конкретных вкладках (см. задачу).
+ */
+exports.shopAdminRouter.get('/orders/status-counts', async (_req, res) => {
+    try {
+        // Архив в счётчики рабочих вкладок не входит — см. задачу.
+        const grouped = await prisma_1.prisma.shopOrder.groupBy({ by: ['status'], where: { archived: false }, _count: { status: true } });
+        const counts = {};
+        for (const g of grouped) {
+            counts[g.status] = g._count.status;
+        }
+        res.json(counts);
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] GET /orders/status-counts упал');
+        res.status(500).json({ error: 'Не удалось получить счётчики заказов', details: String(err?.message ?? err) });
+    }
+});
+exports.shopAdminRouter.get('/orders', async (req, res) => {
+    try {
+        const status = req.query.status;
+        const archivedTab = req.query.archived === 'true';
+        // "Архив" — отдельная вкладка, игнорирует status целиком (там все
+        // архивные вперемешку, каким бы ни был их status). Остальные вкладки
+        // ("Все" и по статусу) теперь ВСЕГДА исключают архивные — заказ,
+        // отправленный в архив, пропадает и из "Все", и из рабочих вкладок.
+        const where = archivedTab
+            ? { archived: true }
+            : status
+                ? { status, archived: false }
+                : { status: { not: 'cancelled' }, archived: false };
+        const orders = await prisma_1.prisma.shopOrder.findMany({
+            where,
+            orderBy: { createdAt: 'desc' },
+            take: 500,
+            include: { courier: true, payout: true }, // курьер и выплата — только у доставленных, у остальных null
+        });
+        // Чеки re:Kassa по этим заказам (продажа / возврат).
+        const receipts = orders.length
+            ? await prisma_1.prisma.fiscalReceipt.findMany({ where: { orderId: { in: orders.map((o) => o.id) } } })
+            : [];
+        const byOrder = new Map();
+        for (const r of receipts)
+            byOrder.set(r.orderId, [...(byOrder.get(r.orderId) ?? []), { ...r, qrUrl: (0, rekassa_service_1.ofdReceiptUrl)(r.qrUrl) }]);
+        res.json(orders.map((o) => ({ ...o, items: JSON.parse(o.items), receipts: byOrder.get(o.id) ?? [] })));
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] GET /orders упал');
+        res.status(500).json({ error: 'Не удалось получить заказы', details: String(err?.message ?? err) });
+    }
+});
+const orderIdsSchema = zod_1.z.object({ ids: zod_1.z.array(zod_1.z.string()).min(1) });
+/**
+ * «Машина выехала» (пачкой): оплаченные заказы в ДРУГИЕ города получают shippedAt — в приложении у клиента
+ * запускается «День 1 из N». Заказы в Алматы (доставка на следующий день) и уже выехавшие пропускаем.
+ * Клиенту уходит пуш.
+ */
+exports.shopAdminRouter.post('/orders/dispatch', async (req, res) => {
+    const parsed = orderIdsSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: parsed.error.flatten() });
+    try {
+        const orders = await prisma_1.prisma.shopOrder.findMany({ where: { id: { in: parsed.data.ids } } });
+        const now = new Date();
+        let updated = 0, skipped = 0;
+        for (const o of orders) {
+            const isAlmaty = ((0, cities_1.resolveCity)(o.city) ?? '') === delivery_1.HUB_CITY;
+            if (isAlmaty || o.status !== 'paid' || o.shippedAt) {
+                skipped++;
+                continue;
+            }
+            await prisma_1.prisma.shopOrder.update({ where: { id: o.id }, data: { shippedAt: now } });
+            updated++;
+            const phone = (0, shop_routes_1.normalizePhone)(o.phone);
+            const city = (0, cities_1.resolveCity)(o.city) ?? String(o.city ?? '');
+            if (phone)
+                await (0, expoPush_1.sendDeliveryProgressPush)(phone, `Заказ ${o.number} выехал из Алматы в ${city}. Следите за ходом доставки в разделе «Заказы».`, o.number, 'shipped');
+        }
+        res.json({ ok: true, updated, skipped });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] POST /orders/dispatch упал');
+        res.status(500).json({ error: 'Не удалось отметить «Машина выехала»', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * «Машина прибыла» (пачкой): arrivedAt — заказ в городе, дальше его берёт местный курьер. Если «выехала»
+ * не нажимали — shippedAt тоже ставим. Клиенту уходит пуш «Заказ приехал в город».
+ */
+exports.shopAdminRouter.post('/orders/arrive', async (req, res) => {
+    const parsed = orderIdsSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: parsed.error.flatten() });
+    try {
+        const orders = await prisma_1.prisma.shopOrder.findMany({ where: { id: { in: parsed.data.ids } } });
+        const now = new Date();
+        let updated = 0, skipped = 0;
+        for (const o of orders) {
+            const isAlmaty = ((0, cities_1.resolveCity)(o.city) ?? '') === delivery_1.HUB_CITY;
+            if (isAlmaty || o.status !== 'paid' || o.arrivedAt) {
+                skipped++;
+                continue;
+            }
+            await prisma_1.prisma.shopOrder.update({ where: { id: o.id }, data: { arrivedAt: now, shippedAt: o.shippedAt ?? now } });
+            updated++;
+            const phone = (0, shop_routes_1.normalizePhone)(o.phone);
+            const city = (0, cities_1.resolveCity)(o.city) ?? String(o.city ?? '');
+            if (phone)
+                await (0, expoPush_1.sendDeliveryProgressPush)(phone, `Заказ ${o.number} приехал в ${city}. Курьер скоро привезёт его вам.`, o.number, 'arrived');
+        }
+        res.json({ ok: true, updated, skipped });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] POST /orders/arrive упал');
+        res.status(500).json({ error: 'Не удалось отметить «Машина прибыла»', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * «В архив» (пачкой) — ТОЛЬКО archived:true, status заказа не трогаем,
+ * остаток/деньги/выплата курьеру тоже не трогаются (это просто флаг
+ * видимости во вкладках, не изменение самого заказа).
+ */
+exports.shopAdminRouter.post('/orders/archive', async (req, res) => {
+    const parsed = orderIdsSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: parsed.error.flatten() });
+    try {
+        const result = await prisma_1.prisma.shopOrder.updateMany({ where: { id: { in: parsed.data.ids } }, data: { archived: true } });
+        res.json({ ok: true, updated: result.count });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] POST /orders/archive упал');
+        res.status(500).json({ error: 'Не удалось перенести заказы в архив', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * Удаление заказов пачкой — безвозвратно (подтверждение на клиенте).
+ * Позиции заказа (items) удаляются сами собой — это JSON-поле на самой
+ * строке ShopOrder, не отдельная таблица. CourierPayout (если был — заказ
+ * уже выдан и выплата начислена) удаляем ПЕРВЫМ в той же транзакции: без
+ * этого внешний ключ orderId не даст удалить сам заказ. Остаток на витрину
+ * нигде здесь не меняем — ни в плюс, ни в минус.
+ */
+exports.shopAdminRouter.post('/orders/delete', async (req, res) => {
+    const parsed = orderIdsSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: parsed.error.flatten() });
+    try {
+        const [, deleted] = await prisma_1.prisma.$transaction([
+            prisma_1.prisma.courierPayout.deleteMany({ where: { orderId: { in: parsed.data.ids } } }),
+            prisma_1.prisma.shopOrder.deleteMany({ where: { id: { in: parsed.data.ids } } }),
+        ]);
+        res.json({ ok: true, deleted: deleted.count });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] POST /orders/delete упал');
+        res.status(500).json({ error: 'Не удалось удалить заказы', details: String(err?.message ?? err) });
+    }
+});
+const WAYBILL_ZIP_LIMIT = 50;
+// Русские метки для имени файла — те же, что на вкладках, но в имени
+// файла без заглавных букв и пробелов (дефис вместо пробела).
+const WAYBILL_ZIP_STATUS_LABELS = {
+    '': 'все',
+    pending_payment: 'ожидает-оплаты',
+    paid: 'оплачен',
+    picked: 'курьер-забрал',
+    in_transit: 'в-пути',
+    delivered: 'выдан',
+    cancelled: 'отменён',
+};
+/**
+ * ZIP-пачка накладных для текущей открытой вкладки заказов. ВАЖНО:
+ * зарегистрирован ДО GET /orders/:id ниже — иначе Express принял бы
+ * "waybills-zip" за параметр :id и сюда бы запрос никогда не долетал.
+ *
+ * Отменённые заказы НИКОГДА не попадают в пачку — даже если явно запросить
+ * status=cancelled (тогда результат после фильтра будет пуст, и это
+ * корректно даёт "Нет заказов для печати", а не отдельный частный случай).
+ * Один и тот же generateWaybillPdf, что и у одиночной кнопки «Накладная» —
+ * макет гарантированно тот же самый, не отдельная копия логики.
+ */
+exports.shopAdminRouter.get('/orders/waybills-zip', async (req, res) => {
+    try {
+        const status = req.query.status || '';
+        const baseWhere = status ? { status } : { status: { not: 'cancelled' } };
+        const allMatching = await prisma_1.prisma.shopOrder.findMany({ where: baseWhere, orderBy: { createdAt: 'desc' } });
+        const eligible = allMatching.filter((o) => o.status !== 'cancelled');
+        if (!eligible.length) {
+            return res.status(404).json({ error: 'Нет заказов для печати' });
+        }
+        const total = eligible.length;
+        const batch = eligible.slice(0, WAYBILL_ZIP_LIMIT);
+        const zip = new jszip_1.default();
+        let includedCount = 0;
+        for (const order of batch) {
+            let items = [];
+            try {
+                items = JSON.parse(order.items)
+                    .map((i) => ({ sku: i.sku, name: i.name, quantity: i.quantity }));
+            }
+            catch {
+                items = [];
+            }
+            try {
+                const pdfBuffer = await (0, waybill_service_1.generateWaybillPdf)({
+                    number: order.number,
+                    customerName: order.customerName,
+                    phone: order.phone,
+                    city: order.city,
+                    street: order.street,
+                    house: order.house,
+                    apartment: order.apartment,
+                    entrance: order.entrance,
+                    floor: order.floor,
+                    intercom: order.intercom,
+                    items,
+                });
+                zip.file(`waybill-${order.number}.pdf`, pdfBuffer);
+                includedCount += 1;
+            }
+            catch (err) {
+                // Один заказ не собрался (например, не заполнен адрес) — просто
+                // пропускаем его, остальные в архив всё равно попадают, весь
+                // запрос не роняем.
+                logger_1.logger.warn({ err: String(err?.message ?? err), orderNumber: order.number }, '[Shop Admin] Накладная для заказа не собралась — пропущена в ZIP-пачке');
+            }
+        }
+        if (!includedCount) {
+            return res.status(500).json({ error: 'Ни одна накладная не собралась' });
+        }
+        const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
+        const label = WAYBILL_ZIP_STATUS_LABELS[status] ?? status;
+        const dateStr = new Date().toISOString().slice(0, 10);
+        const filename = `nakladnye-${label}-${dateStr}.zip`;
+        res.setHeader('Content-Type', 'application/zip');
+        res.setHeader('Content-Disposition', `attachment; filename="waybills.zip"; filename*=UTF-8''${encodeURIComponent(filename)}`);
+        // Фронт читает эти два заголовка, чтобы показать "скачано N из M",
+        // если пачка была обрезана лимитом.
+        res.setHeader('X-Waybills-Total', String(total));
+        res.setHeader('X-Waybills-Included', String(includedCount));
+        res.setHeader('Access-Control-Expose-Headers', 'X-Waybills-Total, X-Waybills-Included');
+        res.send(zipBuffer);
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] Ошибка сборки ZIP-пачки накладных');
+        res.status(500).json({ error: 'Не удалось собрать пачку накладных', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * Города для кнопки «Скачать накладные ZIP» — всегда все 14 из того же
+ * списка, что в адресе профиля (KZ_CITY_WHITELIST, см. shopAnalytics), в
+ * том же порядке. В число берутся ТОЛЬКО заказы status=paid, не в архиве,
+ * ещё не скачанные (waybillDownloaded=false). hasDownloadedBefore — был ли
+ * у города хоть один УЖЕ скачанный заказ (для «Скачан» / кнопки «ещё раз»
+ * у города с нулём новых).
+ */
+exports.shopAdminRouter.get('/orders/waybills-cities', async (_req, res) => {
+    try {
+        const orders = await prisma_1.prisma.shopOrder.findMany({
+            where: { status: 'paid', archived: false },
+            select: { city: true, waybillDownloaded: true },
+        });
+        const newCountByCity = new Map();
+        const everDownloadedByCity = new Set();
+        for (const o of orders) {
+            const canonical = (0, shopAnalytics_service_2.normalizeKzCity)(o.city);
+            if (!canonical)
+                continue; // город не из списка 14 — не выдумываем лишний, просто не считаем
+            if (o.waybillDownloaded)
+                everDownloadedByCity.add(canonical);
+            else
+                newCountByCity.set(canonical, (newCountByCity.get(canonical) ?? 0) + 1);
+        }
+        const cities = shopAnalytics_service_2.KZ_CITY_WHITELIST.map((city) => ({
+            city,
+            newCount: newCountByCity.get(city) ?? 0,
+            hasDownloadedBefore: everDownloadedByCity.has(city),
+        }));
+        res.json(cities);
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] GET /orders/waybills-cities упал');
+        res.status(500).json({ error: 'Не удалось получить список городов', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * ZIP накладных ОДНОГО города — либо новых (redownload не передан/false:
+ * status=paid, не в архиве, waybillDownloaded=false), либо уже скачанных
+ * раньше повторно (redownload=true: waybillDownloaded=true). Два города в
+ * один ZIP никогда не попадают — city обязателен и должен быть из списка
+ * 14. После успешной сборки (не redownload) помечаем ВКЛЮЧЁННЫЕ в файл
+ * заказы waybillDownloaded=true — именно включённые, не весь найденный
+ * список: заказ, для которого PDF не собрался, флаг не получает и попадёт
+ * в следующую попытку. Статус заказа, остаток, деньги — нигде не трогаем.
+ */
+exports.shopAdminRouter.get('/orders/waybills-zip-by-city', async (req, res) => {
+    try {
+        const city = String(req.query.city ?? '');
+        if (!shopAnalytics_service_2.KZ_CITY_WHITELIST.includes(city)) {
+            return res.status(400).json({ error: 'Город не из списка 14' });
+        }
+        const redownload = req.query.redownload === 'true';
+        const candidates = await prisma_1.prisma.shopOrder.findMany({
+            where: { status: 'paid', archived: false, waybillDownloaded: redownload },
+            orderBy: { createdAt: 'desc' },
+        });
+        const matching = candidates.filter((o) => (0, shopAnalytics_service_2.normalizeKzCity)(o.city) === city);
+        if (!matching.length) {
+            return res.status(404).json({ error: redownload ? 'Нет ранее скачанных накладных для этого города' : 'Новых накладных для этого города нет' });
+        }
+        const batch = matching.slice(0, WAYBILL_ZIP_LIMIT);
+        const zip = new jszip_1.default();
+        let includedCount = 0;
+        const includedIds = [];
+        for (const order of batch) {
+            let items = [];
+            try {
+                items = JSON.parse(order.items)
+                    .map((i) => ({ sku: i.sku, name: i.name, quantity: i.quantity }));
+            }
+            catch {
+                items = [];
+            }
+            try {
+                const pdfBuffer = await (0, waybill_service_1.generateWaybillPdf)({
+                    number: order.number,
+                    customerName: order.customerName,
+                    phone: order.phone,
+                    city: order.city,
+                    street: order.street,
+                    house: order.house,
+                    apartment: order.apartment,
+                    entrance: order.entrance,
+                    floor: order.floor,
+                    intercom: order.intercom,
+                    items,
+                });
+                zip.file(`waybill-${order.number}.pdf`, pdfBuffer);
+                includedCount += 1;
+                includedIds.push(order.id);
+            }
+            catch (err) {
+                logger_1.logger.warn({ err: String(err?.message ?? err), orderNumber: order.number }, '[Shop Admin] Накладная для заказа не собралась — пропущена в городской ZIP-пачке');
+            }
+        }
+        if (!includedCount) {
+            return res.status(500).json({ error: 'Ни одна накладная не собралась' });
+        }
+        if (!redownload) {
+            await prisma_1.prisma.shopOrder.updateMany({ where: { id: { in: includedIds } }, data: { waybillDownloaded: true } });
+        }
+        const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
+        const now = new Date();
+        const dateStr = `${String(now.getDate()).padStart(2, '0')}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+        const filename = `${city}_${dateStr}.zip`;
+        res.setHeader('Content-Type', 'application/zip');
+        res.setHeader('Content-Disposition', `attachment; filename="waybills.zip"; filename*=UTF-8''${encodeURIComponent(filename)}`);
+        res.setHeader('X-Waybills-Total', String(matching.length));
+        res.setHeader('X-Waybills-Included', String(includedCount));
+        res.setHeader('Access-Control-Expose-Headers', 'X-Waybills-Total, X-Waybills-Included');
+        res.send(zipBuffer);
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] GET /orders/waybills-zip-by-city упал');
+        res.status(500).json({ error: 'Не удалось собрать накладные города', details: String(err?.message ?? err) });
+    }
+});
+/** Короткий файловый «слаг» из названия товара — только буквы/цифры,
+ *  пробелы на дефис, нижний регистр, не бесконечной длины. Не пытаемся
+ *  угадать «главное слово» (краска/kiwi и т.п.) — просто всё название. */
+function waybillProductSlug(name) {
+    return name
+        .toLowerCase()
+        .replace(/[^a-zа-яё0-9]+/gi, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 40) || 'товар';
+}
+function startOfToday() {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d;
+}
+/**
+ * Загружает сегодняшние оплаченные (status=paid, не в архиве) заказы с их
+ * позициями, один раз — дальше оба соседних эндпоинта (список товаров и
+ * ZIP по товару+городу) работают с одним и тем же куском данных, не делая
+ * вторую выборку с чуть другими условиями.
+ */
+async function loadTodayPaidOrders() {
+    const orders = await prisma_1.prisma.shopOrder.findMany({
+        where: { status: 'paid', archived: false, createdAt: { gte: startOfToday() } },
+    });
+    return orders.map((o) => {
+        let items = [];
+        try {
+            items = JSON.parse(o.items);
+        }
+        catch {
+            items = [];
+        }
+        return { ...o, parsedItems: items };
+    });
+}
+/**
+ * Товары, по которым СЕГОДНЯ есть оплаченный заказ — один оттенок/артикул
+ * (sku) = одна строка, не смешиваем. Для каждого — суммарно штук и список
+ * городов за сегодня (для строки списка), и отдельно по каждому городу —
+ * ещё не скачанные/уже скачанные (для верхней части окна после галочки).
+ */
+exports.shopAdminRouter.get('/orders/waybills-products-today', async (_req, res) => {
+    try {
+        const orders = await loadTodayPaidOrders();
+        const bySku = new Map();
+        for (const o of orders) {
+            const canonicalCity = (0, shopAnalytics_service_2.normalizeKzCity)(o.city);
+            for (const item of o.parsedItems) {
+                if (!item.sku)
+                    continue;
+                if (!bySku.has(item.sku)) {
+                    bySku.set(item.sku, { sku: item.sku, name: item.name, todayQty: 0, todayCities: new Set(), cityStats: new Map() });
+                }
+                const entry = bySku.get(item.sku);
+                entry.todayQty += item.quantity;
+                if (canonicalCity) {
+                    entry.todayCities.add(canonicalCity);
+                    if (!entry.cityStats.has(canonicalCity))
+                        entry.cityStats.set(canonicalCity, { newQty: 0, hasDownloadedBefore: false });
+                    const cityEntry = entry.cityStats.get(canonicalCity);
+                    if (o.waybillDownloaded)
+                        cityEntry.hasDownloadedBefore = true;
+                    else
+                        cityEntry.newQty += item.quantity;
+                }
+            }
+        }
+        // Фото — один запрос на ВСЕ встреченные sku сразу (не по товару), тот же
+        // источник, что и в колонке «Товар» таблицы заказов: ищем Product по
+        // sku ИЛИ shopArticle (item.sku может быть любым из двух), берём первую
+        // картинку из product.images. Нет товара/фото — null, не пустая строка.
+        const skus = Array.from(bySku.keys());
+        const matchingProducts = skus.length
+            ? await prisma_1.prisma.product.findMany({
+                where: { OR: [{ sku: { in: skus } }, { shopArticle: { in: skus } }] },
+                select: { sku: true, shopArticle: true, images: true },
+            })
+            : [];
+        const imageBySku = new Map();
+        for (const mp of matchingProducts) {
+            let firstImage = null;
+            try {
+                const arr = mp.images ? JSON.parse(mp.images) : [];
+                firstImage = Array.isArray(arr) && arr[0] ? arr[0] : null;
+            }
+            catch {
+                firstImage = null;
+            }
+            imageBySku.set(mp.sku, firstImage);
+            if (mp.shopArticle)
+                imageBySku.set(mp.shopArticle, firstImage);
+        }
+        const products = Array.from(bySku.values())
+            .sort((a, b) => a.name.localeCompare(b.name, 'ru'))
+            .map((p, i) => ({
+            number: i + 1,
+            sku: p.sku,
+            name: p.name,
+            image: imageBySku.get(p.sku) ?? null,
+            todayQty: p.todayQty,
+            todayCities: Array.from(p.todayCities),
+            cities: Array.from(p.cityStats.entries()).map(([city, stats]) => ({ city, ...stats })),
+        }));
+        res.json(products);
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] GET /orders/waybills-products-today упал');
+        res.status(500).json({ error: 'Не удалось получить товары за сегодня', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * ZIP накладных ОДНОГО товара (sku) В ОДНОМ городе — за сегодня. Другой
+ * оттенок/артикул и другой город в этот файл никогда не попадают. Как и у
+ * обычного городского ZIP: redownload=false — ещё не скачанные, true —
+ * повторно уже скачанные; отмечаем waybillDownloaded только у реально
+ * включённых в файл заказов, статус заказа не трогаем.
+ */
+exports.shopAdminRouter.get('/orders/waybills-zip-by-product-city', async (req, res) => {
+    try {
+        const sku = String(req.query.sku ?? '');
+        const city = String(req.query.city ?? '');
+        if (!sku)
+            return res.status(400).json({ error: 'Не указан товар' });
+        if (!shopAnalytics_service_2.KZ_CITY_WHITELIST.includes(city))
+            return res.status(400).json({ error: 'Город не из списка 14' });
+        const redownload = req.query.redownload === 'true';
+        const orders = await loadTodayPaidOrders();
+        const matching = orders
+            .filter((o) => o.waybillDownloaded === redownload && (0, shopAnalytics_service_2.normalizeKzCity)(o.city) === city && o.parsedItems.some((i) => i.sku === sku));
+        if (!matching.length) {
+            return res.status(404).json({ error: redownload ? 'Нет ранее скачанных накладных для этого товара и города' : 'Новых накладных для этого товара и города нет' });
+        }
+        const batch = matching.slice(0, WAYBILL_ZIP_LIMIT);
+        const zip = new jszip_1.default();
+        let includedCount = 0;
+        const includedIds = [];
+        for (const order of batch) {
+            try {
+                const pdfBuffer = await (0, waybill_service_1.generateWaybillPdf)({
+                    number: order.number,
+                    customerName: order.customerName,
+                    phone: order.phone,
+                    city: order.city,
+                    street: order.street,
+                    house: order.house,
+                    apartment: order.apartment,
+                    entrance: order.entrance,
+                    floor: order.floor,
+                    intercom: order.intercom,
+                    items: order.parsedItems.map((i) => ({ sku: i.sku, name: i.name, quantity: i.quantity })),
+                });
+                zip.file(`waybill-${order.number}.pdf`, pdfBuffer);
+                includedCount += 1;
+                includedIds.push(order.id);
+            }
+            catch (err) {
+                logger_1.logger.warn({ err: String(err?.message ?? err), orderNumber: order.number }, '[Shop Admin] Накладная для заказа не собралась — пропущена в ZIP товара+города');
+            }
+        }
+        if (!includedCount) {
+            return res.status(500).json({ error: 'Ни одна накладная не собралась' });
+        }
+        if (!redownload) {
+            await prisma_1.prisma.shopOrder.updateMany({ where: { id: { in: includedIds } }, data: { waybillDownloaded: true } });
+        }
+        const zipBuffer = await zip.generateAsync({ type: 'nodebuffer' });
+        const now = new Date();
+        const dateStr = `${String(now.getDate()).padStart(2, '0')}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+        const productName = matching[0].parsedItems.find((i) => i.sku === sku)?.name ?? 'товар';
+        const filename = `${city}_${waybillProductSlug(productName)}_${dateStr}.zip`;
+        res.setHeader('Content-Type', 'application/zip');
+        res.setHeader('Content-Disposition', `attachment; filename="waybills.zip"; filename*=UTF-8''${encodeURIComponent(filename)}`);
+        res.setHeader('X-Waybills-Total', String(matching.length));
+        res.setHeader('X-Waybills-Included', String(includedCount));
+        res.setHeader('Access-Control-Expose-Headers', 'X-Waybills-Total, X-Waybills-Included');
+        res.send(zipBuffer);
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] GET /orders/waybills-zip-by-product-city упал');
+        res.status(500).json({ error: 'Не удалось собрать накладные товара', details: String(err?.message ?? err) });
+    }
+});
+/** Онлайн-касса re:Kassa: подключена ли, открыта ли смена. */
+exports.shopAdminRouter.get('/rekassa/status', async (_req, res) => {
+    res.json(await (0, rekassa_service_1.rekassaStatus)());
+});
+/** Пробить чек по заказу вручную: { operation: 'sell' | 'return' }. Повтор после ошибки не задвоит чек. */
+exports.shopAdminRouter.post('/orders/:id/receipt', async (req, res) => {
+    const operation = req.body?.operation === 'return' ? 'return' : 'sell';
+    try {
+        const order = await prisma_1.prisma.shopOrder.findUnique({ where: { id: req.params.id } });
+        if (!order)
+            return res.status(404).json({ error: 'Заказ не найден' });
+        if (operation === 'sell' && order.status === 'pending_payment')
+            return res.status(409).json({ error: 'Заказ ещё не оплачен — чек пробивается после оплаты' });
+        const r = await (0, rekassa_service_1.fiscalizeOrder)(order.id, operation);
+        res.json(r);
+    }
+    catch (err) {
+        const e = err instanceof rekassa_service_1.RekassaError ? err : null;
+        res.status(e && e.status && e.status < 500 ? 422 : 502).json({ error: e ? `Касса: ${e.message}` : 'Касса не ответила', code: e?.code });
+    }
+});
+exports.shopAdminRouter.get('/orders/:id', async (req, res) => {
+    try {
+        const order = await prisma_1.prisma.shopOrder.findUnique({ where: { id: req.params.id } });
+        if (!order)
+            return res.status(404).json({ error: 'Заказ не найден' });
+        res.json({ ...order, items: JSON.parse(order.items) });
+    }
+    catch (err) {
+        res.status(500).json({ error: 'Не удалось получить заказ', details: String(err?.message ?? err) });
+    }
+});
+const statusSchema = zod_1.z.object({ status: zod_1.z.enum(['pending_payment', 'paid', 'picked', 'in_transit', 'delivered', 'cancelled']) });
+// Ручная смена статуса из админки (например, "picked"/"in_transit" — товар
+// готов к выдаче; "cancelled" — отмена). Оплата (-> paid) и выдача
+// (-> delivered) обычно идут через свои специализированные эндпоинты
+// (/api/shop/orders/:id/paid и /api/courier/deliver), но этот путь
+// оставлен для ручной корректировки статуса из админки при необходимости.
+exports.shopAdminRouter.post('/orders/:id/status', async (req, res) => {
+    const parsed = statusSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: parsed.error.flatten() });
+    try {
+        const order = await prisma_1.prisma.shopOrder.update({ where: { id: req.params.id }, data: { status: parsed.data.status } });
+        // Отмена и отсюда (не только через клиентский /orders/:id/cancel) правит
+        // то же Telegram-сообщение. «paid» этот путь не проставляет статус
+        // напрямую через markShopOrderAsPaid, поэтому здесь его не трогаем —
+        // см. отдельную кнопку «Отметить оплаченным».
+        // Ждём здесь же (см. POST /orders про serverless-лямбду) — статус уже
+        // сменён строкой выше; СВОЙ try/catch, чтобы сбой Telegram не попал во
+        // внешний catch этого роута и не подменил собой настоящую 500-ошибку.
+        if (parsed.data.status === 'cancelled') {
+            try {
+                await (0, telegram_1.editOrderNotify)(order, 'cancelled');
+            }
+            catch (err) {
+                logger_1.logger.error({ err }, '[Telegram] editOrderNotify(cancelled) не должен был бросить исключение');
+            }
+        }
+        res.json(order);
+    }
+    catch (err) {
+        res.status(500).json({ error: 'Не удалось изменить статус заказа', details: String(err?.message ?? err) });
+    }
+});
+/** Отметить выплату курьеру как выполненную — кнопка «Выплачено» в
+ *  «Заказы APP» у доставленных заказов. */
+/**
+ * Кнопка «Отметить оплаченным» в «Заказы APP» — пока нет реальной
+ * интеграции с эквайрингом, это единственный способ перевести заказ в
+ * paid и протестировать весь дальнейший путь (курьер, выплата и т.д.).
+ * Разрешено ТОЛЬКО из pending_payment — из любого другого статуса
+ * отклоняем (409), не переводим повторно и не "чиним" чужой статус
+ * этой кнопкой.
+ *
+ * Код выдачи здесь НЕ создаётся и НЕ трогается — теперь код появляется
+ * только когда курьер сам его запросит (/api/shop/courier/request-code),
+ * непосредственно перед выдачей, а не заранее при оплате.
+ *
+ * Списание остатка и создание Order/OrderItem для юнит-экономики —
+ * ТОЧНО ТА ЖЕ функция markShopOrderAsPaid, что использует клиентский
+ * /orders/:id/paid — поэтому повторное списание при уже списанном на
+ * этапе создания остатке физически исключено (первым делом там же
+ * проверяется, что заказ всё ещё pending_payment).
+ */
+exports.shopAdminRouter.post('/orders/:id/mark-paid', async (req, res) => {
+    try {
+        const order = await prisma_1.prisma.shopOrder.findUnique({ where: { id: req.params.id } });
+        if (!order)
+            return res.status(404).json({ error: 'Заказ не найден' });
+        if (order.status !== 'pending_payment') {
+            return res.status(409).json({ error: `Заказ в статусе "${order.status}" — отметить оплаченным можно только заказ «Ожидает оплаты»` });
+        }
+        const result = await (0, shop_routes_1.markShopOrderAsPaid)(order.id);
+        if (!result.ok) {
+            // Между проверкой выше и этим вызовом заказ успел измениться
+            // (гонка) — сообщаем честно, не притворяемся, что всё получилось.
+            return res.status(409).json({ error: 'Заказ уже был обработан — попробуйте обновить страницу' });
+        }
+        res.json({ ok: true, status: 'paid' });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] Ошибка отметки заказа оплаченным');
+        res.status(500).json({ error: 'Не удалось отметить заказ оплаченным', details: String(err?.message ?? err) });
+    }
+});
+exports.shopAdminRouter.post('/payouts/:orderId/paid', async (req, res) => {
+    try {
+        const payout = await prisma_1.prisma.courierPayout.findUnique({ where: { orderId: req.params.orderId } });
+        if (!payout)
+            return res.status(404).json({ error: 'Выплата не найдена для этого заказа' });
+        if (payout.status === 'paid')
+            return res.status(409).json({ error: 'Уже отмечено как выплачено' });
+        const updated = await prisma_1.prisma.courierPayout.update({
+            where: { id: payout.id },
+            data: { status: 'paid', paidAt: new Date() },
+        });
+        res.json(updated);
+    }
+    catch (err) {
+        res.status(500).json({ error: 'Не удалось отметить выплату', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * Массовая загрузка Excel — ТОЛЬКО для витрины My Market, отдельно от
+ * общей загрузки товаров (там другие обязательные поля и другой смысл).
+ * Обязательные колонки: sku, name, category, type — строка без category
+ * ИЛИ type целиком отклоняется (не загружается, не "чинится" дефолтом).
+ */
+// Тот же принцип, что и в products.routes.ts: shopArticle сюда не добавлять —
+// Excel не может вписать артикул витрины (в т.ч. вида ozon-/wb-/kaspi-...),
+// он всегда только сгенерирован сервером (см. maybeGenerateShopArticle ниже).
+const shopBulkRowSchema = zod_1.z.object({
+    sku: zod_1.z.string().min(1),
+    name: zod_1.z.string().min(1),
+    category: zod_1.z.string().min(1),
+    subcategory: zod_1.z.string().optional().nullable(),
+    type: zod_1.z.string().min(1),
+    shopPrice: zod_1.z.number().nonnegative().optional().nullable(),
+    shopOldPrice: zod_1.z.number().nonnegative().optional().nullable(),
+    shopStock: zod_1.z.number().int().nonnegative().default(0),
+    description: zod_1.z.string().optional().nullable(),
+    composition: zod_1.z.string().optional().nullable(),
+    images: zod_1.z.string().optional().nullable(),
+    shopDelivery: zod_1.z.string().optional().nullable(),
+    shopActive: zod_1.z.boolean().default(true),
+    videoUrl: zod_1.z.string().optional().nullable(),
+});
+exports.shopAdminRouter.post('/bulk-upsert', async (req, res) => {
+    const bodySchema = zod_1.z.object({ products: zod_1.z.array(zod_1.z.record(zod_1.z.any())).min(1).max(20) });
+    const parsed = bodySchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: 'Неверный формат данных', details: parsed.error.flatten() });
+    // ВАЖНО (иначе рвётся 504 на Vercel Hobby): раньше на каждую строку было
+    // ДВА последовательных обращения к БД (findFirst + create/update) — для
+    // 42 товаров это до 84 обращений подряд, легко выходит за ~10 секунд,
+    // которые Vercel Hobby реально даёт функции. Теперь: ОДИН groupped-запрос
+    // (findMany по всем sku пачки разом), чтобы узнать, кто уже есть, плюс
+    // upsert на строку (одно обращение вместо потенциальных двух). Пачка
+    // здесь и так небольшая (см. лимит .max(20) выше — фронт шлёт по 8-10 за
+    // раз), так что и без этой оптимизации стало бы лучше, но вместе — с
+    // хорошим запасом.
+    const bodySkus = parsed.data.products.map((r) => r?.sku).filter((s) => typeof s === 'string' && s.length > 0);
+    const existingProducts = new Map(bodySkus.length
+        ? (await prisma_1.prisma.product.findMany({ where: { sku: { in: bodySkus } }, select: { sku: true, shopArticle: true } })).map((p) => [p.sku, p])
+        : []);
+    const existingSkus = new Set(existingProducts.keys());
+    let created = 0;
+    let updated = 0;
+    const errors = [];
+    for (const raw of parsed.data.products) {
+        const row = shopBulkRowSchema.safeParse(raw);
+        if (!row.success) {
+            // Строка без category или type (или sku/name) — явная ошибка по строке,
+            // не загружаем её, но продолжаем обрабатывать остальные.
+            errors.push(`${raw.sku ?? '(без sku)'}: ${JSON.stringify(row.error.flatten().fieldErrors)}`);
+            continue;
+        }
+        try {
+            // Жёсткий список разделов витрины — категория вне списка сохраняется
+            // «как есть» (см. config/shopCategories.ts), но «В продаже» для такой
+            // строки включить нельзя: даже если в файле стоит «да», понижаем до
+            // «нет», не отклоняя всю строку целиком (остальные поля всё же нужны).
+            const categoryValid = (0, shopCategories_1.isValidShopCategory)(row.data.category);
+            const shopActive = row.data.shopActive && categoryValid;
+            if (row.data.shopActive && !categoryValid) {
+                errors.push(`${row.data.sku}: категория «${row.data.category}» не из списка разделов витрины — сохранено, но «В продаже» не включено`);
+            }
+            const data = {
+                name: row.data.name,
+                category: row.data.category,
+                subcategory: row.data.subcategory || null,
+                type: row.data.type,
+                shopPrice: row.data.shopPrice ?? null,
+                shopOldPrice: row.data.shopOldPrice ?? null,
+                shopStock: row.data.shopStock,
+                description: row.data.description || null,
+                composition: row.data.composition || null,
+                images: row.data.images || null,
+                shopDelivery: row.data.shopDelivery || null,
+                shopActive,
+                videoUrl: row.data.videoUrl || null,
+                // Excel с shopActive=да возвращает товар из архива витрины.
+                ...(shopActive ? { shopArchived: false } : {}),
+            };
+            // Артикул витрины — та же логика, что и в карточке (см.
+            // services/shopArticle.ts): строка Excel всегда приходит с заполненной
+            // ценой (обязательное поле шаблона), поэтому генерируется у всех НОВЫХ
+            // товаров и у уже существующих, если артикула ещё не было.
+            const existingArticle = existingProducts.get(row.data.sku)?.shopArticle ?? null;
+            const article = await (0, shopArticle_1.maybeGenerateShopArticle)({
+                currentShopArticle: existingArticle,
+                effectivePrice: data.shopPrice,
+                effectiveActive: data.shopActive,
+            });
+            if (article)
+                data.shopArticle = article;
+            const wasExisting = existingSkus.has(row.data.sku);
+            await prisma_1.prisma.product.upsert({
+                where: { sku: row.data.sku },
+                update: data,
+                create: { sku: row.data.sku, costPrice: 0, ...data },
+            });
+            if (wasExisting)
+                updated += 1;
+            else
+                created += 1;
+        }
+        catch (err) {
+            errors.push(`${row.data.sku}: ${String(err?.message ?? err)}`);
+        }
+    }
+    res.json({ ok: true, created, updated, errors });
+});
+// =====================================================================
+// Курьеры — вкладка «Курьеры» в My Market. Фото (удостоверение/лицо) и
+// прочие личные данные отдаются ТОЛЬКО отсюда (админский путь) — ни один
+// эндпоинт /api/shop/courier/* (курьерский, x-app-key) их не возвращает.
+// =====================================================================
+/**
+ * Заявки на регистрацию курьера — список для вкладки «Курьеры» в админке:
+ * телефон, имя, город, дата, статус. Без кэша — тот же принцип, что и у
+ * списка самих курьеров ниже: это рабочий список, не должен отставать.
+ */
+/**
+ * ?archived=true — вкладка «Архив»; без параметра (или false) — «Заявки»
+ * (как раньше), но теперь уже БЕЗ архивных — отклонённые туда больше не
+ * попадают (их архивирует сам /reject), а вручную убранные пачкой — тоже.
+ */
+const courierInviteSchema = zod_1.z.object({
+    firstName: zod_1.z.string().min(1),
+    lastName: zod_1.z.string().min(1),
+    phone: zod_1.z.string().min(1),
+    iin: zod_1.z.string().min(1),
+});
+/**
+ * «Вакансия» — приглашение на конкретный телефон, без которого курьер не
+ * может подать заявку (см. POST /courier/apply). Одна запись на телефон:
+ * повторная отправка на тот же номер обновляет её (новое имя/ИИН тоже
+ * подтянутся), а не создаёт вторую.
+ */
+exports.shopAdminRouter.post('/courier-invites', async (req, res) => {
+    const parsed = courierInviteSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+    try {
+        const phone = (0, shop_routes_1.normalizePhone)(parsed.data.phone);
+        if (!phone)
+            return res.status(400).json({ error: 'Некорректный номер телефона' });
+        const invite = await prisma_1.prisma.shopCourierInvite.upsert({
+            where: { phone },
+            update: { firstName: parsed.data.firstName, lastName: parsed.data.lastName, iin: parsed.data.iin },
+            create: { phone, firstName: parsed.data.firstName, lastName: parsed.data.lastName, iin: parsed.data.iin },
+        });
+        res.status(201).json(invite);
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] POST /courier-invites упал');
+        res.status(500).json({ error: 'Не удалось отправить вакансию', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * Список вакансий (приглашений) для вкладки «Вакансия»: сама вакансия + статус связанной заявки
+ * по тому же телефону (null — заявку ещё не подавали). Без кэша — рабочий список.
+ */
+exports.shopAdminRouter.get('/courier-invites', async (_req, res) => {
+    try {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+        const invites = await prisma_1.prisma.shopCourierInvite.findMany({ orderBy: { createdAt: 'desc' } });
+        const apps = invites.length
+            ? await prisma_1.prisma.shopCourierApplication.findMany({ where: { phone: { in: invites.map((i) => i.phone) } } })
+            : [];
+        const statusByPhone = new Map(apps.map((a) => [a.phone, a.status]));
+        res.json(invites.map((i) => ({ ...i, applicationStatus: statusByPhone.get(i.phone) ?? null })));
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] GET /courier-invites упал');
+        res.status(500).json({ error: 'Не удалось получить вакансии', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * «Удалить» вакансию: стирает приглашение по телефону и связанную заявку (если есть) — после этого
+ * номер «чистый», на него можно снова отправить вакансию. Одобренных курьеров не трогаем: если по
+ * номеру заявка одобрена или курьер уже зарегистрирован — 409, ничего не удаляется. Работает и для
+ * записи из «Архива», у которой вакансии уже нет (только заявка).
+ */
+exports.shopAdminRouter.delete('/courier-invites/:phone', async (req, res) => {
+    try {
+        const phone = (0, shop_routes_1.normalizePhone)(req.params.phone);
+        if (!phone)
+            return res.status(400).json({ error: 'Некорректный номер телефона' });
+        const [application, courier] = await Promise.all([
+            prisma_1.prisma.shopCourierApplication.findUnique({ where: { phone } }),
+            prisma_1.prisma.courier.findUnique({ where: { phone } }),
+        ]);
+        if (courier || application?.status === 'approved') {
+            return res.status(409).json({ error: 'Курьер по этому номеру одобрен — удалить можно только вакансию без одобренного курьера' });
+        }
+        const [invite, app] = await prisma_1.prisma.$transaction([
+            prisma_1.prisma.shopCourierInvite.deleteMany({ where: { phone } }),
+            prisma_1.prisma.shopCourierApplication.deleteMany({ where: { phone, status: { not: 'approved' } } }),
+        ]);
+        if (!invite.count && !app.count)
+            return res.status(404).json({ error: 'Вакансия не найдена' });
+        res.json({ ok: true, invitesDeleted: invite.count, applicationsDeleted: app.count });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] DELETE /courier-invites/:phone упал');
+        res.status(500).json({ error: 'Не удалось удалить вакансию', details: String(err?.message ?? err) });
+    }
+});
+exports.shopAdminRouter.get('/courier-applications', async (req, res) => {
+    try {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+        const archived = req.query.archived === 'true';
+        const applications = await prisma_1.prisma.shopCourierApplication.findMany({ where: { archived }, orderBy: { createdAt: 'desc' } });
+        res.json(applications);
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] GET /courier-applications упал');
+        res.status(500).json({ error: 'Не удалось получить заявки курьеров', details: String(err?.message ?? err) });
+    }
+});
+/** «Одобрить» — после этого телефон проходит POST /courier/register. Остаётся в «Заявках» (archived не трогаем). */
+exports.shopAdminRouter.post('/courier-applications/:id/approve', async (req, res) => {
+    try {
+        const before = await prisma_1.prisma.shopCourierApplication.findUnique({ where: { id: req.params.id } });
+        if (!before)
+            return res.status(404).json({ error: 'Заявка не найдена' });
+        const application = await prisma_1.prisma.shopCourierApplication.update({
+            where: { id: req.params.id },
+            data: { status: 'approved', reviewedAt: new Date() },
+        });
+        // Пуш курьеру — только при переходе в «Одобрена» (повторный клик не дублирует). Нет токена/ошибка пуша — одобрение всё равно прошло.
+        if (before.status !== 'approved')
+            await (0, expoPush_1.sendCourierApprovedPush)(application.phone);
+        res.json(application);
+    }
+    catch (err) {
+        if (err?.code === 'P2025')
+            return res.status(404).json({ error: 'Заявка не найдена' });
+        logger_1.logger.error({ err }, '[Shop Admin] POST /courier-applications/:id/approve упал');
+        res.status(500).json({ error: 'Не удалось одобрить заявку', details: String(err?.message ?? err) });
+    }
+});
+/** «Отказать» — регистрация закрыта (403 на /courier/register) И заявка сразу уходит в архив — из «Заявок» её больше не видно. */
+exports.shopAdminRouter.post('/courier-applications/:id/reject', async (req, res) => {
+    try {
+        const application = await prisma_1.prisma.shopCourierApplication.update({
+            where: { id: req.params.id },
+            data: { status: 'rejected', reviewedAt: new Date(), archived: true },
+        });
+        res.json(application);
+    }
+    catch (err) {
+        if (err?.code === 'P2025')
+            return res.status(404).json({ error: 'Заявка не найдена' });
+        logger_1.logger.error({ err }, '[Shop Admin] POST /courier-applications/:id/reject упал');
+        res.status(500).json({ error: 'Не удалось отклонить заявку', details: String(err?.message ?? err) });
+    }
+});
+const archiveApplicationsSchema = zod_1.z.object({
+    ids: zod_1.z.array(zod_1.z.string()).min(1),
+    archived: zod_1.z.boolean(),
+});
+/**
+ * Пачечный перенос заявок между «Заявки» и «Архив» — кнопка «Убрать в
+ * архив» (archived:true) наверху списка, и обратный перенос из архива
+ * (archived:false). status (pending/approved/rejected) этим не трогается —
+ * только видимость в какой вкладке.
+ */
+exports.shopAdminRouter.post('/courier-applications/archive', async (req, res) => {
+    const parsed = archiveApplicationsSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: parsed.error.flatten() });
+    try {
+        const result = await prisma_1.prisma.shopCourierApplication.updateMany({
+            where: { id: { in: parsed.data.ids } },
+            data: { archived: parsed.data.archived },
+        });
+        res.json({ ok: true, updated: result.count });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] POST /courier-applications/archive упал');
+        res.status(500).json({ error: 'Не удалось перенести заявки', details: String(err?.message ?? err) });
+    }
+});
+exports.shopAdminRouter.get('/couriers', async (_req, res) => {
+    try {
+        // Явно без кэша — этот список должен ВСЕГДА показывать актуальное
+        // состояние БД, а не что-то, что мог закэшировать браузер/прокси/CDN.
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+        const couriers = await prisma_1.prisma.courier.findMany({ orderBy: { createdAt: 'desc' } });
+        // Закрытые заказы и заработок — один groupBy на ВСЕХ курьеров сразу, не
+        // по запросу на строку. CourierPayout создаётся ровно в момент, когда
+        // заказ переходит в "Выдан" (POST /courier/deliver, одной транзакцией
+        // с order.status='delivered') — значит число строк выплат этого
+        // курьера = число закрытых им заказов, а сумма amount = заработок.
+        const grouped = await prisma_1.prisma.courierPayout.groupBy({ by: ['courierId'], _count: { id: true }, _sum: { amount: true } });
+        const statsByCourier = new Map(grouped.map((g) => [
+            g.courierId,
+            { ordersClosed: g._count.id, totalEarned: g._sum.amount ?? 0 },
+        ]));
+        // Одобренные заявки, по которым курьер ещё не прошёл регистрацию в приложении (строки Courier нет):
+        // показываем их в «Активных» сразу после «Одобрить», с пометкой «ждёт регистрации». Фото, адрес, авто и
+        // реквизиты появятся здесь сами, когда курьер заполнит анкету в приложении (POST /courier/register).
+        const approved = await prisma_1.prisma.shopCourierApplication.findMany({ where: { status: 'approved', archived: false }, orderBy: { reviewedAt: 'desc' } });
+        const registeredPhones = new Set(couriers.map((c) => c.phone));
+        const waiting = approved
+            .filter((a) => !registeredPhones.has(a.phone))
+            .map((a) => ({
+            id: `app:${a.id}`,
+            pendingRegistration: true,
+            name: a.name,
+            phone: a.phone,
+            iin: a.iin,
+            city: a.city,
+            address: null,
+            vehicle: null,
+            idPhotoUrl: null,
+            facePhotoUrl: null,
+            requisitesType: null,
+            requisitesValue: null,
+            agreeContractAt: null,
+            active: true,
+            createdAt: a.reviewedAt ?? a.createdAt,
+            ordersClosed: 0,
+            totalEarned: 0,
+        }));
+        res.json([
+            ...waiting,
+            ...couriers.map((c) => ({
+                ...c,
+                ordersClosed: statsByCourier.get(c.id)?.ordersClosed ?? 0,
+                totalEarned: statsByCourier.get(c.id)?.totalEarned ?? 0,
+            })),
+        ]);
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] GET /couriers упал');
+        res.status(500).json({ error: 'Не удалось получить список курьеров', details: String(err?.message ?? err) });
+    }
+});
+const courierBlockSchema = zod_1.z.object({ active: zod_1.z.boolean() });
+/** Заблокировать/разблокировать курьера — кнопка «Заблокировать» в
+ *  карточке (переключается на «Разблокировать», если уже заблокирован,
+ *  чтобы не было тупикового состояния без возможности отменить). */
+exports.shopAdminRouter.post('/couriers/:id/block', async (req, res) => {
+    const parsed = courierBlockSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: parsed.error.flatten() });
+    try {
+        const courier = await prisma_1.prisma.courier.update({ where: { id: req.params.id }, data: { active: parsed.data.active } });
+        res.json(courier);
+    }
+    catch (err) {
+        res.status(500).json({ error: 'Не удалось изменить статус курьера', details: String(err?.message ?? err) });
+    }
+});
+const bulkDeleteSchema = zod_1.z.object({ ids: zod_1.z.array(zod_1.z.string().min(1)).min(1).max(500) });
+/**
+ * Массовая очистка «Архива» заявок: удаляет выбранные ShopCourierApplication и связанные
+ * ShopCourierInvite по их телефонам — телефон освобождается под новую вакансию. Только то, что
+ * выбрано (ids): остальные заявки, в том числе свежие «Ожидает», не затрагиваются. Строки Courier
+ * здесь не трогаем — они удаляются отдельно из списка курьеров.
+ */
+exports.shopAdminRouter.post('/courier-applications/bulk-delete', async (req, res) => {
+    const parsed = bulkDeleteSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: parsed.error.flatten() });
+    try {
+        const apps = await prisma_1.prisma.shopCourierApplication.findMany({ where: { id: { in: parsed.data.ids } } });
+        if (!apps.length)
+            return res.json({ ok: true, deleted: 0, invitesDeleted: 0 });
+        const [removedApps, removedInvites] = await prisma_1.prisma.$transaction([
+            prisma_1.prisma.shopCourierApplication.deleteMany({ where: { id: { in: apps.map((a) => a.id) } } }),
+            prisma_1.prisma.shopCourierInvite.deleteMany({ where: { phone: { in: apps.map((a) => a.phone) } } }),
+        ]);
+        res.json({ ok: true, deleted: removedApps.count, invitesDeleted: removedInvites.count });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] POST /courier-applications/bulk-delete упал');
+        res.status(500).json({ error: 'Не удалось удалить заявки', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * Массовое удаление из списка курьеров (активные и заблокированные): запись Courier + заявка +
+ * вакансия по тому же телефону. ids — id курьеров, либо «app:<id заявки>» для одобренных, но ещё не
+ * зарегистрировавшихся (у них строки Courier нет — чистим заявку и вакансию). Курьер с заказами или
+ * выплатами НЕ удаляется (на них держится история и деньги) — возвращается в skipped с причиной,
+ * остальные выбранные удаляются.
+ */
+exports.shopAdminRouter.post('/couriers/bulk-delete', async (req, res) => {
+    const parsed = bulkDeleteSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: parsed.error.flatten() });
+    try {
+        const appIds = parsed.data.ids.filter((id) => id.startsWith('app:')).map((id) => id.slice(4));
+        const courierIds = parsed.data.ids.filter((id) => !id.startsWith('app:'));
+        const couriers = courierIds.length
+            ? await prisma_1.prisma.courier.findMany({ where: { id: { in: courierIds } } })
+            : [];
+        const courierIdList = couriers.map((c) => c.id);
+        const ordersGrouped = courierIdList.length
+            ? await prisma_1.prisma.shopOrder.groupBy({ by: ['courierId'], where: { courierId: { in: courierIdList } }, _count: { id: true } })
+            : [];
+        const payoutsGrouped = courierIdList.length
+            ? await prisma_1.prisma.courierPayout.groupBy({ by: ['courierId'], where: { courierId: { in: courierIdList } }, _count: { id: true } })
+            : [];
+        const withOrders = ordersGrouped;
+        const withPayouts = payoutsGrouped;
+        const busy = new Set([
+            ...withOrders.map((g) => g.courierId).filter((x) => !!x),
+            ...withPayouts.map((g) => g.courierId),
+        ]);
+        const deletable = couriers.filter((c) => !busy.has(c.id));
+        const skipped = couriers
+            .filter((c) => busy.has(c.id))
+            .map((c) => ({ id: c.id, name: c.name, phone: c.phone, reason: 'есть заказы или выплаты — история сохранена' }));
+        const pendingApps = appIds.length
+            ? await prisma_1.prisma.shopCourierApplication.findMany({ where: { id: { in: appIds } } })
+            : [];
+        const phones = [...new Set([...deletable.map((c) => c.phone), ...pendingApps.map((a) => a.phone)])];
+        let deleted = 0;
+        if (phones.length) {
+            const [removedCouriers] = await prisma_1.prisma.$transaction([
+                prisma_1.prisma.courier.deleteMany({ where: { id: { in: deletable.map((c) => c.id) } } }),
+                prisma_1.prisma.shopCourierApplication.deleteMany({ where: { phone: { in: phones } } }),
+                prisma_1.prisma.shopCourierInvite.deleteMany({ where: { phone: { in: phones } } }),
+            ]);
+            deleted = removedCouriers.count + pendingApps.length;
+        }
+        res.json({ ok: true, deleted, skipped });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] POST /couriers/bulk-delete упал');
+        res.status(500).json({ error: 'Не удалось удалить курьеров', details: String(err?.message ?? err) });
+    }
+});
+// =====================================================================
+// Аналитика витрины My Market — период 7/30 дней, только канал APP.
+// Три подвкладки: поиск, конверсия по SKU, сезонность + города.
+// =====================================================================
+function parseAnalyticsDays(req) {
+    const raw = Number(req.query.days);
+    return raw === 30 ? 30 : 7; // по умолчанию и на любое другое значение — 7
+}
+exports.shopAdminRouter.get('/analytics/search', async (req, res) => {
+    try {
+        const rows = await (0, shopAnalytics_service_1.getSearchAnalytics)(parseAnalyticsDays(req));
+        res.json(rows);
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] GET /analytics/search упал');
+        res.status(500).json({ error: 'Не удалось получить аналитику поиска', details: String(err?.message ?? err) });
+    }
+});
+exports.shopAdminRouter.get('/analytics/conversion', async (req, res) => {
+    try {
+        const rows = await (0, shopAnalytics_service_1.getConversionAnalytics)(parseAnalyticsDays(req));
+        res.json(rows);
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] GET /analytics/conversion упал');
+        res.status(500).json({ error: 'Не удалось получить аналитику конверсии', details: String(err?.message ?? err) });
+    }
+});
+exports.shopAdminRouter.get('/analytics/seasonality', async (req, res) => {
+    try {
+        const data = await (0, shopAnalytics_service_1.getSeasonalityAnalytics)(parseAnalyticsDays(req));
+        res.json(data);
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] GET /analytics/seasonality упал');
+        res.status(500).json({ error: 'Не удалось получить аналитику сезонности', details: String(err?.message ?? err) });
+    }
+});
+exports.shopAdminRouter.get('/analytics/geo', async (req, res) => {
+    try {
+        const raw = Number(req.query.days);
+        const days = [7, 30, 90, 0].includes(raw) ? raw : 30; // 0 — за всё время
+        res.json(await (0, shopGeo_service_1.getGeoAnalytics)(days));
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] GET /analytics/geo упал');
+        res.status(500).json({ error: 'Не удалось получить карту доставок', details: String(err?.message ?? err) });
+    }
+});
+// =====================================================================
+// Архив и удаление товаров ВИТРИНЫ My Market (вкладка «Товары»).
+// Ничего не вызывает на Kaspi/Ozon/WB: работает только с записью Product
+// в нашей базе. Раздел учёта (active, costPrice, идентификаторы площадок,
+// marketImages) не затрагивается.
+// =====================================================================
+const shopProductIdsSchema = zod_1.z.object({ ids: zod_1.z.array(zod_1.z.string()).min(1).max(500) });
+/**
+ * Архив витрины / возврат из архива. archived=true: товар пропадает из
+ * приложения (shopActive=false) и из «В продаже»/«Скрыты», остаётся во
+ * вкладке «Архив». archived=false: только снимает метку — товар вернётся в
+ * «Скрыты» (или «Без категории»); в продажу его включают отдельно.
+ * Поле active (архив учёта) намеренно НЕ трогается.
+ */
+exports.shopAdminRouter.post('/products/archive', async (req, res) => {
+    const parsed = shopProductIdsSchema.extend({ archived: zod_1.z.boolean() }).safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: parsed.error.flatten() });
+    try {
+        const result = await prisma_1.prisma.product.updateMany({
+            where: { id: { in: parsed.data.ids } },
+            data: parsed.data.archived ? { shopArchived: true, shopActive: false } : { shopArchived: false },
+        });
+        res.json({ ok: true, updated: result.count });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] POST /products/archive упал');
+        res.status(500).json({ error: 'Не удалось изменить архив витрины', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * «Чистый» товар витрины — существует только ради приложения: без
+ * идентификаторов Kaspi/Ozon/WB и не с sku вида kaspi-/ozon-/wb-. MM-* и
+ * товары из Excel My Market (SKU-001 и т.п.) сюда попадают. Всё остальное —
+ * товар учёта: его запись НИКОГДА не удаляется этим эндпоинтом.
+ */
+function isPureShopProduct(p) {
+    if (/^(kaspi|ozon|wb)-/i.test(p.sku))
+        return false;
+    return !p.kaspiSku && !p.ozonOfferId && p.ozonSku == null && !p.wbArticle && p.wbNmId == null && !p.kaspiProductUrl;
+}
+/**
+ * «Удалить» из My Market — ТОЛЬКО для чистых товаров витрины (MM-*, товары из
+ * Excel My Market): удаляется запись Product (история APP-заказов остаётся:
+ * OrderItem.productId обнуляется, снимок названия/цены/себестоимости
+ * сохраняется). Товар учёта (kaspi-/ozon-/wb-* и всё с идентификаторами
+ * площадок) удалять и «снимать с витрины» этим эндпоинтом ЗАПРЕЩЕНО — для
+ * него есть только архив витрины (/products/archive). Если среди выбранных
+ * есть хотя бы один товар учёта, не удаляется ничего (409) — без частичных
+ * удалений, чтобы результат был однозначным.
+ */
+exports.shopAdminRouter.post('/products/remove', async (req, res) => {
+    const parsed = shopProductIdsSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: parsed.error.flatten() });
+    try {
+        const products = await prisma_1.prisma.product.findMany({
+            where: { id: { in: parsed.data.ids } },
+            select: { id: true, sku: true, kaspiSku: true, ozonOfferId: true, ozonSku: true, wbArticle: true, wbNmId: true, kaspiProductUrl: true },
+        });
+        const accounting = products.filter((p) => !isPureShopProduct(p));
+        if (accounting.length) {
+            return res.status(409).json({
+                error: 'Товар учёта. Только архив витрины',
+                accounting: accounting.length,
+                skus: accounting.slice(0, 20).map((p) => p.sku),
+            });
+        }
+        const pureIds = products.map((p) => p.id);
+        const deleted = pureIds.length ? (await prisma_1.prisma.product.deleteMany({ where: { id: { in: pureIds } } })).count : 0;
+        res.json({ ok: true, deleted, notFound: parsed.data.ids.length - products.length });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] POST /products/remove упал');
+        res.status(500).json({ error: 'Не удалось убрать товары из My Market', details: String(err?.message ?? err) });
+    }
+});
+// =====================================================================
+// Словарь соответствий «тип Ozon -> category + type My Market».
+// Сырую категорию Ozon в карточки не пишем и тип по названию не угадываем:
+// category/type ставятся ТОЛЬКО по записи из этого словаря.
+// =====================================================================
+/** Типы Ozon, встречающиеся у товаров (с числом товаров) + соответствия. */
+exports.shopAdminRouter.get('/ozon-type-map', async (_req, res) => {
+    try {
+        const groups = await prisma_1.prisma.product.groupBy({ by: ['ozonType'], where: { ozonType: { not: null } }, _count: { _all: true } });
+        const maps = await prisma_1.prisma.ozonTypeMap.findMany();
+        const mapByKey = new Map(maps.map((m) => [m.ozonTypeKey, m]));
+        const rows = new Map();
+        for (const g of groups) {
+            if (!g.ozonType)
+                continue;
+            const key = (0, sync_service_1.ozonTypeKey)(g.ozonType);
+            const hit = mapByKey.get(key);
+            const prev = rows.get(key);
+            rows.set(key, {
+                ozonType: prev?.ozonType ?? g.ozonType,
+                count: (prev?.count ?? 0) + g._count._all,
+                category: hit?.category ?? null,
+                type: hit?.type ?? null,
+                mapped: !!hit,
+            });
+        }
+        // Соответствия, по которым сейчас нет ни одного товара, тоже показываем.
+        for (const [key, m] of mapByKey) {
+            if (!rows.has(key))
+                rows.set(key, { ozonType: m.ozonTypeLabel, count: 0, category: m.category, type: m.type, mapped: true });
+        }
+        const list = Array.from(rows.values()).sort((a, b) => Number(a.mapped) - Number(b.mapped) || b.count - a.count || a.ozonType.localeCompare(b.ozonType, 'ru'));
+        res.json(list);
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] GET /ozon-type-map упал');
+        res.status(500).json({ error: 'Не удалось получить словарь типов Ozon', details: String(err?.message ?? err) });
+    }
+});
+const ozonTypeMapSchema = zod_1.z.object({
+    ozonType: zod_1.z.string().trim().min(1),
+    category: zod_1.z.string().trim().min(1),
+    type: zod_1.z.string().trim().min(1),
+});
+/**
+ * Сохранить соответствие и сразу применить его к уже загруженным товарам
+ * этого типа Ozon — но только к тем, у кого category И type пусты либо были
+ * проставлены словарём раньше. Вручную заполненные карточки не перезаписываются.
+ */
+exports.shopAdminRouter.put('/ozon-type-map', async (req, res) => {
+    const parsed = ozonTypeMapSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: parsed.error.flatten() });
+    const { ozonType, category, type } = parsed.data;
+    try {
+        const key = (0, sync_service_1.ozonTypeKey)(ozonType);
+        await prisma_1.prisma.ozonTypeMap.upsert({
+            where: { ozonTypeKey: key },
+            update: { ozonTypeLabel: ozonType, category, type },
+            create: { ozonTypeKey: key, ozonTypeLabel: ozonType, category, type },
+        });
+        const applied = await prisma_1.prisma.product.updateMany({
+            where: {
+                ozonType: { equals: ozonType, mode: 'insensitive' },
+                OR: [{ AND: [{ category: null }, { type: null }] }, { categorySource: 'dictionary' }],
+            },
+            data: { category, type, categorySource: 'dictionary' },
+        });
+        res.json({ ok: true, applied: applied.count });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] PUT /ozon-type-map упал');
+        res.status(500).json({ error: 'Не удалось сохранить соответствие', details: String(err?.message ?? err) });
+    }
+});
+// =====================================================================
+// Категория и тип «по названию» — подсказка, а не публикация. Правила и
+// справочник — в services/categoryHints.ts (дерево Ozon не используется).
+// Ничего из этого не включает продажу и не затирает заполненные поля.
+// =====================================================================
+/**
+ * Каталог «категория → её типы» для выпадающих списков в карточке:
+ * стартовый список + справочник правил + свои типы (ShopCategoryType) + соответствия из словаря Ozon (уже My Market-значения)
+ * + пары, реально использованные в товарах. Дерево категорий Ozon не берётся.
+ */
+exports.shopAdminRouter.get('/category-catalog', async (_req, res) => {
+    try {
+        res.setHeader('Cache-Control', 'no-store');
+        const used = await prisma_1.prisma.product.groupBy({
+            by: ['category', 'type'],
+            where: { category: { not: null }, type: { not: null } },
+        });
+        const mapped = await prisma_1.prisma.ozonTypeMap.findMany({ select: { category: true, type: true } });
+        const custom = await prisma_1.prisma.shopCategoryType.findMany({ select: { category: true, type: true }, orderBy: { createdAt: 'asc' } });
+        const categories = (0, categoryHints_1.buildCatalog)([
+            ...(0, categoryHints_1.starterCatalogPairs)(),
+            ...(0, categoryHints_1.hintRuleCatalogPairs)(),
+            ...custom,
+            ...mapped,
+            ...used,
+        ]);
+        // canon — справочник приложения (полки и типы): по нему строятся списки «Подкатегория» и «Тип».
+        res.json({ categories, canon: shopCatalogCanon_1.SHOP_CATALOG_CANON });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] GET /category-catalog упал');
+        res.status(500).json({ error: 'Не удалось получить каталог категорий', details: String(err?.message ?? err) });
+    }
+});
+/** Варианты category/type по названию (для блока «По названию» в карточке). */
+exports.shopAdminRouter.get('/category-hints', (req, res) => {
+    res.json((0, categoryHints_1.hintCategoryByName)(String(req.query.name ?? '')));
+});
+/**
+ * Пакетная простановка category/type по названию. Только для товаров, у
+ * которых category И type пусты (заполненное — в том числе руками — не
+ * трогается), и только когда подходит ровно один вариант; спорные и без
+ * совпадений остаются пустыми. shopActive не меняется. Источник помечается
+ * categorySource="name" — так в списке видно «категория с названия».
+ * Клиент шлёт id пачками (до 500), чтобы уложиться в лимит serverless.
+ */
+exports.shopAdminRouter.post('/products/apply-name-categories', async (req, res) => {
+    const parsed = shopProductIdsSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: parsed.error.flatten() });
+    try {
+        const products = await prisma_1.prisma.product.findMany({
+            where: { id: { in: parsed.data.ids } },
+            select: { id: true, name: true, category: true, type: true },
+        });
+        let alreadyFilled = 0;
+        let multiple = 0;
+        let none = 0;
+        const groups = new Map();
+        for (const p of products) {
+            if (p.category || p.type) {
+                alreadyFilled += 1;
+                continue;
+            }
+            const hint = (0, categoryHints_1.hintCategoryByName)(p.name);
+            if (hint.status === 'multiple') {
+                multiple += 1;
+                continue;
+            }
+            if (hint.status === 'none') {
+                none += 1;
+                continue;
+            }
+            const v = hint.variants[0];
+            const key = `${v.category}|${v.type}`;
+            if (!groups.has(key))
+                groups.set(key, { category: v.category, type: v.type, ids: [] });
+            groups.get(key).ids.push(p.id);
+        }
+        let applied = 0;
+        for (const g of groups.values()) {
+            // category/type: null в условии — защита от гонки: если поле успели
+            // заполнить между чтением и записью, оно не будет перезаписано.
+            const r = await prisma_1.prisma.product.updateMany({
+                where: { id: { in: g.ids }, category: null, type: null },
+                data: { category: g.category, type: g.type, categorySource: 'name' },
+            });
+            applied += r.count;
+        }
+        res.json({ ok: true, applied, multiple, none, alreadyFilled, notFound: parsed.data.ids.length - products.length });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] POST /products/apply-name-categories упал');
+        res.status(500).json({ error: 'Не удалось проставить категории по названиям', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * Свой тип, вписанный в карточке («+ Свой тип…»): попадает в каталог своей
+ * категории и в следующий раз уже есть в выпадающем списке. Идемпотентно —
+ * повтор (в том числе с другим регистром) второй раз не создаёт. Подкатегория
+ * здесь не участвует: тип не хранится «вместо» подкатегории и не дублирует её.
+ */
+exports.shopAdminRouter.post('/category-types', async (req, res) => {
+    const parsed = zod_1.z.object({ category: zod_1.z.string().min(1).max(200), type: zod_1.z.string().min(1).max(200) }).safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: parsed.error.flatten() });
+    const category = parsed.data.category.replace(/\s+/g, ' ').trim();
+    const type = parsed.data.type.replace(/\s+/g, ' ').trim();
+    if (!category || !type)
+        return res.status(400).json({ error: 'Категория и тип не должны быть пустыми' });
+    if (type.length > 60)
+        return res.status(400).json({ error: 'Тип слишком длинный (максимум 60 символов)' });
+    try {
+        // Дубль проверяем по ВСЕМУ каталогу (стартовый список + свои типы), не
+        // только по своей таблице — иначе тип из стартового списка («Краска для
+        // волос» и т.п.) плодил бы лишнюю запись при первом же ручном вводе.
+        const [custom] = await Promise.all([prisma_1.prisma.shopCategoryType.findMany({ select: { category: true, type: true } })]);
+        const catalog = (0, categoryHints_1.buildCatalog)([...(0, categoryHints_1.starterCatalogPairs)(), ...(0, categoryHints_1.hintRuleCatalogPairs)(), ...custom]);
+        const existingType = catalog
+            .find((c) => c.category.toLowerCase() === category.toLowerCase())
+            ?.types.find((t) => t.toLowerCase() === type.toLowerCase());
+        if (existingType)
+            return res.json({ ok: true, created: false, type: existingType });
+        const row = await prisma_1.prisma.shopCategoryType.create({ data: { category, type } });
+        res.status(201).json({ ok: true, created: true, type: row.type });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] POST /category-types упал');
+        res.status(500).json({ error: 'Не удалось добавить тип', details: String(err?.message ?? err) });
+    }
+});
+// =====================================================================
+// Варианты витрины (цвет/размер) — несколько РАЗНЫХ строк Product с общим
+// variantGroup. Каждая остаётся своим товаром: своя цена, остаток, фото,
+// shopArticle. Этот эндпоинт только расставляет/снимает variantGroup и
+// variantLabel — ничего другого (цену, остаток и т.п.) не трогает.
+// =====================================================================
+const saveProductVariantsSchema = zod_1.z.object({
+    // Все отмеченные товары, ВКЛЮЧАЯ текущий (его checkbox в интерфейсе всегда
+    // отмечен и недоступен для снятия, пока в группе есть кто-то ещё).
+    memberIds: zod_1.z.array(zod_1.z.string()).min(1),
+    // Подпись миниатюры на каждый id из memberIds; для кого не прислали —
+    // остаётся прежняя (или пустая у новых).
+    labels: zod_1.z.record(zod_1.z.string(), zod_1.z.string().max(60)).optional().default({}),
+    // id товаров, которые уже состоят в ДРУГОЙ группе — подтверждение явного
+    // переноса. Без этого подтверждения такие товары не трогаем вообще.
+    transferIds: zod_1.z.array(zod_1.z.string()).optional().default([]),
+});
+/**
+ * Сохранение группы вариантов для товара :id. Алгоритм:
+ *  1. Товары из memberIds, у которых уже есть ЧУЖАЯ группа (не совпадающая
+ *     с текущей группой :id) и которых нет в transferIds — блокируем всё
+ *     сохранение целиком (409) со списком, что именно требует подтверждения
+ *     переноса. Ничего не меняем, пока это не подтверждено явно.
+ *  2. Группа: если у текущего товара она уже есть — используем её; если
+ *     создаём впервые (и в memberIds есть кто-то ещё, не только сам товар) —
+ *     генерируем новую.
+ *  3. Товары, которые БЫЛИ в группе текущего товара, но не вошли в новый
+ *     memberIds (их галочку сняли) — группа и подпись с них снимаются.
+ *  4. Если в итоге в группе остаётся только сам товар (всех остальных
+ *     убрали) — группа у него тоже снимается: группа из одного не нужна.
+ */
+exports.shopAdminRouter.post('/products/:id/variants', async (req, res) => {
+    const parsed = saveProductVariantsSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: parsed.error.flatten() });
+    const currentId = req.params.id;
+    const memberIds = Array.from(new Set([...parsed.data.memberIds, currentId]));
+    const { labels, transferIds } = parsed.data;
+    try {
+        const current = await prisma_1.prisma.product.findUnique({ where: { id: currentId } });
+        if (!current)
+            return res.status(404).json({ error: 'Товар не найден' });
+        const members = await prisma_1.prisma.product.findMany({ where: { id: { in: memberIds } } });
+        const foundIds = new Set(members.map((m) => m.id));
+        const notFound = memberIds.filter((id) => !foundIds.has(id));
+        if (notFound.length)
+            return res.status(404).json({ error: 'Некоторые товары не найдены', ids: notFound });
+        const needsTransfer = members.filter((m) => m.id !== currentId && m.variantGroup && m.variantGroup !== current.variantGroup);
+        const unconfirmed = needsTransfer.filter((m) => !transferIds.includes(m.id));
+        if (unconfirmed.length) {
+            return res.status(409).json({
+                error: 'Некоторые товары уже в другой группе',
+                items: unconfirmed.map((m) => ({ id: m.id, name: m.name, variantGroup: m.variantGroup })),
+            });
+        }
+        const otherMemberIds = memberIds.filter((id) => id !== currentId);
+        const targetGroup = otherMemberIds.length ? (current.variantGroup ?? (0, crypto_1.randomUUID)()) : null;
+        // Сняты с группы: были в группе текущего товара, но не вошли в новый состав.
+        if (current.variantGroup) {
+            await prisma_1.prisma.product.updateMany({
+                where: { variantGroup: current.variantGroup, id: { notIn: memberIds } },
+                data: { variantGroup: null, variantLabel: null },
+            });
+        }
+        if (targetGroup) {
+            for (const id of memberIds) {
+                await prisma_1.prisma.product.update({
+                    where: { id },
+                    data: { variantGroup: targetGroup, variantLabel: labels[id]?.trim() || null },
+                });
+            }
+        }
+        else {
+            // В итоге только сам товар — группа из одного не нужна, снимаем.
+            await prisma_1.prisma.product.update({ where: { id: currentId }, data: { variantGroup: null, variantLabel: null } });
+        }
+        res.json({ ok: true, variantGroup: targetGroup });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] POST /products/:id/variants упал');
+        res.status(500).json({ error: 'Не удалось сохранить варианты', details: String(err?.message ?? err) });
+    }
+});
+// =====================================================================
+// Возвраты My Market — список и решения. Заказы и остатки не трогаются
+// нигде в этом блоке.
+// =====================================================================
+/** Список заявок на возврат — без фильтра по умолчанию, сортировка по дате. */
+exports.shopAdminRouter.get('/returns', async (_req, res) => {
+    try {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+        const returns = await prisma_1.prisma.shopReturn.findMany({ orderBy: { createdAt: 'desc' } });
+        // Адрес заказа — одним запросом на все встреченные orderNumber сразу
+        // (не по одному на заявку). Заказа нет (удалён, опечатка в номере и
+        // т.п.) — адрес просто пустой, заявку это не роняет.
+        const orderNumbers = Array.from(new Set(returns.map((r) => r.orderNumber)));
+        const orders = orderNumbers.length
+            ? await prisma_1.prisma.shopOrder.findMany({
+                where: { number: { in: orderNumbers } },
+                select: { number: true, city: true, street: true, house: true, apartment: true, entrance: true, floor: true, intercom: true, phone: true },
+            })
+            : [];
+        const orderByNumber = new Map(orders.map((o) => [o.number, o]));
+        res.json(returns.map((r) => {
+            let photos = [];
+            try {
+                photos = r.photos ? JSON.parse(r.photos) : [];
+            }
+            catch {
+                photos = [];
+            }
+            const order = orderByNumber.get(r.orderNumber);
+            return {
+                ...r,
+                photos,
+                address: order
+                    ? { city: order.city, street: order.street, house: order.house, apartment: order.apartment, entrance: order.entrance, floor: order.floor, intercom: order.intercom, phone: order.phone }
+                    : null,
+            };
+        }));
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] GET /returns упал');
+        res.status(500).json({ error: 'Не удалось получить заявки на возврат', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * «Одобрить» — SMS покупателю с фиксированным текстом. Заказ и остатки не
+ * меняем: сам забор/приёмку товара и всё, что с ней связано, эта кнопка не
+ * делает — только решение и уведомление.
+ */
+exports.shopAdminRouter.post('/returns/:id/approve', async (req, res) => {
+    try {
+        const ret = await prisma_1.prisma.shopReturn.update({
+            where: { id: req.params.id },
+            data: { status: 'approved', reviewedAt: new Date() },
+        });
+        try {
+            await (0, sms_service_1.sendSms)(ret.customerPhone, 'Одобрено. Курьер заберёт через 3-4 дня.');
+        }
+        catch (err) {
+            // SMS не должно ронять сам ответ — решение уже сохранено.
+            logger_1.logger.error({ err }, '[Shop Admin] SMS об одобрении возврата не ушло');
+        }
+        let photos = [];
+        try {
+            photos = ret.photos ? JSON.parse(ret.photos) : [];
+        }
+        catch {
+            photos = [];
+        }
+        res.json({ ...ret, photos });
+    }
+    catch (err) {
+        if (err?.code === 'P2025')
+            return res.status(404).json({ error: 'Заявка не найдена' });
+        logger_1.logger.error({ err }, '[Shop Admin] POST /returns/:id/approve упал');
+        res.status(500).json({ error: 'Не удалось одобрить возврат', details: String(err?.message ?? err) });
+    }
+});
+const rejectReturnSchema = zod_1.z.object({ reason: zod_1.z.string().min(1).max(300) });
+/** «Отказать» — короткая причина обязательна, уходит покупателю SMS-ом. */
+exports.shopAdminRouter.post('/returns/:id/reject', async (req, res) => {
+    const parsed = rejectReturnSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: 'Укажите причину отказа', details: parsed.error.flatten() });
+    try {
+        const ret = await prisma_1.prisma.shopReturn.update({
+            where: { id: req.params.id },
+            data: { status: 'rejected', reviewedAt: new Date(), rejectReason: parsed.data.reason },
+        });
+        try {
+            await (0, sms_service_1.sendSms)(ret.customerPhone, `Отказано: ${parsed.data.reason}`);
+        }
+        catch (err) {
+            logger_1.logger.error({ err }, '[Shop Admin] SMS об отказе в возврате не ушло');
+        }
+        let photos = [];
+        try {
+            photos = ret.photos ? JSON.parse(ret.photos) : [];
+        }
+        catch {
+            photos = [];
+        }
+        res.json({ ...ret, photos });
+    }
+    catch (err) {
+        if (err?.code === 'P2025')
+            return res.status(404).json({ error: 'Заявка не найдена' });
+        logger_1.logger.error({ err }, '[Shop Admin] POST /returns/:id/reject упал');
+        res.status(500).json({ error: 'Не удалось отклонить возврат', details: String(err?.message ?? err) });
+    }
+});
+const catalogTypeName = zod_1.z.string().transform((v) => v.replace(/\s+/g, ' ').trim()).refine((v) => v.length > 0, 'Название типа не должно быть пустым').refine((v) => v.length <= 60, 'Тип слишком длинный (максимум 60 символов)');
+const catalogImageUrl = zod_1.z.string().trim().max(2000).refine((v) => /^https?:\/\//i.test(v), 'Ссылка на картинку должна начинаться с http:// или https://');
+/** Все типы (в том числе скрытые) + 23 раздела — экран «Каталог» фильтрует по разделу сам. */
+exports.shopAdminRouter.get('/catalog-types', async (_req, res) => {
+    try {
+        res.setHeader('Cache-Control', 'no-store');
+        const items = await prisma_1.prisma.catalogType.findMany({ orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] });
+        res.json({ categories: shopCategories_1.SHOP_CATEGORIES, items });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] GET /catalog-types упал');
+        res.status(500).json({ error: 'Не удалось получить типы каталога', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * «Импорт из приложения»: заводит в справочнике типы, которые система уже знает
+ * (тот же набор, что в выпадающем «Тип» карточки товара): стартовый список,
+ * правила названий, свои типы, соответствия Ozon и пары category/type, реально
+ * стоящие у товаров. Картинки пустые. Безопасно повторять: что уже есть в
+ * справочнике (в том числе скрытое) пропускается, ничего не дублируется и не
+ * перезаписывается; товары не меняются. Разделы вне списка из 23 пропускаются.
+ */
+exports.shopAdminRouter.post('/catalog-types/import', async (_req, res) => {
+    try {
+        const used = await prisma_1.prisma.product.groupBy({
+            by: ['category', 'type'],
+            where: { category: { not: null }, type: { not: null } },
+        });
+        const mapped = await prisma_1.prisma.ozonTypeMap.findMany({ select: { category: true, type: true } });
+        const custom = await prisma_1.prisma.shopCategoryType.findMany({ select: { category: true, type: true } });
+        const catalog = (0, categoryHints_1.buildCatalog)([
+            ...(0, categoryHints_1.starterCatalogPairs)(),
+            ...(0, categoryHints_1.hintRuleCatalogPairs)(),
+            ...custom,
+            ...mapped,
+            ...used,
+        ]);
+        const existing = await prisma_1.prisma.catalogType.findMany({});
+        const seen = new Set(existing.map((r) => `${r.category}|${r.type.toLowerCase()}`));
+        const nextOrder = new Map();
+        for (const r of existing)
+            nextOrder.set(r.category, Math.max(nextOrder.get(r.category) ?? 0, r.sortOrder));
+        const toCreate = [];
+        let alreadyThere = 0;
+        let skipped = 0;
+        for (const c of catalog) {
+            const category = (0, shopCategories_1.normalizeShopCategory)(c.category);
+            if (!category) {
+                skipped += c.types.length;
+                continue;
+            }
+            for (const raw of c.types) {
+                const type = String(raw).replace(/\s+/g, ' ').trim();
+                if (!type || type.length > 60) {
+                    skipped += 1;
+                    continue;
+                }
+                const key = `${category}|${type.toLowerCase()}`;
+                if (seen.has(key)) {
+                    alreadyThere += 1;
+                    continue;
+                }
+                seen.add(key);
+                const sortOrder = (nextOrder.get(category) ?? 0) + 1;
+                nextOrder.set(category, sortOrder);
+                toCreate.push({ category, type, sortOrder });
+            }
+        }
+        if (toCreate.length)
+            await prisma_1.prisma.catalogType.createMany({ data: toCreate, skipDuplicates: true });
+        res.json({ ok: true, created: toCreate.length, alreadyThere, skipped });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] POST /catalog-types/import упал');
+        res.status(500).json({ error: 'Не удалось импортировать типы', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * Массовая загрузка картинок типов ZIP-архивом. Папка = раздел (без учёта
+ * регистра и лишних пробелов), имя файла без расширения = тип. Нет такого типа
+ * в разделе — создаётся; есть — картинка заменяется. Картинки уходят в Vercel
+ * Blob тем же способом, что и фото товаров (shop/image/...). Ошибки по файлам
+ * не роняют загрузку — возвращаются списком. Тело — сам ZIP (Content-Type
+ * application/zip), до ~4,4 МБ: выше предела Vercel на тело запроса (~4,5 МБ);
+ * экран админки сам режет большой архив на части.
+ */
+exports.shopAdminRouter.post('/catalog-types/images-zip', express_1.default.raw({ type: () => true, limit: '4.4mb' }), async (req, res) => {
+    if (!env_1.env.blobToken) {
+        return res.status(501).json({ error: 'добавьте Blob', details: 'BLOB_READ_WRITE_TOKEN не задан в переменных окружения — картинки некуда сохранить.' });
+    }
+    const body = req.body;
+    if (!Buffer.isBuffer(body) || body.length === 0)
+        return res.status(400).json({ error: 'Пустой запрос: ожидается ZIP-архив в теле запроса' });
+    try {
+        let parsed;
+        try {
+            parsed = await (0, catalogTypeImport_1.parseImageZip)(body);
+        }
+        catch (e) {
+            return res.status(400).json({ error: String(e?.message ?? e) });
+        }
+        const errors = [...parsed.errors];
+        const rows = await prisma_1.prisma.catalogType.findMany({});
+        const index = new Map(rows.map((r) => [`${r.category}|${(0, catalogTypeImport_1.normalizeKey)(r.type)}`, r]));
+        const nextOrder = new Map();
+        for (const r of rows)
+            nextOrder.set(r.category, Math.max(nextOrder.get(r.category) ?? 0, r.sortOrder));
+        // 1) картинки в хранилище (по несколько штук параллельно, чтобы уложиться в лимит времени функции)
+        const uploaded = [];
+        const queue = [...parsed.items];
+        const worker = async () => {
+            for (let item = queue.shift(); item; item = queue.shift()) {
+                try {
+                    const rand = Math.random().toString(36).slice(2, 8);
+                    const blob = await (0, blob_1.put)(`shop/image/${Date.now()}-catalog-${rand}.${item.ext}`, item.buffer, { access: 'public', contentType: item.contentType, token: env_1.env.blobToken });
+                    uploaded.push({ item, url: blob.url });
+                }
+                catch (e) {
+                    errors.push({ file: item.source, message: `Не удалось загрузить в хранилище: ${String(e?.message ?? e)}` });
+                }
+            }
+        };
+        await Promise.all([worker(), worker(), worker(), worker()]);
+        uploaded.sort((x, y) => x.item.source.localeCompare(y.item.source));
+        // 2) привязка к типам в справочнике
+        const results = [];
+        for (const { item, url } of uploaded) {
+            try {
+                const key = `${item.category}|${(0, catalogTypeImport_1.normalizeKey)(item.type)}`;
+                const existing = index.get(key);
+                if (existing) {
+                    await prisma_1.prisma.catalogType.update({ where: { id: existing.id }, data: { imageUrl: url } });
+                    results.push({ category: item.category, type: existing.type, action: existing.imageUrl ? 'replaced' : 'attached' });
+                    existing.imageUrl = url;
+                }
+                else {
+                    const sortOrder = (nextOrder.get(item.category) ?? 0) + 1;
+                    nextOrder.set(item.category, sortOrder);
+                    const type = (0, catalogTypeImport_1.capitalizeFirst)(item.type);
+                    const row = await prisma_1.prisma.catalogType.create({ data: { category: item.category, type, imageUrl: url, sortOrder } });
+                    index.set(key, row);
+                    results.push({ category: item.category, type, action: 'created' });
+                }
+            }
+            catch (e) {
+                errors.push({ file: item.source, message: `Не удалось сохранить тип: ${String(e?.message ?? e)}` });
+            }
+        }
+        res.json({
+            ok: true,
+            created: results.filter((r) => r.action === 'created').length,
+            replaced: results.filter((r) => r.action === 'replaced').length,
+            attached: results.filter((r) => r.action === 'attached').length,
+            skippedJunk: parsed.skippedJunk,
+            items: results,
+            errors,
+        });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] POST /catalog-types/images-zip упал');
+        res.status(500).json({ error: 'Не удалось обработать архив', details: String(err?.message ?? err) });
+    }
+});
+/** «Добавить типы списком»: строки «Категория | Тип». Недостающие создаются (без картинки), существующие пропускаются. */
+exports.shopAdminRouter.post('/catalog-types/bulk', async (req, res) => {
+    const parsedBody = zod_1.z.object({ text: zod_1.z.string().max(200_000) }).safeParse(req.body);
+    if (!parsedBody.success)
+        return res.status(400).json({ error: 'Нужен текст: по строке «Категория | Тип»' });
+    try {
+        const { pairs, errors } = (0, catalogTypeImport_1.parseBulkText)(parsedBody.data.text);
+        const rows = await prisma_1.prisma.catalogType.findMany({});
+        const seen = new Set(rows.map((r) => `${r.category}|${(0, catalogTypeImport_1.normalizeKey)(r.type)}`));
+        const nextOrder = new Map();
+        for (const r of rows)
+            nextOrder.set(r.category, Math.max(nextOrder.get(r.category) ?? 0, r.sortOrder));
+        const toCreate = [];
+        let alreadyThere = 0;
+        for (const p of pairs) {
+            const key = `${p.category}|${(0, catalogTypeImport_1.normalizeKey)(p.type)}`;
+            if (seen.has(key)) {
+                alreadyThere += 1;
+                continue;
+            }
+            seen.add(key);
+            const sortOrder = (nextOrder.get(p.category) ?? 0) + 1;
+            nextOrder.set(p.category, sortOrder);
+            toCreate.push({ category: p.category, type: (0, catalogTypeImport_1.cleanName)(p.type), sortOrder });
+        }
+        if (toCreate.length)
+            await prisma_1.prisma.catalogType.createMany({ data: toCreate, skipDuplicates: true });
+        res.json({ ok: true, created: toCreate.length, alreadyThere, errors });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] POST /catalog-types/bulk упал');
+        res.status(500).json({ error: 'Не удалось добавить типы', details: String(err?.message ?? err) });
+    }
+});
+exports.shopAdminRouter.post('/catalog-types', async (req, res) => {
+    const parsed = zod_1.z.object({ category: zod_1.z.string(), type: catalogTypeName, imageUrl: catalogImageUrl.nullish() }).safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Неверные данные', details: parsed.error.flatten() });
+    const category = (0, shopCategories_1.normalizeShopCategory)(parsed.data.category);
+    if (!category)
+        return res.status(400).json({ error: 'Такого раздела нет в списке' });
+    try {
+        const inCategory = await prisma_1.prisma.catalogType.findMany({ where: { category } });
+        if (inCategory.some((r) => r.type.toLowerCase() === parsed.data.type.toLowerCase())) {
+            return res.status(409).json({ error: `Тип «${parsed.data.type}» в разделе «${category}» уже есть` });
+        }
+        const sortOrder = inCategory.reduce((m, r) => Math.max(m, r.sortOrder), 0) + 1;
+        const row = await prisma_1.prisma.catalogType.create({ data: { category, type: parsed.data.type, imageUrl: parsed.data.imageUrl || null, sortOrder } });
+        res.status(201).json(row);
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] POST /catalog-types упал');
+        res.status(500).json({ error: 'Не удалось добавить тип', details: String(err?.message ?? err) });
+    }
+});
+/** Переименовать, заменить/убрать картинку, скрыть/показать. Раздел не меняется. */
+exports.shopAdminRouter.patch('/catalog-types/:id', async (req, res) => {
+    const parsed = zod_1.z.object({ type: catalogTypeName.optional(), imageUrl: catalogImageUrl.nullable().optional(), active: zod_1.z.boolean().optional() }).safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Неверные данные', details: parsed.error.flatten() });
+    try {
+        const row = await prisma_1.prisma.catalogType.findUnique({ where: { id: req.params.id } });
+        if (!row)
+            return res.status(404).json({ error: 'Тип не найден' });
+        const data = {};
+        if (parsed.data.type !== undefined && parsed.data.type !== row.type) {
+            const siblings = await prisma_1.prisma.catalogType.findMany({ where: { category: row.category } });
+            if (siblings.some((r) => r.id !== row.id && r.type.toLowerCase() === parsed.data.type.toLowerCase())) {
+                return res.status(409).json({ error: `Тип «${parsed.data.type}» в разделе «${row.category}» уже есть` });
+            }
+            data.type = parsed.data.type;
+        }
+        if (parsed.data.imageUrl !== undefined)
+            data.imageUrl = parsed.data.imageUrl || null;
+        if (parsed.data.active !== undefined)
+            data.active = parsed.data.active;
+        const updated = Object.keys(data).length ? await prisma_1.prisma.catalogType.update({ where: { id: row.id }, data }) : row;
+        res.json(updated);
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] PATCH /catalog-types/:id упал');
+        res.status(500).json({ error: 'Не удалось изменить тип', details: String(err?.message ?? err) });
+    }
+});
+/** Порядок: поменять местами с соседом внутри раздела. Номера сначала выравниваются в 1..n, чтобы одинаковые sortOrder не мешали. */
+exports.shopAdminRouter.post('/catalog-types/:id/move', async (req, res) => {
+    const parsed = zod_1.z.object({ direction: zod_1.z.enum(['up', 'down']) }).safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: 'direction должен быть up или down' });
+    try {
+        const row = await prisma_1.prisma.catalogType.findUnique({ where: { id: req.params.id } });
+        if (!row)
+            return res.status(404).json({ error: 'Тип не найден' });
+        const list = await prisma_1.prisma.catalogType.findMany({ where: { category: row.category }, orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] });
+        const i = list.findIndex((r) => r.id === row.id);
+        const j = parsed.data.direction === 'up' ? i - 1 : i + 1;
+        if (i >= 0 && j >= 0 && j < list.length)
+            [list[i], list[j]] = [list[j], list[i]];
+        const ops = list
+            .map((r, idx) => ({ r, order: idx + 1 }))
+            .filter(({ r, order }) => r.sortOrder !== order)
+            .map(({ r, order }) => prisma_1.prisma.catalogType.update({ where: { id: r.id }, data: { sortOrder: order } }));
+        if (ops.length)
+            await prisma_1.prisma.$transaction(ops);
+        res.json({ ok: true });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] POST /catalog-types/:id/move упал');
+        res.status(500).json({ error: 'Не удалось изменить порядок', details: String(err?.message ?? err) });
+    }
+});
+exports.shopAdminRouter.delete('/catalog-types/:id', async (req, res) => {
+    try {
+        const row = await prisma_1.prisma.catalogType.findUnique({ where: { id: req.params.id } });
+        if (!row)
+            return res.status(404).json({ error: 'Тип не найден' });
+        await prisma_1.prisma.catalogType.delete({ where: { id: row.id } });
+        res.json({ ok: true, id: row.id });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Shop Admin] DELETE /catalog-types/:id упал');
+        res.status(500).json({ error: 'Не удалось удалить тип', details: String(err?.message ?? err) });
+    }
+});
+// ---------------------------------------------------------------------------
+// Подписка «Вау» — админка: настройки, подписчики (подтвердить оплату / вернуть
+// деньги), товары со скидкой «Вау» с проверкой, что после скидки не в минус.
+// ---------------------------------------------------------------------------
+const wowSettingsSchema = zod_1.z.object({
+    enabled: zod_1.z.boolean().optional(),
+    monthlyPrice: zod_1.z.number().positive().max(1_000_000).optional(),
+    defaultPercent: zod_1.z.number().int().min(wow_service_1.WOW_MIN_PERCENT).max(wow_service_1.WOW_MAX_PERCENT).optional(),
+    payInstructions: zod_1.z.string().max(1000).optional().nullable(),
+});
+exports.shopAdminRouter.get('/wow/settings', async (_req, res) => {
+    res.json(await (0, wow_service_1.getWowSettings)());
+});
+exports.shopAdminRouter.put('/wow/settings', async (req, res) => {
+    const parsed = wowSettingsSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: 'Неверные настройки', details: parsed.error.flatten() });
+    try {
+        const d = parsed.data;
+        const data = {
+            ...(d.enabled !== undefined ? { enabled: d.enabled } : {}),
+            ...(d.monthlyPrice !== undefined ? { monthlyPrice: Math.round(d.monthlyPrice) } : {}),
+            ...(d.defaultPercent !== undefined ? { defaultPercent: d.defaultPercent } : {}),
+            ...(d.payInstructions !== undefined ? { payInstructions: d.payInstructions?.trim() || null } : {}),
+        };
+        await prisma_1.prisma.wowSettings.upsert({ where: { id: 'main' }, update: data, create: { id: 'main', ...data } });
+        res.json(await (0, wow_service_1.getWowSettings)());
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Wow admin] PUT /wow/settings упал');
+        res.status(500).json({ error: 'Не удалось сохранить настройки', details: String(err?.message ?? err) });
+    }
+});
+/** Подписчики: GET /wow/members?status=pending_payment|active|refund_requested|all */
+exports.shopAdminRouter.get('/wow/members', async (req, res) => {
+    try {
+        const want = String(req.query.status ?? 'all');
+        const rows = await prisma_1.prisma.wowMembership.findMany({ orderBy: { createdAt: 'desc' }, take: 500 });
+        const savings = await (0, wow_service_1.membershipSavings)(rows.map((r) => r.id));
+        const list = rows
+            .map((r) => {
+            const s = savings.get(r.id);
+            return { ...r, status: (0, wow_service_1.effectiveStatus)(r), savedTotal: Math.round(s.saved), discountedOrders: s.orders };
+        })
+            .filter((r) => want === 'all' || r.status === want);
+        const now = Date.now();
+        const monthAgo = now - 30 * 86400_000;
+        const summary = {
+            active: list.filter((r) => r.status === 'active').length,
+            pending: rows.filter((r) => (0, wow_service_1.effectiveStatus)(r) === 'pending_payment').length,
+            refundRequested: rows.filter((r) => (0, wow_service_1.effectiveStatus)(r) === 'refund_requested').length,
+            // Деньги за подписки за 30 дней (подтверждённые, без возвращённых) и сколько скидки отдали за то же время.
+            paid30d: Math.round(rows.filter((r) => r.paidAt && r.paidAt.getTime() >= monthAgo && r.status !== 'refunded').reduce((a, r) => a + r.price, 0)),
+            discount30d: 0,
+        };
+        const disc = await prisma_1.prisma.shopOrder.findMany({
+            where: { wowDiscount: { gt: 0 }, status: { not: 'cancelled' }, createdAt: { gte: new Date(monthAgo) } },
+            select: { wowDiscount: true },
+        });
+        summary.discount30d = Math.round(disc.reduce((a, o) => a + o.wowDiscount, 0));
+        res.json({ summary, members: list });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Wow admin] GET /wow/members упал');
+        res.status(500).json({ error: 'Не удалось получить подписчиков', details: String(err?.message ?? err) });
+    }
+});
+/** «Подтвердить оплату»: подписка начинает работать на 1 месяц (продление — с конца текущей). */
+exports.shopAdminRouter.post('/wow/members/:id/confirm', async (req, res) => {
+    try {
+        const m = await prisma_1.prisma.wowMembership.findUnique({ where: { id: req.params.id } });
+        if (!m)
+            return res.status(404).json({ error: 'Подписка не найдена' });
+        if (m.status !== 'pending_payment')
+            return res.status(409).json({ error: `Подписка уже в статусе «${m.status}»` });
+        const now = new Date();
+        const prev = await prisma_1.prisma.wowMembership.findFirst({
+            where: { phone: m.phone, status: 'active', endsAt: { gt: now }, id: { not: m.id } },
+            orderBy: { endsAt: 'desc' },
+        });
+        const startsAt = prev?.endsAt ?? now;
+        const endsAt = (0, wow_service_1.addOneMonth)(startsAt);
+        const updated = await prisma_1.prisma.wowMembership.update({
+            where: { id: m.id },
+            data: { status: 'active', paidAt: now, startsAt, endsAt },
+        });
+        await (0, shop_routes_1.notifyWowActivated)(m.phone, endsAt);
+        res.json(updated);
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Wow admin] confirm упал');
+        res.status(500).json({ error: 'Не удалось подтвердить оплату', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * «Деньги вернули»: только если по подписке не было покупок со скидкой (правило возврата).
+ * force=true — вернуть всё равно (решение админа, например по жалобе).
+ */
+exports.shopAdminRouter.post('/wow/members/:id/refund', async (req, res) => {
+    try {
+        const m = await prisma_1.prisma.wowMembership.findUnique({ where: { id: req.params.id } });
+        if (!m)
+            return res.status(404).json({ error: 'Подписка не найдена' });
+        if (!['active', 'refund_requested'].includes(m.status))
+            return res.status(409).json({ error: `Вернуть нельзя: статус «${m.status}»` });
+        const s = (await (0, wow_service_1.membershipSavings)([m.id])).get(m.id);
+        if (s.orders > 0 && req.body?.force !== true) {
+            return res.status(409).json({ error: `По подписке было ${s.orders} заказ(а) со скидкой на ${Math.round(s.saved)} ₸ — по правилам деньги не возвращаются`, reason: 'has_orders' });
+        }
+        const updated = await prisma_1.prisma.wowMembership.update({
+            where: { id: m.id },
+            data: { status: 'refunded', refundedAt: new Date(), cancelledAt: m.cancelledAt ?? new Date(), cancelRequested: true },
+        });
+        await (0, wow_service_1.pushToCustomer)(m.phone, 'Подписка Вау отменена', `Мы вернули ${Math.round(m.price)} ₸ за подписку.`);
+        res.json(updated);
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Wow admin] refund упал');
+        res.status(500).json({ error: 'Не удалось оформить возврат', details: String(err?.message ?? err) });
+    }
+});
+/** Отменить подписку, которая ждёт оплаты (например, деньги так и не пришли). */
+exports.shopAdminRouter.post('/wow/members/:id/cancel', async (req, res) => {
+    try {
+        const m = await prisma_1.prisma.wowMembership.findUnique({ where: { id: req.params.id } });
+        if (!m)
+            return res.status(404).json({ error: 'Подписка не найдена' });
+        if (m.status !== 'pending_payment')
+            return res.status(409).json({ error: 'Отменить можно только подписку, которая ждёт оплаты. Для оплаченной — «Вернуть деньги»' });
+        const updated = await prisma_1.prisma.wowMembership.update({ where: { id: m.id }, data: { status: 'cancelled', cancelledAt: new Date() } });
+        res.json(updated);
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Wow admin] cancel упал');
+        res.status(500).json({ error: 'Не удалось отменить', details: String(err?.message ?? err) });
+    }
+});
+const WOW_PRODUCT_SELECT = {
+    id: true, name: true, shopArticle: true, shopPrice: true, shopCost: true, costPrice: true, packagingCost: true,
+    wowPercent: true, wowUntil: true, images: true, category: true,
+};
+/**
+ * Юнит-экономика товара для «Вау»: сколько остаётся с одной продажи без скидки и со скидкой.
+ * Себестоимость = закуп для витрины (shopCost, иначе общий costPrice) + упаковка. Комиссии площадки
+ * у своего приложения нет; доставку/рекламу тут не вычитаем (они не зависят от скидки).
+ */
+function wowMarginOf(p, percent) {
+    const price = p.shopPrice ?? 0;
+    const wowPrice = (0, wow_service_1.wowPriceOf)(price, percent);
+    const cost = (p.shopCost ?? p.costPrice ?? 0) + (p.packagingCost ?? 0);
+    const profit = Math.round(wowPrice - cost);
+    return {
+        wowPrice, cost: Math.round(cost), costKnown: cost > 0,
+        profitBefore: Math.round(price - cost),
+        profit,
+        discountPerUnit: Math.round(price - wowPrice),
+        marginPct: wowPrice > 0 ? Math.round((profit / wowPrice) * 1000) / 10 : 0,
+    };
+}
+/** Товары витрины для раздела «Вау»: галочка, %, срок, цена, цена со скидкой, прибыль до/после скидки. */
+exports.shopAdminRouter.get('/wow/products', async (_req, res) => {
+    try {
+        const settings = await (0, wow_service_1.getWowSettings)();
+        const rows = await prisma_1.prisma.product.findMany({
+            where: { shopActive: true, shopArchived: false, shopPrice: { not: null } },
+            select: WOW_PRODUCT_SELECT,
+            orderBy: { shopPrice: 'desc' },
+        });
+        const now = Date.now();
+        res.json(rows.map((p) => {
+            const pct = p.wowPercent ?? settings.defaultPercent;
+            let image = null;
+            try {
+                image = (p.images ? JSON.parse(p.images) : [])[0] ?? null;
+            }
+            catch {
+                image = null;
+            }
+            const expired = !!(p.wowPercent && p.wowUntil && p.wowUntil.getTime() <= now);
+            return {
+                id: p.id, name: p.name, article: p.shopArticle, category: p.category, image, price: p.shopPrice,
+                percent: pct, until: p.wowUntil, enabled: !!p.wowPercent && !expired, expired,
+                ...wowMarginOf(p, pct),
+            };
+        }));
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Wow admin] GET /wow/products упал');
+        res.status(500).json({ error: 'Не удалось получить товары', details: String(err?.message ?? err) });
+    }
+});
+const wowProductsSchema = zod_1.z.object({
+    ids: zod_1.z.array(zod_1.z.string().min(1)).min(1).max(2000),
+    // null или 0 — снять галочку «Вау».
+    percent: zod_1.z.number().int().min(0).max(wow_service_1.WOW_MAX_PERCENT).nullable(),
+    // До какой даты действует (ГГГГ-ММ-ДД, включительно). null — пока не снимут вручную.
+    until: zod_1.z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+});
+/** Конец дня по Алматы (UTC+5) для даты ГГГГ-ММ-ДД: скидка действует весь последний день. */
+function endOfAlmatyDay(ymd) {
+    return new Date(Date.parse(`${ymd}T23:59:59.999+05:00`));
+}
+/**
+ * Поставить/снять галочку «Вау» на выбранных товарах. Если после скидки цена ниже себестоимости —
+ * товар НЕ включается (возвращается в skipped), чтобы не продавать в минус.
+ */
+exports.shopAdminRouter.post('/wow/products', async (req, res) => {
+    const parsed = wowProductsSchema.safeParse(req.body);
+    if (!parsed.success)
+        return res.status(400).json({ error: 'Неверные данные', details: parsed.error.flatten() });
+    try {
+        const percent = (0, wow_service_1.normalizeWowPercent)(parsed.data.percent);
+        const until = percent && parsed.data.until ? endOfAlmatyDay(parsed.data.until) : null;
+        if (until && until.getTime() <= Date.now())
+            return res.status(400).json({ error: 'Дата окончания уже прошла' });
+        const rows = await prisma_1.prisma.product.findMany({ where: { id: { in: parsed.data.ids } }, select: WOW_PRODUCT_SELECT });
+        const okIds = [];
+        const skipped = [];
+        for (const p of rows) {
+            if (percent === null) {
+                okIds.push(p.id);
+                continue;
+            }
+            if (p.shopPrice == null) {
+                skipped.push({ id: p.id, name: p.name, reason: 'нет цены на витрине' });
+                continue;
+            }
+            const m = wowMarginOf(p, percent);
+            if (m.costKnown && m.profit < 0) {
+                skipped.push({ id: p.id, name: p.name, reason: `после скидки ${m.wowPrice} ₸ меньше себестоимости ${m.cost} ₸` });
+                continue;
+            }
+            okIds.push(p.id);
+        }
+        if (okIds.length) {
+            await prisma_1.prisma.product.updateMany({ where: { id: { in: okIds } }, data: { wowPercent: percent, wowUntil: percent ? until : null } });
+        }
+        res.json({ updated: okIds.length, skipped });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Wow admin] POST /wow/products упал');
+        res.status(500).json({ error: 'Не удалось сохранить скидки', details: String(err?.message ?? err) });
+    }
+});
+/**
+ * «Синхронизировать с Ozon» (My Market → Товары): товары Ozon, которых ещё нет в My Market,
+ * становятся карточками витрины (фото, название, цена с Ozon; категория — по словарю).
+ * Уже существующие товары My Market не трогаются. Пачками: фронт вызывает, пока done=false.
+ */
+exports.shopAdminRouter.post('/ozon-import', async (req, res) => {
+    try {
+        const cursor = typeof req.body?.cursor === 'string' && req.body.cursor ? req.body.cursor : undefined;
+        res.json({ ok: true, ...(await (0, ozonToMyMarket_service_1.importOzonToMyMarket)(40, cursor)) });
+    }
+    catch (err) {
+        logger_1.logger.error({ err }, '[Ozon → My Market] ошибка');
+        res.status(500).json({ ok: false, error: 'Не удалось перенести товары с Ozon', details: String(err?.message ?? err) });
+    }
+});
+//# sourceMappingURL=shopAdmin.routes.js.map
