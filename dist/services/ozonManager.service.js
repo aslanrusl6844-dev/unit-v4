@@ -12,6 +12,8 @@ exports.returnsList = returnsList;
 exports.fboStock = fboStock;
 exports.morningReport = morningReport;
 exports.eveningReport = eveningReport;
+exports.photoCards = photoCards;
+exports.setOzonBotPhotoSender = setOzonBotPhotoSender;
 exports.runTool = runTool;
 exports.setOzonBotFetch = setOzonBotFetch;
 exports.askOzonManager = askOzonManager;
@@ -23,6 +25,7 @@ const analytics_service_1 = require("./analytics.service");
 const sync_service_1 = require("./sync.service");
 const taxSettings_1 = require("../handlers/taxSettings");
 const timezone_1 = require("../utils/timezone");
+const assistant_service_1 = require("./assistant.service");
 /**
  * «Озон-менеджер» — отдельный Telegram-бот владельца: продажи и маржа за день/период, что отгрузить
  * (сроки FBS, чтобы не было штрафа), сколько денег нужно на закупку товара под заказы, возвраты,
@@ -230,6 +233,8 @@ async function morningReport() {
         out.push(...buy.items.slice(0, 10).map((i) => `• ${esc(i.name.slice(0, 60))} — ${i.qty} шт × ${i.unitCost ? money(i.unitCost) : '<i>нет закупочной цены</i>'}`));
         if (buy.missingCost.length)
             out.push(`⚠️ Нет закупочной цены у ${buy.missingCost.length} товаров — сумма закупки неполная (заполните в «Товарах»)`);
+        if (buy.items.length)
+            out.push('📸 /collect — те же товары фотографиями с количеством, чтобы показать оптовикам');
     }
     catch (err) {
         out.push('', `⚠️ Отгрузки/закупка: не получилось спросить Ozon (${esc(String(err?.message ?? err).slice(0, 120))})`);
@@ -288,6 +293,76 @@ async function eveningReport() {
     catch { /* ignore */ }
     return out.join('\n');
 }
+/** Первое фото товара: витрина My Market, иначе фото с площадки. */
+async function photosByOffer(offerIds) {
+    const ids = [...new Set(offerIds.filter(Boolean))];
+    if (!ids.length)
+        return new Map();
+    const rows = await prisma_1.prisma.product.findMany({
+        where: { OR: [{ ozonOfferId: { in: ids } }, { sku: { in: ids } }] },
+        select: { sku: true, ozonOfferId: true, images: true, marketImages: true },
+    });
+    const first = (json) => {
+        try {
+            const a = JSON.parse(json ?? '[]');
+            return Array.isArray(a) ? a.find((u) => typeof u === 'string' && /^https?:\/\//.test(u)) ?? null : null;
+        }
+        catch {
+            return null;
+        }
+    };
+    const m = new Map();
+    for (const r of rows) {
+        const url = first(r.images) ?? first(r.marketImages);
+        if (!url)
+            continue;
+        if (r.ozonOfferId)
+            m.set(r.ozonOfferId, url);
+        if (!m.has(r.sku))
+            m.set(r.sku, url);
+    }
+    return m;
+}
+/**
+ * Товары одной картинкой на позицию: «collect» — что собрать у оптовиков (несобранные FBS-заказы),
+ * «sold» — что продалось за день (FBS + FBO). Одинаковые товары сложены в одну строку с общим количеством.
+ */
+async function photoCards(kind, dateStr) {
+    const agg = new Map();
+    const add = (offerId, name, qty) => {
+        const key = offerId || name;
+        const cur = agg.get(key) ?? { offerId, name, qty: 0 };
+        cur.qty += qty;
+        agg.set(key, cur);
+    };
+    let title;
+    if (kind === 'collect') {
+        const need = await purchaseNeeds();
+        for (const i of need.items)
+            add(i.offerId, i.name, i.qty);
+        title = '🛒 Собрать у оптовиков (несобранные заказы FBS)';
+    }
+    else {
+        const { date, from, to } = dayBounds(dateStr);
+        // Прямо из Ozon (без тяжёлой синхронизации финансов) — быстро, укладываемся в лимит времени.
+        const fbs = await ozon_client_1.ozonClient.fetchFbsPostings(from, to);
+        for (const p of fbs.filter((x) => !analytics_service_1.NON_SALE_STATUSES.includes(x.status)))
+            for (const i of p.products)
+                add(i.offerId, i.name, i.quantity);
+        try {
+            for (const r of await ozon_client_1.ozonClient.fetchFboPostings(from, to))
+                if (!/cancel/i.test(r.status))
+                    add(r.offerId, r.name, r.quantity);
+        }
+        catch { /* FBO может быть не подключён */ }
+        title = `📦 Продано ${(0, dayjs_1.default)(date).format('DD.MM')} (FBS + FBO)`;
+    }
+    const photos = await photosByOffer([...agg.values()].map((x) => x.offerId));
+    const cards = [...agg.values()].sort((a, b) => b.qty - a.qty).map((x) => ({ ...x, photo: photos.get(x.offerId) ?? null }));
+    return { title, cards };
+}
+let photoSender = null;
+function setOzonBotPhotoSender(fn) { photoSender = fn; }
 // ---------------------------------------------------------------- «мозг»: Claude с инструментами
 exports.OZON_TOOLS = [
     { name: 'day_sales', description: 'Продажи Ozon за день (по умолчанию сегодня, Алматы): FBS-заказы с выручкой, закупкой, комиссиями Ozon, прибылью по каждому; FBO-продажи; отмены.', input_schema: { type: 'object', properties: { date: { type: 'string', description: 'YYYY-MM-DD, пусто — сегодня' } } } },
@@ -296,9 +371,17 @@ exports.OZON_TOOLS = [
     { name: 'purchase_needs', description: 'Сколько товара и денег по закупочной (оптовой) цене нужно, чтобы собрать ещё не собранные FBS-заказы.', input_schema: { type: 'object', properties: {} } },
     { name: 'returns', description: 'Возвраты Ozon за последние N дней: статус, причина, где сейчас, сумма.', input_schema: { type: 'object', properties: { days: { type: 'number' } } } },
     { name: 'fbo_stock', description: 'Остатки на складах Ozon (FBO) и на сколько дней хватит; что заканчивается.', input_schema: { type: 'object', properties: {} } },
+    { name: 'show_photos', description: 'Отправить в чат товары ФОТОГРАФИЯМИ с количеством (одно фото на товар, одинаковые сложены): kind=collect — что собрать у оптовиков под несобранные заказы; kind=sold — что продалось за день. Используй, когда просят «покажи с фото», «что собрать у оптовиков», «какие товары продались». После вызова фото уже в чате — напиши только короткий итог.', input_schema: { type: 'object', properties: { kind: { type: 'string', enum: ['collect', 'sold'] }, date: { type: 'string', description: 'YYYY-MM-DD для sold, пусто — сегодня' } }, required: ['kind'] } },
 ];
-async function runTool(name, input) {
+async function runTool(name, input, ctx = {}) {
     switch (name) {
+        case 'show_photos': {
+            const { title, cards } = await photoCards(input?.kind === 'sold' ? 'sold' : 'collect', input?.date);
+            if (!ctx.chatId || !photoSender)
+                return { error: 'фото сейчас отправить нельзя', cards };
+            await photoSender(ctx.chatId, title, cards);
+            return { sent: true, positions: cards.length, totalQty: cards.reduce((s, c) => s + c.qty, 0), withoutPhoto: cards.filter((c) => !c.photo).map((c) => c.name) };
+        }
         case 'day_sales': return daySales(input?.date);
         case 'period_report': return periodReport(String(input?.from ?? ''), String(input?.to ?? ''));
         case 'fbs_to_ship': return fbsToShip();
@@ -332,11 +415,14 @@ function setOzonBotFetch(f) { fetchImpl = f ?? ((...a) => fetch(...a)); }
 /** Поиск в интернете (сервер Anthropic) — для анализа конкурентов на Ozon. Выключить: OZON_BOT_WEB_SEARCH=off. */
 const WEB_SEARCH_TOOL = { type: 'web_search_20250305', name: 'web_search', max_uses: 6, allowed_domains: ['ozon.kz', 'ozon.ru'] };
 /** Ответ на вопрос владельца: Claude сам вызывает инструменты (до 8 шагов) и пишет ответ. Фото товара — для анализа конкурентов. */
-async function askOzonManager(history, question, image) {
+async function askOzonManager(history, question, image, ctx = {}) {
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey)
         return 'Мозг бота не подключён: нет ANTHROPIC_API_KEY в Vercel.';
-    const model = process.env.OZON_BOT_MODEL || 'claude-sonnet-4-5';
+    // Модели по очереди: если аккаунту Anthropic какая-то недоступна (not_found) — берём следующую.
+    // Последняя — та же, на которой уже работает Баурсак.
+    const models = [...new Set([process.env.OZON_BOT_MODEL, 'claude-sonnet-4-5-20250929', 'claude-sonnet-4-20250514', assistant_service_1.DEFAULT_MODEL].filter(Boolean))];
+    let model = models.shift();
     let webSearch = (process.env.OZON_BOT_WEB_SEARCH ?? 'on').toLowerCase() !== 'off';
     const userContent = image
         ? [{ type: 'image', source: { type: 'base64', media_type: image.mediaType, data: image.base64 } }, { type: 'text', text: question || 'Проанализируй этот товар для Ozon.' }]
@@ -353,6 +439,12 @@ async function askOzonManager(history, question, image) {
             // Поиск в интернете не включён у аккаунта Anthropic — продолжаем без него.
             if (webSearch && /web.?search/i.test(String(body?.error?.message ?? ''))) {
                 webSearch = false;
+                step--;
+                continue;
+            }
+            if ((body?.error?.type === 'not_found_error' || /^model:/i.test(String(body?.error?.message ?? ''))) && models.length) {
+                logger_1.logger.warn({ model }, '[OzonBot] модель недоступна — пробую следующую');
+                model = models.shift();
                 step--;
                 continue;
             }
@@ -374,7 +466,7 @@ async function askOzonManager(history, question, image) {
         for (const c of calls) {
             let out;
             try {
-                out = await runTool(c.name, c.input);
+                out = await runTool(c.name, c.input, ctx);
             }
             catch (err) {
                 out = { error: String(err?.message ?? err).slice(0, 300) };

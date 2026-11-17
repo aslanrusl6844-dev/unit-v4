@@ -3,12 +3,15 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.ozonBotSecret = exports.ozonBotRouter = void 0;
 exports.setOzonBotTelegramFetch = setOzonBotTelegramFetch;
 exports.sendOzonBot = sendOzonBot;
+exports.setOzonBotImageFetch = setOzonBotImageFetch;
+exports.sendPhotoCards = sendPhotoCards;
 exports.handleOzonBotUpdate = handleOzonBotUpdate;
 exports.sendOzonBotReport = sendOzonBotReport;
 const express_1 = require("express");
 const crypto_1 = require("crypto");
 const functions_1 = require("@vercel/functions");
 const prisma_1 = require("../db/prisma");
+const photoCollage_1 = require("../services/photoCollage");
 const logger_1 = require("../utils/logger");
 const ozonManager_service_1 = require("../services/ozonManager.service");
 /**
@@ -17,7 +20,9 @@ const ozonManager_service_1 = require("../services/ozonManager.service");
  */
 exports.ozonBotRouter = (0, express_1.Router)();
 const token = () => (process.env.OZON_BOT_TOKEN ?? '').trim();
-const ownerId = () => (process.env.OZON_BOT_OWNER_ID ?? '').trim();
+/** Кому бот отвечает: chat id владельца и/или семейной группы (через запятую). Отчёты — в первый. */
+const allowedIds = () => (process.env.OZON_BOT_OWNER_ID ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+const ownerId = () => allowedIds()[0] ?? '';
 const ozonBotSecret = () => (0, crypto_1.createHash)('sha256').update('ozon-bot:' + token()).digest('hex').slice(0, 32);
 exports.ozonBotSecret = ozonBotSecret;
 let tgFetch = (...a) => fetch(...a);
@@ -62,6 +67,81 @@ async function downloadPhoto(fileId) {
     const ext = String(f.file_path).split('.').pop()?.toLowerCase();
     return { mediaType: ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg', base64: buf.toString('base64') };
 }
+const escH = (v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+/**
+ * Товары фотографиями: одно фото = один товар, подпись — название и КОЛИЧЕСТВО крупно (удобно
+ * переслать оптовику). Без фото — одной общей строкой в конце. Закупочные цены в подпись не пишем.
+ */
+let imgFetch = (...a) => fetch(...a);
+function setOzonBotImageFetch(f) { imgFetch = f ?? ((...a) => fetch(...a)); }
+/** Скачать фото товара сами (Telegram не всегда может забрать картинку с CDN Ozon по ссылке). */
+async function loadImage(url) {
+    try {
+        const r = await imgFetch(url, { headers: { Accept: 'image/jpeg,image/png,image/*' }, signal: AbortSignal.timeout(8000) });
+        if (!r.ok)
+            return null;
+        const type = r.headers?.get?.('content-type') ?? 'image/jpeg';
+        if (!/^image\/(jpe?g|png|webp)/i.test(type))
+            return null;
+        const buf = await r.arrayBuffer();
+        if (!buf.byteLength || buf.byteLength > 9_000_000)
+            return null;
+        return new Blob([buf], { type });
+    }
+    catch {
+        return null;
+    }
+}
+/** sendPhoto файлом (multipart) — так фото доходит всегда, если мы смогли его скачать. */
+async function sendPhotoFile(chatId, img, caption) {
+    const form = new FormData();
+    form.append('chat_id', chatId);
+    form.append('caption', caption);
+    form.append('parse_mode', 'HTML');
+    form.append('photo', img, 'item.jpg');
+    const r = await tgFetch(`https://api.telegram.org/bot${token()}/sendPhoto`, { method: 'POST', body: form });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || !data?.ok)
+        throw new Error(`telegram sendPhoto: ${data?.description ?? r.status}`);
+}
+async function sendPhotoCards(chatId, title, cards) {
+    const started = Date.now();
+    const total = cards.reduce((s, c) => s + c.qty, 0);
+    if (!cards.length) {
+        await sendOzonBot(chatId, `${title}\nПока ничего нет 👍`);
+        return;
+    }
+    const list = cards.slice(0, 36);
+    // Фото качаем сами, по 6 параллельно (Telegram не всегда забирает картинку с CDN Ozon).
+    const images = new Array(list.length).fill(null);
+    for (let i = 0; i < list.length && Date.now() - started < 25_000; i += 6) {
+        const got = await Promise.all(list.slice(i, i + 6).map((c) => (c.photo ? loadImage(c.photo) : Promise.resolve(null))));
+        for (let j = 0; j < got.length; j++)
+            images[i + j] = got[j] ? Buffer.from(await got[j].arrayBuffer()) : null;
+    }
+    // Коллажи по 9 товаров: плитка ≈ 1/3 ширины, крупно «N шт», номер позиции; подпись — список с номерами.
+    for (let i = 0; i < list.length; i += 9) {
+        const part = list.slice(i, i + 9);
+        const items = part.map((c, j) => ({ qty: c.qty, name: c.name, image: images[i + j], index: i + j + 1 }));
+        const head = i === 0 ? `<b>${escH(title)}</b>\n${cards.length} товаров, всего ${total} шт\n` : '';
+        const lines = part.map((c, j) => `${i + j + 1}) <b>${c.qty} шт</b> — ${escH(c.name.slice(0, 55))}${c.offerId ? ` · ${escH(c.offerId)}` : ''}`);
+        let caption = head + lines.join('\n');
+        if (caption.length > 1000)
+            caption = head + lines.map((l) => l.replace(/ · [^·]*$/, '')).join('\n').slice(0, 1000);
+        try {
+            const jpeg = await (0, photoCollage_1.buildCollage)(items);
+            await sendPhotoFile(chatId, new Blob([jpeg], { type: 'image/jpeg' }), caption);
+        }
+        catch (err) {
+            logger_1.logger.warn({ err: String(err?.message ?? err) }, '[OzonBot] коллаж не собрался — шлю списком');
+            await sendOzonBot(chatId, caption);
+        }
+    }
+    if (cards.length > list.length) {
+        await sendOzonBot(chatId, ['<b>Ещё товары:</b>', ...cards.slice(list.length).map((c) => `• <b>${c.qty} шт</b> — ${escH(c.name.slice(0, 80))}`)].join('\n'));
+    }
+}
+(0, ozonManager_service_1.setOzonBotPhotoSender)(sendPhotoCards);
 function secretOk(v) {
     if (!token() || !v)
         return false;
@@ -81,6 +161,8 @@ const HELP = [
     '/today — продажи и прибыль за сегодня',
     '/ship — что отгрузить и сроки',
     '/buy — сколько нужно на закупку',
+    '/collect — что собрать у оптовиков: фото + количество',
+    '/sold — что продалось сегодня: фото + количество',
     '/returns — возвраты за 7 дней',
     '/stock — остатки на складах Ozon',
     '/new — начать разговор заново',
@@ -128,10 +210,10 @@ async function handleOzonBotUpdate(update) {
     if (!chatId || (!text && !photo?.length))
         return;
     if (!ownerId()) {
-        await sendOzonBot(chatId, `Бот ещё не привязан к владельцу.\nВаш chat id: <b>${chatId}</b>\nДобавьте его в Vercel как OZON_BOT_OWNER_ID и сделайте Redeploy.`);
+        await sendOzonBot(chatId, `Бот ещё не привязан.\nChat id ${msg?.chat?.type === 'private' ? 'этого чата' : 'этой группы'}: <b>${chatId}</b>\nДобавьте его в Vercel как OZON_BOT_OWNER_ID и сделайте Redeploy.`);
         return;
     }
-    if (chatId !== ownerId())
+    if (!allowedIds().includes(chatId))
         return; // чужим — молчим
     const cmd = text.split(/[\s@]/)[0].toLowerCase();
     if (cmd === '/start' || cmd === '/help') {
@@ -145,6 +227,11 @@ async function handleOzonBotUpdate(update) {
     }
     await tg('sendChatAction', { chat_id: chatId, action: 'typing' }).catch(() => undefined);
     try {
+        if (cmd === '/collect' || cmd === '/sold') {
+            const { title, cards } = await (0, ozonManager_service_1.photoCards)(cmd === '/sold' ? 'sold' : 'collect');
+            await sendPhotoCards(chatId, title, cards);
+            return;
+        }
         const fast = await quick(cmd);
         if (fast !== null) {
             await sendOzonBot(chatId, fast);
@@ -155,7 +242,9 @@ async function handleOzonBotUpdate(update) {
         const image = photo?.length ? await downloadPhoto(photo[photo.length - 1].file_id).catch(() => undefined) : undefined;
         if (photo?.length)
             await sendOzonBot(chatId, '🔎 Смотрю товар и ищу конкурентов на Ozon — это займёт до минуты…');
-        const answer = await (0, ozonManager_service_1.askOzonManager)(history, text, image);
+        // В группе бот видит, кто спрашивает (владелец или жена) — чтобы отвечать по имени.
+        const who = msg?.chat?.type !== 'private' && msg?.from?.first_name ? `[${String(msg.from.first_name).slice(0, 30)}] ` : '';
+        const answer = await (0, ozonManager_service_1.askOzonManager)(history, who + text, image, { chatId });
         await prisma_1.prisma.ozonBotMessage.createMany({ data: [{ chatId, role: 'user', content: ((photo?.length ? '[фото товара] ' : '') + text).slice(0, 4000) }, { chatId, role: 'assistant', content: answer.slice(0, 4000) }] });
         await sendOzonBot(chatId, answer);
     }
@@ -181,6 +270,7 @@ exports.ozonBotRouter.get('/setup', async (req, res) => {
         await tg('setMyCommands', { commands: [
                 { command: 'report', description: 'Утренний отчёт' }, { command: 'today', description: 'Продажи за сегодня' },
                 { command: 'ship', description: 'Что отгрузить' }, { command: 'buy', description: 'Закупка под заказы' },
+                { command: 'collect', description: 'Собрать у оптовиков (фото)' }, { command: 'sold', description: 'Продано сегодня (фото)' },
                 { command: 'returns', description: 'Возвраты' }, { command: 'stock', description: 'Склады Ozon' }, { command: 'new', description: 'Начать заново' },
             ] }).catch(() => undefined);
         res.json({ ok: true, webhook: url, owner: ownerId() ? 'задан' : 'не задан — напишите боту /start, он пришлёт ваш chat id' });
