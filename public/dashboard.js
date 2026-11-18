@@ -10631,7 +10631,11 @@ async function loadMmCreators() {
   const status = document.getElementById('mmCreatorStatus');
   status.textContent = 'Загружаю…';
   try {
-    if (mmCreatorTab === 'creators') mmCreatorRows = await api('/shop-admin/creators');
+    if (mmCreatorTab === 'creators') {
+      const r = await api('/shop-admin/creators');
+      mmCreatorRows = Array.isArray(r) ? r : r.items;
+      if (!Array.isArray(r)) mmLiveShopCats = r.shopCategories || mmLiveShopCats;
+    }
     else if (mmCreatorTab === 'videos') mmCreatorRows = await api('/shop-admin/live/videos?status=pending');
     else if (mmCreatorTab === 'published') mmCreatorRows = await api('/shop-admin/live/videos?status=published');
     else if (mmCreatorTab === 'streams') mmCreatorRows = await api('/shop-admin/live/streams');
@@ -10718,7 +10722,7 @@ function renderMmCreators() {
   }
 
   if (mmCreatorTab === 'creators') {
-    thead.innerHTML = '<tr><th>Имя</th><th>Телефон</th><th>Код</th><th>Процент с продаж</th><th>Статус</th><th>Видео без проверки</th><th class="num">Подарки, монет</th><th>С какого числа</th></tr>';
+    thead.innerHTML = '<tr><th>Имя</th><th>Телефон</th><th>Код</th><th>Процент с продаж</th><th>Статус</th><th>Видео без проверки</th><th>Раздел в Live</th><th>Рекомендовать</th><th class="num">Подарки, монет</th><th>С какого числа</th></tr>';
     tbody.innerHTML = rows.length ? rows.map((c) => `
       <tr>
         <td style="white-space:nowrap">${c.avatarUrl ? `<img src="${mmEsc(c.avatarUrl)}" alt="" style="width:28px;height:28px;border-radius:50%;object-fit:cover;vertical-align:middle;margin-right:6px" />` : ''}${mmEsc(c.name)}</td>
@@ -10733,9 +10737,16 @@ function renderMmCreators() {
           <button class="link-btn" data-creator-toggle="${c.id}" data-active="${c.active ? '1' : '0'}">${c.active ? 'Выключить' : 'Включить'}</button>
         </td>
         <td><label style="cursor:pointer"><input type="checkbox" data-creator-auto="${c.id}" ${c.autoPublish ? 'checked' : ''} /> сразу в ленту</label></td>
+        <td>
+          <select data-creator-cat="${c.id}" style="max-width:170px">
+            <option value="">— сам по товарам —</option>
+            ${(mmLiveShopCats || []).map((x) => `<option value="${mmEsc(x)}" ${c.category === x ? 'selected' : ''}>${mmEsc(x)}</option>`).join('')}
+          </select>
+        </td>
+        <td><label style="cursor:pointer"><input type="checkbox" data-creator-featured="${c.id}" ${c.featured ? 'checked' : ''} /> в топ</label></td>
         <td class="num">${c.giftCoins ?? 0}</td>
         <td>${mmCreatorDate(c.createdAt)}</td>
-      </tr>`).join('') : '<tr><td colspan="8" style="color:var(--text-faint)">Креаторов пока нет</td></tr>';
+      </tr>`).join('') : '<tr><td colspan="10" style="color:var(--text-faint)">Креаторов пока нет</td></tr>';
   } else {
     const pending = mmCreatorTab === 'pending';
     thead.innerHTML = `<tr><th>Дата</th><th>Имя</th><th>Телефон</th><th>Город</th><th>Формат</th><th>Подписчики</th><th>Пробное видео</th><th></th><th>${pending ? 'Решение' : 'Причина'}</th></tr>`;
@@ -10797,6 +10808,18 @@ function renderMmCreators() {
       document.getElementById('mmCreatorStatus').textContent = `Процент сохранён: ${percent}%`;
       loadMmCreators();
     } catch (err) { alert(err.message); }
+  }));
+  tbody.querySelectorAll('[data-creator-cat]').forEach((b) => b.addEventListener('change', async () => {
+    try {
+      await api(`/shop-admin/creators/${b.dataset.creatorCat}`, { method: 'PATCH', body: JSON.stringify({ category: b.value }) });
+      document.getElementById('mmCreatorStatus').textContent = b.value ? `Раздел в Live: ${b.value}` : 'Раздел считается сам — по товарам креатора';
+    } catch (err) { alert(err.message); }
+  }));
+  tbody.querySelectorAll('[data-creator-featured]').forEach((b) => b.addEventListener('change', async () => {
+    try {
+      await api(`/shop-admin/creators/${b.dataset.creatorFeatured}`, { method: 'PATCH', body: JSON.stringify({ featured: b.checked }) });
+      document.getElementById('mmCreatorStatus').textContent = b.checked ? 'Креатор первым в «Топ креаторов» Live' : 'Креатор в топе по подписчикам и продажам';
+    } catch (err) { alert(err.message); b.checked = !b.checked; }
   }));
   tbody.querySelectorAll('[data-creator-auto]').forEach((b) => b.addEventListener('change', async () => {
     try {

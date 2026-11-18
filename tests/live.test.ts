@@ -375,3 +375,25 @@ describe('ТикТок: события чата, ♥ счётчик, подар�
     assert.equal(r.status, 409);
   });
 });
+
+describe('Креаторы: топ, страница, подписка', () => {
+  test('топ креаторов: раздел по товарам, «Рекомендовать» первым, подписка видна', async () => {
+    creators.push({ id: 'cr2', phone: '77000000002', name: 'Данияр', code: 'MM-2', percent: 7, active: true, featured: false });
+    videos.push({ id: 'v1', creatorId: 'cr1', title: 'Крем', videoUrl: 'https://p/v1.mp4', skus: '["1000001"]', status: 'published', likes: 5, views: 0, createdAt: new Date() });
+    videos.push({ id: 'v2', creatorId: 'cr2', title: 'Сушилка', videoUrl: 'https://p/v2.mp4', skus: '["1000002"]', status: 'published', likes: 1, views: 0, createdAt: new Date() });
+    let r = await call('GET', '/api/shop/live/creators?device=d1');
+    assert.deepEqual(r.json.items.map((c: Row) => [c.name, c.category]), [['Айгерим', 'Красота и здоровье'], ['Данияр', 'Дом и сад']]);
+    await call('POST', '/api/shop/live/creators/cr2/follow', { device: 'd1' });
+    creators[1].featured = true;
+    r = await call('GET', '/api/shop/live/creators?device=d1');
+    assert.equal(r.json.items[0].name, 'Данияр');
+    assert.equal(r.json.items[0].following, true);
+    assert.equal(r.json.items[0].followers, 1);
+    const page = await call('GET', '/api/shop/live/creators/cr2?device=d1');
+    assert.equal(page.json.creator.name, 'Данияр');
+    assert.deepEqual(page.json.shorts.map((v: Row) => v.id), ['v2']);
+    assert.deepEqual(page.json.skus, ['1000002']);
+    assert.equal(page.json.shorts[0].creatorId, 'cr2');
+    assert.equal((await call('GET', '/api/shop/live/creators/nope')).status, 404);
+  });
+});

@@ -74,7 +74,7 @@ export async function closeStaleStreams(now = Date.now()): Promise<void> {
 export function videoDto(v: any, creatorName: string, liked = false) {
   return {
     id: v.id, title: v.title, videoUrl: v.videoUrl, skus: parseSkus(v.skus), likes: v.likes, views: v.views,
-    status: v.status, creatorName, liked, createdAt: v.createdAt,
+    status: v.status, creatorName, creatorId: v.creatorId ?? '', liked, createdAt: v.createdAt,
   };
 }
 
@@ -82,7 +82,7 @@ export function streamDto(s: any, creatorName: string) {
   return {
     id: s.id, title: s.title, status: isOnAir(s) ? 'live' : s.status === 'live' ? 'ended' : s.status,
     skus: parseSkus(s.skus), scheduledAt: s.scheduledAt, startedAt: s.startedAt, endedAt: s.endedAt, creatorName,
-    replayUrl: s.replayUrl ?? null, likes: s.likes ?? 0, views: s.views ?? 0, viewers: 0,
+    replayUrl: s.replayUrl ?? null, likes: s.likes ?? 0, views: s.views ?? 0, viewers: 0, creatorId: s.creatorId ?? '',
   };
 }
 
