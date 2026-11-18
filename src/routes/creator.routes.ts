@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { creatorGiftCoins } from '../services/liveGifts.service';
 import { z } from 'zod';
 import { env } from '../config/env';
 import { prisma } from '../db/prisma';
@@ -154,8 +155,9 @@ creatorAdminRouter.post('/applications/:id/reopen', async (req, res) => {
 /** Одобренные креаторы. */
 creatorAdminRouter.get('/', async (_req, res) => {
   try {
-    const rows = await prisma.creator.findMany({ orderBy: { createdAt: 'desc' }, take: 1000 });
-    res.json(rows);
+    const rows: any[] = await prisma.creator.findMany({ orderBy: { createdAt: 'desc' }, take: 1000 });
+    const gifts = await creatorGiftCoins(rows.map((r) => r.id)).catch(() => new Map<string, number>());
+    res.json(rows.map((r) => ({ ...r, giftCoins: gifts.get(r.id) ?? 0 })));
   } catch (err: any) {
     logger.error({ err }, '[Creator Admin] GET / упал');
     res.status(500).json({ error: 'Не удалось получить креаторов' });
