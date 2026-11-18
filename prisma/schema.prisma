@@ -1295,6 +1295,19 @@ model LiveBanner {
 }
 
 // «Колокольчик»: сообщить покупателю пушем, когда креатор начнёт следующий эфир.
+// 🔔 «Напомнить» у анонса: пуш придёт, когда этот эфир начнётся.
+model LiveReminder {
+  id        String   @id @default(cuid())
+  streamId  String
+  deviceKey String
+  phone     String?
+  pushToken String?
+  createdAt DateTime @default(now())
+
+  @@unique([streamId, deviceKey])
+  @@index([streamId])
+}
+
 model LiveFollow {
   id        String   @id @default(cuid())
   creatorId String

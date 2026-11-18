@@ -10831,7 +10831,17 @@ function renderMmLiveCats(thead, tbody) {
   const edit = mmCreatorRows.find((c) => c.id === mmLiveCatEditId) || null;
   const checked = new Set(edit ? edit.categories : []);
   thead.innerHTML = '<tr><th>Порядок</th><th>Вкладка</th><th>Разделы каталога</th><th>Показ</th><th></th></tr>';
-  const form = `
+  // Быстрый способ: галочка у раздела = вкладка с тем же названием, сохраняется сразу.
+  const single = new Map(mmCreatorRows.filter((c) => c.categories.length === 1 && c.title === c.categories[0]).map((c) => [c.categories[0], c]));
+  const quick = `
+    <tr><td colspan="5" style="background:#fff7ec">
+      <b>Быстро:</b> поставьте галочку — раздел сразу станет вкладкой в приложении после «Шортс». Снимите — вкладка уберётся.
+      <div style="display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:8px">
+        ${mmLiveShopCats.map((c) => `<label style="cursor:pointer;font-size:13px"><input type="checkbox" data-livecat-quick="${mmEsc(c)}" ${single.has(c) ? 'checked' : ''} /> ${mmEsc(c)}</label>`).join('')}
+      </div>
+      <p class="panel__hint" style="margin:8px 0 0">Нужна одна вкладка из нескольких разделов (например «Для дома» = Дом и сад + Мебель + Бытовая химия)? Используйте форму ниже и нажмите «Добавить вкладку».</p>
+    </td></tr>`;
+  const form = quick + `
     <tr><td colspan="5" style="background:var(--surface-2, #faf8f4)">
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
         <label>Название вкладки<input type="text" id="mmLiveCatTitle" maxlength="40" value="${mmEsc(edit?.title || '')}" placeholder="Например: Красота" style="width:200px" /></label>
@@ -10865,7 +10875,8 @@ function renderMmLiveCats(thead, tbody) {
       active: document.getElementById('mmLiveCatActive').checked,
       categories: [...tbody.querySelectorAll('[data-livecat-shop]:checked')].map((x) => x.dataset.livecatShop),
     };
-    if (!body.title || !body.categories.length) { alert('Укажите название и отметьте хотя бы один раздел'); return; }
+    if (!body.title && body.categories.length) body.title = body.categories[0];
+    if (!body.categories.length) { alert('Отметьте хотя бы один раздел каталога'); return; }
     try {
       if (edit) await api(`/shop-admin/live/categories/${edit.id}`, { method: 'PUT', body: JSON.stringify(body) });
       else await api('/shop-admin/live/categories', { method: 'POST', body: JSON.stringify(body) });
@@ -10874,6 +10885,27 @@ function renderMmLiveCats(thead, tbody) {
       loadMmCreators();
     } catch (err) { alert(err.message); }
   });
+  tbody.querySelectorAll('[data-livecat-quick]').forEach((cb) => cb.addEventListener('change', async () => {
+    const section = cb.dataset.livecatQuick;
+    const status = document.getElementById('mmCreatorStatus');
+    cb.disabled = true;
+    try {
+      if (cb.checked) {
+        const sort = mmCreatorRows.reduce((m, c) => Math.max(m, Number(c.sort) || 0), 0) + 1;
+        await api('/shop-admin/live/categories', { method: 'POST', body: JSON.stringify({ title: section, categories: [section], sort, active: true }) });
+        status.textContent = `Вкладка «${section}» добавлена — в приложении появится в течение минуты`;
+      } else {
+        const row = single.get(section);
+        if (row) await api(`/shop-admin/live/categories/${row.id}`, { method: 'DELETE' });
+        status.textContent = `Вкладка «${section}» убрана`;
+      }
+      loadMmCreators();
+    } catch (err) {
+      cb.checked = !cb.checked;
+      cb.disabled = false;
+      alert(err.message);
+    }
+  }));
   document.getElementById('mmLiveCatCancel')?.addEventListener('click', () => { mmLiveCatEditId = null; renderMmCreators(); });
   tbody.querySelectorAll('[data-livecat-edit]').forEach((b) => b.addEventListener('click', () => { mmLiveCatEditId = b.dataset.livecatEdit; renderMmCreators(); }));
   tbody.querySelectorAll('[data-livecat-del]').forEach((b) => b.addEventListener('click', async () => {
