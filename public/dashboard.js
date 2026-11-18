@@ -10636,6 +10636,12 @@ async function loadMmCreators() {
     else if (mmCreatorTab === 'published') mmCreatorRows = await api('/shop-admin/live/videos?status=published');
     else if (mmCreatorTab === 'streams') mmCreatorRows = await api('/shop-admin/live/streams');
     else if (mmCreatorTab === 'livebanners') mmCreatorRows = (await api('/shop-admin/live/banners')).items;
+    else if (mmCreatorTab === 'livegifts') {
+      const [g, c] = await Promise.all([api('/shop-admin/live/gifts'), api('/shop-admin/live/gifts/creators')]);
+      mmCreatorRows = g.items;
+      mmLiveGiftDaily = g.daily;
+      mmLiveGiftCreators = c;
+    }
     else if (mmCreatorTab === 'livecats') {
       const r = await api('/shop-admin/live/categories');
       mmCreatorRows = r.items;
@@ -10689,6 +10695,7 @@ function renderMmCreators() {
 
   if (mmCreatorTab === 'livecats') { renderMmLiveCats(thead, tbody); return; }
   if (mmCreatorTab === 'livebanners') { renderMmLiveBanners(thead, tbody); return; }
+  if (mmCreatorTab === 'livegifts') { renderMmLiveGifts(thead, tbody); return; }
 
   if (mmCreatorTab === 'streams') {
     const label = { live: '<span style="color:var(--loss);font-weight:700">● В эфире</span>', scheduled: 'Анонс', ended: 'Завершён' };
@@ -10711,10 +10718,10 @@ function renderMmCreators() {
   }
 
   if (mmCreatorTab === 'creators') {
-    thead.innerHTML = '<tr><th>Имя</th><th>Телефон</th><th>Код</th><th>Процент с продаж</th><th>Статус</th><th>Видео без проверки</th><th>С какого числа</th></tr>';
+    thead.innerHTML = '<tr><th>Имя</th><th>Телефон</th><th>Код</th><th>Процент с продаж</th><th>Статус</th><th>Видео без проверки</th><th class="num">Подарки, монет</th><th>С какого числа</th></tr>';
     tbody.innerHTML = rows.length ? rows.map((c) => `
       <tr>
-        <td>${mmEsc(c.name)}</td>
+        <td style="white-space:nowrap">${c.avatarUrl ? `<img src="${mmEsc(c.avatarUrl)}" alt="" style="width:28px;height:28px;border-radius:50%;object-fit:cover;vertical-align:middle;margin-right:6px" />` : ''}${mmEsc(c.name)}</td>
         <td>+${mmEsc(c.phone)}</td>
         <td><b>${mmEsc(c.code)}</b></td>
         <td>
@@ -10726,8 +10733,9 @@ function renderMmCreators() {
           <button class="link-btn" data-creator-toggle="${c.id}" data-active="${c.active ? '1' : '0'}">${c.active ? 'Выключить' : 'Включить'}</button>
         </td>
         <td><label style="cursor:pointer"><input type="checkbox" data-creator-auto="${c.id}" ${c.autoPublish ? 'checked' : ''} /> сразу в ленту</label></td>
+        <td class="num">${c.giftCoins ?? 0}</td>
         <td>${mmCreatorDate(c.createdAt)}</td>
-      </tr>`).join('') : '<tr><td colspan="7" style="color:var(--text-faint)">Креаторов пока нет</td></tr>';
+      </tr>`).join('') : '<tr><td colspan="8" style="color:var(--text-faint)">Креаторов пока нет</td></tr>';
   } else {
     const pending = mmCreatorTab === 'pending';
     thead.innerHTML = `<tr><th>Дата</th><th>Имя</th><th>Телефон</th><th>Город</th><th>Формат</th><th>Подписчики</th><th>Пробное видео</th><th></th><th>${pending ? 'Решение' : 'Причина'}</th></tr>`;
@@ -10992,5 +11000,93 @@ function renderMmLiveBanners(thead, tbody) {
   tbody.querySelectorAll('[data-livebanner-del]').forEach((b) => b.addEventListener('click', async () => {
     if (!confirm('Удалить баннер?')) return;
     try { await api(`/shop-admin/live/banners/${b.dataset.livebannerDel}`, { method: 'DELETE' }); loadMmCreators(); } catch (err) { alert(err.message); }
+  }));
+}
+
+
+// ---- Подарки Live: что зрители дарят креаторам в эфире (как в ТикТоке). Пока бесплатно: монеты на день. ----
+let mmLiveGiftEditId = null;
+let mmLiveGiftImage = '';
+let mmLiveGiftDaily = 100;
+let mmLiveGiftCreators = [];
+
+function renderMmLiveGifts(thead, tbody) {
+  const edit = mmCreatorRows.find((g) => g.id === mmLiveGiftEditId) || null;
+  if (edit && !mmLiveGiftImage) mmLiveGiftImage = edit.imageUrl || '';
+  thead.innerHTML = '<tr><th>Порядок</th><th>Подарок</th><th class="num">Цена, монет</th><th class="num">Подарено, шт</th><th>Показ</th><th></th></tr>';
+  const form = `
+    <tr><td colspan="6" style="background:var(--surface-2, #faf8f4)">
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+        <div>
+          <div id="mmLiveGiftPreview" style="width:64px;height:64px;border-radius:12px;background:#222 center/contain no-repeat;${mmLiveGiftImage ? `background-image:url('${mmEsc(mmLiveGiftImage)}')` : ''};display:flex;align-items:center;justify-content:center;font-size:34px">${mmLiveGiftImage ? '' : mmEsc(edit?.emoji || '🎁')}</div>
+          <input type="file" id="mmLiveGiftFile" accept="image/png,image/webp,image/jpeg" style="margin-top:6px;font-size:12px;width:200px" />
+        </div>
+        <label>Название<input type="text" id="mmLiveGiftTitle" maxlength="40" value="${mmEsc(edit?.title || '')}" placeholder="Например: Роза" style="width:160px" /></label>
+        <label>Эмодзи (если нет картинки)<input type="text" id="mmLiveGiftEmoji" maxlength="8" value="${mmEsc(edit?.emoji || '🎁')}" style="width:70px" /></label>
+        <label>Цена, монет<input type="number" id="mmLiveGiftCoins" min="1" max="100000" value="${edit?.coins ?? 1}" style="width:90px" /></label>
+        <label>Порядок<input type="number" id="mmLiveGiftSort" min="0" max="1000" value="${edit?.sort ?? (mmCreatorRows.length + 1)}" style="width:70px" /></label>
+        <label style="cursor:pointer"><input type="checkbox" id="mmLiveGiftActive" ${edit ? (edit.active ? 'checked' : '') : 'checked'} /> показывать</label>
+        <button class="btn" id="mmLiveGiftSave">${edit ? 'Сохранить' : 'Добавить подарок'}</button>
+        ${edit ? '<button class="btn btn--ghost" id="mmLiveGiftCancel">Отмена</button>' : ''}
+        ${mmLiveGiftImage ? '<button class="btn btn--ghost" id="mmLiveGiftNoImage">Убрать картинку</button>' : ''}
+      </div>
+      <p class="panel__hint" style="margin:8px 0 0">Пока подарки бесплатные: каждый зритель получает <b>${mmLiveGiftDaily} монет в день</b>. Подарок идёт креатору эфира — сколько монет получил каждый, видно ниже и во вкладке «Креаторы». Картинка лучше PNG с прозрачным фоном.</p>
+    </td></tr>`;
+  const rows = mmCreatorRows.map((g) => `
+    <tr>
+      <td>${g.sort}</td>
+      <td>${g.imageUrl ? `<img src="${mmEsc(g.imageUrl)}" alt="" style="width:32px;height:32px;object-fit:contain;vertical-align:middle;margin-right:6px" />` : `<span style="font-size:24px;vertical-align:middle;margin-right:6px">${mmEsc(g.emoji)}</span>`}<b>${mmEsc(g.title)}</b></td>
+      <td class="num">${g.coins}</td>
+      <td class="num">${g.sent || 0}</td>
+      <td>${g.active ? '<span style="color:var(--accent)">● да</span>' : '<span style="color:var(--text-faint)">скрыт</span>'}</td>
+      <td style="white-space:nowrap">
+        <button class="link-btn" data-livegift-edit="${g.id}">Изменить</button>
+        ${g.active ? `<button class="link-btn" data-livegift-del="${g.id}" style="color:var(--loss)">Скрыть</button>` : ''}
+      </td>
+    </tr>`).join('');
+  const creators = mmLiveGiftCreators.filter((c) => c.coins > 0);
+  const creatorsBlock = `
+    <tr><td colspan="6" style="padding-top:18px"><b>Кому сколько подарили</b></td></tr>
+    ${creators.length ? creators.map((c) => `<tr><td colspan="2">${c.avatarUrl ? `<img src="${mmEsc(c.avatarUrl)}" alt="" style="width:24px;height:24px;border-radius:50%;object-fit:cover;vertical-align:middle;margin-right:6px" />` : ''}${mmEsc(c.name)}</td><td class="num">${c.coins}</td><td colspan="3"></td></tr>`).join('')
+      : '<tr><td colspan="6" style="color:var(--text-faint)">Подарков пока не дарили</td></tr>'}`;
+  tbody.innerHTML = form + (rows || '<tr><td colspan="6" style="color:var(--text-faint)">Подарков пока нет</td></tr>') + creatorsBlock;
+
+  document.getElementById('mmLiveGiftFile').addEventListener('change', async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const st = document.getElementById('mmCreatorStatus');
+    st.textContent = 'Загружаю картинку…';
+    try {
+      mmLiveGiftImage = await uploadMyMarketFile(file);
+      const pv = document.getElementById('mmLiveGiftPreview');
+      pv.style.backgroundImage = `url('${mmLiveGiftImage}')`;
+      pv.textContent = '';
+      st.textContent = 'Картинка загружена';
+    } catch (err) { st.textContent = `Ошибка: ${err.message}`; }
+  });
+  document.getElementById('mmLiveGiftNoImage')?.addEventListener('click', () => { mmLiveGiftImage = ''; if (edit) edit.imageUrl = ''; renderMmCreators(); });
+  document.getElementById('mmLiveGiftSave').addEventListener('click', async () => {
+    const body = {
+      title: document.getElementById('mmLiveGiftTitle').value.trim(),
+      emoji: document.getElementById('mmLiveGiftEmoji').value.trim() || '🎁',
+      imageUrl: mmLiveGiftImage || '',
+      coins: Number(document.getElementById('mmLiveGiftCoins').value) || 1,
+      sort: Number(document.getElementById('mmLiveGiftSort').value) || 0,
+      active: document.getElementById('mmLiveGiftActive').checked,
+    };
+    if (!body.title) { alert('Укажите название подарка'); return; }
+    try {
+      if (edit) await api(`/shop-admin/live/gifts/${edit.id}`, { method: 'PUT', body: JSON.stringify(body) });
+      else await api('/shop-admin/live/gifts', { method: 'POST', body: JSON.stringify(body) });
+      mmLiveGiftEditId = null; mmLiveGiftImage = '';
+      document.getElementById('mmCreatorStatus').textContent = 'Подарок сохранён';
+      loadMmCreators();
+    } catch (err) { alert(err.message); }
+  });
+  document.getElementById('mmLiveGiftCancel')?.addEventListener('click', () => { mmLiveGiftEditId = null; mmLiveGiftImage = ''; renderMmCreators(); });
+  tbody.querySelectorAll('[data-livegift-edit]').forEach((b) => b.addEventListener('click', () => { mmLiveGiftEditId = b.dataset.livegiftEdit; mmLiveGiftImage = ''; renderMmCreators(); }));
+  tbody.querySelectorAll('[data-livegift-del]').forEach((b) => b.addEventListener('click', async () => {
+    if (!confirm('Скрыть подарок? Он пропадёт из списка в приложении.')) return;
+    try { await api(`/shop-admin/live/gifts/${b.dataset.livegiftDel}`, { method: 'DELETE' }); loadMmCreators(); } catch (err) { alert(err.message); }
   }));
 }

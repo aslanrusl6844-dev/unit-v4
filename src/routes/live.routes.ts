@@ -11,6 +11,10 @@ import {
   newChannel, parseSkus, resolveReplays, shopCategoryBySku, soldBySku, startRecording, stopRecording, streamDto, topBySales, videoDto, viewersOf,
 } from '../services/live.service';
 import { SHOP_CATEGORIES } from '../config/shopCategories';
+import {
+  DAILY_FREE_COINS, activeGifts, chatDto, chatEvent, cleanName, coinsLeft, creatorGiftCoins, eventAllowed, giftDto, topGifters,
+} from '../services/liveGifts.service';
+import { uploadPublicFile } from '../services/mediaStorage.service';
 
 /**
  * My Market Live.
@@ -179,8 +183,17 @@ liveRouter.get('/streams/:id', async (req, res) => {
   try {
     const s = await prisma.liveStream.findUnique({ where: { id: req.params.id } });
     if (!s) return res.status(404).json({ error: 'Эфир не найден' });
-    const names = await creatorNames([s.creatorId]);
-    const dto: any = streamDto(s, names.get(s.creatorId) ?? '');
+    const [creator, followers, gifts, top] = await Promise.all([
+      prisma.creator.findUnique({ where: { id: s.creatorId } }),
+      prisma.liveFollow.findMany({ where: { creatorId: s.creatorId }, select: { id: true }, take: 100000 }),
+      creatorGiftCoins([s.creatorId]),
+      topGifters(s.id),
+    ]);
+    const dto: any = streamDto(s, creator?.name ?? '');
+    dto.creatorAvatar = creator?.avatarUrl ?? '';
+    dto.creatorFollowers = followers.length;
+    dto.creatorGiftCoins = gifts.get(s.creatorId) ?? 0;
+    dto.topGifters = top;
     if (dto.status === 'live') dto.viewers = await viewersOf(s.channel);
     const device = String(req.query.device ?? '').trim().slice(0, 80);
     if (device) {
@@ -224,6 +237,11 @@ liveRouter.post('/streams/:id/like', async (req, res) => {
       // Как в ТикТоке: сколько раз нажали — столько ♥ и прибавилось.
       if (!existing) await prisma.creatorVideoLike.create({ data: { videoId: key, deviceKey: device } }).catch(() => undefined);
       const fresh = await prisma.liveStream.update({ where: { id: s.id }, data: { likes: { increment: taps } } });
+      // В чат: «Аслан отправил(а) лайки (110 шт.)» — не чаще раза в 15 секунд с устройства.
+      if (isOnAir(s) && eventAllowed(`like:${s.id}:${device}`, 15_000)) {
+        const name = cleanName(req.body?.name);
+        await chatEvent(s.id, 'like', name, `отправил(а) лайки (${taps} шт.)`, { likes: taps }).catch(() => undefined);
+      }
       return res.json({ liked: true, likes: fresh.likes });
     }
     const like = req.body?.like !== false;
@@ -290,13 +308,87 @@ liveRouter.post('/streams/:id/remind', async (req, res) => {
   }
 });
 
+// ---- События эфира и подарки (как в ТикТок Live) ----
+
+/** Зритель зашёл: в чате «Аслан теперь с нами». */
+liveRouter.post('/streams/:id/join', async (req, res) => {
+  const device = String(req.body?.device ?? '').trim().slice(0, 80);
+  if (!device) return res.status(400).json({ error: 'Нет устройства' });
+  try {
+    const s = await prisma.liveStream.findUnique({ where: { id: req.params.id } });
+    if (!s || !isOnAir(s)) return res.json({ ok: false });
+    if (eventAllowed(`join:${s.id}:${device}`, 10 * 60_000)) await chatEvent(s.id, 'join', cleanName(req.body?.name), 'теперь с нами');
+    res.json({ ok: true });
+  } catch (err) {
+    logger.error({ err }, '[Live] join упал');
+    res.json({ ok: false });
+  }
+});
+
+/** Поделился эфиром: в чате «Аслан поделился(-ась) трансляцией». */
+liveRouter.post('/streams/:id/share', async (req, res) => {
+  const device = String(req.body?.device ?? '').trim().slice(0, 80);
+  if (!device) return res.status(400).json({ error: 'Нет устройства' });
+  try {
+    const s = await prisma.liveStream.findUnique({ where: { id: req.params.id } });
+    if (!s || !isOnAir(s)) return res.json({ ok: false });
+    if (eventAllowed(`share:${s.id}:${device}`, 60_000)) await chatEvent(s.id, 'share', cleanName(req.body?.name), 'поделился(-ась) трансляцией');
+    res.json({ ok: true });
+  } catch {
+    res.json({ ok: false });
+  }
+});
+
+/** Подарки: список и сколько бесплатных монет осталось сегодня у устройства. */
+liveRouter.get('/gifts', async (req, res) => {
+  try {
+    const device = String(req.query.device ?? '').trim().slice(0, 80);
+    const [gifts, left] = await Promise.all([activeGifts(), coinsLeft(device)]);
+    res.json({ items: gifts.map(giftDto), coins: left, daily: DAILY_FREE_COINS });
+  } catch (err) {
+    logger.error({ err }, '[Live] gifts упал');
+    res.status(500).json({ error: 'Не удалось загрузить подарки' });
+  }
+});
+
+/** Отправить подарок креатору эфира: { device, name, giftId, count }. Пока за бесплатные монеты дня. */
+liveRouter.post('/streams/:id/gift', async (req, res) => {
+  const device = String(req.body?.device ?? '').trim().slice(0, 80);
+  if (!device) return res.status(400).json({ error: 'Нет устройства' });
+  if (limited(`gift:${req.ip}`, 40)) return res.status(429).json({ error: 'Слишком часто' });
+  const count = Math.min(99, Math.max(1, Math.floor(Number(req.body?.count ?? 1)) || 1));
+  try {
+    const s = await prisma.liveStream.findUnique({ where: { id: req.params.id } });
+    if (!s || !isOnAir(s)) return res.status(409).json({ error: 'Подарки можно дарить только во время эфира' });
+    const gift = await prisma.liveGift.findUnique({ where: { id: String(req.body?.giftId ?? '') } });
+    if (!gift || !gift.active) return res.status(404).json({ error: 'Подарок не найден' });
+    const total = gift.coins * count;
+    const left = await coinsLeft(device);
+    if (total > left) return res.status(402).json({ error: `Не хватает монет: осталось ${left} на сегодня`, coins: left });
+    const name = cleanName(req.body?.name);
+    await prisma.liveGiftSend.create({ data: { streamId: s.id, creatorId: s.creatorId, giftId: gift.id, deviceKey: device, name, count, coins: total } });
+    await chatEvent(s.id, 'gift', name, `отправил(а) Подарок «${gift.title}» ×${count}`, {
+      giftId: gift.id, title: gift.title, emoji: gift.emoji, imageUrl: gift.imageUrl ?? '', count, coins: total,
+    });
+    res.json({ ok: true, coins: left - total });
+  } catch (err) {
+    logger.error({ err }, '[Live] gift упал');
+    res.status(500).json({ error: 'Не удалось отправить подарок' });
+  }
+});
+
 /** Чат эфира: новые сообщения после after. */
 liveRouter.get('/streams/:id/chat', async (req, res) => {
   try {
     const after = Math.max(0, Number(req.query.after ?? 0) || 0);
     const rows = await prisma.liveChatMessage.findMany({ where: { streamId: req.params.id, id: { gt: after } }, orderBy: { id: 'asc' }, take: 100 });
     const s = await prisma.liveStream.findUnique({ where: { id: req.params.id } });
-    res.json({ status: s ? streamDto(s, '').status : 'ended', messages: rows.map((m: any) => ({ id: m.id, name: m.name, text: m.text, fromHost: m.fromHost })) });
+    res.json({
+      status: s ? streamDto(s, '').status : 'ended',
+      messages: rows.map(chatDto),
+      likes: s?.likes ?? 0, // ♥ под именем ведущей обновляется у всех зрителей
+      topGifters: s ? await topGifters(s.id) : [],
+    });
   } catch (err) {
     logger.error({ err }, '[Live] chat GET упал');
     res.status(500).json({ error: 'Ошибка' });
@@ -389,13 +481,38 @@ liveRouter.get('/creator/mine', async (req, res) => {
       prisma.creatorVideo.findMany({ where: { creatorId: creator.id, status: { not: 'deleted' } }, orderBy: { createdAt: 'desc' }, take: 50 }),
       prisma.liveStream.findMany({ where: { creatorId: creator.id }, orderBy: { createdAt: 'desc' }, take: 20 }),
     ]);
+    const [gifts, followers] = await Promise.all([
+      creatorGiftCoins([creator.id]),
+      prisma.liveFollow.findMany({ where: { creatorId: creator.id }, select: { id: true }, take: 100000 }),
+    ]);
     res.json({
+      profile: { name: creator.name, avatarUrl: (creator as any).avatarUrl ?? '', giftCoins: gifts.get(creator.id) ?? 0, followers: followers.length },
       videos: videos.map((v: any) => videoDto(v, creator.name)),
       streams: streams.map((s: any) => streamDto(s, creator.name)),
     });
   } catch (err) {
     logger.error({ err }, '[Live] /creator/mine упал');
     res.status(500).json({ error: 'Ошибка' });
+  }
+});
+
+/** Фото креатора (аватар в эфире): тело — картинка (jpeg/png/webp) до 3 МБ, ?phone=. */
+liveRouter.post('/creator/avatar', express.raw({ type: ['image/jpeg', 'image/png', 'image/webp', 'application/octet-stream'], limit: '3mb' }), async (req, res) => {
+  const phone = phoneOf(req.query.phone);
+  const creator = phone ? await activeCreatorByPhone(phone) : null;
+  if (!creator) return res.status(403).json({ error: 'Только для креаторов' });
+  const body = req.body as Buffer;
+  if (!Buffer.isBuffer(body) || body.length < 100) return res.status(400).json({ error: 'Пустое фото' });
+  const type = String(req.header('content-type') ?? '');
+  const ext = type.includes('png') ? 'png' : type.includes('webp') ? 'webp' : 'jpg';
+  try {
+    const { url } = await uploadPublicFile('creators', `${creator.id}-${Date.now()}.${ext}`, body, ext === 'jpg' ? 'image/jpeg' : `image/${ext}`);
+    await prisma.creator.update({ where: { id: creator.id }, data: { avatarUrl: url } });
+    res.json({ avatarUrl: url });
+  } catch (err) {
+    if (err instanceof StorageUnavailableError) return res.status(501).json({ error: 'Хранилище фото не настроено' });
+    logger.error({ err }, '[Live] аватар креатора не сохранился');
+    res.status(500).json({ error: 'Не удалось сохранить фото' });
   }
 });
 
@@ -567,6 +684,56 @@ liveAdminRouter.delete('/categories/:id', async (req, res) => {
   const r = await prisma.liveCategory.deleteMany({ where: { id: req.params.id } });
   if (!r.count) return res.status(404).json({ error: 'Вкладка не найдена' });
   res.json({ ok: true });
+});
+
+// ---- Подарки эфира: список, цена в монетах, картинка (если нет — эмодзи) ----
+const giftSchema = z.object({
+  title: z.string().trim().min(1).max(40),
+  emoji: z.string().trim().max(16).optional().default('🎁'),
+  imageUrl: z.string().trim().url().max(500).optional().or(z.literal('')).default(''),
+  coins: z.number().int().min(1).max(100000),
+  sort: z.number().int().min(0).max(1000).optional().default(0),
+  active: z.boolean().optional().default(true),
+});
+
+liveAdminRouter.get('/gifts', async (_req, res) => {
+  await activeGifts().catch(() => []);
+  const rows = await prisma.liveGift.findMany({ orderBy: [{ sort: 'asc' }, { coins: 'asc' }] });
+  const sends: Array<{ giftId: string; count: number }> = await prisma.liveGiftSend.findMany({ select: { giftId: true, count: true }, take: 100000 });
+  const sent = new Map<string, number>();
+  for (const r of sends) sent.set(r.giftId, (sent.get(r.giftId) ?? 0) + r.count);
+  res.json({ items: rows.map((g: any) => ({ ...giftDto(g), sent: sent.get(g.id) ?? 0 })), daily: DAILY_FREE_COINS });
+});
+
+liveAdminRouter.post('/gifts', async (req, res) => {
+  const p = giftSchema.safeParse(req.body);
+  if (!p.success) return res.status(400).json({ error: 'Название и цена в монетах (от 1)' });
+  const d = p.data;
+  const row = await prisma.liveGift.create({ data: { title: d.title, emoji: d.emoji || '🎁', imageUrl: d.imageUrl || null, coins: d.coins, sort: d.sort, active: d.active } });
+  res.status(201).json(giftDto(row));
+});
+
+liveAdminRouter.put('/gifts/:id', async (req, res) => {
+  const p = giftSchema.safeParse(req.body);
+  if (!p.success) return res.status(400).json({ error: 'Название и цена в монетах (от 1)' });
+  const d = p.data;
+  const r = await prisma.liveGift.updateMany({ where: { id: req.params.id }, data: { title: d.title, emoji: d.emoji || '🎁', imageUrl: d.imageUrl || null, coins: d.coins, sort: d.sort, active: d.active } });
+  if (!r.count) return res.status(404).json({ error: 'Подарок не найден' });
+  res.json({ ok: true });
+});
+
+liveAdminRouter.delete('/gifts/:id', async (req, res) => {
+  // Не удаляем, а скрываем — у отправленных подарков остаётся название.
+  const r = await prisma.liveGift.updateMany({ where: { id: req.params.id }, data: { active: false } });
+  if (!r.count) return res.status(404).json({ error: 'Подарок не найден' });
+  res.json({ ok: true });
+});
+
+/** Подарки по креаторам: сколько монет получил каждый. */
+liveAdminRouter.get('/gifts/creators', async (_req, res) => {
+  const creators: any[] = await prisma.creator.findMany({ select: { id: true, name: true, avatarUrl: true }, take: 1000 });
+  const coins = await creatorGiftCoins(creators.map((c) => c.id));
+  res.json(creators.map((c) => ({ id: c.id, name: c.name, avatarUrl: c.avatarUrl ?? '', coins: coins.get(c.id) ?? 0 })).sort((a, b) => b.coins - a.coins));
 });
 
 // ---- Баннеры Live: карусель сверху главной Live, количество не ограничено ----

@@ -27,6 +27,8 @@ let banners: Row[] = [];
 let follows: Row[] = [];
 let reminders: Row[] = [];
 let orders: Row[] = [];
+let gifts: Row[] = [];
+let giftSends: Row[] = [];
 const products: Row[] = [
   { sku: 'ozon-1', shopArticle: '1000001', category: 'Красота и здоровье' },
   { sku: 'ozon-2', shopArticle: '1000002', category: 'Дом и сад' },
@@ -105,6 +107,8 @@ const stub: Record<string, any> = {
       return k ? reminders.find((f) => f.streamId === k.streamId && f.deviceKey === k.deviceKey) ?? null : reminders.find((f) => f.id === a.where.id) ?? null;
     },
   },
+  liveGift: table(() => gifts, (r) => { gifts = r; }),
+  liveGiftSend: table(() => giftSends, (r) => { giftSends = r; }, true),
   shopOrder: { findMany: async () => orders.map((o) => ({ items: o.items })) },
   product: { findMany: async (a: Row) => { const list = a.where.OR[0].shopArticle.in; return products.filter((p) => list.includes(p.shopArticle) || list.includes(p.sku)); } },
 };
@@ -123,6 +127,8 @@ const prismaPath = require.resolve('@prisma/client');
 require.cache[prismaPath] = { id: prismaPath, filename: prismaPath, loaded: true, exports: { PrismaClient: StubPrismaClient, Prisma: {} } } as any;
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const app = require('../src/expressApp').default;
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { resetEventThrottle } = require('../src/services/liveGifts.service');
 
 let port = 0;
 let server: http.Server;
@@ -154,7 +160,8 @@ before(async () => { server = app.listen(0); port = (server.address() as any).po
 after(() => server.close());
 beforeEach(() => {
   creators = [{ id: 'cr1', phone: PHONE, name: 'Айгерим', code: 'MM-ABCDE', percent: 7, active: true, autoPublish: false }];
-  streams = []; videos = []; likes = []; chat = []; liveCats = []; banners = []; follows = []; reminders = []; orders = []; seq = 0;
+  streams = []; videos = []; likes = []; chat = []; liveCats = []; banners = []; follows = []; reminders = []; orders = []; gifts = []; giftSends = []; seq = 0;
+  resetEventThrottle();
 });
 
 describe('эфиры', () => {
@@ -319,5 +326,52 @@ describe('Coupang: лайки пачкой, напоминание, топ-10', 
       { kind: 'short', id: 'v1', sold: 1 },
       { kind: 'stream', id: 'r1', sold: 0 },
     ]);
+  });
+});
+
+describe('ТикТок: события чата, ♥ счётчик, подарки креатору', () => {
+  test('вход, лайки и «поделился» появляются в чате; ♥ эфира видно в чате', async () => {
+    const r = await call('POST', '/api/shop/live/creator/streams/start', { phone: PHONE, title: 'Яблоки', skus: ['1'] });
+    await call('POST', `/api/shop/live/streams/${r.json.id}/join`, { device: 'd1', name: 'Аслан' });
+    await call('POST', `/api/shop/live/streams/${r.json.id}/join`, { device: 'd1', name: 'Аслан' }); // повтор не пишем
+    await call('POST', `/api/shop/live/streams/${r.json.id}/like`, { device: 'd1', count: 80, name: 'Аслан' });
+    await call('POST', `/api/shop/live/streams/${r.json.id}/share`, { device: 'd1', name: 'Аслан' });
+    const c = await call('GET', `/api/shop/live/streams/${r.json.id}/chat?after=0`);
+    assert.deepEqual(c.json.messages.map((m: Row) => [m.kind, m.text]), [
+      ['join', 'теперь с нами'],
+      ['like', 'отправил(а) лайки (80 шт.)'],
+      ['share', 'поделился(-ась) трансляцией'],
+    ]);
+    assert.equal(c.json.likes, 80);
+  });
+
+  test('подарки: набор по умолчанию, 100 бесплатных монет в день, подарок идёт креатору и виден в чате и топе', async () => {
+    const r = await call('POST', '/api/shop/live/creator/streams/start', { phone: PHONE, title: 'Яблоки', skus: ['1'] });
+    const list = await call('GET', '/api/shop/live/gifts?device=d1');
+    assert.ok(list.json.items.length >= 10, JSON.stringify(list.json));
+    assert.equal(list.json.coins, 100);
+    const rose = list.json.items.find((g: Row) => g.title === 'Роза');
+    const rocket = list.json.items.find((g: Row) => g.title === 'Ракета');
+    const sent = await call('POST', `/api/shop/live/streams/${r.json.id}/gift`, { device: 'd1', name: 'Аслан', giftId: rose.id, count: 3 });
+    assert.equal(sent.json.coins, 97);
+    const tooMuch = await call('POST', `/api/shop/live/streams/${r.json.id}/gift`, { device: 'd1', name: 'Аслан', giftId: rocket.id });
+    assert.equal(tooMuch.status, 402);
+    assert.equal(giftSends[0].creatorId, 'cr1');
+    const c = await call('GET', `/api/shop/live/streams/${r.json.id}/chat?after=0`);
+    const ev = c.json.messages.find((m: Row) => m.kind === 'gift');
+    assert.equal(ev.meta.emoji, '🌹');
+    assert.equal(ev.meta.count, 3);
+    assert.deepEqual(c.json.topGifters, [{ name: 'Аслан', coins: 3 }]);
+    const s = await call('GET', `/api/shop/live/streams/${r.json.id}`);
+    assert.equal(s.json.creatorGiftCoins, 3);
+    const mine = await call('GET', `/api/shop/live/creator/mine?phone=${PHONE}`);
+    assert.equal(mine.json.profile.giftCoins, 3);
+  });
+
+  test('подарок вне эфира не отправляется', async () => {
+    streams.push({ id: 's9', creatorId: 'cr1', title: 'Анонс', channel: 'c9', status: 'scheduled', skus: '[]', likes: 0, views: 0 });
+    const list = await call('GET', '/api/shop/live/gifts?device=d1');
+    const r = await call('POST', '/api/shop/live/streams/s9/gift', { device: 'd1', giftId: list.json.items[0].id });
+    assert.equal(r.status, 409);
   });
 });
