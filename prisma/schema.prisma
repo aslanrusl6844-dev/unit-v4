@@ -1212,6 +1212,8 @@ model Creator {
   autoPublish   Boolean  @default(false)
   applicationId String?
   avatarUrl     String?  // фото креатора в эфире (как в Инстаграме), загружает сам в кабинете
+  category      String?  // раздел креатора («Красота и здоровье»); пусто — считается по его товарам
+  featured      Boolean  @default(false) // «Рекомендовать»: первым в топе креаторов Live
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 }

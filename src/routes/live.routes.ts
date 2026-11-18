@@ -15,6 +15,7 @@ import {
   DAILY_FREE_COINS, activeGifts, chatDto, chatEvent, cleanName, coinsLeft, creatorGiftCoins, eventAllowed, giftDto, topGifters,
 } from '../services/liveGifts.service';
 import { uploadPublicFile } from '../services/mediaStorage.service';
+import { creatorPage, listCreators } from '../services/liveCreators.service';
 
 /**
  * My Market Live.
@@ -304,6 +305,57 @@ liveRouter.post('/streams/:id/remind', async (req, res) => {
     res.json({ reminded: remind });
   } catch (err) {
     logger.error({ err }, '[Live] remind упал');
+    res.status(500).json({ error: 'Не удалось' });
+  }
+});
+
+// ---- Креаторы: топ для поиска, страница креатора, подписка (как у Coupang Live) ----
+
+/** Топ креаторов: фото, имя, раздел, подписчики, ♥, подарки; ?device= — на кого я подписан. */
+liveRouter.get('/creators', async (req, res) => {
+  try {
+    const device = String(req.query.device ?? '').trim().slice(0, 80);
+    res.json({ items: await listCreators(device) });
+  } catch (err) {
+    logger.error({ err }, '[Live] /creators упал');
+    res.status(500).json({ error: 'Не удалось загрузить креаторов' });
+  }
+});
+
+/** Страница креатора: эфиры, повторы, анонсы, шортс, товары. */
+liveRouter.get('/creators/:id', async (req, res) => {
+  try {
+    await closeStaleStreams();
+    const device = String(req.query.device ?? '').trim().slice(0, 80);
+    const page = await creatorPage(req.params.id, device);
+    if (!page) return res.status(404).json({ error: 'Креатор не найден' });
+    res.json(page);
+  } catch (err) {
+    logger.error({ err }, '[Live] /creators/:id упал');
+    res.status(500).json({ error: 'Не удалось открыть страницу' });
+  }
+});
+
+/** Подписка на креатора со страницы/поиска: { device, follow, pushToken?, phone? } — пуш, когда выйдет в эфир. */
+liveRouter.post('/creators/:id/follow', async (req, res) => {
+  const device = String(req.body?.device ?? '').trim().slice(0, 80);
+  if (!device) return res.status(400).json({ error: 'Нет устройства' });
+  if (limited(`follow:${req.ip}`)) return res.status(429).json({ error: 'Слишком часто' });
+  try {
+    const c = await prisma.creator.findUnique({ where: { id: req.params.id } });
+    if (!c || !c.active) return res.status(404).json({ error: 'Креатор не найден' });
+    const follow = req.body?.follow !== false;
+    const key = { creatorId_deviceKey: { creatorId: c.id, deviceKey: device } };
+    const existing = await prisma.liveFollow.findUnique({ where: key });
+    const pushToken = String(req.body?.pushToken ?? '').trim().slice(0, 400) || null;
+    const phone = phoneOf(req.body?.phone);
+    if (follow) {
+      if (existing) await prisma.liveFollow.update({ where: { id: existing.id }, data: { pushToken: pushToken ?? existing.pushToken, phone: phone ?? existing.phone } });
+      else await prisma.liveFollow.create({ data: { creatorId: c.id, deviceKey: device, pushToken, phone } });
+    } else if (existing) await prisma.liveFollow.delete({ where: { id: existing.id } });
+    res.json({ following: follow });
+  } catch (err) {
+    logger.error({ err }, '[Live] creator follow упал');
     res.status(500).json({ error: 'Не удалось' });
   }
 });

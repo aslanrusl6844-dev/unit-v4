@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { SHOP_CATEGORIES } from '../config/shopCategories';
 import { creatorGiftCoins } from '../services/liveGifts.service';
 import { z } from 'zod';
 import { env } from '../config/env';
@@ -157,7 +158,7 @@ creatorAdminRouter.get('/', async (_req, res) => {
   try {
     const rows: any[] = await prisma.creator.findMany({ orderBy: { createdAt: 'desc' }, take: 1000 });
     const gifts = await creatorGiftCoins(rows.map((r) => r.id)).catch(() => new Map<string, number>());
-    res.json(rows.map((r) => ({ ...r, giftCoins: gifts.get(r.id) ?? 0 })));
+    res.json({ items: rows.map((r) => ({ ...r, giftCoins: gifts.get(r.id) ?? 0 })), shopCategories: SHOP_CATEGORIES });
   } catch (err: any) {
     logger.error({ err }, '[Creator Admin] GET / упал');
     res.status(500).json({ error: 'Не удалось получить креаторов' });
@@ -174,6 +175,12 @@ creatorAdminRouter.patch('/:id', async (req, res) => {
   }
   if (req.body?.active !== undefined) data.active = !!req.body.active;
   if (req.body?.autoPublish !== undefined) data.autoPublish = !!req.body.autoPublish;
+  if (req.body?.featured !== undefined) data.featured = !!req.body.featured;
+  if (req.body?.category !== undefined) {
+    const c = String(req.body.category ?? '').trim();
+    if (c && !SHOP_CATEGORIES.includes(c)) return res.status(400).json({ error: 'Раздел не из каталога' });
+    data.category = c || null;
+  }
   if (!Object.keys(data).length) return res.status(400).json({ error: 'Нечего менять' });
   try {
     const creator = await prisma.creator.update({ where: { id: req.params.id }, data });
