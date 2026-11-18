@@ -269,11 +269,16 @@ export async function viewersOf(channel: string): Promise<number> {
 /** Покупатели с «колокольчиком» на этого креатора получают пуш: эфир начался. */
 export async function notifyFollowers(stream: { id: string; creatorId: string; title: string }, creatorName: string): Promise<number> {
   try {
-    const rows: any[] = await prisma.liveFollow.findMany({ where: { creatorId: stream.creatorId }, take: 5000 });
+    // Подписчики креатора + те, кто нажал «Напомнить» у анонса именно этого эфира.
+    const [follows, reminders]: any[][] = await Promise.all([
+      prisma.liveFollow.findMany({ where: { creatorId: stream.creatorId }, take: 5000 }),
+      prisma.liveReminder.findMany({ where: { streamId: stream.id }, take: 5000 }),
+    ]);
+    const rows = [...follows, ...reminders];
     if (!rows.length) return 0;
     const phones = rows.filter((r) => !r.pushToken && r.phone).map((r) => r.phone as string);
     const byPhone: any[] = phones.length ? await prisma.shopCustomerPushToken.findMany({ where: { phone: { in: phones } } }) : [];
-    const tokens = [...rows.map((r) => r.pushToken).filter(Boolean), ...byPhone.map((t) => t.token)] as string[];
+    const tokens = Array.from(new Set([...rows.map((r) => r.pushToken).filter(Boolean), ...byPhone.map((t) => t.token)])) as string[];
     if (!tokens.length) return 0;
     const { sendBroadcast } = await import('./pushBroadcast.service');
     await sendBroadcast({
@@ -291,4 +296,54 @@ export async function notifyFollowers(stream: { id: string; creatorId: string; t
 
 export function bannerDto(b: any) {
   return { id: b.id, imageUrl: b.imageUrl, title: b.title ?? '', linkType: b.linkType ?? '', linkValue: b.linkValue ?? '' };
+}
+
+// ---------------------------------------------------------------------------
+// Топ-10 по продажам за 7 дней: сколько штук товаров эфира/ролика продано
+// (оплаченные заказы My Market). Прямой связи «заказ ← эфир» нет, поэтому
+// считаем продажи его артикулов — как «эфиры, товары которых покупают».
+// ---------------------------------------------------------------------------
+
+const SOLD_STATUSES = ['paid', 'picked', 'in_transit', 'delivered'];
+
+export async function soldBySku(days = 7, now = Date.now()): Promise<Map<string, number>> {
+  const since = new Date(now - days * 24 * 60 * 60_000);
+  const orders: Array<{ items: string }> = await prisma.shopOrder.findMany({
+    where: { status: { in: SOLD_STATUSES }, OR: [{ paidAt: { gte: since } }, { paidAt: null, createdAt: { gte: since } }] },
+    select: { items: true },
+    take: 5000,
+  });
+  const out = new Map<string, number>();
+  for (const o of orders) {
+    let items: any[] = [];
+    try { items = JSON.parse(o.items); } catch { items = []; }
+    if (!Array.isArray(items)) continue;
+    for (const it of items) {
+      const sku = String(it?.sku ?? '');
+      const q = Number(it?.quantity ?? 1) || 0;
+      if (sku && q > 0) out.set(sku, (out.get(sku) ?? 0) + q);
+    }
+  }
+  return out;
+}
+
+export type TopEntry = { kind: 'stream' | 'short'; id: string; sold: number };
+
+/** Топ-10: сначала по проданным штукам, при равенстве — по просмотрам. Анонсы не участвуют. */
+export function topBySales(
+  streams: Array<{ id: string; skus: string[]; views: number }>,
+  shorts: Array<{ id: string; skus: string[]; views: number }>,
+  sold: Map<string, number>,
+  limit = 10,
+): TopEntry[] {
+  const score = (skus: string[]) => Array.from(new Set(skus)).reduce((n, s) => n + (sold.get(s) ?? 0), 0);
+  const all = [
+    ...streams.map((s) => ({ kind: 'stream' as const, id: s.id, sold: score(s.skus), views: s.views })),
+    ...shorts.map((v) => ({ kind: 'short' as const, id: v.id, sold: score(v.skus), views: v.views })),
+  ];
+  return all
+    .filter((x) => x.sold > 0 || x.views > 0)
+    .sort((a, b) => b.sold - a.sold || b.views - a.views)
+    .slice(0, limit)
+    .map(({ kind, id, sold: n }) => ({ kind, id, sold: n }));
 }

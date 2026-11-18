@@ -25,6 +25,8 @@ let chat: Row[] = [];
 let liveCats: Row[] = [];
 let banners: Row[] = [];
 let follows: Row[] = [];
+let reminders: Row[] = [];
+let orders: Row[] = [];
 const products: Row[] = [
   { sku: 'ozon-1', shopArticle: '1000001', category: 'Красота и здоровье' },
   { sku: 'ozon-2', shopArticle: '1000002', category: 'Дом и сад' },
@@ -96,6 +98,14 @@ const stub: Record<string, any> = {
       return k ? follows.find((f) => f.creatorId === k.creatorId && f.deviceKey === k.deviceKey) ?? null : follows.find((f) => f.id === a.where.id) ?? null;
     },
   },
+  liveReminder: {
+    ...table(() => reminders, (r) => { reminders = r; }),
+    findUnique: async (a: Row) => {
+      const k = a.where.streamId_deviceKey;
+      return k ? reminders.find((f) => f.streamId === k.streamId && f.deviceKey === k.deviceKey) ?? null : reminders.find((f) => f.id === a.where.id) ?? null;
+    },
+  },
+  shopOrder: { findMany: async () => orders.map((o) => ({ items: o.items })) },
   product: { findMany: async (a: Row) => { const list = a.where.OR[0].shopArticle.in; return products.filter((p) => list.includes(p.shopArticle) || list.includes(p.sku)); } },
 };
 class StubPrismaClient {
@@ -144,7 +154,7 @@ before(async () => { server = app.listen(0); port = (server.address() as any).po
 after(() => server.close());
 beforeEach(() => {
   creators = [{ id: 'cr1', phone: PHONE, name: 'Айгерим', code: 'MM-ABCDE', percent: 7, active: true, autoPublish: false }];
-  streams = []; videos = []; likes = []; chat = []; liveCats = []; banners = []; follows = []; seq = 0;
+  streams = []; videos = []; likes = []; chat = []; liveCats = []; banners = []; follows = []; reminders = []; orders = []; seq = 0;
 });
 
 describe('эфиры', () => {
@@ -238,7 +248,7 @@ describe('вкладки-категории Live', () => {
     videos.push({ id: 'v1', creatorId: 'cr1', title: 'Крем', videoUrl: 'https://p/v1.mp4', skus: '["1000001"]', status: 'published', likes: 0, views: 0, createdAt: new Date(Date.now() - 1000) });
     videos.push({ id: 'v2', creatorId: 'cr1', title: 'Сушилка', videoUrl: 'https://p/v2.mp4', skus: '["1000002"]', status: 'published', likes: 0, views: 0, createdAt: new Date() });
     const home = await call('GET', '/api/shop/live/home');
-    assert.deepEqual(home.json.categories, [{ id: c.json.id, title: 'Красота' }]);
+    assert.deepEqual(home.json.categories, [{ id: c.json.id, title: 'Красота', sections: ['Красота и здоровье'] }]);
     assert.deepEqual(home.json.shorts.find((v: Row) => v.id === 'v1').cats, [c.json.id]);
     assert.deepEqual(home.json.shorts.find((v: Row) => v.id === 'v2').cats, []);
     const feed = await call('GET', `/api/shop/live/shorts?cat=${c.json.id}`);
@@ -274,5 +284,40 @@ describe('баннеры Live и колокольчик', () => {
     await call('POST', `/api/shop/live/streams/${r.json.id}/follow`, { device: 'd1', follow: false });
     g = await call('GET', `/api/shop/live/streams/${r.json.id}?device=d1`);
     assert.equal(g.json.following, false);
+  });
+});
+
+describe('Coupang: лайки пачкой, напоминание, топ-10', () => {
+  test('♥ как в ТикТоке: count прибавляет столько лайков, сколько нажали (не больше 100 за раз)', async () => {
+    const r = await call('POST', '/api/shop/live/creator/streams/start', { phone: PHONE, title: 'Кухня', skus: ['1'] });
+    assert.equal((await call('POST', `/api/shop/live/streams/${r.json.id}/like`, { device: 'd1', count: 7 })).json.likes, 7);
+    assert.equal((await call('POST', `/api/shop/live/streams/${r.json.id}/like`, { device: 'd1', count: 5 })).json.likes, 12);
+    assert.equal((await call('POST', `/api/shop/live/streams/${r.json.id}/like`, { device: 'd2', count: 999 })).json.likes, 112);
+    assert.equal((await call('GET', `/api/shop/live/streams/${r.json.id}?device=d1`)).json.liked, true);
+    videos.push({ id: 'v1', creatorId: 'cr1', title: 'Блендер', videoUrl: 'https://p/v1.mp4', skus: '["1"]', status: 'published', likes: 0, views: 0, createdAt: new Date() });
+    assert.equal((await call('POST', '/api/shop/live/shorts/v1/like', { device: 'd1', count: 3 })).json.likes, 3);
+  });
+
+  test('🔔 «Напомнить» у анонса: сохраняется, видно в /home, снимается', async () => {
+    streams.push({ id: 's1', creatorId: 'cr1', title: 'Анонс', channel: 'c1', status: 'scheduled', skus: '[]', scheduledAt: new Date(Date.now() + 3600_000), likes: 0, views: 0 });
+    assert.equal((await call('POST', '/api/shop/live/streams/s1/remind', {})).status, 400);
+    assert.equal((await call('POST', '/api/shop/live/streams/s1/remind', { device: 'd1', pushToken: 'tok' })).json.reminded, true);
+    assert.deepEqual((await call('GET', '/api/shop/live/home?device=d1')).json.reminded, ['s1']);
+    assert.deepEqual((await call('GET', '/api/shop/live/home?device=d2')).json.reminded, []);
+    await call('POST', '/api/shop/live/streams/s1/remind', { device: 'd1', remind: false });
+    assert.equal(reminders.length, 0);
+  });
+
+  test('Топ-10: по проданным штукам товаров за 7 дней, потом по просмотрам', async () => {
+    streams.push({ id: 'r1', creatorId: 'cr1', title: 'Повтор 1', channel: 'c1', status: 'ended', replayUrl: 'https://p/1.mp4', skus: '["A"]', endedAt: new Date(), likes: 0, views: 50 });
+    streams.push({ id: 'r2', creatorId: 'cr1', title: 'Повтор 2', channel: 'c2', status: 'ended', replayUrl: 'https://p/2.mp4', skus: '["B"]', endedAt: new Date(), likes: 0, views: 5 });
+    videos.push({ id: 'v1', creatorId: 'cr1', title: 'Ролик', videoUrl: 'https://p/v.mp4', skus: '["C"]', status: 'published', likes: 0, views: 0, createdAt: new Date() });
+    orders.push({ items: JSON.stringify([{ sku: 'B', quantity: 3 }, { sku: 'C', quantity: 1 }]) });
+    const h = await call('GET', '/api/shop/live/home');
+    assert.deepEqual(h.json.top, [
+      { kind: 'stream', id: 'r2', sold: 3 },
+      { kind: 'short', id: 'v1', sold: 1 },
+      { kind: 'stream', id: 'r1', sold: 0 },
+    ]);
   });
 });

@@ -8,7 +8,7 @@ import { normalizePhone } from './shop.routes';
 import { isR2Configured, r2CompleteChunks, r2PutChunk, StorageUnavailableError } from '../services/mediaStorage.service';
 import {
   AGORA_APP_ID, activeCreatorByPhone, bannerDto, notifyFollowers, activeLiveCategories, agoraConfigured, agoraToken, catsFor, cleanSkus, closeStaleStreams, creatorNames, isOnAir,
-  newChannel, parseSkus, resolveReplays, shopCategoryBySku, startRecording, stopRecording, streamDto, videoDto, viewersOf,
+  newChannel, parseSkus, resolveReplays, shopCategoryBySku, soldBySku, startRecording, stopRecording, streamDto, topBySales, videoDto, viewersOf,
 } from '../services/live.service';
 import { SHOP_CATEGORIES } from '../config/shopCategories';
 
@@ -44,6 +44,13 @@ function limited(key: string, max = 60): boolean {
 
 const phoneOf = (raw: unknown) => normalizePhone(String(raw ?? ''));
 
+/** Пачка нажатий ♥ (как в ТикТоке): 1..100 за один запрос, иначе 0 — обычный лайк/снять лайк. */
+export function tapsOf(raw: unknown): number {
+  const n = Math.floor(Number(raw));
+  if (!Number.isFinite(n) || n < 1) return 0;
+  return Math.min(100, n);
+}
+
 // ---------------------------------------------------------------------------
 // Покупатели: главная Live, шортс, эфиры, чат
 // ---------------------------------------------------------------------------
@@ -66,8 +73,22 @@ liveRouter.get('/home', async (req, res) => {
     const [names, cats] = await Promise.all([creatorNames(all.map((x: any) => x.creatorId)), activeLiveCategories()]);
     const bySku = await shopCategoryBySku(all.flatMap((x: any) => parseSkus(x.skus)));
     const withCats = (dto: any) => ({ ...dto, cats: catsFor(dto.skus, bySku, cats) });
+    const device = String(req.query.device ?? '').trim().slice(0, 80);
+    const [sold, reminded] = await Promise.all([
+      soldBySku(7, now).catch(() => new Map<string, number>()),
+      device && upcoming.length
+        ? prisma.liveReminder.findMany({ where: { deviceKey: device, streamId: { in: upcoming.map((u: any) => u.id) } }, select: { streamId: true } })
+        : Promise.resolve([] as Array<{ streamId: string }>),
+    ]);
+    const top = topBySales(
+      [...onAir, ...replays].map((s: any) => ({ id: s.id, skus: parseSkus(s.skus), views: s.views ?? 0 })),
+      shorts.map((v: any) => ({ id: v.id, skus: parseSkus(v.skus), views: v.views ?? 0 })),
+      sold,
+    );
     res.json({
-      categories: cats.map((c) => ({ id: c.id, title: c.title })),
+      categories: cats.map((c) => ({ id: c.id, title: c.title, sections: c.categories })),
+      top,
+      reminded: (reminded as Array<{ streamId: string }>).map((r) => r.streamId),
       banners: (banners as any[]).map(bannerDto),
       live: await Promise.all(onAir.map(async (s: any) => ({ ...withCats(streamDto(s, names.get(s.creatorId) ?? '')), viewers: await viewersOf(s.channel) }))),
       upcoming: upcoming.map((s: any) => withCats(streamDto(s, names.get(s.creatorId) ?? ''))),
@@ -131,6 +152,12 @@ liveRouter.post('/shorts/:id/like', async (req, res) => {
     const video = await prisma.creatorVideo.findUnique({ where: { id: req.params.id } });
     if (!video || video.status !== 'published') return res.status(404).json({ error: 'Видео не найдено' });
     const existing = await prisma.creatorVideoLike.findUnique({ where: { videoId_deviceKey: { videoId: video.id, deviceKey: device } } });
+    const taps = tapsOf(req.body?.count);
+    if (taps) {
+      if (!existing) await prisma.creatorVideoLike.create({ data: { videoId: video.id, deviceKey: device } }).catch(() => undefined);
+      const fresh = await prisma.creatorVideo.update({ where: { id: video.id }, data: { likes: { increment: taps } } });
+      return res.json({ liked: true, likes: fresh.likes });
+    }
     const like = req.body?.like !== false;
     if (like && !existing) {
       await prisma.creatorVideoLike.create({ data: { videoId: video.id, deviceKey: device } });
@@ -192,6 +219,13 @@ liveRouter.post('/streams/:id/like', async (req, res) => {
     if (!s) return res.status(404).json({ error: 'Эфир не найден' });
     const key = `s:${s.id}`;
     const existing = await prisma.creatorVideoLike.findUnique({ where: { videoId_deviceKey: { videoId: key, deviceKey: device } } });
+    const taps = tapsOf(req.body?.count);
+    if (taps) {
+      // Как в ТикТоке: сколько раз нажали — столько ♥ и прибавилось.
+      if (!existing) await prisma.creatorVideoLike.create({ data: { videoId: key, deviceKey: device } }).catch(() => undefined);
+      const fresh = await prisma.liveStream.update({ where: { id: s.id }, data: { likes: { increment: taps } } });
+      return res.json({ liked: true, likes: fresh.likes });
+    }
     const like = req.body?.like !== false;
     if (like && !existing) {
       await prisma.creatorVideoLike.create({ data: { videoId: key, deviceKey: device } });
@@ -228,6 +262,30 @@ liveRouter.post('/streams/:id/follow', async (req, res) => {
     res.json({ following: follow });
   } catch (err) {
     logger.error({ err }, '[Live] follow упал');
+    res.status(500).json({ error: 'Не удалось' });
+  }
+});
+
+/** 🔔 «Напомнить» у анонса: { device, remind, pushToken?, phone? } — пуш, когда этот эфир начнётся. */
+liveRouter.post('/streams/:id/remind', async (req, res) => {
+  const device = String(req.body?.device ?? '').trim().slice(0, 80);
+  if (!device) return res.status(400).json({ error: 'Нет устройства' });
+  if (limited(`remind:${req.ip}`)) return res.status(429).json({ error: 'Слишком часто' });
+  try {
+    const s = await prisma.liveStream.findUnique({ where: { id: req.params.id } });
+    if (!s) return res.status(404).json({ error: 'Эфир не найден' });
+    const remind = req.body?.remind !== false;
+    const key = { streamId_deviceKey: { streamId: s.id, deviceKey: device } };
+    const existing = await prisma.liveReminder.findUnique({ where: key });
+    const pushToken = String(req.body?.pushToken ?? '').trim().slice(0, 400) || null;
+    const phone = phoneOf(req.body?.phone);
+    if (remind) {
+      if (existing) await prisma.liveReminder.update({ where: { id: existing.id }, data: { pushToken: pushToken ?? existing.pushToken, phone: phone ?? existing.phone } });
+      else await prisma.liveReminder.create({ data: { streamId: s.id, deviceKey: device, pushToken, phone } });
+    } else if (existing) await prisma.liveReminder.delete({ where: { id: existing.id } });
+    res.json({ reminded: remind });
+  } catch (err) {
+    logger.error({ err }, '[Live] remind упал');
     res.status(500).json({ error: 'Не удалось' });
   }
 });
