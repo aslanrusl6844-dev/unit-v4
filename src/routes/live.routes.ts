@@ -16,6 +16,7 @@ import {
 } from '../services/liveGifts.service';
 import { uploadPublicFile } from '../services/mediaStorage.service';
 import { creatorPage, listCreators } from '../services/liveCreators.service';
+import { agoraMonthUsage, agoraUsageConfigured } from '../services/agoraUsage.service';
 
 /**
  * My Market Live.
@@ -746,6 +747,17 @@ liveAdminRouter.post('/streams/bulk-delete', async (req, res) => {
     }
   }
   res.json({ ok: true, done, skipped });
+});
+
+/** Расход минут Agora за месяц и примерная сумма к оплате (?month=YYYY-MM). */
+liveAdminRouter.get('/agora-usage', async (req, res) => {
+  if (!agoraUsageConfigured()) return res.json({ configured: false });
+  try {
+    res.json({ configured: true, ...(await agoraMonthUsage(String(req.query.month ?? '') || undefined)) });
+  } catch (err: any) {
+    logger.warn({ err: String(err?.message ?? err) }, '[Live] расход Agora');
+    res.json({ configured: true, error: String(err?.message ?? err) });
+  }
 });
 
 /** Остановить эфир из админки (нарушение правил). */
