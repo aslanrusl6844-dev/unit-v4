@@ -112,7 +112,12 @@ const stub: Record<string, any> = {
   liveGift: table(() => gifts, (r) => { gifts = r; }),
   liveGiftSend: table(() => giftSends, (r) => { giftSends = r; }, true),
   shopOrder: { findMany: async () => orders.map((o) => ({ items: o.items })) },
-  product: { findMany: async (a: Row) => { const list = a.where.OR[0].shopArticle.in; return products.filter((p) => list.includes(p.shopArticle) || list.includes(p.sku)); } },
+  product: {
+    findMany: async (a: Row) => {
+      if (a.where?.OR) { const list = a.where.OR[0].shopArticle?.in ?? a.where.OR[0].sku?.in ?? []; const l2 = a.where.OR[1]?.shopArticle?.in ?? []; return products.filter((p) => list.includes(p.shopArticle) || list.includes(p.sku) || l2.includes(p.shopArticle)); }
+      return products.filter((p) => match(p, a.where));
+    },
+  },
 };
 class StubPrismaClient {
   constructor() {
@@ -443,5 +448,26 @@ describe('Админка: эфиры по разделам и массовое �
     r = await call('POST', '/api/shop-admin/live/streams/bulk-delete', { ids: ['r1', 'r2', live.json.id], mode: 'stream' }, true);
     assert.deepEqual([r.json.done, r.json.skipped], [2, 1]);
     assert.deepEqual(streams.map((s) => s.id), [live.json.id]);
+  });
+});
+
+describe('Продавцы: в эфире только свои товары', () => {
+  test('продавец не может взять чужой товар; креатор — любой; список своих товаров', async () => {
+    creators[0].kind = 'seller';
+    products.forEach((p) => { p.shopActive = true; p.shopArchived = false; });
+    products[0].sellerId = 'cr1';
+    const own = products[0].sku;
+    const other = products[1].sku;
+    let r = await call('GET', `/api/shop/live/creator/products?phone=${PHONE}`);
+    assert.deepEqual([r.json.kind, r.json.skus], ['seller', [own]]);
+    r = await call('POST', '/api/shop/live/creator/streams/start', { phone: PHONE, title: 'Мои товары', skus: [own, other] });
+    assert.equal(r.status, 400);
+    r = await call('POST', '/api/shop/live/creator/streams/schedule', { phone: PHONE, title: 'Анонс', skus: [other], scheduledAt: new Date(Date.now() + 3600_000).toISOString() });
+    assert.equal(r.status, 400);
+    r = await call('POST', '/api/shop/live/creator/streams/start', { phone: PHONE, title: 'Мои товары', skus: [own] });
+    assert.equal(r.status, 200);
+    creators[0].kind = 'creator';
+    r = await call('GET', `/api/shop/live/creator/products?phone=${PHONE}`);
+    assert.equal(r.json.all, true);
   });
 });

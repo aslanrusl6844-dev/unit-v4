@@ -383,3 +383,28 @@ export async function deleteStream(streamId: string): Promise<boolean> {
   await prisma.liveStream.delete({ where: { id: s.id } });
   return true;
 }
+
+// ---------------------------------------------------------------------------
+// Продавцы маркетплейса: в эфир и шортс берут только свои товары.
+// Креаторы (kind=creator) — любые товары приложения за процент.
+// ---------------------------------------------------------------------------
+
+export const isSeller = (c: { kind?: string | null } | null | undefined) => c?.kind === 'seller';
+
+/** Артикулы товаров продавца (только те, что в продаже в приложении). */
+export async function sellerSkus(sellerId: string): Promise<string[]> {
+  const rows: Array<{ sku: string }> = await prisma.product.findMany({
+    where: { sellerId, shopActive: true, shopArchived: false },
+    select: { sku: true },
+    take: 20000,
+  });
+  return rows.map((r) => r.sku);
+}
+
+/** Продавец выбрал чужой товар → текст ошибки; иначе null. */
+export async function checkCreatorSkus(creator: { id: string; kind?: string | null }, skus: string[]): Promise<string | null> {
+  if (!isSeller(creator) || !skus.length) return null;
+  const own = new Set(await sellerSkus(creator.id));
+  const foreign = skus.filter((s) => !own.has(s));
+  return foreign.length ? 'Продавец может показывать в эфире только свои товары' : null;
+}

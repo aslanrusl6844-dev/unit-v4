@@ -158,7 +158,10 @@ creatorAdminRouter.get('/', async (_req, res) => {
   try {
     const rows: any[] = await prisma.creator.findMany({ orderBy: { createdAt: 'desc' }, take: 1000 });
     const gifts = await creatorGiftCoins(rows.map((r) => r.id)).catch(() => new Map<string, number>());
-    res.json({ items: rows.map((r) => ({ ...r, giftCoins: gifts.get(r.id) ?? 0 })), shopCategories: SHOP_CATEGORIES });
+    const owned: Array<{ sellerId: string | null }> = await prisma.product.findMany({ where: { sellerId: { not: null } }, select: { sellerId: true }, take: 200000 });
+    const counts = new Map<string, number>();
+    for (const o of owned) if (o.sellerId) counts.set(o.sellerId, (counts.get(o.sellerId) ?? 0) + 1);
+    res.json({ items: rows.map((r) => ({ ...r, giftCoins: gifts.get(r.id) ?? 0, productsCount: counts.get(r.id) ?? 0 })), shopCategories: SHOP_CATEGORIES });
   } catch (err: any) {
     logger.error({ err }, '[Creator Admin] GET / упал');
     res.status(500).json({ error: 'Не удалось получить креаторов' });
@@ -176,6 +179,13 @@ creatorAdminRouter.patch('/:id', async (req, res) => {
   if (req.body?.active !== undefined) data.active = !!req.body.active;
   if (req.body?.autoPublish !== undefined) data.autoPublish = !!req.body.autoPublish;
   if (req.body?.featured !== undefined) data.featured = !!req.body.featured;
+  if (req.body?.kind !== undefined) data.kind = req.body.kind === 'seller' ? 'seller' : 'creator';
+  if (req.body?.companyName !== undefined) data.companyName = String(req.body.companyName ?? '').trim().slice(0, 120) || null;
+  if (req.body?.bin !== undefined) {
+    const bin = String(req.body.bin ?? '').replace(/\D/g, '');
+    if (bin && bin.length !== 12) return res.status(400).json({ error: 'ИИН/БИН — 12 цифр' });
+    data.bin = bin || null;
+  }
   if (req.body?.category !== undefined) {
     const c = String(req.body.category ?? '').trim();
     if (c && !SHOP_CATEGORIES.includes(c)) return res.status(400).json({ error: 'Раздел не из каталога' });
@@ -190,4 +200,41 @@ creatorAdminRouter.patch('/:id', async (req, res) => {
     logger.error({ err }, '[Creator Admin] PATCH упал');
     res.status(500).json({ error: 'Не удалось сохранить' });
   }
+});
+
+
+// ---- Товары продавца: какие товары каталога принадлежат продавцу (в эфире он показывает только их) ----
+
+creatorAdminRouter.get('/:id/products', async (req, res) => {
+  const rows: any[] = await prisma.product.findMany({
+    where: { sellerId: req.params.id },
+    select: { sku: true, name: true, shopArticle: true, shopPrice: true, category: true, shopActive: true, images: true },
+    orderBy: { name: 'asc' },
+    take: 20000,
+  });
+  res.json(rows.map((p) => {
+    let img = '';
+    try { img = (JSON.parse(p.images || '[]') as string[])[0] ?? ''; } catch { img = ''; }
+    return { sku: p.sku, name: p.name, article: p.shopArticle ?? '', price: p.shopPrice ?? 0, category: p.category ?? '', active: !!p.shopActive, image: img };
+  }));
+});
+
+/** { codes: ['артикул или sku', …], mode: 'add' | 'remove' } — закрепить товары за продавцом или снять. */
+creatorAdminRouter.post('/:id/products', async (req, res) => {
+  const c = await prisma.creator.findUnique({ where: { id: req.params.id } });
+  if (!c) return res.status(404).json({ error: 'Креатор не найден' });
+  const codes: string[] = Array.from(new Set((Array.isArray(req.body?.codes) ? req.body.codes : []).map((x: unknown) => String(x ?? '').trim()).filter(Boolean))).slice(0, 5000) as string[];
+  if (!codes.length) return res.status(400).json({ error: 'Укажите артикулы' });
+  const remove = req.body?.mode === 'remove';
+  const found: Array<{ id: string; sku: string; shopArticle: string | null; sellerId: string | null }> = await prisma.product.findMany({
+    where: { OR: [{ sku: { in: codes } }, { shopArticle: { in: codes } }] },
+    select: { id: true, sku: true, shopArticle: true, sellerId: true },
+  });
+  const matched = new Set(found.flatMap((p) => [p.sku, p.shopArticle ?? '']));
+  const notFound = codes.filter((x) => !matched.has(x));
+  const target = remove ? found.filter((p) => p.sellerId === c.id) : found;
+  const busy = remove ? [] : found.filter((p) => p.sellerId && p.sellerId !== c.id).map((p) => p.sku);
+  const ids = target.filter((p) => remove || !p.sellerId || p.sellerId === c.id).map((p) => p.id);
+  const r = ids.length ? await prisma.product.updateMany({ where: { id: { in: ids } }, data: { sellerId: remove ? null : c.id } }) : { count: 0 };
+  res.json({ ok: true, changed: r.count, notFound, busy });
 });
