@@ -10703,7 +10703,7 @@ function renderMmCreators() {
 
   if (mmCreatorTab === 'streams') {
     const label = { live: '<span style="color:var(--loss);font-weight:700">● В эфире</span>', scheduled: 'Анонс', ended: 'Завершён' };
-    thead.innerHTML = '<tr><th>Креатор</th><th>Название</th><th>Статус</th><th>Начало / анонс</th><th>Окончание</th><th class="num">Пик зрителей</th><th></th></tr>';
+    thead.innerHTML = '<tr><th>Креатор</th><th>Название</th><th>Статус</th><th>Начало / анонс</th><th>Окончание</th><th class="num">Пик зрителей</th><th>Повтор</th><th></th></tr>';
     tbody.innerHTML = rows.length ? rows.map((s) => `
       <tr>
         <td>${mmEsc(s.creatorName)}</td>
@@ -10712,8 +10712,20 @@ function renderMmCreators() {
         <td>${s.startedAt ? new Date(s.startedAt).toLocaleString('ru-RU') : s.scheduledAt ? new Date(s.scheduledAt).toLocaleString('ru-RU') : '—'}</td>
         <td>${s.endedAt ? new Date(s.endedAt).toLocaleString('ru-RU') : '—'}</td>
         <td class="num">${s.peakViewers ?? 0}</td>
-        <td>${s.status !== 'ended' ? `<button class="link-btn" data-stream-stop="${s.id}" style="color:var(--loss)">Остановить</button>` : ''}</td>
-      </tr>`).join('') : '<tr><td colspan="7" style="color:var(--text-faint)">Эфиров пока не было</td></tr>';
+        <td>${s.replayUrl ? `<a href="${mmEsc(s.replayUrl)}" target="_blank" rel="noopener">▶ Смотреть</a> · ${s.views ?? 0} просм.` : (s.status === 'ended' ? '<span style="color:var(--text-faint)">нет</span>' : '—')}</td>
+        <td style="white-space:nowrap">
+          ${s.status !== 'ended' ? `<button class="link-btn" data-stream-stop="${s.id}" style="color:var(--loss)">Остановить</button>` : ''}
+          ${s.replayUrl ? `<button class="link-btn" data-stream-delreplay="${s.id}" style="color:var(--loss)">Удалить повтор</button>` : ''}
+        </td>
+      </tr>`).join('') : '<tr><td colspan="8" style="color:var(--text-faint)">Эфиров пока не было</td></tr>';
+    tbody.querySelectorAll('[data-stream-delreplay]').forEach((b) => b.addEventListener('click', async () => {
+      if (!confirm('Удалить повтор? Запись сотрётся из R2 и пропадёт из приложения. Вернуть будет нельзя.')) return;
+      try {
+        const r = await api(`/shop-admin/live/streams/${b.dataset.streamDelreplay}/replay`, { method: 'DELETE' });
+        document.getElementById('mmCreatorStatus').textContent = `Повтор удалён (файлов в R2: ${r.removed})`;
+        loadMmCreators();
+      } catch (err) { alert(err.message); }
+    }));
     tbody.querySelectorAll('[data-stream-stop]').forEach((b) => b.addEventListener('click', async () => {
       if (!confirm('Остановить эфир?')) return;
       try { await api(`/shop-admin/live/streams/${b.dataset.streamStop}/stop`, { method: 'POST', body: '{}' }); loadMmCreators(); } catch (err) { alert(err.message); }

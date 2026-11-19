@@ -397,3 +397,16 @@ describe('Креаторы: топ, страница, подписка', () => {
     assert.equal((await call('GET', '/api/shop/live/creators/nope')).status, 404);
   });
 });
+
+describe('Админка: удалить повтор эфира', () => {
+  test('повтор пропадает из приложения и не возвращается; идущий эфир не трогаем', async () => {
+    streams.push({ id: 'r1', creatorId: 'cr1', title: 'Повтор', channel: 'c1', status: 'ended', replayUrl: 'https://p/1.mp4', recState: 'stopped', skus: '[]', endedAt: new Date(), likes: 0, views: 3 });
+    const r = await call('DELETE', '/api/shop-admin/live/streams/r1/replay', undefined, true);
+    assert.equal(r.status, 200);
+    assert.equal(streams[0].replayUrl, null);
+    assert.equal(streams[0].recState, 'deleted');
+    assert.deepEqual((await call('GET', '/api/shop/live/home')).json.replays, []);
+    const live = await call('POST', '/api/shop/live/creator/streams/start', { phone: PHONE, title: 'Идёт', skus: ['1'] });
+    assert.equal((await call('DELETE', `/api/shop-admin/live/streams/${live.json.id}/replay`, undefined, true)).status, 409);
+  });
+});

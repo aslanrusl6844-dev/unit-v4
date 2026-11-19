@@ -8,13 +8,13 @@ import { normalizePhone } from './shop.routes';
 import { isR2Configured, r2CompleteChunks, r2PutChunk, StorageUnavailableError } from '../services/mediaStorage.service';
 import {
   AGORA_APP_ID, activeCreatorByPhone, bannerDto, notifyFollowers, activeLiveCategories, agoraConfigured, agoraToken, catsFor, cleanSkus, closeStaleStreams, creatorNames, isOnAir,
-  newChannel, parseSkus, resolveReplays, shopCategoryBySku, soldBySku, startRecording, stopRecording, streamDto, topBySales, videoDto, viewersOf,
+  newChannel, parseSkus, replayPrefix, resolveReplays, shopCategoryBySku, soldBySku, startRecording, stopRecording, streamDto, topBySales, videoDto, viewersOf,
 } from '../services/live.service';
 import { SHOP_CATEGORIES } from '../config/shopCategories';
 import {
   DAILY_FREE_COINS, activeGifts, chatDto, chatEvent, cleanName, coinsLeft, creatorGiftCoins, eventAllowed, giftDto, topGifters,
 } from '../services/liveGifts.service';
-import { uploadPublicFile } from '../services/mediaStorage.service';
+import { r2DeletePrefix, uploadPublicFile } from '../services/mediaStorage.service';
 import { creatorPage, listCreators } from '../services/liveCreators.service';
 
 /**
@@ -687,6 +687,22 @@ liveAdminRouter.get('/streams', async (_req, res) => {
   const rows = await prisma.liveStream.findMany({ orderBy: { createdAt: 'desc' }, take: 100 });
   const names = await creatorNames(rows.map((r: any) => r.creatorId));
   res.json(rows.map((s: any) => ({ ...streamDto(s, names.get(s.creatorId) ?? ''), peakViewers: s.peakViewers })));
+});
+
+/** Удалить повтор эфира: файлы записи в R2 (папка live/<id>/) и сам повтор из приложения. */
+liveAdminRouter.delete('/streams/:id/replay', async (req, res) => {
+  const s = await prisma.liveStream.findUnique({ where: { id: req.params.id } });
+  if (!s) return res.status(404).json({ error: 'Эфир не найден' });
+  if (s.status === 'live') return res.status(409).json({ error: 'Эфир ещё идёт — сначала остановите его' });
+  try {
+    const removed = await r2DeletePrefix(replayPrefix(s.id).join('/') + '/');
+    // recState 'deleted' — чтобы поиск повторов не вернул ссылку обратно.
+    await prisma.liveStream.update({ where: { id: s.id }, data: { replayUrl: null, recState: 'deleted' } });
+    res.json({ ok: true, removed });
+  } catch (err) {
+    logger.error({ err }, '[Live] удаление повтора упало');
+    res.status(500).json({ error: 'Не удалось удалить файлы в R2' });
+  }
 });
 
 /** Остановить эфир из админки (нарушение правил). */
