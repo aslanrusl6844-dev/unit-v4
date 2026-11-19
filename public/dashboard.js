@@ -11211,12 +11211,13 @@ function renderMmLiveStreams(thead, tbody, allRows) {
       </div>
       <p class="panel__hint" style="margin:6px 0 0">«Удалить повторы» — стирает только запись (R2), эфир остаётся в списке. «Целиком» — эфир, запись, чат и напоминания пропадут и из админки, и из приложения. Идущий эфир сначала остановите.</p>
     </td></tr>`;
-  tbody.innerHTML = toolbar
+  tbody.innerHTML = `<tr><td colspan="${cols}" id="mmAgoraUsage" style="background:#fff7ec">Загружаю расход минут Agora…</td></tr>` + toolbar
     + section('live', '🔴 Сейчас в эфире', live, 'Сейчас никто не в эфире')
     + section('upcoming', '📅 Анонсы', upcoming, 'Анонсов нет')
     + section('ended', '✅ Завершённые', ended, 'Завершённых эфиров нет')
     + section('all', '📋 Все эфиры', rows, mmLiveStreamCat ? 'В этой вкладке эфиров нет' : 'Эфиров пока не было');
 
+  mmLoadAgoraUsage();
   const lists = { live, upcoming, ended, all: rows };
   tbody.querySelectorAll('[data-stream-cat]').forEach((b) => b.addEventListener('click', () => { mmLiveStreamCat = b.dataset.streamCat; renderMmCreators(); }));
   tbody.querySelectorAll('[data-stream-sel]').forEach((cb) => cb.addEventListener('change', () => {
@@ -11267,4 +11268,49 @@ function renderMmLiveStreams(thead, tbody, allRows) {
       loadMmCreators();
     } catch (err) { alert(err.message); }
   }));
+}
+
+
+// ---- Расход минут Agora: бесплатные 10 000 в месяц, сколько потрачено, примерно сколько должны ----
+let mmAgoraUsageCache = null;
+const MM_USD_KZT = 520; // примерный курс для подсказки в тенге
+
+async function mmLoadAgoraUsage(force = false) {
+  const el = document.getElementById('mmAgoraUsage');
+  if (!el) return;
+  try {
+    if (!mmAgoraUsageCache || force) mmAgoraUsageCache = await api('/shop-admin/live/agora-usage');
+    const u = mmAgoraUsageCache;
+    const box = document.getElementById('mmAgoraUsage');
+    if (!box) return;
+    if (!u.configured) { box.innerHTML = '<b>Agora:</b> нет ключей AGORA_CUSTOMER_ID / AGORA_CUSTOMER_SECRET — расход посмотреть нельзя.'; return; }
+    if (u.error) { box.innerHTML = `<b>Agora:</b> не удалось получить расход — ${mmEsc(u.error)}`; return; }
+    const n = (x) => Number(x || 0).toLocaleString('ru-RU');
+    const usedFree = u.freeMinutes - u.freeLeft;
+    const pct = Math.min(100, Math.round((usedFree / u.freeMinutes) * 100));
+    const monthName = new Date(`${u.month}-01T00:00:00Z`).toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' });
+    const parts = [
+      u.minutes.hd && `HD-видео ${n(u.minutes.hd)}`,
+      u.minutes.fullHd && `Full HD ${n(u.minutes.fullHd)}`,
+      u.minutes.audio && `только звук ${n(u.minutes.audio)}`,
+      (u.minutes.k2 + u.minutes.k4) && `2K/4K ${n(u.minutes.k2 + u.minutes.k4)}`,
+    ].filter(Boolean).join(' · ');
+    box.innerHTML = `
+      <div style="display:flex;flex-wrap:wrap;gap:18px;align-items:flex-end">
+        <div><div style="font-size:12px;color:var(--text-faint)">Agora · ${mmEsc(monthName)}</div><b style="font-size:20px">${n(u.minutes.total)} мин</b> <span style="color:var(--text-faint)">эфиры (ведущие + зрители)</span></div>
+        <div><div style="font-size:12px;color:var(--text-faint)">Запись повторов</div><b style="font-size:20px">${n(u.recording.total)} мин</b></div>
+        <div><div style="font-size:12px;color:var(--text-faint)">Бесплатно осталось</div><b style="font-size:20px;color:${u.freeLeft ? 'var(--accent)' : 'var(--loss)'}">${n(u.freeLeft)}</b> <span style="color:var(--text-faint)">из ${n(u.freeMinutes)}</span></div>
+        <div><div style="font-size:12px;color:var(--text-faint)">К оплате за месяц (примерно)</div><b style="font-size:20px;color:${u.costUsd > 0 ? 'var(--loss)' : 'inherit'}">$${u.costUsd.toFixed(2)}</b> <span style="color:var(--text-faint)">≈ ${n(Math.round(u.costUsd * MM_USD_KZT))} ₸</span></div>
+        <button class="link-btn" id="mmAgoraRefresh">обновить</button>
+      </div>
+      <div style="height:6px;background:#eee;border-radius:3px;margin-top:8px;overflow:hidden"><div style="height:100%;width:${pct}%;background:${pct >= 90 ? 'var(--loss)' : pct >= 70 ? '#e6a700' : 'var(--accent)'}"></div></div>
+      <div style="font-size:12px;color:var(--text-faint);margin-top:6px">
+        ${parts ? `Минуты: ${parts}. ` : ''}Данные Agora за ${mmEsc(u.from)} — ${mmEsc(u.to)} (UTC), обновляются с задержкой до суток.
+        Сумма — оценка по прайсу Agora (10 000 мин бесплатно, HD $3.99, запись HD $5.99 за 1 000 мин); точный счёт — в консоли Agora → Billing.
+      </div>`;
+    document.getElementById('mmAgoraRefresh')?.addEventListener('click', () => mmLoadAgoraUsage(true));
+  } catch (err) {
+    const box = document.getElementById('mmAgoraUsage');
+    if (box) box.textContent = `Agora: ошибка — ${err.message}`;
+  }
 }
