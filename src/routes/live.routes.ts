@@ -8,7 +8,7 @@ import { normalizePhone } from './shop.routes';
 import { isR2Configured, r2CompleteChunks, r2PutChunk, StorageUnavailableError } from '../services/mediaStorage.service';
 import {
   AGORA_APP_ID, activeCreatorByPhone, bannerDto, notifyFollowers, activeLiveCategories, agoraConfigured, agoraToken, catsFor, cleanSkus, closeStaleStreams, creatorNames, isOnAir,
-  deleteReplay, deleteStream, newChannel, parseSkus, purgeExpiredReplays, resolveReplays, shopCategoryBySku, soldBySku, startRecording, stopRecording, streamDto, topBySales, videoDto, viewersOf,
+  checkCreatorSkus, deleteReplay, deleteStream, isSeller, newChannel, sellerSkus, parseSkus, purgeExpiredReplays, resolveReplays, shopCategoryBySku, soldBySku, startRecording, stopRecording, streamDto, topBySales, videoDto, viewersOf,
 } from '../services/live.service';
 import { SHOP_CATEGORIES } from '../config/shopCategories';
 import {
@@ -512,6 +512,8 @@ liveRouter.post('/creator/videos', async (req, res) => {
   const creator = phone ? await activeCreatorByPhone(phone) : null;
   if (!creator) return res.status(403).json({ error: 'Загружать видео могут только креаторы' });
   const contentType = VIDEO_TYPES.includes(d.contentType) ? d.contentType : 'video/mp4';
+  const skuErr = await checkCreatorSkus(creator, cleanSkus(d.skus));
+  if (skuErr) return res.status(400).json({ error: skuErr });
   try {
     const r = await r2CompleteChunks(`live-${d.uploadId}`, d.total, d.filename, contentType, MAX_VIDEO_BYTES);
     const video = await prisma.creatorVideo.create({
@@ -540,7 +542,10 @@ liveRouter.get('/creator/mine', async (req, res) => {
       prisma.liveFollow.findMany({ where: { creatorId: creator.id }, select: { id: true }, take: 100000 }),
     ]);
     res.json({
-      profile: { name: creator.name, avatarUrl: (creator as any).avatarUrl ?? '', giftCoins: gifts.get(creator.id) ?? 0, followers: followers.length },
+      profile: {
+        name: creator.name, avatarUrl: (creator as any).avatarUrl ?? '', giftCoins: gifts.get(creator.id) ?? 0, followers: followers.length,
+        kind: (creator as any).kind ?? 'creator', companyName: (creator as any).companyName ?? '',
+      },
       videos: videos.map((v: any) => videoDto(v, creator.name)),
       streams: streams.map((s: any) => streamDto(s, creator.name)),
     });
@@ -548,6 +553,14 @@ liveRouter.get('/creator/mine', async (req, res) => {
     logger.error({ err }, '[Live] /creator/mine упал');
     res.status(500).json({ error: 'Ошибка' });
   }
+});
+
+/** Какие товары креатор может взять в эфир: продавец — только свои (skus), креатор — все товары приложения (all). */
+liveRouter.get('/creator/products', async (req, res) => {
+  const creator = await activeCreatorByPhone(phoneOf(req.query.phone) ?? '');
+  if (!creator) return res.status(403).json({ error: 'Только для креаторов' });
+  if (!isSeller(creator)) return res.json({ kind: 'creator', all: true, skus: [] });
+  res.json({ kind: 'seller', all: false, companyName: (creator as any).companyName ?? '', skus: await sellerSkus(creator.id) });
 });
 
 /** Фото креатора (аватар в эфире): тело — картинка (jpeg/png/webp) до 3 МБ, ?phone=. */
@@ -594,6 +607,8 @@ liveRouter.post('/creator/streams/schedule', async (req, res) => {
   if (!creator) return res.status(403).json({ error: 'Только для креаторов' });
   const at = new Date(parsed.data.scheduledAt);
   if (at.getTime() < Date.now() - 5 * 60_000) return res.status(400).json({ error: 'Время эфира уже прошло' });
+  const skuErr = await checkCreatorSkus(creator, cleanSkus(parsed.data.skus));
+  if (skuErr) return res.status(400).json({ error: skuErr });
   const s = await prisma.liveStream.create({
     data: { creatorId: creator.id, title: parsed.data.title, channel: newChannel(), status: 'scheduled', skus: JSON.stringify(cleanSkus(parsed.data.skus)), scheduledAt: at },
   });
@@ -622,6 +637,8 @@ liveRouter.post('/creator/streams/start', async (req, res) => {
     } else {
       const parsed = streamSchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ error: 'Укажите название и хотя бы один товар' });
+      const skuErr = await checkCreatorSkus(creator, cleanSkus(parsed.data.skus));
+      if (skuErr) return res.status(400).json({ error: skuErr });
       // Один эфир за раз: прошлый «висящий» закрываем.
       const prev: any[] = await prisma.liveStream.findMany({ where: { creatorId: creator.id, status: 'live' } });
       for (const p of prev) {

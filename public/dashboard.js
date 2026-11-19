@@ -10708,7 +10708,7 @@ function renderMmCreators() {
   if (mmCreatorTab === 'streams') { renderMmLiveStreams(thead, tbody, rows); return; }
 
   if (mmCreatorTab === 'creators') {
-    thead.innerHTML = '<tr><th>Имя</th><th>Телефон</th><th>Код</th><th>Процент с продаж</th><th>Статус</th><th>Видео без проверки</th><th>Раздел в Live</th><th>Рекомендовать</th><th class="num">Подарки, монет</th><th>С какого числа</th></tr>';
+    thead.innerHTML = '<tr><th>Имя</th><th>Телефон</th><th>Код</th><th>Процент с продаж</th><th>Статус</th><th>Видео без проверки</th><th>Тип</th><th>Раздел в Live</th><th>Рекомендовать</th><th class="num">Подарки, монет</th><th>С какого числа</th></tr>';
     tbody.innerHTML = rows.length ? rows.map((c) => `
       <tr>
         <td style="white-space:nowrap">${c.avatarUrl ? `<img src="${mmEsc(c.avatarUrl)}" alt="" style="width:28px;height:28px;border-radius:50%;object-fit:cover;vertical-align:middle;margin-right:6px" />` : ''}${mmEsc(c.name)}</td>
@@ -10723,6 +10723,16 @@ function renderMmCreators() {
           <button class="link-btn" data-creator-toggle="${c.id}" data-active="${c.active ? '1' : '0'}">${c.active ? 'Выключить' : 'Включить'}</button>
         </td>
         <td><label style="cursor:pointer"><input type="checkbox" data-creator-auto="${c.id}" ${c.autoPublish ? 'checked' : ''} /> сразу в ленту</label></td>
+        <td style="min-width:170px">
+          <select data-creator-kind="${c.id}">
+            <option value="creator" ${c.kind !== 'seller' ? 'selected' : ''}>Креатор (любые товары)</option>
+            <option value="seller" ${c.kind === 'seller' ? 'selected' : ''}>Продавец ИП/ТОО (свои товары)</option>
+          </select>
+          ${c.kind === 'seller' ? `
+            <div style="font-size:12px;margin-top:4px">${mmEsc(c.companyName || 'Название не указано')}${c.bin ? ` · БИН ${mmEsc(c.bin)}` : ''}
+              <button class="link-btn" data-seller-edit="${c.id}">изменить</button></div>
+            <button class="btn btn--ghost" data-seller-products="${c.id}" style="padding:3px 10px;margin-top:4px">Товары продавца (${c.productsCount || 0})</button>` : ''}
+        </td>
         <td>
           <select data-creator-cat="${c.id}" style="max-width:170px">
             <option value="">— сам по товарам —</option>
@@ -10732,7 +10742,7 @@ function renderMmCreators() {
         <td><label style="cursor:pointer"><input type="checkbox" data-creator-featured="${c.id}" ${c.featured ? 'checked' : ''} /> в топ</label></td>
         <td class="num">${c.giftCoins ?? 0}</td>
         <td>${mmCreatorDate(c.createdAt)}</td>
-      </tr>`).join('') : '<tr><td colspan="10" style="color:var(--text-faint)">Креаторов пока нет</td></tr>';
+      </tr>`).join('') : '<tr><td colspan="11" style="color:var(--text-faint)">Креаторов пока нет</td></tr>';
   } else {
     const pending = mmCreatorTab === 'pending';
     thead.innerHTML = `<tr><th>Дата</th><th>Имя</th><th>Телефон</th><th>Город</th><th>Формат</th><th>Подписчики</th><th>Пробное видео</th><th></th><th>${pending ? 'Решение' : 'Причина'}</th></tr>`;
@@ -10794,6 +10804,35 @@ function renderMmCreators() {
       document.getElementById('mmCreatorStatus').textContent = `Процент сохранён: ${percent}%`;
       loadMmCreators();
     } catch (err) { alert(err.message); }
+  }));
+  tbody.querySelectorAll('[data-creator-kind]').forEach((sel) => sel.addEventListener('change', async () => {
+    const id = sel.dataset.creatorKind;
+    const body = { kind: sel.value };
+    if (sel.value === 'seller') {
+      const c = mmCreatorRows.find((x) => x.id === id) || {};
+      const company = prompt('Название продавца (например, «ИП Иванов» или «ТОО Ромашка»):', c.companyName || '');
+      if (company === null) { sel.value = 'creator'; return; }
+      const bin = prompt('ИИН/БИН продавца (12 цифр):', c.bin || '');
+      if (bin === null) { sel.value = 'creator'; return; }
+      body.companyName = company; body.bin = bin;
+    }
+    try {
+      await api(`/shop-admin/creators/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
+      document.getElementById('mmCreatorStatus').textContent = sel.value === 'seller' ? 'Теперь это продавец: в эфире — только его товары. Закрепите за ним товары кнопкой «Товары продавца».' : 'Теперь это креатор: в эфире — любые товары приложения';
+      loadMmCreators();
+    } catch (err) { alert(err.message); loadMmCreators(); }
+  }));
+  tbody.querySelectorAll('[data-seller-edit]').forEach((b) => b.addEventListener('click', async () => {
+    const c = mmCreatorRows.find((x) => x.id === b.dataset.sellerEdit) || {};
+    const company = prompt('Название продавца:', c.companyName || '');
+    if (company === null) return;
+    const bin = prompt('ИИН/БИН (12 цифр):', c.bin || '');
+    if (bin === null) return;
+    try { await api(`/shop-admin/creators/${c.id}`, { method: 'PATCH', body: JSON.stringify({ companyName: company, bin }) }); loadMmCreators(); } catch (err) { alert(err.message); }
+  }));
+  tbody.querySelectorAll('[data-seller-products]').forEach((b) => b.addEventListener('click', () => {
+    const c = mmCreatorRows.find((x) => x.id === b.dataset.sellerProducts);
+    if (c) mmOpenSellerProducts(c);
   }));
   tbody.querySelectorAll('[data-creator-cat]').forEach((b) => b.addEventListener('change', async () => {
     try {
@@ -11313,4 +11352,55 @@ async function mmLoadAgoraUsage(force = false) {
     const box = document.getElementById('mmAgoraUsage');
     if (box) box.textContent = `Agora: ошибка — ${err.message}`;
   }
+}
+
+
+/** Окно «Товары продавца»: какие товары каталога его (в эфире и шортс он берёт только их). */
+async function mmOpenSellerProducts(c) {
+  document.getElementById('mmSellerModal')?.remove();
+  const wrap = document.createElement('div');
+  wrap.id = 'mmSellerModal';
+  wrap.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  wrap.innerHTML = `
+    <div style="background:var(--surface,#fff);border-radius:14px;padding:16px;max-width:720px;width:100%;max-height:90vh;display:flex;flex-direction:column;gap:10px">
+      <div style="display:flex;align-items:center;gap:8px">
+        <b style="flex:1">Товары продавца: ${mmEsc(c.companyName || c.name)}</b>
+        <button id="mmSellerClose" style="background:none;border:0;font-size:22px;cursor:pointer">✕</button>
+      </div>
+      <p class="panel__hint" style="margin:0">Вставьте артикулы My Market (7 цифр) или SKU — через запятую, пробел или с новой строки. В эфире и шортс продавец сможет выбрать только эти товары.</p>
+      <textarea id="mmSellerCodes" rows="3" placeholder="3092392, 3092393…" style="width:100%"></textarea>
+      <div style="display:flex;gap:8px"><button class="btn" id="mmSellerAdd">Закрепить за продавцом</button><span id="mmSellerMsg" style="font-size:12px;align-self:center"></span></div>
+      <div id="mmSellerList" style="overflow:auto;flex:1;border-top:1px solid var(--border,#eee);padding-top:8px">Загружаю…</div>
+    </div>`;
+  document.body.appendChild(wrap);
+  const close = () => { wrap.remove(); loadMmCreators(); };
+  wrap.addEventListener('click', (e) => { if (e.target === wrap) close(); });
+  document.getElementById('mmSellerClose').addEventListener('click', close);
+  const load = async () => {
+    const list = document.getElementById('mmSellerList');
+    try {
+      const rows = await api(`/shop-admin/creators/${c.id}/products`);
+      list.innerHTML = rows.length ? `<div style="font-size:12px;color:var(--text-faint);margin-bottom:6px">Закреплено: ${rows.length}</div>` + rows.map((p) => `
+        <div style="display:flex;align-items:center;gap:8px;padding:4px 0">
+          ${p.image ? `<img src="${mmEsc(p.image)}" style="width:32px;height:32px;object-fit:cover;border-radius:6px" />` : ''}
+          <span style="flex:1">${mmEsc(p.name)}<br><span style="font-size:11px;color:var(--text-faint)">${mmEsc(p.article || p.sku)} · ${mmEsc(p.category)} · ${Number(p.price || 0).toLocaleString('ru-RU')} ₸${p.active ? '' : ' · не в продаже'}</span></span>
+          <button class="link-btn" data-seller-unlink="${mmEsc(p.sku)}" style="color:var(--loss)">убрать</button>
+        </div>`).join('') : '<span style="color:var(--text-faint)">Товаров пока нет</span>';
+      list.querySelectorAll('[data-seller-unlink]').forEach((b) => b.addEventListener('click', async () => {
+        try { await api(`/shop-admin/creators/${c.id}/products`, { method: 'POST', body: JSON.stringify({ codes: [b.dataset.sellerUnlink], mode: 'remove' }) }); load(); } catch (err) { alert(err.message); }
+      }));
+    } catch (err) { list.textContent = `Ошибка: ${err.message}`; }
+  };
+  document.getElementById('mmSellerAdd').addEventListener('click', async () => {
+    const codes = document.getElementById('mmSellerCodes').value.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean);
+    if (!codes.length) return;
+    const msg = document.getElementById('mmSellerMsg');
+    try {
+      const r = await api(`/shop-admin/creators/${c.id}/products`, { method: 'POST', body: JSON.stringify({ codes, mode: 'add' }) });
+      msg.textContent = `Закреплено: ${r.changed}` + (r.notFound.length ? ` · не найдены: ${r.notFound.join(', ')}` : '') + (r.busy.length ? ` · уже у другого продавца: ${r.busy.length}` : '');
+      document.getElementById('mmSellerCodes').value = '';
+      load();
+    } catch (err) { msg.textContent = `Ошибка: ${err.message}`; }
+  });
+  load();
 }

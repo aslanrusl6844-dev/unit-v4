@@ -255,6 +255,9 @@ model Product {
   @@index([kaspiSku])
   @@index([ozonOfferId])
   @@index([teezSku])
+  sellerId    String?  // продавец маркетплейса (Creator.id, kind=seller); пусто — товар My Market
+
+  @@index([sellerId])
 }
 
 // История изменений цены автоботом — чтобы видеть, что и когда происходило.
@@ -1214,6 +1217,9 @@ model Creator {
   avatarUrl     String?  // фото креатора в эфире (как в Инстаграме), загружает сам в кабинете
   category      String?  // раздел креатора («Красота и здоровье»); пусто — считается по его товарам
   featured      Boolean  @default(false) // «Рекомендовать»: первым в топе креаторов Live
+  kind          String   @default("creator") // creator — любые товары приложения за процент; seller — продавец ИП/ТОО, в эфире только свои товары
+  companyName   String?  // продавец: «ИП Иванов» / «ТОО Ромашка»
+  bin           String?  // продавец: ИИН/БИН
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 }
