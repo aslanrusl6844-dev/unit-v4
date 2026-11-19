@@ -63,6 +63,20 @@ export async function r2ListKeys(prefix: string): Promise<string[]> {
   return (r.Contents ?? []).map((o) => o.Key ?? '').filter(Boolean);
 }
 
+/** Удалить все объекты R2 в «папке» (например, запись эфира live/<id>/). Возвращает сколько удалено. */
+export async function r2DeletePrefix(prefix: string): Promise<number> {
+  if (!isR2Configured() || !prefix.endsWith('/') || prefix.length < 4) return 0;
+  let total = 0;
+  for (let round = 0; round < 20; round++) {
+    const keys = await r2ListKeys(prefix);
+    if (!keys.length) break;
+    await r2Client().send(new DeleteObjectsCommand({ Bucket: env.r2.bucket, Delete: { Objects: keys.map((Key) => ({ Key })), Quiet: true } }));
+    total += keys.length;
+    if (keys.length < 1000) break;
+  }
+  return total;
+}
+
 /** Публичная ссылка на объект R2: `${R2_PUBLIC_URL}/${pathname}` — она и сохраняется в базу. */
 export function r2PublicUrl(pathname: string): string {
   return `${env.r2.publicUrl}/${pathname.split('/').map(encodeURIComponent).join('/')}`;

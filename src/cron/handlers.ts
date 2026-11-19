@@ -68,6 +68,12 @@ export async function runRekassaShiftClose() {
   return closeRekassaShift();
 }
 
+/** Удалить повторы эфиров с вышедшим сроком хранения (R2 + приложение). */
+export async function runReplayPurge() {
+  const { purgeExpiredReplays } = await import('../services/live.service');
+  return purgeExpiredReplays(200);
+}
+
 /** Озон-менеджер: утренний / вечерний отчёт владельцу в Telegram. */
 export async function runOzonBotReport(kind: 'morning' | 'evening') {
   const { sendOzonBotReport } = await import('../routes/ozonBot.routes');

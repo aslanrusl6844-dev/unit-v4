@@ -1262,6 +1262,7 @@ model LiveStream {
   recSid        String?
   recState      String?   // recording | stopped | failed
   replayUrl     String?
+  replayUntil   DateTime? // повтор хранится до этой даты, потом удаляется сам (R2 + приложение); пусто — навсегда
   likes         Int       @default(0) // ♥ эфира/повтора
   views         Int       @default(0) // открытия повтора
   createdAt    DateTime  @default(now())

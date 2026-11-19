@@ -6,7 +6,7 @@ import { randomBytes } from 'crypto';
 import { RtcRole, RtcTokenBuilder } from 'agora-token';
 import { prisma } from '../db/prisma';
 import { env } from '../config/env';
-import { isR2Configured, r2ListKeys, r2PublicUrl } from './mediaStorage.service';
+import { isR2Configured, r2DeletePrefix, r2ListKeys, r2PublicUrl } from './mediaStorage.service';
 import { logger } from '../utils/logger';
 
 /** App ID проекта Agora не секрет (он и так есть в приложении); сертификат — только в переменных Vercel. */
@@ -346,4 +346,28 @@ export function topBySales(
     .sort((a, b) => b.sold - a.sold || b.views - a.views)
     .slice(0, limit)
     .map(({ kind, id, sold: n }) => ({ kind, id, sold: n }));
+}
+
+// ---------------------------------------------------------------------------
+// Срок хранения повторов: выбирается в админке (7 / 10 / 30 дней или навсегда).
+// ---------------------------------------------------------------------------
+
+/** Удалить повтор: файлы записи в R2 и ссылку в приложении. recState 'deleted' — поиск повторов не вернёт её. */
+export async function deleteReplay(streamId: string): Promise<number> {
+  const removed = await r2DeletePrefix(replayPrefix(streamId).join('/') + '/');
+  await prisma.liveStream.update({ where: { id: streamId }, data: { replayUrl: null, recState: 'deleted', replayUntil: null } });
+  return removed;
+}
+
+/** Удалить повторы, у которых вышел срок хранения. */
+export async function purgeExpiredReplays(limit = 20, now = Date.now()): Promise<number> {
+  const rows: any[] = await prisma.liveStream.findMany({
+    where: { replayUrl: { not: null }, replayUntil: { lte: new Date(now) } },
+    take: limit,
+  });
+  let n = 0;
+  for (const s of rows) {
+    try { await deleteReplay(s.id); n++; } catch (err: any) { logger.warn({ err: String(err?.message ?? err) }, '[Live] автоудаление повтора'); }
+  }
+  return n;
 }
