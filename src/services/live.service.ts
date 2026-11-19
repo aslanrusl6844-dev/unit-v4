@@ -371,3 +371,15 @@ export async function purgeExpiredReplays(limit = 20, now = Date.now()): Promise
   }
   return n;
 }
+
+/** Удалить эфир целиком: запись в R2, чат, лайки, напоминания и сам эфир (из приложения и админки). Идущий — нельзя. */
+export async function deleteStream(streamId: string): Promise<boolean> {
+  const s = await prisma.liveStream.findUnique({ where: { id: streamId } });
+  if (!s || s.status === 'live') return false;
+  await r2DeletePrefix(replayPrefix(s.id).join('/') + '/').catch(() => 0);
+  await prisma.liveChatMessage.deleteMany({ where: { streamId: s.id } });
+  await prisma.liveReminder.deleteMany({ where: { streamId: s.id } });
+  await prisma.creatorVideoLike.deleteMany({ where: { videoId: `s:${s.id}` } });
+  await prisma.liveStream.delete({ where: { id: s.id } });
+  return true;
+}

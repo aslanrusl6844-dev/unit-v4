@@ -10638,7 +10638,11 @@ async function loadMmCreators() {
     }
     else if (mmCreatorTab === 'videos') mmCreatorRows = await api('/shop-admin/live/videos?status=pending');
     else if (mmCreatorTab === 'published') mmCreatorRows = await api('/shop-admin/live/videos?status=published');
-    else if (mmCreatorTab === 'streams') mmCreatorRows = await api('/shop-admin/live/streams');
+    else if (mmCreatorTab === 'streams') {
+      const r = await api('/shop-admin/live/streams');
+      mmCreatorRows = Array.isArray(r) ? r : r.items;
+      mmLiveStreamCats = Array.isArray(r) ? [] : (r.categories || []);
+    }
     else if (mmCreatorTab === 'livebanners') mmCreatorRows = (await api('/shop-admin/live/banners')).items;
     else if (mmCreatorTab === 'livegifts') {
       const [g, c] = await Promise.all([api('/shop-admin/live/gifts'), api('/shop-admin/live/gifts/creators')]);
@@ -10701,60 +10705,7 @@ function renderMmCreators() {
   if (mmCreatorTab === 'livebanners') { renderMmLiveBanners(thead, tbody); return; }
   if (mmCreatorTab === 'livegifts') { renderMmLiveGifts(thead, tbody); return; }
 
-  if (mmCreatorTab === 'streams') {
-    const label = { live: '<span style="color:var(--loss);font-weight:700">● В эфире</span>', scheduled: 'Анонс', ended: 'Завершён' };
-    thead.innerHTML = '<tr><th>Креатор</th><th>Название</th><th>Статус</th><th>Начало / анонс</th><th>Окончание</th><th class="num">Пик зрителей</th><th>Повтор</th><th></th></tr>';
-    tbody.innerHTML = rows.length ? rows.map((s) => `
-      <tr>
-        <td>${mmEsc(s.creatorName)}</td>
-        <td>${mmEsc(s.title)}<br><span style="color:var(--text-faint);font-size:11px">ID: <code>${mmEsc(s.id)}</code></span></td>
-        <td>${label[s.status] || mmEsc(s.status)}</td>
-        <td>${s.startedAt ? new Date(s.startedAt).toLocaleString('ru-RU') : s.scheduledAt ? new Date(s.scheduledAt).toLocaleString('ru-RU') : '—'}</td>
-        <td>${s.endedAt ? new Date(s.endedAt).toLocaleString('ru-RU') : '—'}</td>
-        <td class="num">${s.peakViewers ?? 0}</td>
-        <td style="white-space:nowrap">${s.replayUrl ? `
-          <button class="btn btn--ghost" data-stream-watch="${s.id}" style="padding:4px 10px">▶ Смотреть</button>
-          <span style="color:var(--text-faint);font-size:12px">${s.views ?? 0} просм.</span>
-          <div style="margin-top:4px">
-            <select data-stream-keep="${s.id}" style="font-size:12px">
-              ${s.replayUntil ? `<option value="" selected disabled>Хранить до ${new Date(s.replayUntil).toLocaleDateString('ru-RU')}</option>` : ''}
-              ${[[0, 'Хранить всегда'], [7, 'Хранить 7 дней'], [10, 'Хранить 10 дней'], [30, 'Хранить 30 дней']].map(([d, t]) => `<option value="${d}" ${!s.replayUntil && d === 0 ? 'selected' : ''}>${t}</option>`).join('')}
-            </select>
-            <div style="font-size:11px;color:${s.replayUntil ? 'var(--loss)' : 'var(--text-faint)'}">${s.replayUntil ? `удалится ${new Date(s.replayUntil).toLocaleDateString('ru-RU')}` : 'хранится всегда'}</div>
-          </div>` : (s.status === 'ended' ? '<span style="color:var(--text-faint)">нет</span>' : '—')}</td>
-        <td style="white-space:nowrap">
-          ${s.status !== 'ended' ? `<button class="link-btn" data-stream-stop="${s.id}" style="color:var(--loss)">Остановить</button>` : ''}
-          ${s.replayUrl ? `<button class="link-btn" data-stream-delreplay="${s.id}" style="color:var(--loss)">Удалить повтор</button>` : ''}
-        </td>
-      </tr>`).join('') : '<tr><td colspan="8" style="color:var(--text-faint)">Эфиров пока не было</td></tr>';
-    tbody.querySelectorAll('[data-stream-watch]').forEach((b) => b.addEventListener('click', () => {
-      const st = rows.find((x) => x.id === b.dataset.streamWatch);
-      if (st) mmOpenReplayPlayer(st);
-    }));
-    tbody.querySelectorAll('[data-stream-keep]').forEach((sel) => {
-      sel.addEventListener('change', async () => {
-        const days = Number(sel.value);
-        try {
-          await api(`/shop-admin/live/streams/${sel.dataset.streamKeep}/replay`, { method: 'PATCH', body: JSON.stringify({ days }) });
-          document.getElementById('mmCreatorStatus').textContent = days ? `Повтор удалится через ${days} дн. — сам, из R2 и из приложения` : 'Повтор хранится всегда';
-          loadMmCreators();
-        } catch (err) { alert(err.message); }
-      });
-    });
-    tbody.querySelectorAll('[data-stream-delreplay]').forEach((b) => b.addEventListener('click', async () => {
-      if (!confirm('Удалить повтор? Запись сотрётся из R2 и пропадёт из приложения. Вернуть будет нельзя.')) return;
-      try {
-        const r = await api(`/shop-admin/live/streams/${b.dataset.streamDelreplay}/replay`, { method: 'DELETE' });
-        document.getElementById('mmCreatorStatus').textContent = `Повтор удалён (файлов в R2: ${r.removed})`;
-        loadMmCreators();
-      } catch (err) { alert(err.message); }
-    }));
-    tbody.querySelectorAll('[data-stream-stop]').forEach((b) => b.addEventListener('click', async () => {
-      if (!confirm('Остановить эфир?')) return;
-      try { await api(`/shop-admin/live/streams/${b.dataset.streamStop}/stop`, { method: 'POST', body: '{}' }); loadMmCreators(); } catch (err) { alert(err.message); }
-    }));
-    return;
-  }
+  if (mmCreatorTab === 'streams') { renderMmLiveStreams(thead, tbody, rows); return; }
 
   if (mmCreatorTab === 'creators') {
     thead.innerHTML = '<tr><th>Имя</th><th>Телефон</th><th>Код</th><th>Процент с продаж</th><th>Статус</th><th>Видео без проверки</th><th>Раздел в Live</th><th>Рекомендовать</th><th class="num">Подарки, монет</th><th>С какого числа</th></tr>';
@@ -11194,4 +11145,126 @@ function mmOpenReplayPlayer(st) {
       loadMmCreators();
     } catch (err) { alert(err.message); }
   });
+}
+
+
+// ---- Эфиры в админке: фильтр по вкладкам-категориям (как в приложении), разделы, массовое удаление ----
+let mmLiveStreamCats = [];
+let mmLiveStreamCat = '';
+const mmStreamSel = new Set();
+
+function renderMmLiveStreams(thead, tbody, allRows) {
+  const rows = mmLiveStreamCat ? allRows.filter((s) => (s.cats || []).includes(mmLiveStreamCat)) : allRows;
+  const ids = new Set(allRows.map((s) => s.id));
+  for (const id of [...mmStreamSel]) if (!ids.has(id)) mmStreamSel.delete(id);
+  const live = rows.filter((s) => s.onAir);
+  const upcoming = rows.filter((s) => s.status === 'scheduled');
+  const ended = rows.filter((s) => s.status === 'ended' || (s.status === 'live' && !s.onAir));
+  const cols = 9;
+  thead.innerHTML = '<tr><th style="width:28px"></th><th>Креатор</th><th>Название</th><th>Статус</th><th>Начало / анонс</th><th>Окончание</th><th class="num">Пик зрителей</th><th>Повтор</th><th></th></tr>';
+  const fmt = (d) => (d ? new Date(d).toLocaleString('ru-RU') : '—');
+  const catTitle = (id) => (mmLiveStreamCats.find((c) => c.id === id) || {}).title || '';
+  const statusOf = (s) => (s.onAir ? '<span style="color:var(--loss);font-weight:700">● В эфире</span>' : s.status === 'scheduled' ? 'Анонс' : 'Завершён');
+  const rowHtml = (s) => `
+    <tr>
+      <td><input type="checkbox" data-stream-sel="${s.id}" ${mmStreamSel.has(s.id) ? 'checked' : ''} ${s.onAir ? 'disabled title="Идущий эфир сначала остановите"' : ''} /></td>
+      <td>${mmEsc(s.creatorName)}</td>
+      <td>${mmEsc(s.title)}${(s.cats || []).length ? `<br><span style="font-size:11px;color:var(--accent)">${s.cats.map(catTitle).filter(Boolean).map(mmEsc).join(' · ')}</span>` : ''}<br><span style="color:var(--text-faint);font-size:11px">ID: <code>${mmEsc(s.id)}</code></span></td>
+      <td>${statusOf(s)}</td>
+      <td>${s.startedAt ? fmt(s.startedAt) : fmt(s.scheduledAt)}</td>
+      <td>${fmt(s.endedAt)}</td>
+      <td class="num">${s.peakViewers ?? 0}</td>
+      <td style="white-space:nowrap">${s.replayUrl ? `
+        <button class="btn btn--ghost" data-stream-watch="${s.id}" style="padding:4px 10px">▶ Смотреть</button>
+        <span style="color:var(--text-faint);font-size:12px">${s.views ?? 0} просм.</span>
+        <div style="margin-top:4px">
+          <select data-stream-keep="${s.id}" style="font-size:12px">
+            ${s.replayUntil ? `<option value="" selected disabled>Хранить до ${new Date(s.replayUntil).toLocaleDateString('ru-RU')}</option>` : ''}
+            ${[[0, 'Хранить всегда'], [7, 'Хранить 7 дней'], [10, 'Хранить 10 дней'], [30, 'Хранить 30 дней']].map(([d, t]) => `<option value="${d}" ${!s.replayUntil && d === 0 ? 'selected' : ''}>${t}</option>`).join('')}
+          </select>
+        </div>` : (s.status === 'ended' ? '<span style="color:var(--text-faint)">нет</span>' : '—')}</td>
+      <td style="white-space:nowrap">
+        ${s.status !== 'ended' ? `<button class="link-btn" data-stream-stop="${s.id}" style="color:var(--loss)">Остановить</button>` : ''}
+        ${s.replayUrl ? `<button class="link-btn" data-stream-delreplay="${s.id}" style="color:var(--loss)">Удалить повтор</button>` : ''}
+      </td>
+    </tr>`;
+  const section = (key, title, list, empty) => `
+    <tr><td colspan="${cols}" style="background:var(--surface-2, #f6f4ef);padding-top:14px">
+      <label style="cursor:pointer;font-weight:700">
+        <input type="checkbox" data-stream-selall="${key}" ${list.filter((s) => !s.onAir).length && list.filter((s) => !s.onAir).every((s) => mmStreamSel.has(s.id)) ? 'checked' : ''} ${list.filter((s) => !s.onAir).length ? '' : 'disabled'} />
+        ${title} <span style="color:var(--text-faint);font-weight:400">(${list.length})</span>
+      </label>
+    </td></tr>
+    ${list.length ? list.map(rowHtml).join('') : `<tr><td colspan="${cols}" style="color:var(--text-faint)">${empty}</td></tr>`}`;
+  const n = mmStreamSel.size;
+  const toolbar = `
+    <tr><td colspan="${cols}">
+      <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+        <b style="margin-right:4px">Вкладка в приложении:</b>
+        ${[{ id: '', title: 'Все' }, ...mmLiveStreamCats].map((c) => `<button class="btn ${mmLiveStreamCat === c.id ? '' : 'btn--ghost'}" data-stream-cat="${mmEsc(c.id)}" style="padding:4px 12px">${mmEsc(c.title)}</button>`).join('')}
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px">
+        <span>Выбрано: <b>${n}</b></span>
+        <button class="btn btn--ghost" id="mmStreamDelReplays" ${n ? '' : 'disabled'}>Удалить повторы выбранных</button>
+        <button class="btn" id="mmStreamDelAll" ${n ? '' : 'disabled'} style="background:var(--loss);border-color:var(--loss)">Удалить выбранные эфиры целиком</button>
+        ${n ? '<button class="link-btn" id="mmStreamSelClear">снять выбор</button>' : ''}
+      </div>
+      <p class="panel__hint" style="margin:6px 0 0">«Удалить повторы» — стирает только запись (R2), эфир остаётся в списке. «Целиком» — эфир, запись, чат и напоминания пропадут и из админки, и из приложения. Идущий эфир сначала остановите.</p>
+    </td></tr>`;
+  tbody.innerHTML = toolbar
+    + section('live', '🔴 Сейчас в эфире', live, 'Сейчас никто не в эфире')
+    + section('upcoming', '📅 Анонсы', upcoming, 'Анонсов нет')
+    + section('ended', '✅ Завершённые', ended, 'Завершённых эфиров нет')
+    + section('all', '📋 Все эфиры', rows, mmLiveStreamCat ? 'В этой вкладке эфиров нет' : 'Эфиров пока не было');
+
+  const lists = { live, upcoming, ended, all: rows };
+  tbody.querySelectorAll('[data-stream-cat]').forEach((b) => b.addEventListener('click', () => { mmLiveStreamCat = b.dataset.streamCat; renderMmCreators(); }));
+  tbody.querySelectorAll('[data-stream-sel]').forEach((cb) => cb.addEventListener('change', () => {
+    if (cb.checked) mmStreamSel.add(cb.dataset.streamSel); else mmStreamSel.delete(cb.dataset.streamSel);
+    renderMmCreators();
+  }));
+  tbody.querySelectorAll('[data-stream-selall]').forEach((cb) => cb.addEventListener('change', () => {
+    for (const s of lists[cb.dataset.streamSelall].filter((x) => !x.onAir)) { if (cb.checked) mmStreamSel.add(s.id); else mmStreamSel.delete(s.id); }
+    renderMmCreators();
+  }));
+  document.getElementById('mmStreamSelClear')?.addEventListener('click', () => { mmStreamSel.clear(); renderMmCreators(); });
+  const bulk = async (mode) => {
+    const ids = [...mmStreamSel];
+    const q = mode === 'replay'
+      ? `Удалить повторы у ${ids.length} эфир(ов)? Записи сотрутся из R2 и пропадут из приложения.`
+      : `Удалить ${ids.length} эфир(ов) целиком? Пропадут из админки и приложения вместе с записью и чатом. Вернуть нельзя.`;
+    if (!confirm(q)) return;
+    try {
+      const r = await api('/shop-admin/live/streams/bulk-delete', { method: 'POST', body: JSON.stringify({ ids, mode }) });
+      document.getElementById('mmCreatorStatus').textContent = `Удалено: ${r.done}${r.skipped ? `, пропущено: ${r.skipped}` : ''}`;
+      mmStreamSel.clear();
+      loadMmCreators();
+    } catch (err) { alert(err.message); }
+  };
+  document.getElementById('mmStreamDelReplays')?.addEventListener('click', () => bulk('replay'));
+  document.getElementById('mmStreamDelAll')?.addEventListener('click', () => bulk('stream'));
+  tbody.querySelectorAll('[data-stream-stop]').forEach((b) => b.addEventListener('click', async () => {
+    if (!confirm('Остановить эфир?')) return;
+    try { await api(`/shop-admin/live/streams/${b.dataset.streamStop}/stop`, { method: 'POST', body: '{}' }); loadMmCreators(); } catch (err) { alert(err.message); }
+  }));
+  tbody.querySelectorAll('[data-stream-watch]').forEach((b) => b.addEventListener('click', () => {
+    const st = allRows.find((x) => x.id === b.dataset.streamWatch);
+    if (st) mmOpenReplayPlayer(st);
+  }));
+  tbody.querySelectorAll('[data-stream-keep]').forEach((sel) => sel.addEventListener('change', async () => {
+    const days = Number(sel.value);
+    try {
+      await api(`/shop-admin/live/streams/${sel.dataset.streamKeep}/replay`, { method: 'PATCH', body: JSON.stringify({ days }) });
+      document.getElementById('mmCreatorStatus').textContent = days ? `Повтор удалится через ${days} дн. — сам, из R2 и из приложения` : 'Повтор хранится всегда';
+      loadMmCreators();
+    } catch (err) { alert(err.message); }
+  }));
+  tbody.querySelectorAll('[data-stream-delreplay]').forEach((b) => b.addEventListener('click', async () => {
+    if (!confirm('Удалить повтор? Запись сотрётся из R2 и пропадёт из приложения. Вернуть будет нельзя.')) return;
+    try {
+      const r = await api(`/shop-admin/live/streams/${b.dataset.streamDelreplay}/replay`, { method: 'DELETE' });
+      document.getElementById('mmCreatorStatus').textContent = `Повтор удалён (файлов в R2: ${r.removed})`;
+      loadMmCreators();
+    } catch (err) { alert(err.message); }
+  }));
 }

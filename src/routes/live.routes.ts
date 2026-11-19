@@ -8,7 +8,7 @@ import { normalizePhone } from './shop.routes';
 import { isR2Configured, r2CompleteChunks, r2PutChunk, StorageUnavailableError } from '../services/mediaStorage.service';
 import {
   AGORA_APP_ID, activeCreatorByPhone, bannerDto, notifyFollowers, activeLiveCategories, agoraConfigured, agoraToken, catsFor, cleanSkus, closeStaleStreams, creatorNames, isOnAir,
-  deleteReplay, newChannel, parseSkus, purgeExpiredReplays, resolveReplays, shopCategoryBySku, soldBySku, startRecording, stopRecording, streamDto, topBySales, videoDto, viewersOf,
+  deleteReplay, deleteStream, newChannel, parseSkus, purgeExpiredReplays, resolveReplays, shopCategoryBySku, soldBySku, startRecording, stopRecording, streamDto, topBySales, videoDto, viewersOf,
 } from '../services/live.service';
 import { SHOP_CATEGORIES } from '../config/shopCategories';
 import {
@@ -685,10 +685,19 @@ liveAdminRouter.post('/videos/:id/status', async (req, res) => {
 
 liveAdminRouter.get('/streams', async (_req, res) => {
   await closeStaleStreams();
-  const rows = await prisma.liveStream.findMany({ orderBy: { createdAt: 'desc' }, take: 100 });
+  const rows = await prisma.liveStream.findMany({ orderBy: { createdAt: 'desc' }, take: 300 });
   const names = await creatorNames(rows.map((r: any) => r.creatorId));
   await purgeExpiredReplays(10).catch(() => undefined);
-  res.json(rows.map((s: any) => ({ ...streamDto(s, names.get(s.creatorId) ?? ''), peakViewers: s.peakViewers, replayUntil: s.replayUntil ?? null })));
+  // Вкладки-категории как в приложении — для фильтра в админке.
+  const cats = await activeLiveCategories();
+  const bySku = await shopCategoryBySku(rows.flatMap((r: any) => parseSkus(r.skus)));
+  res.json({
+    categories: cats.map((c) => ({ id: c.id, title: c.title })),
+    items: rows.map((s: any) => ({
+      ...streamDto(s, names.get(s.creatorId) ?? ''), peakViewers: s.peakViewers, replayUntil: s.replayUntil ?? null,
+      onAir: s.status === 'live' && isOnAir(s), cats: catsFor(parseSkus(s.skus), bySku, cats),
+    })),
+  });
 });
 
 /** Удалить повтор эфира: файлы записи в R2 (папка live/<id>/) и сам повтор из приложения. */
@@ -714,6 +723,29 @@ liveAdminRouter.patch('/streams/:id/replay', async (req, res) => {
   const replayUntil = days ? new Date(Date.now() + days * 24 * 60 * 60_000) : null;
   await prisma.liveStream.update({ where: { id: s.id }, data: { replayUntil } });
   res.json({ ok: true, replayUntil });
+});
+
+/** Удалить эфиры массово: { ids, mode: 'replay' | 'stream' }. replay — только запись; stream — эфир целиком. Идущие пропускаем. */
+liveAdminRouter.post('/streams/bulk-delete', async (req, res) => {
+  const ids: string[] = Array.isArray(req.body?.ids) ? req.body.ids.map(String).slice(0, 300) : [];
+  const mode = req.body?.mode === 'replay' ? 'replay' : 'stream';
+  if (!ids.length) return res.status(400).json({ error: 'Ничего не выбрано' });
+  let done = 0;
+  let skipped = 0;
+  for (const id of ids) {
+    try {
+      if (mode === 'stream') {
+        if (await deleteStream(id)) done++; else skipped++;
+      } else {
+        const s = await prisma.liveStream.findUnique({ where: { id } });
+        if (s && s.replayUrl && s.status !== 'live') { await deleteReplay(id); done++; } else skipped++;
+      }
+    } catch (err) {
+      logger.warn({ err: String((err as any)?.message ?? err) }, '[Live] массовое удаление');
+      skipped++;
+    }
+  }
+  res.json({ ok: true, done, skipped });
 });
 
 /** Остановить эфир из админки (нарушение правил). */
