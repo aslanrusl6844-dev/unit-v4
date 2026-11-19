@@ -38,7 +38,8 @@ let seq = 0;
 const match = (x: Row, w: Row = {}): boolean => Object.entries(w).every(([k, v]) => {
   if (v && typeof v === 'object' && !(v instanceof Date)) {
     if ('in' in v) return v.in.includes(x[k]);
-    if ('not' in v) return x[k] !== v.not;
+    if ('not' in v) return v.not === null ? x[k] != null : x[k] !== v.not;
+    if ('lte' in v) return x[k] != null && x[k] <= v.lte;
     if ('gt' in v) return x[k] > v.gt;
     if ('lt' in v) return x[k] != null && x[k] < v.lt;
     if ('gte' in v) return x[k] != null && x[k] >= v.gte;
@@ -408,5 +409,21 @@ describe('Админка: удалить повтор эфира', () => {
     assert.deepEqual((await call('GET', '/api/shop/live/home')).json.replays, []);
     const live = await call('POST', '/api/shop/live/creator/streams/start', { phone: PHONE, title: 'Идёт', skus: ['1'] });
     assert.equal((await call('DELETE', `/api/shop-admin/live/streams/${live.json.id}/replay`, undefined, true)).status, 409);
+  });
+});
+
+describe('Срок хранения повтора', () => {
+  test('выбрал 7 дней — через 7 дней повтор удаляется сам', async () => {
+    streams.push({ id: 'r1', creatorId: 'cr1', title: 'Повтор', channel: 'c1', status: 'ended', replayUrl: 'https://p/1.mp4', recState: 'stopped', skus: '[]', endedAt: new Date(), likes: 0, views: 0 });
+    const r = await call('PATCH', '/api/shop-admin/live/streams/r1/replay', { days: 7 }, true);
+    assert.equal(r.status, 200);
+    const until = new Date(streams[0].replayUntil).getTime();
+    assert.ok(Math.abs(until - (Date.now() + 7 * 86400_000)) < 60_000);
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { purgeExpiredReplays } = require('../src/services/live.service');
+    assert.equal(await purgeExpiredReplays(10, Date.now() + 6 * 86400_000), 0);
+    assert.equal(await purgeExpiredReplays(10, Date.now() + 8 * 86400_000), 1);
+    assert.equal(streams[0].replayUrl, null);
+    assert.equal((await call('PATCH', '/api/shop-admin/live/streams/r1/replay', { days: 400 }, true)).status, 400);
   });
 });

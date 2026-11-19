@@ -8,13 +8,13 @@ import { normalizePhone } from './shop.routes';
 import { isR2Configured, r2CompleteChunks, r2PutChunk, StorageUnavailableError } from '../services/mediaStorage.service';
 import {
   AGORA_APP_ID, activeCreatorByPhone, bannerDto, notifyFollowers, activeLiveCategories, agoraConfigured, agoraToken, catsFor, cleanSkus, closeStaleStreams, creatorNames, isOnAir,
-  newChannel, parseSkus, replayPrefix, resolveReplays, shopCategoryBySku, soldBySku, startRecording, stopRecording, streamDto, topBySales, videoDto, viewersOf,
+  deleteReplay, newChannel, parseSkus, purgeExpiredReplays, resolveReplays, shopCategoryBySku, soldBySku, startRecording, stopRecording, streamDto, topBySales, videoDto, viewersOf,
 } from '../services/live.service';
 import { SHOP_CATEGORIES } from '../config/shopCategories';
 import {
   DAILY_FREE_COINS, activeGifts, chatDto, chatEvent, cleanName, coinsLeft, creatorGiftCoins, eventAllowed, giftDto, topGifters,
 } from '../services/liveGifts.service';
-import { r2DeletePrefix, uploadPublicFile } from '../services/mediaStorage.service';
+import { uploadPublicFile } from '../services/mediaStorage.service';
 import { creatorPage, listCreators } from '../services/liveCreators.service';
 
 /**
@@ -65,6 +65,7 @@ liveRouter.get('/home', async (req, res) => {
   try {
     await closeStaleStreams();
     await resolveReplays(3).catch(() => undefined);
+    await purgeExpiredReplays(5).catch(() => undefined); // повторы с вышедшим сроком хранения
     const now = Date.now();
     const [live, upcoming, shorts, replays, banners] = await Promise.all([
       prisma.liveStream.findMany({ where: { status: 'live' }, orderBy: { startedAt: 'desc' }, take: 20 }),
@@ -686,7 +687,8 @@ liveAdminRouter.get('/streams', async (_req, res) => {
   await closeStaleStreams();
   const rows = await prisma.liveStream.findMany({ orderBy: { createdAt: 'desc' }, take: 100 });
   const names = await creatorNames(rows.map((r: any) => r.creatorId));
-  res.json(rows.map((s: any) => ({ ...streamDto(s, names.get(s.creatorId) ?? ''), peakViewers: s.peakViewers })));
+  await purgeExpiredReplays(10).catch(() => undefined);
+  res.json(rows.map((s: any) => ({ ...streamDto(s, names.get(s.creatorId) ?? ''), peakViewers: s.peakViewers, replayUntil: s.replayUntil ?? null })));
 });
 
 /** Удалить повтор эфира: файлы записи в R2 (папка live/<id>/) и сам повтор из приложения. */
@@ -695,14 +697,23 @@ liveAdminRouter.delete('/streams/:id/replay', async (req, res) => {
   if (!s) return res.status(404).json({ error: 'Эфир не найден' });
   if (s.status === 'live') return res.status(409).json({ error: 'Эфир ещё идёт — сначала остановите его' });
   try {
-    const removed = await r2DeletePrefix(replayPrefix(s.id).join('/') + '/');
-    // recState 'deleted' — чтобы поиск повторов не вернул ссылку обратно.
-    await prisma.liveStream.update({ where: { id: s.id }, data: { replayUrl: null, recState: 'deleted' } });
+    const removed = await deleteReplay(s.id);
     res.json({ ok: true, removed });
   } catch (err) {
     logger.error({ err }, '[Live] удаление повтора упало');
     res.status(500).json({ error: 'Не удалось удалить файлы в R2' });
   }
+});
+
+/** Срок хранения повтора: { days: 0 } — навсегда, иначе 1..365 дней с сегодняшнего дня; потом удалится сам. */
+liveAdminRouter.patch('/streams/:id/replay', async (req, res) => {
+  const days = Math.floor(Number(req.body?.days ?? 0));
+  if (!Number.isFinite(days) || days < 0 || days > 365) return res.status(400).json({ error: 'Срок: 0 (навсегда) или от 1 до 365 дней' });
+  const s = await prisma.liveStream.findUnique({ where: { id: req.params.id } });
+  if (!s || !s.replayUrl) return res.status(404).json({ error: 'Повтора нет' });
+  const replayUntil = days ? new Date(Date.now() + days * 24 * 60 * 60_000) : null;
+  await prisma.liveStream.update({ where: { id: s.id }, data: { replayUntil } });
+  res.json({ ok: true, replayUntil });
 });
 
 /** Остановить эфир из админки (нарушение правил). */
