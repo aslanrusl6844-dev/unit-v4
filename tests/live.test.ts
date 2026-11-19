@@ -79,6 +79,7 @@ const table = (rows: () => Row[], set: (r: Row[]) => void, idNum = false) => ({
     return { count: n };
   },
   delete: async (a: Row) => { set(rows().filter((r) => r.id !== a.where.id)); return {}; },
+  deleteMany: async (a: Row = {}) => { const n = rows().length; set(rows().filter((r) => !match(r, a.where))); return { count: n - rows().length }; },
 });
 const stub: Record<string, any> = {
   creator: table(() => creators, (r) => { creators = r; }),
@@ -425,5 +426,22 @@ describe('Срок хранения повтора', () => {
     assert.equal(await purgeExpiredReplays(10, Date.now() + 8 * 86400_000), 1);
     assert.equal(streams[0].replayUrl, null);
     assert.equal((await call('PATCH', '/api/shop-admin/live/streams/r1/replay', { days: 400 }, true)).status, 400);
+  });
+});
+
+describe('Админка: эфиры по разделам и массовое удаление', () => {
+  test('список с категориями; массово — повторы или эфиры целиком; идущий пропускаем', async () => {
+    streams.push({ id: 'r1', creatorId: 'cr1', title: 'Повтор 1', channel: 'c1', status: 'ended', replayUrl: 'https://p/1.mp4', recState: 'stopped', skus: '["1000001"]', endedAt: new Date(), likes: 0, views: 0 });
+    streams.push({ id: 'r2', creatorId: 'cr1', title: 'Повтор 2', channel: 'c2', status: 'ended', replayUrl: 'https://p/2.mp4', recState: 'stopped', skus: '[]', endedAt: new Date(), likes: 0, views: 0 });
+    const live = await call('POST', '/api/shop/live/creator/streams/start', { phone: PHONE, title: 'Идёт', skus: ['1'] });
+    const list = await call('GET', '/api/shop-admin/live/streams', undefined, true);
+    assert.ok(Array.isArray(list.json.items));
+    assert.equal(list.json.items.find((s: Row) => s.id === live.json.id).onAir, true);
+    let r = await call('POST', '/api/shop-admin/live/streams/bulk-delete', { ids: ['r1', live.json.id], mode: 'replay' }, true);
+    assert.deepEqual([r.json.done, r.json.skipped], [1, 1]);
+    assert.equal(streams.find((s) => s.id === 'r1').replayUrl, null);
+    r = await call('POST', '/api/shop-admin/live/streams/bulk-delete', { ids: ['r1', 'r2', live.json.id], mode: 'stream' }, true);
+    assert.deepEqual([r.json.done, r.json.skipped], [2, 1]);
+    assert.deepEqual(streams.map((s) => s.id), [live.json.id]);
   });
 });
