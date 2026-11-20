@@ -177,6 +177,25 @@
         <div class="seg" id="ozTabs" style="margin-bottom:14px">
           <button class="is-active" data-oztab="fbo">FBO</button>
           <button data-oztab="returns">Возвраты</button>
+          <button data-oztab="delivered">Доставленные</button>
+        </div>
+
+        <div id="ozTabDelivered" hidden>
+          <div class="panel">
+            <div class="panel__head"><h2>Доставленные и выкупленные</h2><span id="ozDelivInfo" style="font-size:12.5px;color:var(--text-muted)"></span></div>
+            <div class="inline-form" style="align-items:center">
+              <select id="ozDelivScheme"><option value="">FBS и FBO</option><option value="fbs">Только FBS</option><option value="fbo">Только FBO</option></select>
+              <input id="ozDelivSearch" type="text" placeholder="Поиск: товар, артикул, номер..." style="flex:2 1 220px" />
+            </div>
+            <div id="ozDelivTotals" style="display:flex;flex-wrap:wrap;gap:18px;margin:12px 0"></div>
+            <div class="table-wrap">
+              <table class="table" id="ozDelivTable">
+                <thead><tr><th>Дата</th><th>Схема</th><th>Товар</th><th class="num">Шт</th><th class="num">Цена</th><th>Выкуплен</th><th class="num">Себестоимость</th><th class="num">Комиссии и логистика</th><th class="num">Налог</th><th class="num">Чистая прибыль</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <p class="panel__hint" style="margin-top:8px">Заказы за выбранный период, которые Ozon уже доставил покупателю (выкуплены). FBS — реальные комиссии Ozon из наших заказов; FBO — комиссия и логистика оценены по тарифам из карточки товара (помечено «≈»). Нет себестоимости — прибыль завышена, заполните её в «Товарах».</p>
+          </div>
         </div>
 
         <div id="ozTabFbo">
