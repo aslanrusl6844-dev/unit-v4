@@ -431,11 +431,15 @@ async function loadOzonPage() {
     });
     document.getElementById('ozReturnsSchema').addEventListener('change', renderOzonReturns);
     document.getElementById('ozReturnsPickup').addEventListener('change', renderOzonReturns);
+    document.getElementById('ozDelivScheme').addEventListener('change', () => loadOzonDeliveredPage());
+    document.getElementById('ozDelivSearch').addEventListener('input', renderOzonDelivered);
   }
   const tab = ozActiveTab();
   document.getElementById('ozTabFbo').hidden = tab !== 'fbo';
   document.getElementById('ozTabReturns').hidden = tab !== 'returns';
+  document.getElementById('ozTabDelivered').hidden = tab !== 'delivered';
   if (tab === 'returns') await loadOzonReturnsPage();
+  else if (tab === 'delivered') await loadOzonDeliveredPage();
   else await loadOzonFboPage();
 }
 
@@ -11403,4 +11407,47 @@ async function mmOpenSellerProducts(c) {
     } catch (err) { msg.textContent = `Ошибка: ${err.message}`; }
   });
   load();
+}
+
+
+// ---------- Озон: доставленные (выкупленные) FBS и FBO с чистой прибылью ----------
+let ozDelivCache = null;
+
+async function loadOzonDeliveredPage() {
+  const tbody = document.querySelector('#ozDelivTable tbody');
+  tbody.innerHTML = '<tr><td colspan="10" style="color:var(--text-faint)">Загрузка…</td></tr>';
+  document.getElementById('ozDelivTotals').innerHTML = '';
+  try {
+    const scheme = document.getElementById('ozDelivScheme').value;
+    ozDelivCache = await api(`/ozon-fbo/delivered?${qs({ from: state.from, to: state.to, scheme })}`);
+    renderOzonDelivered();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="10" style="color:var(--danger,#d33)">Не удалось загрузить: ${ozEsc(e.message)}</td></tr>`;
+  }
+}
+
+function renderOzonDelivered() {
+  const d = ozDelivCache;
+  if (!d) return;
+  const q = (document.getElementById('ozDelivSearch').value || '').trim().toLowerCase();
+  const rows = d.rows.filter((r) => !q || `${r.name} ${r.offerId} ${r.posting}`.toLowerCase().includes(q));
+  const tile = (title, t, color) => `<div><div style="font-size:12px;color:var(--text-muted)">${title}</div><b style="font-size:18px">${t.orders} заказ(ов) · ${t.qty} шт</b><div style="font-size:12.5px">выручка ${fmtMoney(t.revenue)} · <b style="color:${t.profit >= 0 ? 'var(--accent)' : 'var(--loss)'}">прибыль ${fmtMoney(t.profit)}</b></div></div>`;
+  document.getElementById('ozDelivTotals').innerHTML = tile('Всего доставлено', d.totals.all) + tile('FBS', d.totals.fbs) + tile('FBO', d.totals.fbo)
+    + (d.fboError ? `<div style="color:var(--danger,#d33);font-size:12.5px">FBO не загрузились: ${ozEsc(d.fboError)}</div>` : '');
+  document.getElementById('ozDelivInfo').textContent = `налог ${d.taxPct}% · строк: ${rows.length}`;
+  const fmtDate = (v) => (v ? new Date(v).toLocaleDateString('ru-RU') : '—');
+  const tbody = document.querySelector('#ozDelivTable tbody');
+  tbody.innerHTML = rows.length ? rows.map((r) => `
+    <tr>
+      <td>${fmtDate(r.date)}<div style="font-size:11px;color:var(--text-faint)">${ozEsc(r.posting)}</div></td>
+      <td><span style="font-weight:700;color:${r.scheme === 'FBO' ? '#005bff' : 'var(--accent)'}">${r.scheme}</span></td>
+      <td>${ozEsc(r.name)}<div style="font-size:11.5px;color:var(--text-muted)">${ozEsc(r.offerId)}</div></td>
+      <td class="num">${r.qty}</td>
+      <td class="num">${fmtMoney(r.price)}</td>
+      <td><span style="color:var(--accent);font-weight:700">✓ Выкуплен</span></td>
+      <td class="num">${r.noCost ? '<span style="color:var(--loss)" title="Нет себестоимости в «Товарах»">нет</span>' : fmtMoney(r.cogs)}</td>
+      <td class="num">${r.estimated ? '≈ ' : ''}${fmtMoney(r.fees)}</td>
+      <td class="num">${fmtMoney(r.tax)}</td>
+      <td class="num"><b style="color:${r.profit >= 0 ? 'var(--accent)' : 'var(--loss)'}">${r.estimated || r.noCost ? '≈ ' : ''}${fmtMoney(r.profit)}</b></td>
+    </tr>`).join('') : '<tr><td colspan="10" style="color:var(--text-faint)">За период доставленных заказов нет</td></tr>';
 }
