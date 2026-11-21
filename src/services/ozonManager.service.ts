@@ -331,9 +331,13 @@ export async function photoCards(kind: 'collect' | 'sold' | 'ship', dateStr?: st
 }
 
 /** Кто отправляет фото в чат — задаёт Telegram-модуль бота (сервис о Telegram не знает). */
-type PhotoSender = (chatId: string, title: string, cards: PhotoCard[]) => Promise<void>;
+type PhotoSender = (chatId: string, title: string, cards: PhotoCard[], numbered?: boolean) => Promise<void>;
 let photoSender: PhotoSender | null = null;
 export function setOzonBotPhotoSender(fn: PhotoSender | null) { photoSender = fn; }
+/** Список сборки с номерами живёт в Telegram-модуле: отметить собранное и показать остаток. */
+type PickHandlers = { mark: (chatId: string, nums: number[], undo?: boolean) => Promise<string>; left: (chatId: string) => Promise<string> };
+let pickHandlers: PickHandlers | null = null;
+export function setOzonBotPickHandlers(h: PickHandlers | null) { pickHandlers = h; }
 
 // ---------------------------------------------------------------- «мозг»: Claude с инструментами
 
@@ -345,6 +349,7 @@ export const OZON_TOOLS = [
   { name: 'returns', description: 'Возвраты Ozon за последние N дней: статус, причина, где сейчас, сумма.', input_schema: { type: 'object', properties: { days: { type: 'number' } } } },
   { name: 'fbo_stock', description: 'Остатки на складах Ozon (FBO) и на сколько дней хватит; что заканчивается.', input_schema: { type: 'object', properties: {} } },
   { name: 'show_photos', description: 'Отправить в чат товары ФОТОГРАФИЯМИ с количеством (одно фото на товар, одинаковые сложены): kind=ship — ВСЕ заказы FBS, которые надо отгрузить, у каждого фото номера заказов и количество (просят «что отгрузить», «фото и номер заказа», «отгрузка»); kind=collect — что собрать у оптовиков под несобранные заказы; kind=sold — что продалось за день. Используй, когда просят «покажи с фото», «вытащи сюда», «что собрать у оптовиков», «какие товары продались». После вызова фото уже в чате — напиши только короткий итог.', input_schema: { type: 'object', properties: { kind: { type: 'string', enum: ['ship', 'collect', 'sold'] }, date: { type: 'string', description: 'YYYY-MM-DD для sold, пусто — сегодня' } }, required: ['kind'] } },
+  { name: 'pick_list', description: 'Список сборки с номерами (после show_photos ship/collect): action=done — отметить собранными номера (владелец пишет «собрал 2 и 5», «убери 3»); action=undo — вернуть номера в список; action=left — что осталось собрать. Ответ — готовый текст, перешли его как есть.', input_schema: { type: 'object', properties: { action: { type: 'string', enum: ['done', 'undo', 'left'] }, numbers: { type: 'array', items: { type: 'number' } } }, required: ['action'] } },
 ] as const;
 
 export async function runTool(name: string, input: any, ctx: { chatId?: string } = {}): Promise<unknown> {
@@ -353,8 +358,13 @@ export async function runTool(name: string, input: any, ctx: { chatId?: string }
       const kind = input?.kind === 'sold' ? 'sold' : input?.kind === 'ship' ? 'ship' : 'collect';
       const { title, cards } = await photoCards(kind, input?.date);
       if (!ctx.chatId || !photoSender) return { error: 'фото сейчас отправить нельзя', cards };
-      await photoSender(ctx.chatId, title, cards);
+      await photoSender(ctx.chatId, title, cards, kind !== 'sold');
       return { sent: true, positions: cards.length, totalQty: cards.reduce((s, c) => s + c.qty, 0), withoutPhoto: cards.filter((c) => !c.photo).map((c) => c.name) };
+    }
+    case 'pick_list': {
+      if (!ctx.chatId || !pickHandlers) return { error: 'список сейчас недоступен' };
+      const nums = Array.isArray(input?.numbers) ? input.numbers.map(Number).filter((n: number) => Number.isFinite(n)) : [];
+      return { text: input?.action === 'left' ? await pickHandlers.left(ctx.chatId) : await pickHandlers.mark(ctx.chatId, nums, input?.action === 'undo') };
     }
     case 'day_sales': return daySales(input?.date);
     case 'period_report': return periodReport(String(input?.from ?? ''), String(input?.to ?? ''));

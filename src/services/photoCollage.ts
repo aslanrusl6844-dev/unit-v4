@@ -89,7 +89,7 @@ export async function buildCollage(items: CollageItem[]): Promise<Buffer> {
  * Карточка товара «столбиком»: широкая картинка 3:1 — слева фото товара (≈1/3 ширины сообщения),
  * справа крупно «N шт». Telegram показывает её узкой полосой, поэтому фото выходят маленькими.
  */
-export async function buildQtyCard(image: Buffer | null, qty: number, nameIfNoPhoto = '', stickers: string[] = []): Promise<Buffer> {
+export async function buildQtyCard(image: Buffer | null, qty: number, nameIfNoPhoto = '', stickers: string[] = [], num?: number): Promise<Buffer> {
   const H = 300;
   const W = 900;
   const layers: { input: Buffer; top: number; left: number }[] = [];
@@ -128,6 +128,14 @@ export async function buildQtyCard(image: Buffer | null, qty: number, nameIfNoPh
   if (codesImg) {
     const cw = (await sharp(codesImg).metadata()).width ?? 300;
     layers.push({ input: codesImg, top: top0 + qh + 18, left: H + Math.round((W - H - cw) / 2) });
+  }
+  // Номер в списке сборки — синий кружок слева сверху: владелец пишет боту номера собранного.
+  if (num) {
+    const D = 86;
+    layers.push({ input: Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${D}" height="${D}"><circle cx="${D / 2}" cy="${D / 2}" r="${D / 2 - 2}" fill="#1565C0" stroke="#ffffff" stroke-width="4"/></svg>`), top: 8, left: 8 });
+    const t = await textImage(String(num), { bold: true, size: num > 99 ? 30 : 40, color: '#ffffff' });
+    const tm = await sharp(t).metadata();
+    layers.push({ input: t, top: 8 + Math.round((D - (tm.height ?? 40)) / 2), left: 8 + Math.round((D - (tm.width ?? 40)) / 2) });
   }
   return sharp({ create: { width: W, height: H, channels: 3, background: '#ffffff' } })
     .composite([...(hasPhoto ? [] : [{ input: await sharp({ create: { width: H, height: H, channels: 3, background: '#eeeeee' } }).png().toBuffer(), top: 0, left: 0 }]), ...layers])
