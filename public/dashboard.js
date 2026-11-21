@@ -11077,8 +11077,8 @@ function renderMmLiveGifts(thead, tbody) {
         </div>
         <div>
           <div style="font-size:12px;color:var(--text-faint)">Анимация на весь экран</div>
-          <div id="mmLiveGiftAnimPreview" style="width:64px;height:64px;border-radius:12px;background:#222 center/contain no-repeat;${mmLiveGiftAnim ? `background-image:url('${mmEsc(mmLiveGiftAnim)}')` : ''};display:flex;align-items:center;justify-content:center;color:#888;font-size:11px">${mmLiveGiftAnim ? '' : 'нет'}</div>
-          <input type="file" id="mmLiveGiftAnimFile" accept="image/webp,image/gif" style="margin-top:6px;font-size:12px;width:200px" />
+          <div id="mmLiveGiftAnimPreview" style="width:64px;height:64px;border-radius:12px;background:#222 center/contain no-repeat;${mmLiveGiftAnim && !/\.(mp4|webm)(\?|$)/i.test(mmLiveGiftAnim) ? `background-image:url('${mmEsc(mmLiveGiftAnim)}')` : ''};display:flex;align-items:center;justify-content:center;color:#888;font-size:11px">${mmLiveGiftAnim ? (/\.(mp4|webm)(\?|$)/i.test(mmLiveGiftAnim) ? '🎬 MP4' : '') : 'нет'}</div>
+          <input type="file" id="mmLiveGiftAnimFile" accept="image/webp,image/gif,video/mp4" style="margin-top:6px;font-size:12px;width:200px" />
         </div>
         <label>Название<input type="text" id="mmLiveGiftTitle" maxlength="40" value="${mmEsc(edit?.title || '')}" placeholder="Например: Роза" style="width:160px" /></label>
         <label>Эмодзи (если нет картинки)<input type="text" id="mmLiveGiftEmoji" maxlength="8" value="${mmEsc(edit?.emoji || '🎁')}" style="width:70px" /></label>
@@ -11090,7 +11090,7 @@ function renderMmLiveGifts(thead, tbody) {
         ${mmLiveGiftImage ? '<button class="btn btn--ghost" id="mmLiveGiftNoImage">Убрать картинку</button>' : ''}
         ${mmLiveGiftAnim ? '<button class="btn btn--ghost" id="mmLiveGiftNoAnim">Убрать анимацию</button>' : ''}
       </div>
-      <p class="panel__hint" style="margin:8px 0 0">Пока подарки бесплатные: каждый зритель получает <b>${mmLiveGiftDaily} монет в день</b>. Подарок идёт креатору эфира — сколько монет получил каждый, видно ниже и во вкладке «Креаторы». Картинка лучше PNG с прозрачным фоном. <b>Анимация</b> — анимированный WEBP с прозрачным фоном до 3 МБ (лев, дракон, юрта…): когда дарят этот подарок, она играет на весь экран у всех зрителей эфира, как в ТикТоке.</p>
+      <p class="panel__hint" style="margin:8px 0 0">Пока подарки бесплатные: каждый зритель получает <b>${mmLiveGiftDaily} монет в день</b>. Подарок идёт креатору эфира — сколько монет получил каждый, видно ниже и во вкладке «Креаторы». Картинка лучше PNG с прозрачным фоном. <b>Анимация</b> — MP4 со звуком (ролик на весь экран, как лев в саванне) или анимированный WEBP с прозрачным фоном до 3 МБ (лев, дракон, юрта…): когда дарят этот подарок, она играет на весь экран у всех зрителей эфира, как в ТикТоке.</p>
     </td></tr>`;
   const rows = mmCreatorRows.map((g) => `
     <tr>
@@ -11130,10 +11130,10 @@ function renderMmLiveGifts(thead, tbody) {
     const st = document.getElementById('mmCreatorStatus');
     st.textContent = 'Загружаю анимацию…';
     try {
-      mmLiveGiftAnim = await uploadMyMarketFile(file, { banner: true });
+      mmLiveGiftAnim = await uploadMyMarketFile(file, file.type.startsWith('video/') ? { video: true } : { banner: true });
       const pv = document.getElementById('mmLiveGiftAnimPreview');
-      pv.style.backgroundImage = `url('${mmLiveGiftAnim}')`;
-      pv.textContent = '';
+      if (/\.(mp4|webm)(\?|$)/i.test(mmLiveGiftAnim)) { pv.style.backgroundImage = ''; pv.textContent = '🎬 MP4'; }
+      else { pv.style.backgroundImage = `url('${mmLiveGiftAnim}')`; pv.textContent = ''; }
       st.textContent = 'Анимация загружена — нажмите «Сохранить»';
     } catch (err) { st.textContent = `Ошибка: ${err.message}`; }
   });
