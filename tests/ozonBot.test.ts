@@ -187,11 +187,11 @@ describe('Озон-менеджер', () => {
     await bot.handleOzonBotUpdate({ message: { chat: { id: 111 }, text: '/ship_photo' } });
     assert.ok(photos.length >= 1);
     assert.ok(photos.some((p) => /№ /.test(String(p.caption ?? ''))), JSON.stringify(photos.map((p) => p.caption)));
-    assert.match(sent[0].text, /Отгрузить FBS/);
+    assert.match(sent[0].text, /Готовы к отгрузке FBS: 1 заказов/);
   });
 
   test('список сборки: фото с номерами, «1» вычёркивает, «верни 1» возвращает, всё собрано', async () => {
-    await bot.handleOzonBotUpdate({ message: { chat: { id: 111 }, text: '/ship_photo' } });
+    await bot.handleOzonBotUpdate({ message: { chat: { id: 111 }, text: '/collect' } });
     assert.match(String(photos[0].caption), /^<b>1\.<\/b>/);
     assert.match(String(photos[1].caption), /^<b>2\.<\/b>/);
     sent = [];
