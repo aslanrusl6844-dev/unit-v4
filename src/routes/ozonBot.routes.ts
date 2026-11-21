@@ -120,10 +120,12 @@ export async function sendPhotoCards(chatId: string, title: string, cards: Photo
     }
     try {
       const jpeg = await buildQtyCard(images[i], c.qty, images[i] ? '' : c.name, c.stickers ?? []);
-      await sendPhotoFile(chatId, new Blob([jpeg], { type: 'image/jpeg' }), '');
+      // Для отгрузки — под фото номера заказов Ozon.
+      const caption = c.postings?.length ? `<b>${c.qty} шт</b> · ${escH(c.name.slice(0, 60))}\n${c.postings.map((p) => `№ ${escH(p)}`).join('\n')}`.slice(0, 1000) : '';
+      await sendPhotoFile(chatId, new Blob([jpeg], { type: 'image/jpeg' }), caption);
     } catch (err: any) {
       logger.warn({ err: String(err?.message ?? err) }, '[OzonBot] карточка не отправилась');
-      await sendOzonBot(chatId, `<b>${c.qty} шт</b> — ${escH(c.name.slice(0, 80))}`).catch(() => undefined);
+      await sendOzonBot(chatId, `<b>${c.qty} шт</b> — ${escH(c.name.slice(0, 80))}${c.postings?.length ? '\n' + c.postings.map((p) => `№ ${escH(p)}`).join('\n') : ''}`).catch(() => undefined);
     }
   }
   if (cards.length > list.length) {
@@ -152,6 +154,7 @@ const HELP = [
   '/today — продажи и прибыль за сегодня',
   '/ship — что отгрузить и сроки',
   '/buy — сколько нужно на закупку',
+  '/ship_photo — что отгрузить: фото, количество и номера заказов',
   '/collect — что собрать у оптовиков: фото + количество',
   '/sold — что продалось сегодня: фото + количество',
   '/returns — возвраты за 7 дней',
@@ -215,8 +218,8 @@ export async function handleOzonBotUpdate(update: any): Promise<void> {
   }
   await tg('sendChatAction', { chat_id: chatId, action: 'typing' }).catch(() => undefined);
   try {
-    if (cmd === '/collect' || cmd === '/sold') {
-      const { title, cards } = await photoCards(cmd === '/sold' ? 'sold' : 'collect');
+    if (cmd === '/collect' || cmd === '/sold' || cmd === '/ship_photo') {
+      const { title, cards } = await photoCards(cmd === '/sold' ? 'sold' : cmd === '/ship_photo' ? 'ship' : 'collect');
       await sendPhotoCards(chatId, title, cards);
       return;
     }
@@ -252,7 +255,7 @@ ozonBotRouter.get('/setup', async (req, res) => {
     await tg('setWebhook', { url, secret_token: ozonBotSecret(), allowed_updates: ['message'], drop_pending_updates: true });
     await tg('setMyCommands', { commands: [
       { command: 'report', description: 'Утренний отчёт' }, { command: 'today', description: 'Продажи за сегодня' },
-      { command: 'ship', description: 'Что отгрузить' }, { command: 'buy', description: 'Закупка под заказы' },
+      { command: 'ship', description: 'Что отгрузить' }, { command: 'ship_photo', description: 'Отгрузка: фото и номера заказов' }, { command: 'buy', description: 'Закупка под заказы' },
       { command: 'collect', description: 'Собрать у оптовиков (фото)' }, { command: 'sold', description: 'Продано сегодня (фото)' },
       { command: 'returns', description: 'Возвраты' }, { command: 'stock', description: 'Склады Ozon' }, { command: 'new', description: 'Начать заново' },
     ] }).catch(() => undefined);

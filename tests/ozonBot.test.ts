@@ -177,6 +177,13 @@ describe('Озон-менеджер', () => {
     assert.match(claudeCalls[1].messages.at(-1).content[0].content, /"sent":true/);
   });
 
+  test('/ship_photo: всё к отгрузке — фото, количество и номера заказов под фото', async () => {
+    await bot.handleOzonBotUpdate({ message: { chat: { id: 111 }, text: '/ship_photo' } });
+    assert.ok(photos.length >= 1);
+    assert.ok(photos.some((p) => /№ /.test(String(p.caption ?? ''))), JSON.stringify(photos.map((p) => p.caption)));
+    assert.match(sent[0].text, /Отгрузить FBS/);
+  });
+
   test('/sold: что продалось сегодня — прямо из Ozon, отмены не считаются', async () => {
     ozonClient.fetchFboPostings = async () => [{ postingNumber: 'F1', status: 'delivered', createdAt: null, offerId: 'A', name: 'Чайник', quantity: 1, price: 5000 }];
     const r = await om.photoCards('sold');
