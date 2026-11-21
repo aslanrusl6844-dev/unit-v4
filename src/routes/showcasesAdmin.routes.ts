@@ -21,7 +21,8 @@ import { maybeGenerateShopArticle } from '../services/shopArticle';
  */
 export const showcasesAdminRouter = Router();
 
-const SHOWCASE_TYPES = ['brand', 'shop'] as const;
+/** market — плитка «Магазин у дома» в ряду витрин: открывает карту дворов, товары не нужны. */
+const SHOWCASE_TYPES = ['brand', 'shop', 'market'] as const;
 
 const imageUrl = z
   .string()

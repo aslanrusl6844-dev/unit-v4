@@ -91,13 +91,16 @@ async function findPublished(id: string) {
 }
 
 /** Список опубликованных витрин — иконки под главным баннером. */
-showcasesRouter.get('/', async (_req, res) => {
+showcasesRouter.get('/', async (req, res) => {
   try {
     const rows = await prisma.showcase.findMany({
       where: { published: true },
       orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
     });
-    res.json(rows.map(publicShowcase));
+    // Плитку «Магазин у дома» (type market) знают только новые версии приложения (?v=2):
+    // старые показали бы её пустой витриной, а у них эта плитка и так нарисована.
+    const v2 = String(req.query.v ?? '') === '2';
+    res.json(rows.filter((r: any) => v2 || r.type !== 'market').map(publicShowcase));
   } catch (err: any) {
     logger.error({ err }, '[Showcases API] GET / упал');
     const mapped = mapDbError(err);
