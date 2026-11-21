@@ -1298,6 +1298,8 @@ model LiveGift {
   imageUrl  String?
   /// Анимация на весь экран (анимированный WEBP с прозрачностью) — играет у всех зрителей, как лев в ТикТоке.
   animUrl   String?
+  /// Звук подарка (MP3/OGG): рёв льва, крик беркута — играет вместе с анимацией.
+  soundUrl  String?
   coins     Int      @default(1)
   sort      Int      @default(0)
   active    Boolean  @default(true)
