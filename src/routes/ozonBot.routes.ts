@@ -6,7 +6,7 @@ import { buildQtyCard } from '../services/photoCollage';
 import { logger } from '../utils/logger';
 import {
   askOzonManager, daySales, eveningReport, fbsToShip, fboStock, morningReport, photoCards, purchaseNeeds, returnsList,
-  setOzonBotPhotoSender, type PhotoCard,
+  setOzonBotPhotoSender, setOzonBotPickHandlers, type PhotoCard,
 } from '../services/ozonManager.service';
 
 /**
@@ -99,7 +99,68 @@ async function sendPhotoFile(chatId: string, img: Blob, caption: string): Promis
   if (!r.ok || !data?.ok) throw new Error(`telegram sendPhoto: ${data?.description ?? r.status}`);
 }
 
-export async function sendPhotoCards(chatId: string, title: string, cards: PhotoCard[]): Promise<void> {
+// ---------------------------------------------------------------- список сборки с номерами
+
+type PickItem = { n: number; name: string; qty: number; postings: string[]; done: boolean };
+
+async function savePickList(chatId: string, title: string, cards: PhotoCard[]): Promise<void> {
+  const items: PickItem[] = cards.map((c, i) => ({ n: i + 1, name: c.name, qty: c.qty, postings: c.postings ?? [], done: false }));
+  await prisma.ozonBotPickList.upsert({
+    where: { chatId }, create: { chatId, title, items: JSON.stringify(items) }, update: { title, items: JSON.stringify(items) },
+  });
+}
+
+async function loadPickList(chatId: string): Promise<{ title: string; items: PickItem[] } | null> {
+  const row = await prisma.ozonBotPickList.findUnique({ where: { chatId } });
+  if (!row) return null;
+  try { return { title: row.title, items: JSON.parse(row.items) as PickItem[] }; } catch { return null; }
+}
+
+/** «1 3 5», «1,2», «4-7», «есть 2 и 6» → номера. */
+export function parsePickNumbers(text: string): number[] {
+  const out = new Set<number>();
+  for (const m of text.matchAll(/(\d{1,3})\s*[-–—]\s*(\d{1,3})|(\d{1,3})/g)) {
+    if (m[1] && m[2]) { const a = +m[1], b = +m[2]; for (let i = Math.min(a, b); i <= Math.max(a, b) && i - Math.min(a, b) < 200; i++) out.add(i); }
+    else if (m[3]) out.add(+m[3]);
+  }
+  return [...out];
+}
+
+/** Сообщение — это номера собранного? Только цифры/диапазоны, можно со словами «есть / собрал / готово / убери». */
+export function looksLikePickNumbers(text: string): boolean {
+  const t = text.toLowerCase().replace(/^(есть|собрал[аи]?|собрано|готово|убери|убрать|вычеркни|ок|ok|done)[\s:,-]*/u, '').trim();
+  return /\d/.test(t) && /^[\d\s,.;+–—-]*(и[\s\d,.;+–—-]*)*$/u.test(t);
+}
+
+/** Отметить номера собранными (или вернуть — undo) и показать, что осталось. */
+export async function markPicked(chatId: string, nums: number[], undo = false): Promise<string> {
+  const list = await loadPickList(chatId);
+  if (!list || !list.items.length) return 'Списка сборки нет. Сначала попросите «фото, что отгрузить» или /ship_photo.';
+  const max = list.items.length;
+  const ok = nums.filter((n) => n >= 1 && n <= max);
+  const bad = nums.filter((n) => n < 1 || n > max);
+  for (const it of list.items) if (ok.includes(it.n)) it.done = !undo;
+  await prisma.ozonBotPickList.update({ where: { chatId }, data: { items: JSON.stringify(list.items) } });
+  return pickListText(list.title, list.items, undo ? `↩️ Вернул в список: ${ok.join(', ')}` : ok.length ? `✅ Собрано: ${ok.join(', ')}` : '', bad.length ? `Таких номеров нет: ${bad.join(', ')} (в списке 1–${max})` : '');
+}
+
+function pickListText(title: string, items: PickItem[], head = '', warn = ''): string {
+  const left = items.filter((i) => !i.done);
+  const lines = [head, warn].filter(Boolean);
+  if (!left.length) return [...lines, `🎉 <b>Всё собрано!</b> ${items.length} из ${items.length}.`].join('\n');
+  lines.push(`<b>Осталось собрать: ${left.length} из ${items.length}</b> (${left.reduce((s, i) => s + i.qty, 0)} шт)`);
+  for (const i of left) lines.push(`<b>${i.n}.</b> ${escH(i.name.slice(0, 60))} — <b>${i.qty} шт</b>${i.postings.length ? `\n     ${i.postings.map(escH).join(', ')}` : ''}`);
+  lines.push('', 'Пришлите номера собранного, например: <b>2 5 7</b> или <b>3-6</b>. Вернуть: «верни 4».');
+  return lines.join('\n').slice(0, 4000);
+}
+
+export async function pickListLeft(chatId: string): Promise<string> {
+  const list = await loadPickList(chatId);
+  if (!list || !list.items.length) return 'Списка сборки нет. Сначала попросите «фото, что отгрузить» или /ship_photo.';
+  return pickListText(list.title, list.items);
+}
+
+export async function sendPhotoCards(chatId: string, title: string, cards: PhotoCard[], numbered = false): Promise<void> {
   const started = Date.now();
   const total = cards.reduce((s, c) => s + c.qty, 0);
   if (!cards.length) { await sendOzonBot(chatId, `${title}\nПока ничего нет 👍`); return; }
@@ -119,20 +180,28 @@ export async function sendPhotoCards(chatId: string, title: string, cards: Photo
       break;
     }
     try {
-      const jpeg = await buildQtyCard(images[i], c.qty, images[i] ? '' : c.name, c.stickers ?? []);
-      // Для отгрузки — под фото номера заказов Ozon.
-      const caption = c.postings?.length ? `<b>${c.qty} шт</b> · ${escH(c.name.slice(0, 60))}\n${c.postings.map((p) => `№ ${escH(p)}`).join('\n')}`.slice(0, 1000) : '';
+      const jpeg = await buildQtyCard(images[i], c.qty, images[i] ? '' : c.name, c.stickers ?? [], numbered ? i + 1 : undefined);
+      // Для отгрузки — под фото номера заказов Ozon; в списке сборки — номер позиции.
+      const num = numbered ? `<b>${i + 1}.</b> ` : '';
+      const caption = c.postings?.length
+        ? `${num}<b>${c.qty} шт</b> · ${escH(c.name.slice(0, 60))}\n${c.postings.map((p) => `№ ${escH(p)}`).join('\n')}`.slice(0, 1000)
+        : numbered ? `${num}${escH(c.name.slice(0, 60))} — <b>${c.qty} шт</b>` : '';
       await sendPhotoFile(chatId, new Blob([jpeg], { type: 'image/jpeg' }), caption);
     } catch (err: any) {
       logger.warn({ err: String(err?.message ?? err) }, '[OzonBot] карточка не отправилась');
-      await sendOzonBot(chatId, `<b>${c.qty} шт</b> — ${escH(c.name.slice(0, 80))}${c.postings?.length ? '\n' + c.postings.map((p) => `№ ${escH(p)}`).join('\n') : ''}`).catch(() => undefined);
+      await sendOzonBot(chatId, `${numbered ? `<b>${i + 1}.</b> ` : ''}<b>${c.qty} шт</b> — ${escH(c.name.slice(0, 80))}${c.postings?.length ? '\n' + c.postings.map((p) => `№ ${escH(p)}`).join('\n') : ''}`).catch(() => undefined);
     }
   }
   if (cards.length > list.length) {
-    await sendOzonBot(chatId, ['<b>Ещё товары:</b>', ...cards.slice(list.length).map((c) => `• <b>${c.qty} шт</b> — ${escH(c.name.slice(0, 80))}`)].join('\n'));
+    await sendOzonBot(chatId, ['<b>Ещё товары:</b>', ...cards.slice(list.length).map((c, k) => `${numbered ? `<b>${list.length + k + 1}.</b>` : '•'} <b>${c.qty} шт</b> — ${escH(c.name.slice(0, 80))}`)].join('\n'));
+  }
+  if (numbered) {
+    await savePickList(chatId, title, cards);
+    await sendOzonBot(chatId, 'Собрали позицию — пришлите её номер (можно несколько: <b>1 3 5</b> или <b>2-6</b>), я вычеркну и покажу, что осталось. /left — что осталось.');
   }
 }
-setOzonBotPhotoSender(sendPhotoCards);
+setOzonBotPhotoSender((chatId, title, cards, numbered) => sendPhotoCards(chatId, title, cards, numbered));
+setOzonBotPickHandlers({ mark: markPicked, left: pickListLeft });
 
 function secretOk(v: string | undefined): boolean {
   if (!token() || !v) return false;
@@ -154,7 +223,8 @@ const HELP = [
   '/today — продажи и прибыль за сегодня',
   '/ship — что отгрузить и сроки',
   '/buy — сколько нужно на закупку',
-  '/ship_photo — что отгрузить: фото, количество и номера заказов',
+  '/ship_photo — что отгрузить: фото с номерами 1, 2, 3…, количество и номера заказов',
+  'Собрали — пришлите номера (1 3 5 или 2-6), бот вычеркнет; /left — что осталось',
   '/collect — что собрать у оптовиков: фото + количество',
   '/sold — что продалось сегодня: фото + количество',
   '/returns — возвраты за 7 дней',
@@ -219,8 +289,16 @@ export async function handleOzonBotUpdate(update: any): Promise<void> {
   await tg('sendChatAction', { chat_id: chatId, action: 'typing' }).catch(() => undefined);
   try {
     if (cmd === '/collect' || cmd === '/sold' || cmd === '/ship_photo') {
-      const { title, cards } = await photoCards(cmd === '/sold' ? 'sold' : cmd === '/ship_photo' ? 'ship' : 'collect');
-      await sendPhotoCards(chatId, title, cards);
+      const kind = cmd === '/sold' ? 'sold' : cmd === '/ship_photo' ? 'ship' : 'collect';
+      const { title, cards } = await photoCards(kind);
+      await sendPhotoCards(chatId, title, cards, kind !== 'sold');
+      return;
+    }
+    if (cmd === '/left') { await sendOzonBot(chatId, await pickListLeft(chatId)); return; }
+    // Номера собранного: «1 3 5», «2-6», «есть 4» — вычёркиваем без ИИ. «верни 4» — назад в список.
+    if (!photo?.length && /^(верни|вернуть|отмени)\s/i.test(text) && /\d/.test(text)) { await sendOzonBot(chatId, await markPicked(chatId, parsePickNumbers(text), true)); return; }
+    if (!photo?.length && looksLikePickNumbers(text) && (await loadPickList(chatId))?.items.length) {
+      await sendOzonBot(chatId, await markPicked(chatId, parsePickNumbers(text)));
       return;
     }
     const fast = await quick(cmd);
@@ -255,7 +333,7 @@ ozonBotRouter.get('/setup', async (req, res) => {
     await tg('setWebhook', { url, secret_token: ozonBotSecret(), allowed_updates: ['message'], drop_pending_updates: true });
     await tg('setMyCommands', { commands: [
       { command: 'report', description: 'Утренний отчёт' }, { command: 'today', description: 'Продажи за сегодня' },
-      { command: 'ship', description: 'Что отгрузить' }, { command: 'ship_photo', description: 'Отгрузка: фото и номера заказов' }, { command: 'buy', description: 'Закупка под заказы' },
+      { command: 'ship', description: 'Что отгрузить' }, { command: 'ship_photo', description: 'Отгрузка: фото и номера заказов' }, { command: 'left', description: 'Что осталось собрать' }, { command: 'buy', description: 'Закупка под заказы' },
       { command: 'collect', description: 'Собрать у оптовиков (фото)' }, { command: 'sold', description: 'Продано сегодня (фото)' },
       { command: 'returns', description: 'Возвраты' }, { command: 'stock', description: 'Склады Ozon' }, { command: 'new', description: 'Начать заново' },
     ] }).catch(() => undefined);

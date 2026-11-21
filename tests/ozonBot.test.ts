@@ -13,12 +13,18 @@ process.env.ANTHROPIC_API_KEY = 'k';
 
 type Row = Record<string, any>;
 let botMessages: Row[] = [];
+let pickLists: Record<string, Row> = {};
 const products: Row[] = [
   { sku: 'A', ozonOfferId: 'A', costPrice: 1000, packagingCost: 50, name: 'Чайник', images: '["https://cdn/a.jpg"]', marketImages: null },
   { sku: 'B', ozonOfferId: 'B', costPrice: 0, packagingCost: 0, name: 'Кружка', images: null, marketImages: '[]' },
 ];
 const stub: Record<string, any> = {
   product: { findMany: async () => products },
+  ozonBotPickList: {
+    findUnique: async (a: Row) => pickLists[a.where.chatId] ?? null,
+    upsert: async (a: Row) => { pickLists[a.where.chatId] = { chatId: a.where.chatId, ...(pickLists[a.where.chatId] ? a.update : a.create) }; return pickLists[a.where.chatId]; },
+    update: async (a: Row) => { Object.assign(pickLists[a.where.chatId], a.data); return pickLists[a.where.chatId]; },
+  },
   ozonBotMessage: {
     findMany: async () => [...botMessages].reverse(),
     createMany: async (a: Row) => { botMessages.push(...a.data); return { count: a.data.length }; },
@@ -47,7 +53,7 @@ let claudeCalls: any[] = [];
 let claudeReplies: any[] = [];
 
 beforeEach(() => {
-  botMessages = []; sent = []; claudeCalls = []; claudeReplies = []; photos = [];
+  botMessages = []; pickLists = {}; sent = []; claudeCalls = []; claudeReplies = []; photos = [];
   const now = Date.now();
   ozonClient.fetchFbsPostings = async () => [
     { postingNumber: 'P-late', status: 'awaiting_packaging', scanit: 'ii50173001436', inProcessAt: null, shipmentDate: new Date(now - 2 * H).toISOString(), products: [{ offerId: 'A', name: 'Чайник', quantity: 2, price: 5000 }] },
@@ -158,10 +164,10 @@ describe('Озон-менеджер', () => {
     assert.equal(claudeCalls[0].messages.at(-1).content, '[Айгерим] как дела?');
   });
 
-  test('/collect: столбиком — по картинке на товар, без подписи; одинаковые сложены; цен нет', async () => {
+  test('/collect: столбиком — по картинке на товар, подпись с номером в списке; одинаковые сложены; цен нет', async () => {
     await bot.handleOzonBotUpdate({ message: { chat: { id: 111 }, text: '/collect' } });
     assert.equal(photos.length, 2); // Кружка ×3, Чайник ×2
-    assert.ok(photos.every((p) => p.file instanceof Blob && p.file.size > 1000 && !p.caption));
+    assert.ok(photos.every((p, i) => p.file instanceof Blob && p.file.size > 1000 && String(p.caption).startsWith(`<b>${i + 1}.</b>`)));
     assert.match(sent[0].text, /2 товаров, 5 шт/);
     assert.doesNotMatch(sent.map((x) => x.text).join(' '), /₸/);
   });
@@ -182,6 +188,29 @@ describe('Озон-менеджер', () => {
     assert.ok(photos.length >= 1);
     assert.ok(photos.some((p) => /№ /.test(String(p.caption ?? ''))), JSON.stringify(photos.map((p) => p.caption)));
     assert.match(sent[0].text, /Отгрузить FBS/);
+  });
+
+  test('список сборки: фото с номерами, «1» вычёркивает, «верни 1» возвращает, всё собрано', async () => {
+    await bot.handleOzonBotUpdate({ message: { chat: { id: 111 }, text: '/ship_photo' } });
+    assert.match(String(photos[0].caption), /^<b>1\.<\/b>/);
+    assert.match(String(photos[1].caption), /^<b>2\.<\/b>/);
+    sent = [];
+    await bot.handleOzonBotUpdate({ message: { chat: { id: 111 }, text: '1' } });
+    assert.match(sent[0].text, /Собрано: 1/);
+    assert.match(sent[0].text, /Осталось собрать: 1 из 2/);
+    assert.doesNotMatch(sent[0].text, /<b>1\.<\/b>/);
+    sent = [];
+    await bot.handleOzonBotUpdate({ message: { chat: { id: 111 }, text: 'верни 1' } });
+    assert.match(sent[0].text, /Осталось собрать: 2 из 2/);
+    sent = [];
+    await bot.handleOzonBotUpdate({ message: { chat: { id: 111 }, text: 'собрал 1 и 2' } });
+    assert.match(sent[0].text, /Всё собрано/);
+    assert.equal(claudeCalls.length, 0, 'номера обрабатываются без ИИ');
+  });
+
+  test('номера без списка сборки уходят в ИИ как обычный вопрос', async () => {
+    await bot.handleOzonBotUpdate({ message: { chat: { id: 111 }, text: '5' } });
+    assert.equal(claudeCalls.length, 1);
   });
 
   test('/sold: что продалось сегодня — прямо из Ozon, отмены не считаются', async () => {
