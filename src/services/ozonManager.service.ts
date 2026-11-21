@@ -336,7 +336,7 @@ type PhotoSender = (chatId: string, title: string, cards: PhotoCard[], numbered?
 let photoSender: PhotoSender | null = null;
 export function setOzonBotPhotoSender(fn: PhotoSender | null) { photoSender = fn; }
 /** Список сборки с номерами живёт в Telegram-модуле: отметить собранное и показать остаток. */
-type PickHandlers = { mark: (chatId: string, nums: number[], undo?: boolean) => Promise<string>; left: (chatId: string) => Promise<string> };
+type PickHandlers = { mark: (chatId: string, nums: number[], undo?: boolean) => Promise<string>; left: (chatId: string) => Promise<string>; leftPhotos: (chatId: string) => Promise<string> };
 let pickHandlers: PickHandlers | null = null;
 export function setOzonBotPickHandlers(h: PickHandlers | null) { pickHandlers = h; }
 
@@ -350,7 +350,7 @@ export const OZON_TOOLS = [
   { name: 'returns', description: 'Возвраты Ozon за последние N дней: статус, причина, где сейчас, сумма.', input_schema: { type: 'object', properties: { days: { type: 'number' } } } },
   { name: 'fbo_stock', description: 'Остатки на складах Ozon (FBO) и на сколько дней хватит; что заканчивается.', input_schema: { type: 'object', properties: {} } },
   { name: 'show_photos', description: 'Отправить в чат товары ФОТОГРАФИЯМИ с количеством (одно фото на товар, одинаковые сложены): kind=ship — заказы FBS «Готовы к отгрузке» (накладные сделаны; новые несобранные не входят), у каждого фото номера заказов и количество (просят «что отгрузить», «фото и номер заказа», «отгрузка»); kind=collect — что собрать у оптовиков под несобранные заказы; kind=sold — что продалось за день. Используй, когда просят «покажи с фото», «вытащи сюда», «что собрать у оптовиков», «какие товары продались». После вызова фото уже в чате — напиши только короткий итог.', input_schema: { type: 'object', properties: { kind: { type: 'string', enum: ['ship', 'collect', 'sold'] }, date: { type: 'string', description: 'YYYY-MM-DD для sold, пусто — сегодня' } }, required: ['kind'] } },
-  { name: 'pick_list', description: 'Список сборки с номерами (после show_photos ship/collect): action=done — отметить собранными номера (владелец пишет «собрал 2 и 5», «убери 3»); action=undo — вернуть номера в список; action=left — что осталось собрать. Ответ — готовый текст, перешли его как есть.', input_schema: { type: 'object', properties: { action: { type: 'string', enum: ['done', 'undo', 'left'] }, numbers: { type: 'array', items: { type: 'number' } } }, required: ['action'] } },
+  { name: 'pick_list', description: 'Список сборки с номерами (после show_photos ship/collect): action=done — отметить собранными номера (владелец пишет «собрал 2 и 5», «убери 3»); action=undo — вернуть номера в список; action=left — что осталось собрать (текстом); action=left_photos — прислать ФОТО ещё не собранных (с теми же номерами), когда просят «фото того, что не собрал». Ответ — готовый текст, перешли его как есть.', input_schema: { type: 'object', properties: { action: { type: 'string', enum: ['done', 'undo', 'left', 'left_photos'] }, numbers: { type: 'array', items: { type: 'number' } } }, required: ['action'] } },
 ] as const;
 
 export async function runTool(name: string, input: any, ctx: { chatId?: string } = {}): Promise<unknown> {
@@ -365,6 +365,7 @@ export async function runTool(name: string, input: any, ctx: { chatId?: string }
     case 'pick_list': {
       if (!ctx.chatId || !pickHandlers) return { error: 'список сейчас недоступен' };
       const nums = Array.isArray(input?.numbers) ? input.numbers.map(Number).filter((n: number) => Number.isFinite(n)) : [];
+      if (input?.action === 'left_photos') return { sent: true, text: await pickHandlers.leftPhotos(ctx.chatId) };
       return { text: input?.action === 'left' ? await pickHandlers.left(ctx.chatId) : await pickHandlers.mark(ctx.chatId, nums, input?.action === 'undo') };
     }
     case 'day_sales': return daySales(input?.date);
@@ -422,11 +423,13 @@ export async function askOzonManager(history: Msg[], question: string, image?: O
     ? [{ type: 'image', source: { type: 'base64', media_type: image.mediaType, data: image.base64 } }, { type: 'text', text: question || 'Проанализируй этот товар для Ozon.' }]
     : question;
   const messages: Msg[] = [...history, { role: 'user', content: userContent }];
+  // Один system на весь разговор: в нём время, и если оно сменится между шагами, Claude отвергает свои thinking-блоки.
+  const system = systemPrompt();
   for (let step = 0; step < 8; step++) {
     const r = await fetchImpl('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model, max_tokens: 2500, system: systemPrompt(), tools: webSearch ? [...OZON_TOOLS, WEB_SEARCH_TOOL] : OZON_TOOLS, messages }),
+      body: JSON.stringify({ model, max_tokens: 2500, system, tools: webSearch ? [...OZON_TOOLS, WEB_SEARCH_TOOL] : OZON_TOOLS, messages }),
     });
     const body: any = await r.json().catch(() => ({}));
     if (!r.ok) {

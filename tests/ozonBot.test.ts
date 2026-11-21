@@ -208,6 +208,26 @@ describe('Озон-менеджер', () => {
     assert.equal(claudeCalls.length, 0, 'номера обрабатываются без ИИ');
   });
 
+  test('/left_photo: фото только несобранных, с прежними номерами', async () => {
+    await bot.handleOzonBotUpdate({ message: { chat: { id: 111 }, text: '/collect' } });
+    await bot.handleOzonBotUpdate({ message: { chat: { id: 111 }, text: '1' } });
+    photos = []; sent = [];
+    await bot.handleOzonBotUpdate({ message: { chat: { id: 111 }, text: 'Теперь отправь мне фото товаров тех которые я ещё не собрал' } });
+    assert.equal(photos.length, 1);
+    assert.match(String(photos[0].caption), /^<b>2\.<\/b>/);
+    assert.match(sent.at(-1)!.text, /1 из 2/);
+  });
+
+  test('один system на все шаги разговора (иначе Claude отвергает thinking)', async () => {
+    claudeReplies = [
+      { status: 200, body: { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 't1', name: 'fbs_to_ship', input: {} }] } },
+      { status: 200, body: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'готово' }] } },
+    ];
+    await bot.handleOzonBotUpdate({ message: { chat: { id: 111 }, text: 'что отгрузить?' } });
+    assert.equal(claudeCalls.length, 2);
+    assert.equal(claudeCalls[0].system, claudeCalls[1].system);
+  });
+
   test('номера без списка сборки уходят в ИИ как обычный вопрос', async () => {
     await bot.handleOzonBotUpdate({ message: { chat: { id: 111 }, text: '5' } });
     assert.equal(claudeCalls.length, 1);
