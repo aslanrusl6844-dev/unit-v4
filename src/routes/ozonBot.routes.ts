@@ -6,7 +6,7 @@ import { buildQtyCard } from '../services/photoCollage';
 import { logger } from '../utils/logger';
 import {
   askOzonManager, daySales, eveningReport, fbsToShip, fboStock, morningReport, photoCards, purchaseNeeds, returnsList,
-  setOzonBotPhotoSender, setOzonBotPickHandlers, type PhotoCard,
+  setOzonBotPhotoSender, setOzonBotPickHandlers, photosByOffer, type PhotoCard,
 } from '../services/ozonManager.service';
 
 /**
@@ -160,6 +160,30 @@ export async function pickListLeftPhotos(chatId: string): Promise<string> {
   if (!list || !list.items.length) return 'Списка сборки нет. Сначала попросите «фото, что отгрузить» или /ship_photo.';
   const left = list.items.filter((i) => !i.done);
   if (!left.length) return `🎉 Всё собрано! ${list.items.length} из ${list.items.length}.`;
+  // Список, сохранённый старой версией, без фото: находим товар по номерам заказов в Ozon и берём его фото.
+  const noPhoto = left.filter((i) => !i.photo);
+  if (noPhoto.length) {
+    const offerOf = new Map<string, string>();
+    try {
+      const ship = await fbsToShip();
+      const byPosting = new Map(ship.postings.map((p) => [p.postingNumber, p.items]));
+      for (const i of noPhoto) {
+        if (i.offerId) { offerOf.set(String(i.n), i.offerId); continue; }
+        for (const pn of i.postings) {
+          const hit = byPosting.get(pn)?.find((x) => x.name === i.name) ?? (byPosting.get(pn)?.length === 1 ? byPosting.get(pn)![0] : undefined);
+          if (hit) { offerOf.set(String(i.n), hit.offerId); break; }
+        }
+      }
+      const photos = await photosByOffer([...offerOf.values()]);
+      for (const i of noPhoto) {
+        const off = offerOf.get(String(i.n));
+        if (off) { i.offerId = off; i.photo = photos.get(off) ?? null; }
+      }
+      if (noPhoto.some((i) => i.photo)) await prisma.ozonBotPickList.update({ where: { chatId }, data: { items: JSON.stringify(list.items) } });
+    } catch (err: any) {
+      logger.warn({ err: String(err?.message ?? err) }, '[OzonBot] фото для старого списка не нашлись');
+    }
+  }
   const cards: PhotoCard[] = left.map((i) => ({ offerId: i.offerId ?? '', name: i.name, qty: i.qty, photo: i.photo ?? null, stickers: i.stickers ?? [], postings: i.postings }));
   await sendPhotoCards(chatId, `⏳ Ещё не собрано (${list.title.replace(/^\S+\s*/, '')})`, cards, true, left.map((i) => i.n));
   return `Отправил фото ещё не собранных: ${left.length} из ${list.items.length}. Пришлите номера собранного.`;
