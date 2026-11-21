@@ -307,10 +307,11 @@ export async function photoCards(kind: 'collect' | 'sold' | 'ship', dateStr?: st
   };
   let title: string;
   if (kind === 'ship') {
-    // Все FBS-отправления, которые надо отгрузить (и несобранные, и уже собранные), с номерами заказов.
+    // Только «Готовы к отгрузке» (накладные уже сделаны, статус awaiting_deliver); новые, ещё не собранные — не берём.
     const ship = await fbsToShip();
-    for (const p of ship.postings) for (const i of p.items) add(i.offerId, i.name, i.qty, [p.sticker], [p.postingNumber]);
-    title = `🚚 Отгрузить FBS: ${ship.total} заказов`;
+    const ready = ship.postings.filter((p) => !p.needPacking);
+    for (const p of ready) for (const i of p.items) add(i.offerId, i.name, i.qty, [p.sticker], [p.postingNumber]);
+    title = `🚚 Готовы к отгрузке FBS: ${ready.length} заказов`;
   } else if (kind === 'collect') {
     const need = await purchaseNeeds();
     for (const i of need.items) add(i.offerId, i.name, i.qty, i.stickers);
@@ -348,7 +349,7 @@ export const OZON_TOOLS = [
   { name: 'purchase_needs', description: 'Сколько товара и денег по закупочной (оптовой) цене нужно, чтобы собрать ещё не собранные FBS-заказы.', input_schema: { type: 'object', properties: {} } },
   { name: 'returns', description: 'Возвраты Ozon за последние N дней: статус, причина, где сейчас, сумма.', input_schema: { type: 'object', properties: { days: { type: 'number' } } } },
   { name: 'fbo_stock', description: 'Остатки на складах Ozon (FBO) и на сколько дней хватит; что заканчивается.', input_schema: { type: 'object', properties: {} } },
-  { name: 'show_photos', description: 'Отправить в чат товары ФОТОГРАФИЯМИ с количеством (одно фото на товар, одинаковые сложены): kind=ship — ВСЕ заказы FBS, которые надо отгрузить, у каждого фото номера заказов и количество (просят «что отгрузить», «фото и номер заказа», «отгрузка»); kind=collect — что собрать у оптовиков под несобранные заказы; kind=sold — что продалось за день. Используй, когда просят «покажи с фото», «вытащи сюда», «что собрать у оптовиков», «какие товары продались». После вызова фото уже в чате — напиши только короткий итог.', input_schema: { type: 'object', properties: { kind: { type: 'string', enum: ['ship', 'collect', 'sold'] }, date: { type: 'string', description: 'YYYY-MM-DD для sold, пусто — сегодня' } }, required: ['kind'] } },
+  { name: 'show_photos', description: 'Отправить в чат товары ФОТОГРАФИЯМИ с количеством (одно фото на товар, одинаковые сложены): kind=ship — заказы FBS «Готовы к отгрузке» (накладные сделаны; новые несобранные не входят), у каждого фото номера заказов и количество (просят «что отгрузить», «фото и номер заказа», «отгрузка»); kind=collect — что собрать у оптовиков под несобранные заказы; kind=sold — что продалось за день. Используй, когда просят «покажи с фото», «вытащи сюда», «что собрать у оптовиков», «какие товары продались». После вызова фото уже в чате — напиши только короткий итог.', input_schema: { type: 'object', properties: { kind: { type: 'string', enum: ['ship', 'collect', 'sold'] }, date: { type: 'string', description: 'YYYY-MM-DD для sold, пусто — сегодня' } }, required: ['kind'] } },
   { name: 'pick_list', description: 'Список сборки с номерами (после show_photos ship/collect): action=done — отметить собранными номера (владелец пишет «собрал 2 и 5», «убери 3»); action=undo — вернуть номера в список; action=left — что осталось собрать. Ответ — готовый текст, перешли его как есть.', input_schema: { type: 'object', properties: { action: { type: 'string', enum: ['done', 'undo', 'left'] }, numbers: { type: 'array', items: { type: 'number' } } }, required: ['action'] } },
 ] as const;
 

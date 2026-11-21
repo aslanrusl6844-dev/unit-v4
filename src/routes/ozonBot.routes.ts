@@ -223,7 +223,7 @@ const HELP = [
   '/today — продажи и прибыль за сегодня',
   '/ship — что отгрузить и сроки',
   '/buy — сколько нужно на закупку',
-  '/ship_photo — что отгрузить: фото с номерами 1, 2, 3…, количество и номера заказов',
+  '/ship_photo — готовые к отгрузке (накладные сделаны): фото с номерами 1, 2, 3…, количество и номера заказов',
   'Собрали — пришлите номера (1 3 5 или 2-6), бот вычеркнет; /left — что осталось',
   '/collect — что собрать у оптовиков: фото + количество',
   '/sold — что продалось сегодня: фото + количество',
@@ -333,7 +333,7 @@ ozonBotRouter.get('/setup', async (req, res) => {
     await tg('setWebhook', { url, secret_token: ozonBotSecret(), allowed_updates: ['message'], drop_pending_updates: true });
     await tg('setMyCommands', { commands: [
       { command: 'report', description: 'Утренний отчёт' }, { command: 'today', description: 'Продажи за сегодня' },
-      { command: 'ship', description: 'Что отгрузить' }, { command: 'ship_photo', description: 'Отгрузка: фото и номера заказов' }, { command: 'left', description: 'Что осталось собрать' }, { command: 'buy', description: 'Закупка под заказы' },
+      { command: 'ship', description: 'Что отгрузить' }, { command: 'ship_photo', description: 'Готовы к отгрузке: фото и номера' }, { command: 'left', description: 'Что осталось собрать' }, { command: 'buy', description: 'Закупка под заказы' },
       { command: 'collect', description: 'Собрать у оптовиков (фото)' }, { command: 'sold', description: 'Продано сегодня (фото)' },
       { command: 'returns', description: 'Возвраты' }, { command: 'stock', description: 'Склады Ozon' }, { command: 'new', description: 'Начать заново' },
     ] }).catch(() => undefined);
