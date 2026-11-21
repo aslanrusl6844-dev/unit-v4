@@ -218,6 +218,13 @@ describe('Озон-менеджер', () => {
     assert.match(sent.at(-1)!.text, /1 из 2/);
   });
 
+  test('старый список без фото: фото находятся по номерам заказов', async () => {
+    pickLists['111'] = { chatId: '111', title: '🚚 Готовы к отгрузке FBS: 1 заказов', items: JSON.stringify([{ n: 1, name: 'Чайник', qty: 1, postings: ['P-later'], done: false }]) };
+    await bot.handleOzonBotUpdate({ message: { chat: { id: 111 }, text: '/left_photo' } });
+    assert.equal(photos.length, 1);
+    assert.match(JSON.parse(pickLists['111'].items)[0].photo, /cdn\/a\.jpg/);
+  });
+
   test('один system на все шаги разговора (иначе Claude отвергает thinking)', async () => {
     claudeReplies = [
       { status: 200, body: { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 't1', name: 'fbs_to_ship', input: {} }] } },

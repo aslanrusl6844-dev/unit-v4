@@ -271,7 +271,7 @@ export async function eveningReport(): Promise<string> {
 export type PhotoCard = { offerId: string; name: string; qty: number; photo: string | null; stickers?: string[]; postings?: string[] };
 
 /** Первое фото товара: витрина My Market, иначе фото с площадки. */
-async function photosByOffer(offerIds: string[]): Promise<Map<string, string>> {
+export async function photosByOffer(offerIds: string[]): Promise<Map<string, string>> {
   const ids = [...new Set(offerIds.filter(Boolean))];
   if (!ids.length) return new Map();
   const rows = await prisma.product.findMany({
