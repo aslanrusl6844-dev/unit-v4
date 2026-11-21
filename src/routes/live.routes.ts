@@ -422,7 +422,7 @@ liveRouter.post('/streams/:id/gift', async (req, res) => {
     const name = cleanName(req.body?.name);
     await prisma.liveGiftSend.create({ data: { streamId: s.id, creatorId: s.creatorId, giftId: gift.id, deviceKey: device, name, count, coins: total } });
     await chatEvent(s.id, 'gift', name, `отправил(а) Подарок «${gift.title}» ×${count}`, {
-      giftId: gift.id, title: gift.title, emoji: gift.emoji, imageUrl: gift.imageUrl ?? '', animUrl: (gift as any).animUrl ?? '', count, coins: total,
+      giftId: gift.id, title: gift.title, emoji: gift.emoji, imageUrl: gift.imageUrl ?? '', animUrl: (gift as any).animUrl ?? '', soundUrl: (gift as any).soundUrl ?? '', count, coins: total,
     });
     res.json({ ok: true, coins: left - total });
   } catch (err) {
@@ -832,6 +832,7 @@ const giftSchema = z.object({
   emoji: z.string().trim().max(16).optional().default('🎁'),
   imageUrl: z.string().trim().url().max(500).optional().or(z.literal('')).default(''),
   animUrl: z.string().trim().url().max(500).optional().or(z.literal('')).default(''),
+  soundUrl: z.string().trim().url().max(500).optional().or(z.literal('')).default(''),
   coins: z.number().int().min(1).max(100000),
   sort: z.number().int().min(0).max(1000).optional().default(0),
   active: z.boolean().optional().default(true),
@@ -850,7 +851,7 @@ liveAdminRouter.post('/gifts', async (req, res) => {
   const p = giftSchema.safeParse(req.body);
   if (!p.success) return res.status(400).json({ error: 'Название и цена в монетах (от 1)' });
   const d = p.data;
-  const row = await prisma.liveGift.create({ data: { title: d.title, emoji: d.emoji || '🎁', imageUrl: d.imageUrl || null, animUrl: d.animUrl || null, coins: d.coins, sort: d.sort, active: d.active } });
+  const row = await prisma.liveGift.create({ data: { title: d.title, emoji: d.emoji || '🎁', imageUrl: d.imageUrl || null, animUrl: d.animUrl || null, soundUrl: d.soundUrl || null, coins: d.coins, sort: d.sort, active: d.active } });
   res.status(201).json(giftDto(row));
 });
 
@@ -858,7 +859,7 @@ liveAdminRouter.put('/gifts/:id', async (req, res) => {
   const p = giftSchema.safeParse(req.body);
   if (!p.success) return res.status(400).json({ error: 'Название и цена в монетах (от 1)' });
   const d = p.data;
-  const r = await prisma.liveGift.updateMany({ where: { id: req.params.id }, data: { title: d.title, emoji: d.emoji || '🎁', imageUrl: d.imageUrl || null, animUrl: d.animUrl || null, coins: d.coins, sort: d.sort, active: d.active } });
+  const r = await prisma.liveGift.updateMany({ where: { id: req.params.id }, data: { title: d.title, emoji: d.emoji || '🎁', imageUrl: d.imageUrl || null, animUrl: d.animUrl || null, soundUrl: d.soundUrl || null, coins: d.coins, sort: d.sort, active: d.active } });
   if (!r.count) return res.status(404).json({ error: 'Подарок не найден' });
   res.json({ ok: true });
 });
