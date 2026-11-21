@@ -320,6 +320,17 @@ describe('публикация и скрытие', () => {
     assert.equal((await pub(`/${s.id}`)).status, 404);
     assert.equal(tables.showcaseProduct.length, 1, 'привязки сохранились при скрытии');
   });
+
+  test('плитка «Магазин у дома» (type market) видна только новым приложениям (?v=2)', async () => {
+    const m = await newShowcase({ title: 'Магазин у дома', type: 'market' });
+    const b = await newShowcase({ title: 'Nike' });
+    await adm('PATCH', `/${m.id}`, { published: true });
+    await adm('PATCH', `/${b.id}`, { published: true });
+    assert.deepEqual((await pub('')).json.map((x: any) => x.title), ['Nike']);
+    const v2 = (await pub('?v=2')).json;
+    assert.deepEqual(v2.map((x: any) => x.title), ['Магазин у дома', 'Nike']);
+    assert.equal(v2[0].type, 'market');
+  });
 });
 
 // ---------------------------------------------------------------------------
