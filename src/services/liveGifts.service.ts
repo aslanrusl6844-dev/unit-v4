@@ -27,7 +27,7 @@ export const DEFAULT_GIFTS: Array<{ title: string; emoji: string; coins: number 
 ];
 
 export function giftDto(g: any) {
-  return { id: g.id, title: g.title, emoji: g.emoji ?? '🎁', imageUrl: g.imageUrl ?? '', coins: g.coins, sort: g.sort ?? 0, active: g.active !== false };
+  return { id: g.id, title: g.title, emoji: g.emoji ?? '🎁', imageUrl: g.imageUrl ?? '', animUrl: g.animUrl ?? '', coins: g.coins, sort: g.sort ?? 0, active: g.active !== false };
 }
 
 export async function activeGifts(): Promise<any[]> {

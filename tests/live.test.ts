@@ -375,6 +375,19 @@ describe('ТикТок: события чата, ♥ счётчик, подар�
     assert.equal(mine.json.profile.giftCoins, 3);
   });
 
+  test('подарок с анимацией на весь экран: ссылка приходит в списке и в событии чата', async () => {
+    const r = await call('POST', '/api/shop/live/creator/streams/start', { phone: PHONE, title: 'Лев', skus: ['1'] });
+    await call('GET', '/api/shop/live/gifts?device=d1');
+    const lion = gifts.find((g) => g.title === 'Роза')!;
+    lion.animUrl = 'https://cdn.example.com/lion.webp';
+    const list = await call('GET', '/api/shop/live/gifts?device=d1');
+    assert.equal(list.json.items.find((g: Row) => g.id === lion.id).animUrl, 'https://cdn.example.com/lion.webp');
+    await call('POST', `/api/shop/live/streams/${r.json.id}/gift`, { device: 'd1', name: 'Аслан', giftId: lion.id });
+    const c = await call('GET', `/api/shop/live/streams/${r.json.id}/chat?after=0`);
+    const ev = c.json.messages.find((m: Row) => m.kind === 'gift');
+    assert.equal(ev.meta.animUrl, 'https://cdn.example.com/lion.webp');
+  });
+
   test('подарок вне эфира не отправляется', async () => {
     streams.push({ id: 's9', creatorId: 'cr1', title: 'Анонс', channel: 'c9', status: 'scheduled', skus: '[]', likes: 0, views: 0 });
     const list = await call('GET', '/api/shop/live/gifts?device=d1');

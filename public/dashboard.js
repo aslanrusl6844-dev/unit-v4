@@ -11059,12 +11059,14 @@ function renderMmLiveBanners(thead, tbody) {
 // ---- Подарки Live: что зрители дарят креаторам в эфире (как в ТикТоке). Пока бесплатно: монеты на день. ----
 let mmLiveGiftEditId = null;
 let mmLiveGiftImage = '';
+let mmLiveGiftAnim = '';
 let mmLiveGiftDaily = 100;
 let mmLiveGiftCreators = [];
 
 function renderMmLiveGifts(thead, tbody) {
   const edit = mmCreatorRows.find((g) => g.id === mmLiveGiftEditId) || null;
   if (edit && !mmLiveGiftImage) mmLiveGiftImage = edit.imageUrl || '';
+  if (edit && !mmLiveGiftAnim) mmLiveGiftAnim = edit.animUrl || '';
   thead.innerHTML = '<tr><th>Порядок</th><th>Подарок</th><th class="num">Цена, монет</th><th class="num">Подарено, шт</th><th>Показ</th><th></th></tr>';
   const form = `
     <tr><td colspan="6" style="background:var(--surface-2, #faf8f4)">
@@ -11072,6 +11074,11 @@ function renderMmLiveGifts(thead, tbody) {
         <div>
           <div id="mmLiveGiftPreview" style="width:64px;height:64px;border-radius:12px;background:#222 center/contain no-repeat;${mmLiveGiftImage ? `background-image:url('${mmEsc(mmLiveGiftImage)}')` : ''};display:flex;align-items:center;justify-content:center;font-size:34px">${mmLiveGiftImage ? '' : mmEsc(edit?.emoji || '🎁')}</div>
           <input type="file" id="mmLiveGiftFile" accept="image/png,image/webp,image/jpeg" style="margin-top:6px;font-size:12px;width:200px" />
+        </div>
+        <div>
+          <div style="font-size:12px;color:var(--text-faint)">Анимация на весь экран</div>
+          <div id="mmLiveGiftAnimPreview" style="width:64px;height:64px;border-radius:12px;background:#222 center/contain no-repeat;${mmLiveGiftAnim ? `background-image:url('${mmEsc(mmLiveGiftAnim)}')` : ''};display:flex;align-items:center;justify-content:center;color:#888;font-size:11px">${mmLiveGiftAnim ? '' : 'нет'}</div>
+          <input type="file" id="mmLiveGiftAnimFile" accept="image/webp,image/gif" style="margin-top:6px;font-size:12px;width:200px" />
         </div>
         <label>Название<input type="text" id="mmLiveGiftTitle" maxlength="40" value="${mmEsc(edit?.title || '')}" placeholder="Например: Роза" style="width:160px" /></label>
         <label>Эмодзи (если нет картинки)<input type="text" id="mmLiveGiftEmoji" maxlength="8" value="${mmEsc(edit?.emoji || '🎁')}" style="width:70px" /></label>
@@ -11081,13 +11088,14 @@ function renderMmLiveGifts(thead, tbody) {
         <button class="btn" id="mmLiveGiftSave">${edit ? 'Сохранить' : 'Добавить подарок'}</button>
         ${edit ? '<button class="btn btn--ghost" id="mmLiveGiftCancel">Отмена</button>' : ''}
         ${mmLiveGiftImage ? '<button class="btn btn--ghost" id="mmLiveGiftNoImage">Убрать картинку</button>' : ''}
+        ${mmLiveGiftAnim ? '<button class="btn btn--ghost" id="mmLiveGiftNoAnim">Убрать анимацию</button>' : ''}
       </div>
-      <p class="panel__hint" style="margin:8px 0 0">Пока подарки бесплатные: каждый зритель получает <b>${mmLiveGiftDaily} монет в день</b>. Подарок идёт креатору эфира — сколько монет получил каждый, видно ниже и во вкладке «Креаторы». Картинка лучше PNG с прозрачным фоном.</p>
+      <p class="panel__hint" style="margin:8px 0 0">Пока подарки бесплатные: каждый зритель получает <b>${mmLiveGiftDaily} монет в день</b>. Подарок идёт креатору эфира — сколько монет получил каждый, видно ниже и во вкладке «Креаторы». Картинка лучше PNG с прозрачным фоном. <b>Анимация</b> — анимированный WEBP с прозрачным фоном до 3 МБ (лев, дракон, юрта…): когда дарят этот подарок, она играет на весь экран у всех зрителей эфира, как в ТикТоке.</p>
     </td></tr>`;
   const rows = mmCreatorRows.map((g) => `
     <tr>
       <td>${g.sort}</td>
-      <td>${g.imageUrl ? `<img src="${mmEsc(g.imageUrl)}" alt="" style="width:32px;height:32px;object-fit:contain;vertical-align:middle;margin-right:6px" />` : `<span style="font-size:24px;vertical-align:middle;margin-right:6px">${mmEsc(g.emoji)}</span>`}<b>${mmEsc(g.title)}</b></td>
+      <td>${g.imageUrl ? `<img src="${mmEsc(g.imageUrl)}" alt="" style="width:32px;height:32px;object-fit:contain;vertical-align:middle;margin-right:6px" />` : `<span style="font-size:24px;vertical-align:middle;margin-right:6px">${mmEsc(g.emoji)}</span>`}<b>${mmEsc(g.title)}</b>${g.animUrl ? ' <span title="Анимация на весь экран" style="font-size:11px;background:#ffe9d6;color:#c2410c;border-radius:8px;padding:1px 6px">🎬 анимация</span>' : ''}</td>
       <td class="num">${g.coins}</td>
       <td class="num">${g.sent || 0}</td>
       <td>${g.active ? '<span style="color:var(--accent)">● да</span>' : '<span style="color:var(--text-faint)">скрыт</span>'}</td>
@@ -11116,12 +11124,27 @@ function renderMmLiveGifts(thead, tbody) {
       st.textContent = 'Картинка загружена';
     } catch (err) { st.textContent = `Ошибка: ${err.message}`; }
   });
+  document.getElementById('mmLiveGiftAnimFile').addEventListener('change', async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const st = document.getElementById('mmCreatorStatus');
+    st.textContent = 'Загружаю анимацию…';
+    try {
+      mmLiveGiftAnim = await uploadMyMarketFile(file, { banner: true });
+      const pv = document.getElementById('mmLiveGiftAnimPreview');
+      pv.style.backgroundImage = `url('${mmLiveGiftAnim}')`;
+      pv.textContent = '';
+      st.textContent = 'Анимация загружена — нажмите «Сохранить»';
+    } catch (err) { st.textContent = `Ошибка: ${err.message}`; }
+  });
+  document.getElementById('mmLiveGiftNoAnim')?.addEventListener('click', () => { mmLiveGiftAnim = ''; if (edit) edit.animUrl = ''; renderMmCreators(); });
   document.getElementById('mmLiveGiftNoImage')?.addEventListener('click', () => { mmLiveGiftImage = ''; if (edit) edit.imageUrl = ''; renderMmCreators(); });
   document.getElementById('mmLiveGiftSave').addEventListener('click', async () => {
     const body = {
       title: document.getElementById('mmLiveGiftTitle').value.trim(),
       emoji: document.getElementById('mmLiveGiftEmoji').value.trim() || '🎁',
       imageUrl: mmLiveGiftImage || '',
+      animUrl: mmLiveGiftAnim || '',
       coins: Number(document.getElementById('mmLiveGiftCoins').value) || 1,
       sort: Number(document.getElementById('mmLiveGiftSort').value) || 0,
       active: document.getElementById('mmLiveGiftActive').checked,
@@ -11130,13 +11153,13 @@ function renderMmLiveGifts(thead, tbody) {
     try {
       if (edit) await api(`/shop-admin/live/gifts/${edit.id}`, { method: 'PUT', body: JSON.stringify(body) });
       else await api('/shop-admin/live/gifts', { method: 'POST', body: JSON.stringify(body) });
-      mmLiveGiftEditId = null; mmLiveGiftImage = '';
+      mmLiveGiftEditId = null; mmLiveGiftImage = ''; mmLiveGiftAnim = '';
       document.getElementById('mmCreatorStatus').textContent = 'Подарок сохранён';
       loadMmCreators();
     } catch (err) { alert(err.message); }
   });
-  document.getElementById('mmLiveGiftCancel')?.addEventListener('click', () => { mmLiveGiftEditId = null; mmLiveGiftImage = ''; renderMmCreators(); });
-  tbody.querySelectorAll('[data-livegift-edit]').forEach((b) => b.addEventListener('click', () => { mmLiveGiftEditId = b.dataset.livegiftEdit; mmLiveGiftImage = ''; renderMmCreators(); }));
+  document.getElementById('mmLiveGiftCancel')?.addEventListener('click', () => { mmLiveGiftEditId = null; mmLiveGiftImage = ''; mmLiveGiftAnim = ''; renderMmCreators(); });
+  tbody.querySelectorAll('[data-livegift-edit]').forEach((b) => b.addEventListener('click', () => { mmLiveGiftEditId = b.dataset.livegiftEdit; mmLiveGiftImage = ''; mmLiveGiftAnim = ''; renderMmCreators(); }));
   tbody.querySelectorAll('[data-livegift-del]').forEach((b) => b.addEventListener('click', async () => {
     if (!confirm('Скрыть подарок? Он пропадёт из списка в приложении.')) return;
     try { await api(`/shop-admin/live/gifts/${b.dataset.livegiftDel}`, { method: 'DELETE' }); loadMmCreators(); } catch (err) { alert(err.message); }
