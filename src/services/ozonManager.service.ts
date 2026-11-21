@@ -268,7 +268,7 @@ export async function eveningReport(): Promise<string> {
 // ---------------------------------------------------------------- карточки с фото (для оптовиков)
 
 /** stickers — крупные 4 цифры со стикеров Ozon тех отправлений, где есть этот товар. */
-export type PhotoCard = { offerId: string; name: string; qty: number; photo: string | null; stickers?: string[] };
+export type PhotoCard = { offerId: string; name: string; qty: number; photo: string | null; stickers?: string[]; postings?: string[] };
 
 /** Первое фото товара: витрина My Market, иначе фото с площадки. */
 async function photosByOffer(offerIds: string[]): Promise<Map<string, string>> {
@@ -295,17 +295,23 @@ async function photosByOffer(offerIds: string[]): Promise<Map<string, string>> {
  * Товары одной картинкой на позицию: «collect» — что собрать у оптовиков (несобранные FBS-заказы),
  * «sold» — что продалось за день (FBS + FBO). Одинаковые товары сложены в одну строку с общим количеством.
  */
-export async function photoCards(kind: 'collect' | 'sold', dateStr?: string): Promise<{ title: string; cards: PhotoCard[] }> {
-  const agg = new Map<string, { offerId: string; name: string; qty: number; stickers: string[] }>();
-  const add = (offerId: string, name: string, qty: number, stickers: string[] = []) => {
+export async function photoCards(kind: 'collect' | 'sold' | 'ship', dateStr?: string): Promise<{ title: string; cards: PhotoCard[] }> {
+  const agg = new Map<string, { offerId: string; name: string; qty: number; stickers: string[]; postings: string[] }>();
+  const add = (offerId: string, name: string, qty: number, stickers: string[] = [], postings: string[] = []) => {
     const key = offerId || name;
-    const cur = agg.get(key) ?? { offerId, name, qty: 0, stickers: [] };
+    const cur = agg.get(key) ?? { offerId, name, qty: 0, stickers: [], postings: [] };
     cur.qty += qty;
     for (const s of stickers) if (s && !cur.stickers.includes(s)) cur.stickers.push(s);
+    for (const p of postings) if (p && !cur.postings.includes(p)) cur.postings.push(p);
     agg.set(key, cur);
   };
   let title: string;
-  if (kind === 'collect') {
+  if (kind === 'ship') {
+    // Все FBS-отправления, которые надо отгрузить (и несобранные, и уже собранные), с номерами заказов.
+    const ship = await fbsToShip();
+    for (const p of ship.postings) for (const i of p.items) add(i.offerId, i.name, i.qty, [p.sticker], [p.postingNumber]);
+    title = `🚚 Отгрузить FBS: ${ship.total} заказов`;
+  } else if (kind === 'collect') {
     const need = await purchaseNeeds();
     for (const i of need.items) add(i.offerId, i.name, i.qty, i.stickers);
     title = '🛒 Собрать у оптовиков (несобранные заказы FBS)';
@@ -320,7 +326,7 @@ export async function photoCards(kind: 'collect' | 'sold', dateStr?: string): Pr
     title = `📦 Продано ${dayjs(date).format('DD.MM')} (FBS + FBO)`;
   }
   const photos = await photosByOffer([...agg.values()].map((x) => x.offerId));
-  const cards = [...agg.values()].sort((a, b) => b.qty - a.qty).map((x) => ({ ...x, photo: photos.get(x.offerId) ?? null }));
+  const cards = [...agg.values()].sort((a, b) => b.qty - a.qty).map((x) => ({ ...x, postings: kind === 'ship' ? x.postings : undefined, photo: photos.get(x.offerId) ?? null }));
   return { title, cards };
 }
 
@@ -338,13 +344,14 @@ export const OZON_TOOLS = [
   { name: 'purchase_needs', description: 'Сколько товара и денег по закупочной (оптовой) цене нужно, чтобы собрать ещё не собранные FBS-заказы.', input_schema: { type: 'object', properties: {} } },
   { name: 'returns', description: 'Возвраты Ozon за последние N дней: статус, причина, где сейчас, сумма.', input_schema: { type: 'object', properties: { days: { type: 'number' } } } },
   { name: 'fbo_stock', description: 'Остатки на складах Ozon (FBO) и на сколько дней хватит; что заканчивается.', input_schema: { type: 'object', properties: {} } },
-  { name: 'show_photos', description: 'Отправить в чат товары ФОТОГРАФИЯМИ с количеством (одно фото на товар, одинаковые сложены): kind=collect — что собрать у оптовиков под несобранные заказы; kind=sold — что продалось за день. Используй, когда просят «покажи с фото», «что собрать у оптовиков», «какие товары продались». После вызова фото уже в чате — напиши только короткий итог.', input_schema: { type: 'object', properties: { kind: { type: 'string', enum: ['collect', 'sold'] }, date: { type: 'string', description: 'YYYY-MM-DD для sold, пусто — сегодня' } }, required: ['kind'] } },
+  { name: 'show_photos', description: 'Отправить в чат товары ФОТОГРАФИЯМИ с количеством (одно фото на товар, одинаковые сложены): kind=ship — ВСЕ заказы FBS, которые надо отгрузить, у каждого фото номера заказов и количество (просят «что отгрузить», «фото и номер заказа», «отгрузка»); kind=collect — что собрать у оптовиков под несобранные заказы; kind=sold — что продалось за день. Используй, когда просят «покажи с фото», «вытащи сюда», «что собрать у оптовиков», «какие товары продались». После вызова фото уже в чате — напиши только короткий итог.', input_schema: { type: 'object', properties: { kind: { type: 'string', enum: ['ship', 'collect', 'sold'] }, date: { type: 'string', description: 'YYYY-MM-DD для sold, пусто — сегодня' } }, required: ['kind'] } },
 ] as const;
 
 export async function runTool(name: string, input: any, ctx: { chatId?: string } = {}): Promise<unknown> {
   switch (name) {
     case 'show_photos': {
-      const { title, cards } = await photoCards(input?.kind === 'sold' ? 'sold' : 'collect', input?.date);
+      const kind = input?.kind === 'sold' ? 'sold' : input?.kind === 'ship' ? 'ship' : 'collect';
+      const { title, cards } = await photoCards(kind, input?.date);
       if (!ctx.chatId || !photoSender) return { error: 'фото сейчас отправить нельзя', cards };
       await photoSender(ctx.chatId, title, cards);
       return { sent: true, positions: cards.length, totalQty: cards.reduce((s, c) => s + c.qty, 0), withoutPhoto: cards.filter((c) => !c.photo).map((c) => c.name) };
@@ -366,6 +373,7 @@ function systemPrompt() {
     `Сейчас ${now.format('YYYY-MM-DD HH:mm')} по Алматы, валюта — тенге (₸).`,
     'Магазин продаёт на Ozon по FBS (свой склад: сами собираем и отгружаем) и FBO (склад Ozon).',
     'Твоя работа: продажи и маржа, что и до какого срока отгрузить (просрочка = штраф Ozon), сколько денег нужно на закупку товара по оптовой цене, возвраты, остатки FBO.',
+    'ФОТО: отправить фото в чат можно ТОЛЬКО инструментом show_photos. Никогда не пиши «фото отправлены», если в этом ответе не вызывал show_photos и он не вернул sent:true. Просят фото — вызывай show_photos (для отгрузки — kind=ship).',
     'Всегда бери цифры только из инструментов, ничего не выдумывай. Если данных нет или в них пометка (нет закупочной цены, комиссия ещё не начислена) — прямо скажи.',
     'Отвечай по-русски, коротко и по делу, как опытный менеджер: сначала главное (цифры, срочное), потом детали и совет, что сделать.',
     'Формат — Telegram HTML: только <b>, <i>, переносы строк и «•» для списков. Никакого Markdown (**, #, таблиц).',
@@ -396,7 +404,7 @@ export async function askOzonManager(history: Msg[], question: string, image?: O
   if (!apiKey) return 'Мозг бота не подключён: нет ANTHROPIC_API_KEY в Vercel.';
   // Модели по очереди: если аккаунту Anthropic какая-то недоступна (not_found) — берём следующую.
   // Последняя — та же, на которой уже работает Баурсак.
-  const models = [...new Set([process.env.OZON_BOT_MODEL, 'claude-sonnet-4-5-20250929', 'claude-sonnet-4-20250514', DEFAULT_MODEL].filter(Boolean) as string[])];
+  const models = [...new Set([process.env.OZON_BOT_MODEL, 'claude-sonnet-5-5', DEFAULT_MODEL].filter(Boolean) as string[])];
   let model = models.shift()!;
   let webSearch = (process.env.OZON_BOT_WEB_SEARCH ?? 'on').toLowerCase() !== 'off';
   const userContent: string | Block[] = image
