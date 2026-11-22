@@ -367,6 +367,25 @@
               <div id="wsPurStatus" style="font-size:12px;margin-top:4px"></div>
               <div id="wsPurTotals" style="margin-top:8px"></div>
               <div id="wsPurList"></div>
+              <!-- Отправлено на Ozon (FBS): штук, закуп, продажа, расходы Ozon, налог, чистая прибыль по каждому товару -->
+              <div id="wsShipped" style="margin-top:14px;border-top:1px solid var(--border);padding-top:10px">
+                <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:6px">
+                  <b style="font-size:14px">Отправлено на Ozon (FBS)</b>
+                  <span style="font-size:11px;color:var(--text-faint)">≈ — оценка</span>
+                </div>
+                <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+                  <input type="date" id="wsShipFrom" style="flex:1;min-width:120px" />
+                  <span>—</span>
+                  <input type="date" id="wsShipTo" style="flex:1;min-width:120px" />
+                  <button type="button" class="btn btn--ghost" id="wsShipLoad">Показать</button>
+                </div>
+                <div id="wsShipTotals" style="font-size:12.5px;margin-bottom:6px"></div>
+                <div style="overflow-x:auto"><table class="table" id="wsShipTable" style="font-size:12px;min-width:520px">
+                  <thead><tr><th>Товар</th><th class="num">Шт</th><th class="num">Закуп</th><th class="num">Продажа</th><th class="num">Ozon</th><th class="num">Налог</th><th class="num">Чистая</th></tr></thead>
+                  <tbody></tbody>
+                </table></div>
+                <div id="wsShipHint" style="font-size:11px;color:var(--text-faint);margin-top:6px"></div>
+              </div>
             </aside>
             </div>
             <div id="wholesalerStatus" style="margin:0 0 8px;font-size:12.5px"></div>
