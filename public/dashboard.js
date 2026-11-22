@@ -10519,7 +10519,7 @@ function wsPurRender() {
     <button type="button" class="link-btn" data-pur-list-toggle style="margin-top:8px;font-size:12.5px">${wsPur.listOpen ? '▴ Скрыть записи' : `▾ Показать записи (${items.length})`}</button>
     ${wsPur.listOpen ? `<div style="margin-top:4px;max-height:280px;overflow:auto">${items.map((it) => `
       <div style="display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
-        <div style="min-width:0"><span style="color:var(--text-faint)">${fmtD(it.date)}</span> · ${wsEsc(wsPurName(it.wholesalerId))}${it.note ? `<div style="font-size:11.5px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis">${wsEsc(it.note)}</div>` : ''}</div>
+        <div style="min-width:0"><span style="color:var(--text-faint)">${fmtD(it.date)}</span> · ${wsEsc(wsPurName(it.wholesalerId))}${it.shipExtra ? ' <span style="font-size:11px;background:#e0f2fe;color:#0369a1;border-radius:6px;padding:0 5px">+ к Ozon</span>' : ''}${it.note ? `<div style="font-size:11.5px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis">${wsEsc(it.note)}</div>` : ''}</div>
         <div style="white-space:nowrap">${fmtMoney(it.amount)}
           <button type="button" class="link-btn" data-pur-edit="${wsEsc(it.id)}" title="Изменить" style="color:var(--accent)">✎</button>
           <button type="button" class="link-btn" data-pur-del="${wsEsc(it.id)}" title="Удалить" style="color:var(--loss)">🗑</button>
@@ -10547,6 +10547,7 @@ async function wsPurSubmit(e) {
     wholesalerId: form.elements.wholesalerId.value || null,
     note: form.elements.note.value.trim() || null,
     date: form.elements.date.value || undefined,
+    shipExtra: !!form.elements.shipExtra.checked,
   };
   const btn = document.getElementById('wsPurSubmit');
   btn.disabled = true;
@@ -10557,6 +10558,7 @@ async function wsPurSubmit(e) {
     st.style.color = 'var(--gain, #16a34a)';
     wsPurResetForm();
     await wsPurLoad();
+    if (body.shipExtra && typeof wsShipLoad === 'function') wsShipLoad();
   } catch (err) {
     st.textContent = err.message; st.style.color = 'var(--loss)';
   } finally { btn.disabled = false; }
@@ -10597,6 +10599,7 @@ async function wsPurClick(e) {
     form.elements.wholesalerId.value = it.wholesalerId || '';
     form.elements.note.value = it.note || '';
     form.elements.date.value = it.date;
+    form.elements.shipExtra.checked = !!it.shipExtra;
     wsPur.editId = it.id;
     document.getElementById('wsPurSubmit').textContent = 'Сохранить';
     document.getElementById('wsPurCancelEdit').hidden = false;
@@ -11561,8 +11564,10 @@ function wsShipRender() {
     const col = (n) => (n >= 0 ? 'var(--accent)' : 'var(--loss)');
     document.getElementById('wsShipTotals').innerHTML = `<b>${t.orders} заказ(ов) · ${t.qty} шт</b><br>
       Закуп <b>${fmtMoney(t.cogs)}</b> · Продажа <b>${fmtMoney(t.revenue)}</b> · Ozon ≈ ${fmtMoney(t.fees)} · Налог ${fmtMoney(t.tax)}<br>
+      ${t.extraCogs ? `<span style="color:var(--text-muted)">в т.ч. закуп по товарам ${fmtMoney(t.itemsCogs)} + доплата ${fmtMoney(t.extraCogs)}</span><br>` : ''}
       Чистая прибыль: <b style="color:${col(t.profit)};font-size:14px">${fmtMoney(t.profit)}</b>`;
-    const tot = `<tr style="font-weight:700;border-top:2px solid var(--border)"><td>Итого</td><td class="num">${t.qty}</td><td class="num">${fmtMoney(t.cogs)}</td><td class="num">${fmtMoney(t.revenue)}</td><td class="num">${fmtMoney(t.fees)}</td><td class="num">${fmtMoney(t.tax)}</td><td class="num" style="color:${col(t.profit)}">${fmtMoney(t.profit)}</td></tr>`;
+    const extraRow = t.extraCogs ? `<tr style="color:#0369a1"><td>➕ Доплата к закупу (вручную)</td><td></td><td class="num">${fmtMoney(t.extraCogs)}</td><td></td><td></td><td></td><td class="num">−${fmtMoney(t.extraCogs)}</td></tr>` : '';
+    const tot = extraRow + `<tr style="font-weight:700;border-top:2px solid var(--border)"><td>Итого</td><td class="num">${t.qty}</td><td class="num">${fmtMoney(t.cogs)}</td><td class="num">${fmtMoney(t.revenue)}</td><td class="num">${fmtMoney(t.fees)}</td><td class="num">${fmtMoney(t.tax)}</td><td class="num" style="color:${col(t.profit)}">${fmtMoney(t.profit)}</td></tr>`;
     const moreBtn = (kind, left) => `<button type="button" class="btn btn--ghost" data-ship-more="${kind}" style="width:100%;margin-top:6px">Показать ещё ${Math.min(10, left)} ▾ <span style="color:var(--text-faint)">(осталось ${left})</span></button>`;
     const itemsMore = d.rows.length - wsShipLimit.items;
     tbody.innerHTML = d.rows.length ? d.rows.slice(0, wsShipLimit.items).map((r) => `
@@ -11594,6 +11599,7 @@ function wsShipRender() {
             <td class="num" style="color:${col(r.profit)}">${r.estimated || r.noCost ? '≈ ' : ''}${fmtMoney(r.profit)}</td>
           </tr>`).join('')}</tbody>
         </table>
+        ${day.extraCogs ? `<div style="display:flex;justify-content:space-between;font-size:11.5px;padding:4px 2px;border-top:1px dashed var(--border);color:#0369a1"><span>➕ Доплата к закупу (вручную)</span><b>${fmtMoney(day.extraCogs)}</b></div>` : ''}
         ${day.items.length > 10 ? `<button type="button" class="btn btn--ghost" data-ship-day-more="${day.date}" style="width:100%;margin-top:4px">Показать ещё ${day.items.length - 10} ▾</button>` : ''}
       </details>`).join('') + (daysMore > 0 ? moreBtn('days', daysMore) : '') : '<div style="color:var(--text-faint);font-size:12.5px">За период отправок нет</div>';
     document.getElementById('wsShipHint').textContent = `Отправлено = заказы FBS «в доставке» и «доставлен» (отменённые не входят). Налог ${d.taxPct}%. Расходы Ozon: для доставленных — реальные, для ещё в пути — по тарифам из карточки (≈).${t.noCost ? ` У ${t.noCost} товар(ов) нет себестоимости — прибыль завышена.` : ''}`;

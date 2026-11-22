@@ -20,6 +20,7 @@ const stub: Record<string, any> = {
   order: { findMany: async (a: Row) => orders.filter((o) => (a.where.status?.in ? a.where.status.in.includes(o.status) : o.status === a.where.status)) },
   product: { findMany: async () => [{ sku: 'B', ozonOfferId: 'B', costPrice: 1000, packagingCost: 0, ozonCommissionRatePct: 10, ozonLogisticsAmount: 300, ozonLastMileAmount: 0, ozonAcquiringAmount: 0 }] },
   taxSettings: { findFirst: async () => ({ ratePct: 4 }) },
+  wholesalerPurchase: { findMany: async (a: Row) => (a.where.shipExtra ? [{ date: '2026-11-13', amount: 500, note: 'разница опта' }] : []) },
 };
 class StubPrismaClient {
   constructor() { return new Proxy(this, { get(_t, key) { if (key === 'then') return undefined; return stub[key as string] ?? new Proxy({}, { get: () => async () => [] }); } }); }
@@ -64,8 +65,9 @@ test('отправлено FBS за период: по товарам, дост�
   assert.deepEqual([a.qty, a.revenue, a.cogs, a.fees, a.tax, a.profit, a.estimated], [2, 10000, 4000, 2000, 400, 3600, false]);
   // в пути: себестоимость из карточки 1000, расходы 10% + 300, налог 200 → 5000 − 1000 − 800 − 200 = 3000
   assert.deepEqual([b.qty, b.cogs, b.fees, b.tax, b.profit, b.estimated], [1, 1000, 800, 200, 3000, true]);
-  assert.deepEqual([r.totals.orders, r.totals.qty, r.totals.profit], [2, 3, 6600]);
-  // по дням: 10.11 — чайник, 13.11 — кружка (дата по Алматы)
-  assert.deepEqual(r.days.map((d: Row) => [d.date, d.qty, d.cogs]), [['2026-11-10', 2, 4000], ['2026-11-13', 1, 1000]]);
+  // доплата к закупу 500 (13.11) входит в общий закуп и уменьшает прибыль
+  assert.deepEqual([r.totals.orders, r.totals.qty, r.totals.itemsCogs, r.totals.extraCogs, r.totals.cogs, r.totals.profit], [2, 3, 5000, 500, 5500, 6100]);
+  // по дням: 10.11 — чайник, 13.11 — кружка + доплата (дата по Алматы)
+  assert.deepEqual(r.days.map((d: Row) => [d.date, d.qty, d.cogs, d.extraCogs]), [['2026-11-10', 2, 4000, 0], ['2026-11-13', 1, 1500, 500]]);
   assert.equal(r.days[0].items[0].name, 'Чайник');
 });

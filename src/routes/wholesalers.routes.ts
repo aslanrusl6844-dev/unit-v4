@@ -38,6 +38,7 @@ const purchaseSchema = z.object({
   wholesalerId: z.string().min(1).nullable().optional(),
   note: z.string().max(300).nullable().optional(),
   date: z.string().regex(YMD).optional(),
+  shipExtra: z.boolean().optional(),
 });
 
 /** Закупки за период { from, to } (ГГГГ-ММ-ДД) + итоги: за период, за всё время, по оптовикам за период. */
@@ -76,6 +77,7 @@ wholesalersRouter.post('/purchases', async (req, res) => {
         wholesalerId: d.wholesalerId || null,
         note: d.note?.trim() || null,
         date: d.date ?? almatyNow().format('YYYY-MM-DD'),
+        shipExtra: !!d.shipExtra,
       },
     });
     res.status(201).json(item);
@@ -97,6 +99,7 @@ wholesalersRouter.put('/purchases/:pid', async (req, res) => {
         wholesalerId: d.wholesalerId || null,
         note: d.note?.trim() || null,
         ...(d.date ? { date: d.date } : {}),
+        ...(d.shipExtra !== undefined ? { shipExtra: d.shipExtra } : {}),
       },
     });
     res.json(item);
