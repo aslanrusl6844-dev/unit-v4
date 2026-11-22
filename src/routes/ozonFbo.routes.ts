@@ -195,6 +195,16 @@ ozonFboRouter.get('/shipped', async (req, res) => {
       }
     }
     const r0 = (n: number) => Math.round(n);
+    // Доплаты к закупу (галочка в «Закупках у оптовиков»): по дням, входят в общий закуп и уменьшают прибыль.
+    const ymd = (v?: string) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v ?? '')) ? String(v) : null);
+    const fromYmd = ymd(from) ?? dayKey(dateFrom);
+    const toYmd = ymd(to) ?? dayKey(dateTo);
+    const extras: Array<{ date: string; amount: number; note: string | null }> = await prisma.wholesalerPurchase
+      .findMany({ where: { shipExtra: true, date: { gte: fromYmd, lte: toYmd } }, select: { date: true, amount: true, note: true }, orderBy: { date: 'asc' } })
+      .catch(() => []);
+    const extraByDay = new Map<string, number>();
+    for (const e of extras) extraByDay.set(e.date, (extraByDay.get(e.date) ?? 0) + e.amount);
+    for (const dk of extraByDay.keys()) if (!dayAgg.has(dk)) dayAgg.set(dk, { orders: new Set<string>(), items: new Map() });
     const rows = Array.from(agg.values()).map((a) => ({
       offerId: a.offerId, name: a.name, qty: a.qty, orders: a.orders.size,
       revenue: r0(a.revenue), cogs: r0(a.cogs), fees: r0(a.fees), tax: r0(a.tax),
@@ -207,11 +217,18 @@ ozonFboRouter.get('/shipped', async (req, res) => {
         profit: r0(a.revenue - a.cogs - a.fees - a.tax), noCost: a.noCost, estimated: a.estimated,
       })).sort((x, y) => y.cogs - x.cogs || y.qty - x.qty);
       const t = (k: 'qty' | 'revenue' | 'cogs' | 'fees' | 'tax' | 'profit') => items.reduce((s, r) => s + r[k], 0);
-      return { date, orders: d.orders.size, qty: t('qty'), revenue: t('revenue'), cogs: t('cogs'), fees: t('fees'), tax: t('tax'), profit: t('profit'), items };
+      const extra = r0(extraByDay.get(date) ?? 0);
+      return { date, orders: d.orders.size, qty: t('qty'), revenue: t('revenue'), itemsCogs: t('cogs'), extraCogs: extra, cogs: t('cogs') + extra, fees: t('fees'), tax: t('tax'), profit: t('profit') - extra, items };
     });
+    const extraTotal = r0(extras.reduce((s2, e) => s2 + e.amount, 0));
     res.json({
       ok: true, taxPct, rows, days,
-      totals: { orders: orders.length, qty: sum('qty'), revenue: sum('revenue'), cogs: sum('cogs'), fees: sum('fees'), tax: sum('tax'), profit: sum('profit'), noCost: rows.filter((r) => r.noCost).length },
+      extras,
+      totals: {
+        orders: orders.length, qty: sum('qty'), revenue: sum('revenue'),
+        itemsCogs: sum('cogs'), extraCogs: extraTotal, cogs: sum('cogs') + extraTotal,
+        fees: sum('fees'), tax: sum('tax'), profit: sum('profit') - extraTotal, noCost: rows.filter((r) => r.noCost).length,
+      },
     });
   } catch (err) {
     res.status(500).json({ ok: false, error: msg(err) });

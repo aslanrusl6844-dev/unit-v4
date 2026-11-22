@@ -951,6 +951,8 @@ model WholesalerPurchase {
   note         String?
   // Дата закупки по Алматы, ГГГГ-ММ-ДД (по ней фильтр периода).
   date         String
+  /// Доплата к закупу: добавляется к «Закупу» в «Отправлено на Ozon» за этот день (разница оптовых цен и т.п.).
+  shipExtra    Boolean  @default(false)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
