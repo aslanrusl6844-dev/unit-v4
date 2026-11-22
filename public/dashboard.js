@@ -11513,6 +11513,8 @@ function renderOzonDelivered() {
 
 // ---- Отправлено на Ozon (FBS) за период: по каждому товару закуп, продажа, расходы Ozon, налог, чистая ----
 let wsShipInited = false;
+let wsShipData = null;
+const wsShipLimit = { days: 10, items: 10 }; // показываем по 10, дальше — «Показать ещё»
 function wsShipInitOnce() {
   if (wsShipInited || !document.getElementById('wsShipped')) return;
   wsShipInited = true;
@@ -11524,6 +11526,14 @@ function wsShipInitOnce() {
   document.getElementById('wsShipFrom').value = from;
   document.getElementById('wsShipTo').value = today;
   document.getElementById('wsShipLoad').addEventListener('click', wsShipLoad);
+  document.getElementById('wsShipView').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-shipview]');
+    if (!b) return;
+    document.querySelectorAll('#wsShipView [data-shipview]').forEach((x) => x.classList.toggle('is-active', x === b));
+    const days = b.dataset.shipview === 'days';
+    document.getElementById('wsShipDays').hidden = !days;
+    document.getElementById('wsShipItemsWrap').hidden = days;
+  });
   wsShipLoad();
 }
 
@@ -11534,14 +11544,28 @@ async function wsShipLoad() {
   const tbody = document.querySelector('#wsShipTable tbody');
   tbody.innerHTML = '<tr><td colspan="7" style="color:var(--text-faint)">Загрузка…</td></tr>';
   try {
-    const d = await api(`/ozon-fbo/shipped?${qs({ from, to })}`);
+    wsShipData = await api(`/ozon-fbo/shipped?${qs({ from, to })}`);
+    wsShipLimit.days = 10; wsShipLimit.items = 10;
+    wsShipRender();
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="7" style="color:var(--loss)">Не удалось загрузить: ${wsEsc(err.message)}</td></tr>`;
+  }
+}
+
+function wsShipRender() {
+  const d = wsShipData;
+  if (!d) return;
+  const tbody = document.querySelector('#wsShipTable tbody');
+  {
     const t = d.totals;
     const col = (n) => (n >= 0 ? 'var(--accent)' : 'var(--loss)');
     document.getElementById('wsShipTotals').innerHTML = `<b>${t.orders} заказ(ов) · ${t.qty} шт</b><br>
       Закуп <b>${fmtMoney(t.cogs)}</b> · Продажа <b>${fmtMoney(t.revenue)}</b> · Ozon ≈ ${fmtMoney(t.fees)} · Налог ${fmtMoney(t.tax)}<br>
       Чистая прибыль: <b style="color:${col(t.profit)};font-size:14px">${fmtMoney(t.profit)}</b>`;
     const tot = `<tr style="font-weight:700;border-top:2px solid var(--border)"><td>Итого</td><td class="num">${t.qty}</td><td class="num">${fmtMoney(t.cogs)}</td><td class="num">${fmtMoney(t.revenue)}</td><td class="num">${fmtMoney(t.fees)}</td><td class="num">${fmtMoney(t.tax)}</td><td class="num" style="color:${col(t.profit)}">${fmtMoney(t.profit)}</td></tr>`;
-    tbody.innerHTML = d.rows.length ? d.rows.map((r) => `
+    const moreBtn = (kind, left) => `<button type="button" class="btn btn--ghost" data-ship-more="${kind}" style="width:100%;margin-top:6px">Показать ещё ${Math.min(10, left)} ▾ <span style="color:var(--text-faint)">(осталось ${left})</span></button>`;
+    const itemsMore = d.rows.length - wsShipLimit.items;
+    tbody.innerHTML = d.rows.length ? d.rows.slice(0, wsShipLimit.items).map((r) => `
       <tr>
         <td style="max-width:170px">${wsEsc(r.name)}<div style="font-size:10.5px;color:var(--text-faint)">${wsEsc(r.offerId)} · ${r.orders} зак.</div></td>
         <td class="num">${r.qty}</td>
@@ -11550,9 +11574,39 @@ async function wsShipLoad() {
         <td class="num">${r.estimated ? '≈ ' : ''}${fmtMoney(r.fees)}</td>
         <td class="num">${fmtMoney(r.tax)}</td>
         <td class="num"><b style="color:${col(r.profit)}">${r.estimated || r.noCost ? '≈ ' : ''}${fmtMoney(r.profit)}</b></td>
-      </tr>`).join('') + tot : '<tr><td colspan="7" style="color:var(--text-faint)">За период отправок нет</td></tr>';
+      </tr>`).join('') + (itemsMore > 0 ? `<tr><td colspan="7">${moreBtn('items', itemsMore)}</td></tr>` : '') + tot : '<tr><td colspan="7" style="color:var(--text-faint)">За период отправок нет</td></tr>';
+    // По дням: строка дня (заказы, штук, закуп, продажа, чистая) → раскрывается список товаров дня.
+    const fmtDay = (iso) => { const [yy, mm, dd] = iso.split('-'); const wd = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'][new Date(`${iso}T12:00:00Z`).getUTCDay()]; return `${dd}.${mm} ${wd}`; };
+    const daysMore = d.days.length - wsShipLimit.days;
+    document.getElementById('wsShipDays').innerHTML = d.days.length ? d.days.slice(0, wsShipLimit.days).map((day) => `
+      <details style="border:1px solid var(--border);border-radius:8px;margin:0 0 6px;padding:6px 8px">
+        <summary style="cursor:pointer;display:flex;justify-content:space-between;gap:6px;flex-wrap:wrap;font-size:12.5px">
+          <span><b>${fmtDay(day.date)}</b> · ${day.orders} зак. · ${day.qty} шт</span>
+          <span>закуп <b>${fmtMoney(day.cogs)}</b> · продажа ${fmtMoney(day.revenue)} · <b style="color:${col(day.profit)}">${fmtMoney(day.profit)}</b></span>
+        </summary>
+        <table class="table" style="font-size:11.5px;margin-top:6px">
+          <thead><tr><th>Товар</th><th class="num">Шт</th><th class="num">Закуп</th><th class="num">Продажа</th><th class="num">Чистая</th></tr></thead>
+          <tbody>${day.items.map((r, idx) => `<tr ${idx >= 10 ? `data-day-extra="${day.date}" hidden` : ''}>
+            <td style="max-width:170px">${wsEsc(r.name)}<div style="font-size:10.5px;color:var(--text-faint)">${wsEsc(r.offerId)}</div></td>
+            <td class="num">${r.qty}</td>
+            <td class="num">${r.noCost ? '<span style="color:var(--loss)">нет</span>' : fmtMoney(r.cogs)}</td>
+            <td class="num">${fmtMoney(r.revenue)}</td>
+            <td class="num" style="color:${col(r.profit)}">${r.estimated || r.noCost ? '≈ ' : ''}${fmtMoney(r.profit)}</td>
+          </tr>`).join('')}</tbody>
+        </table>
+        ${day.items.length > 10 ? `<button type="button" class="btn btn--ghost" data-ship-day-more="${day.date}" style="width:100%;margin-top:4px">Показать ещё ${day.items.length - 10} ▾</button>` : ''}
+      </details>`).join('') + (daysMore > 0 ? moreBtn('days', daysMore) : '') : '<div style="color:var(--text-faint);font-size:12.5px">За период отправок нет</div>';
     document.getElementById('wsShipHint').textContent = `Отправлено = заказы FBS «в доставке» и «доставлен» (отменённые не входят). Налог ${d.taxPct}%. Расходы Ozon: для доставленных — реальные, для ещё в пути — по тарифам из карточки (≈).${t.noCost ? ` У ${t.noCost} товар(ов) нет себестоимости — прибыль завышена.` : ''}`;
-  } catch (err) {
-    tbody.innerHTML = `<tr><td colspan="7" style="color:var(--loss)">Не удалось загрузить: ${wsEsc(err.message)}</td></tr>`;
   }
 }
+
+// «Показать ещё»: +10 дней / +10 товаров; внутри дня — раскрыть остальные товары.
+document.addEventListener('click', (e) => {
+  const more = e.target.closest('[data-ship-more]');
+  if (more) { wsShipLimit[more.dataset.shipMore] += 10; wsShipRender(); return; }
+  const dm = e.target.closest('[data-ship-day-more]');
+  if (dm) {
+    document.querySelectorAll(`[data-day-extra="${dm.dataset.shipDayMore}"]`).forEach((tr) => { tr.hidden = false; });
+    dm.remove();
+  }
+});
