@@ -9322,6 +9322,7 @@ function renderWholesalerShelves() {
   const list = document.getElementById('wholesalerShelvesList');
   if (!list) return;
   wsPurInitOnce();
+  wsShipInitOnce();
   try {
     if (wholesalersState.error) {
       list.innerHTML = `<p style="color:var(--loss);margin:0">Не удалось загрузить оптовиков: ${wsEsc(wholesalersState.error)}. Общая таблица работает — вкладка «Общая таблица».
@@ -11507,4 +11508,51 @@ function renderOzonDelivered() {
       <td class="num">${fmtMoney(r.tax)}</td>
       <td class="num"><b style="color:${r.profit >= 0 ? 'var(--accent)' : 'var(--loss)'}">${r.estimated || r.noCost ? '≈ ' : ''}${fmtMoney(r.profit)}</b></td>
     </tr>`).join('') : '<tr><td colspan="10" style="color:var(--text-faint)">За период доставленных заказов нет</td></tr>';
+}
+
+
+// ---- Отправлено на Ozon (FBS) за период: по каждому товару закуп, продажа, расходы Ozon, налог, чистая ----
+let wsShipInited = false;
+function wsShipInitOnce() {
+  if (wsShipInited || !document.getElementById('wsShipped')) return;
+  wsShipInited = true;
+  const today = wsAlmatyToday();
+  const [y, m] = today.split('-').map(Number);
+  let from = `${y}-${String(m).padStart(2, '0')}-12`;
+  if (from > today) from = wsIso(m === 1 ? y - 1 : y, m === 1 ? 12 : m - 1, 12);
+  try { from = localStorage.getItem('wsShipFrom') || from; } catch { /* нет хранилища — по умолчанию */ }
+  document.getElementById('wsShipFrom').value = from;
+  document.getElementById('wsShipTo').value = today;
+  document.getElementById('wsShipLoad').addEventListener('click', wsShipLoad);
+  wsShipLoad();
+}
+
+async function wsShipLoad() {
+  const from = document.getElementById('wsShipFrom').value;
+  const to = document.getElementById('wsShipTo').value;
+  try { localStorage.setItem('wsShipFrom', from); } catch { /* не важно */ }
+  const tbody = document.querySelector('#wsShipTable tbody');
+  tbody.innerHTML = '<tr><td colspan="7" style="color:var(--text-faint)">Загрузка…</td></tr>';
+  try {
+    const d = await api(`/ozon-fbo/shipped?${qs({ from, to })}`);
+    const t = d.totals;
+    const col = (n) => (n >= 0 ? 'var(--accent)' : 'var(--loss)');
+    document.getElementById('wsShipTotals').innerHTML = `<b>${t.orders} заказ(ов) · ${t.qty} шт</b><br>
+      Закуп <b>${fmtMoney(t.cogs)}</b> · Продажа <b>${fmtMoney(t.revenue)}</b> · Ozon ≈ ${fmtMoney(t.fees)} · Налог ${fmtMoney(t.tax)}<br>
+      Чистая прибыль: <b style="color:${col(t.profit)};font-size:14px">${fmtMoney(t.profit)}</b>`;
+    const tot = `<tr style="font-weight:700;border-top:2px solid var(--border)"><td>Итого</td><td class="num">${t.qty}</td><td class="num">${fmtMoney(t.cogs)}</td><td class="num">${fmtMoney(t.revenue)}</td><td class="num">${fmtMoney(t.fees)}</td><td class="num">${fmtMoney(t.tax)}</td><td class="num" style="color:${col(t.profit)}">${fmtMoney(t.profit)}</td></tr>`;
+    tbody.innerHTML = d.rows.length ? d.rows.map((r) => `
+      <tr>
+        <td style="max-width:170px">${wsEsc(r.name)}<div style="font-size:10.5px;color:var(--text-faint)">${wsEsc(r.offerId)} · ${r.orders} зак.</div></td>
+        <td class="num">${r.qty}</td>
+        <td class="num">${r.noCost ? '<span style="color:var(--loss)" title="Нет себестоимости — заполните в «Товарах»">нет</span>' : fmtMoney(r.cogs)}</td>
+        <td class="num">${fmtMoney(r.revenue)}</td>
+        <td class="num">${r.estimated ? '≈ ' : ''}${fmtMoney(r.fees)}</td>
+        <td class="num">${fmtMoney(r.tax)}</td>
+        <td class="num"><b style="color:${col(r.profit)}">${r.estimated || r.noCost ? '≈ ' : ''}${fmtMoney(r.profit)}</b></td>
+      </tr>`).join('') + tot : '<tr><td colspan="7" style="color:var(--text-faint)">За период отправок нет</td></tr>';
+    document.getElementById('wsShipHint').textContent = `Отправлено = заказы FBS «в доставке» и «доставлен» (отменённые не входят). Налог ${d.taxPct}%. Расходы Ozon: для доставленных — реальные, для ещё в пути — по тарифам из карточки (≈).${t.noCost ? ` У ${t.noCost} товар(ов) нет себестоимости — прибыль завышена.` : ''}`;
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="7" style="color:var(--loss)">Не удалось загрузить: ${wsEsc(err.message)}</td></tr>`;
+  }
 }

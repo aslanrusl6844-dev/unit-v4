@@ -12,9 +12,12 @@ type Row = Record<string, any>;
 const orders: Row[] = [
   { externalId: 'FBS-1', status: 'delivered', orderDate: new Date('2026-11-10T08:00:00Z'), totalRevenue: 10000, marketplaceCommission: 1500, logisticsCost: 500, acquiringCost: 0, otherFees: 0,
     items: [{ name: 'Чайник', externalSku: 'A', quantity: 2, price: 5000, costPrice: 2000 }] },
+  { externalId: 'FBS-2', status: 'delivering', orderDate: new Date('2026-11-13T08:00:00Z'), totalRevenue: 5000, marketplaceCommission: 0, logisticsCost: 0, acquiringCost: 0, otherFees: 0,
+    items: [{ name: 'Кружка', externalSku: 'B', quantity: 1, price: 5000, costPrice: 0 }] },
+  { externalId: 'FBS-3', status: 'cancelled', orderDate: new Date('2026-11-13T08:00:00Z'), totalRevenue: 5000, items: [{ name: 'Кружка', externalSku: 'B', quantity: 1, price: 5000 }] },
 ];
 const stub: Record<string, any> = {
-  order: { findMany: async (a: Row) => orders.filter((o) => o.status === a.where.status) },
+  order: { findMany: async (a: Row) => orders.filter((o) => (a.where.status?.in ? a.where.status.in.includes(o.status) : o.status === a.where.status)) },
   product: { findMany: async () => [{ sku: 'B', ozonOfferId: 'B', costPrice: 1000, packagingCost: 0, ozonCommissionRatePct: 10, ozonLogisticsAmount: 300, ozonLastMileAmount: 0, ozonAcquiringAmount: 0 }] },
   taxSettings: { findFirst: async () => ({ ratePct: 4 }) },
 };
@@ -47,4 +50,19 @@ test('доставленные FBS + FBO с чистой прибылью; от�
   assert.deepEqual([fbo.revenue, fbo.cogs, fbo.fees, fbo.tax, fbo.profit, fbo.estimated], [5000, 1000, 800, 200, 3000, true]);
   assert.equal(r.rows.length, 2);
   assert.deepEqual([r.totals.all.orders, r.totals.all.profit], [2, 6600]);
+});
+
+test('отправлено FBS за период: по товарам, доставленные — реальные расходы, в пути — по тарифу, отменённые не входят', async () => {
+  const app = express();
+  app.use('/api/ozon-fbo', ozonFboRouter);
+  const srv = app.listen(0);
+  const port = (srv.address() as AddressInfo).port;
+  const r = await (await fetch(`http://127.0.0.1:${port}/api/ozon-fbo/shipped?from=2026-11-01&to=2026-11-20`)).json();
+  srv.close();
+  const a = r.rows.find((x: Row) => x.offerId === 'A');
+  const b = r.rows.find((x: Row) => x.offerId === 'B');
+  assert.deepEqual([a.qty, a.revenue, a.cogs, a.fees, a.tax, a.profit, a.estimated], [2, 10000, 4000, 2000, 400, 3600, false]);
+  // в пути: себестоимость из карточки 1000, расходы 10% + 300, налог 200 → 5000 − 1000 − 800 − 200 = 3000
+  assert.deepEqual([b.qty, b.cogs, b.fees, b.tax, b.profit, b.estimated], [1, 1000, 800, 200, 3000, true]);
+  assert.deepEqual([r.totals.orders, r.totals.qty, r.totals.profit], [2, 3, 6600]);
 });

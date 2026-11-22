@@ -128,3 +128,72 @@ ozonFboRouter.get('/delivered', async (req, res) => {
     totals: { all: sum(rows), fbs: sum(rows.filter((r) => r.scheme === 'FBS')), fbo: sum(rows.filter((r) => r.scheme === 'FBO')) },
   });
 });
+
+
+/** Статусы FBS «отправлено»: заказ уже передан Ozon (в доставке, доставлен, спор). Отменённые и ещё не отгруженные — нет. */
+const SHIPPED_STATUSES = ['delivering', 'delivered', 'arbitration', 'client_arbitration', 'driver_pickup', 'sent_by_seller'];
+
+/**
+ * GET /api/ozon-fbo/shipped?from=&to= — сколько товаров отправили на Ozon (FBS) за период, по каждому товару:
+ * штук, закуп (себестоимость), продажа, расходы Ozon (комиссия, логистика, последняя миля, эквайринг), налог, чистая прибыль.
+ * Если Ozon ещё не начислил комиссию (заказ в доставке) — расходы оцениваем по тарифам из карточки товара (помечено «≈»).
+ */
+ozonFboRouter.get('/shipped', async (req, res) => {
+  try {
+    const { from, to } = req.query as Record<string, string>;
+    const dateTo = to ? almatyEndOfDay(to) : new Date();
+    const dateFrom = from ? almatyStartOfDay(from) : new Date(dateTo.getTime() - 30 * 24 * 3600 * 1000);
+    const taxPct = await getTaxRatePct().catch(() => 4);
+    const orders: any[] = await prisma.order.findMany({
+      where: { marketplace: 'OZON', status: { in: SHIPPED_STATUSES }, orderDate: { gte: dateFrom, lte: dateTo } },
+      include: { items: true },
+    });
+    const skus = Array.from(new Set(orders.flatMap((o) => (o.items ?? []).map((i: any) => String(i.externalSku)))));
+    const products: any[] = skus.length ? await prisma.product.findMany({
+      where: { OR: [{ ozonOfferId: { in: skus } }, { sku: { in: skus } }] },
+      select: { sku: true, ozonOfferId: true, name: true, costPrice: true, packagingCost: true, ozonCommissionRatePct: true, ozonLogisticsAmount: true, ozonLastMileAmount: true, ozonAcquiringAmount: true },
+    }) : [];
+    const byOffer = new Map<string, any>();
+    for (const p of products) { if (p.ozonOfferId) byOffer.set(String(p.ozonOfferId), p); if (!byOffer.has(p.sku)) byOffer.set(p.sku, p); }
+
+    type Agg = { offerId: string; name: string; qty: number; orders: Set<string>; revenue: number; cogs: number; fees: number; tax: number; noCost: boolean; estimated: boolean };
+    const agg = new Map<string, Agg>();
+    for (const o of orders) {
+      const items: any[] = o.items ?? [];
+      const realFees = (o.marketplaceCommission || 0) + (o.logisticsCost || 0) + (o.acquiringCost || 0) + (o.otherFees || 0);
+      const itemsSum = items.reduce((s, i) => s + (i.price || 0) * (i.quantity || 0), 0);
+      const revenueOrder = o.totalRevenue || itemsSum;
+      for (const i of items) {
+        const pr = byOffer.get(String(i.externalSku));
+        const qty = i.quantity || 0;
+        const share = itemsSum > 0 ? ((i.price || 0) * qty) / itemsSum : 1 / Math.max(1, items.length);
+        const rev = revenueOrder * share;
+        const unitCost = i.costPrice || pr?.costPrice || 0;
+        const cogs = (unitCost + (pr?.packagingCost || 0)) * qty;
+        const estimated = !(realFees > 0);
+        const fees = !estimated
+          ? realFees * share
+          : pr ? (rev * (pr.ozonCommissionRatePct || 0)) / 100 + ((pr.ozonLogisticsAmount || 0) + (pr.ozonLastMileAmount || 0) + (pr.ozonAcquiringAmount || 0)) * qty : 0;
+        const key = String(i.externalSku || i.name);
+        const a = agg.get(key) ?? { offerId: String(i.externalSku || ''), name: i.name || pr?.name || key, qty: 0, orders: new Set<string>(), revenue: 0, cogs: 0, fees: 0, tax: 0, noCost: false, estimated: false };
+        a.qty += qty; a.orders.add(o.externalId); a.revenue += rev; a.cogs += cogs; a.fees += fees; a.tax += (rev * taxPct) / 100;
+        if (!unitCost) a.noCost = true;
+        if (estimated) a.estimated = true;
+        agg.set(key, a);
+      }
+    }
+    const r0 = (n: number) => Math.round(n);
+    const rows = Array.from(agg.values()).map((a) => ({
+      offerId: a.offerId, name: a.name, qty: a.qty, orders: a.orders.size,
+      revenue: r0(a.revenue), cogs: r0(a.cogs), fees: r0(a.fees), tax: r0(a.tax),
+      profit: r0(a.revenue - a.cogs - a.fees - a.tax), noCost: a.noCost, estimated: a.estimated,
+    })).sort((x, y) => y.qty - x.qty || y.revenue - x.revenue);
+    const sum = (k: 'qty' | 'revenue' | 'cogs' | 'fees' | 'tax' | 'profit') => rows.reduce((s, r) => s + r[k], 0);
+    res.json({
+      ok: true, taxPct, rows,
+      totals: { orders: orders.length, qty: sum('qty'), revenue: sum('revenue'), cogs: sum('cogs'), fees: sum('fees'), tax: sum('tax'), profit: sum('profit'), noCost: rows.filter((r) => r.noCost).length },
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: msg(err) });
+  }
+});
