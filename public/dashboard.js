@@ -11524,6 +11524,14 @@ function wsShipInitOnce() {
   document.getElementById('wsShipFrom').value = from;
   document.getElementById('wsShipTo').value = today;
   document.getElementById('wsShipLoad').addEventListener('click', wsShipLoad);
+  document.getElementById('wsShipView').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-shipview]');
+    if (!b) return;
+    document.querySelectorAll('#wsShipView [data-shipview]').forEach((x) => x.classList.toggle('is-active', x === b));
+    const days = b.dataset.shipview === 'days';
+    document.getElementById('wsShipDays').hidden = !days;
+    document.getElementById('wsShipItemsWrap').hidden = days;
+  });
   wsShipLoad();
 }
 
@@ -11551,6 +11559,25 @@ async function wsShipLoad() {
         <td class="num">${fmtMoney(r.tax)}</td>
         <td class="num"><b style="color:${col(r.profit)}">${r.estimated || r.noCost ? '≈ ' : ''}${fmtMoney(r.profit)}</b></td>
       </tr>`).join('') + tot : '<tr><td colspan="7" style="color:var(--text-faint)">За период отправок нет</td></tr>';
+    // По дням: строка дня (заказы, штук, закуп, продажа, чистая) → раскрывается список товаров дня.
+    const fmtDay = (iso) => { const [yy, mm, dd] = iso.split('-'); const wd = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'][new Date(`${iso}T12:00:00Z`).getUTCDay()]; return `${dd}.${mm} ${wd}`; };
+    document.getElementById('wsShipDays').innerHTML = d.days.length ? d.days.map((day) => `
+      <details style="border:1px solid var(--border);border-radius:8px;margin:0 0 6px;padding:6px 8px">
+        <summary style="cursor:pointer;display:flex;justify-content:space-between;gap:6px;flex-wrap:wrap;font-size:12.5px">
+          <span><b>${fmtDay(day.date)}</b> · ${day.orders} зак. · ${day.qty} шт</span>
+          <span>закуп <b>${fmtMoney(day.cogs)}</b> · продажа ${fmtMoney(day.revenue)} · <b style="color:${col(day.profit)}">${fmtMoney(day.profit)}</b></span>
+        </summary>
+        <table class="table" style="font-size:11.5px;margin-top:6px">
+          <thead><tr><th>Товар</th><th class="num">Шт</th><th class="num">Закуп</th><th class="num">Продажа</th><th class="num">Чистая</th></tr></thead>
+          <tbody>${day.items.map((r) => `<tr>
+            <td style="max-width:170px">${wsEsc(r.name)}<div style="font-size:10.5px;color:var(--text-faint)">${wsEsc(r.offerId)}</div></td>
+            <td class="num">${r.qty}</td>
+            <td class="num">${r.noCost ? '<span style="color:var(--loss)">нет</span>' : fmtMoney(r.cogs)}</td>
+            <td class="num">${fmtMoney(r.revenue)}</td>
+            <td class="num" style="color:${col(r.profit)}">${r.estimated || r.noCost ? '≈ ' : ''}${fmtMoney(r.profit)}</td>
+          </tr>`).join('')}</tbody>
+        </table>
+      </details>`).join('') : '<div style="color:var(--text-faint);font-size:12.5px">За период отправок нет</div>';
     document.getElementById('wsShipHint').textContent = `Отправлено = заказы FBS «в доставке» и «доставлен» (отменённые не входят). Налог ${d.taxPct}%. Расходы Ozon: для доставленных — реальные, для ещё в пути — по тарифам из карточки (≈).${t.noCost ? ` У ${t.noCost} товар(ов) нет себестоимости — прибыль завышена.` : ''}`;
   } catch (err) {
     tbody.innerHTML = `<tr><td colspan="7" style="color:var(--loss)">Не удалось загрузить: ${wsEsc(err.message)}</td></tr>`;

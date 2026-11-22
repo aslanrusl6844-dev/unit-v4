@@ -65,4 +65,7 @@ test('отправлено FBS за период: по товарам, дост�
   // в пути: себестоимость из карточки 1000, расходы 10% + 300, налог 200 → 5000 − 1000 − 800 − 200 = 3000
   assert.deepEqual([b.qty, b.cogs, b.fees, b.tax, b.profit, b.estimated], [1, 1000, 800, 200, 3000, true]);
   assert.deepEqual([r.totals.orders, r.totals.qty, r.totals.profit], [2, 3, 6600]);
+  // по дням: 10.11 — чайник, 13.11 — кружка (дата по Алматы)
+  assert.deepEqual(r.days.map((d: Row) => [d.date, d.qty, d.cogs]), [['2026-11-10', 2, 4000], ['2026-11-13', 1, 1000]]);
+  assert.equal(r.days[0].items[0].name, 'Чайник');
 });

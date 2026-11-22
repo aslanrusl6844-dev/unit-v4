@@ -158,6 +158,9 @@ ozonFboRouter.get('/shipped', async (req, res) => {
 
     type Agg = { offerId: string; name: string; qty: number; orders: Set<string>; revenue: number; cogs: number; fees: number; tax: number; noCost: boolean; estimated: boolean };
     const agg = new Map<string, Agg>();
+    // По дням (дата заказа по Алматы): какие товары и на сколько закупа в этот день.
+    const dayAgg = new Map<string, { orders: Set<string>; items: Map<string, Agg> }>();
+    const dayKey = (d: Date) => new Date(new Date(d).getTime() + 5 * 3600 * 1000).toISOString().slice(0, 10);
     for (const o of orders) {
       const items: any[] = o.items ?? [];
       const realFees = (o.marketplaceCommission || 0) + (o.logisticsCost || 0) + (o.acquiringCost || 0) + (o.otherFees || 0);
@@ -180,6 +183,15 @@ ozonFboRouter.get('/shipped', async (req, res) => {
         if (!unitCost) a.noCost = true;
         if (estimated) a.estimated = true;
         agg.set(key, a);
+        const dk = dayKey(o.orderDate);
+        const day = dayAgg.get(dk) ?? { orders: new Set<string>(), items: new Map<string, Agg>() };
+        day.orders.add(o.externalId);
+        const di = day.items.get(key) ?? { offerId: a.offerId, name: a.name, qty: 0, orders: new Set<string>(), revenue: 0, cogs: 0, fees: 0, tax: 0, noCost: false, estimated: false };
+        di.qty += qty; di.orders.add(o.externalId); di.revenue += rev; di.cogs += cogs; di.fees += fees; di.tax += (rev * taxPct) / 100;
+        if (!unitCost) di.noCost = true;
+        if (estimated) di.estimated = true;
+        day.items.set(key, di);
+        dayAgg.set(dk, day);
       }
     }
     const r0 = (n: number) => Math.round(n);
@@ -189,8 +201,16 @@ ozonFboRouter.get('/shipped', async (req, res) => {
       profit: r0(a.revenue - a.cogs - a.fees - a.tax), noCost: a.noCost, estimated: a.estimated,
     })).sort((x, y) => y.qty - x.qty || y.revenue - x.revenue);
     const sum = (k: 'qty' | 'revenue' | 'cogs' | 'fees' | 'tax' | 'profit') => rows.reduce((s, r) => s + r[k], 0);
+    const days = Array.from(dayAgg.entries()).sort((a, b) => a[0].localeCompare(b[0])).map(([date, d]) => {
+      const items = Array.from(d.items.values()).map((a) => ({
+        offerId: a.offerId, name: a.name, qty: a.qty, revenue: r0(a.revenue), cogs: r0(a.cogs), fees: r0(a.fees), tax: r0(a.tax),
+        profit: r0(a.revenue - a.cogs - a.fees - a.tax), noCost: a.noCost, estimated: a.estimated,
+      })).sort((x, y) => y.cogs - x.cogs || y.qty - x.qty);
+      const t = (k: 'qty' | 'revenue' | 'cogs' | 'fees' | 'tax' | 'profit') => items.reduce((s, r) => s + r[k], 0);
+      return { date, orders: d.orders.size, qty: t('qty'), revenue: t('revenue'), cogs: t('cogs'), fees: t('fees'), tax: t('tax'), profit: t('profit'), items };
+    });
     res.json({
-      ok: true, taxPct, rows,
+      ok: true, taxPct, rows, days,
       totals: { orders: orders.length, qty: sum('qty'), revenue: sum('revenue'), cogs: sum('cogs'), fees: sum('fees'), tax: sum('tax'), profit: sum('profit'), noCost: rows.filter((r) => r.noCost).length },
     });
   } catch (err) {

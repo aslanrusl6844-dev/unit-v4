@@ -379,8 +379,13 @@
                   <input type="date" id="wsShipTo" style="flex:1;min-width:120px" />
                   <button type="button" class="btn btn--ghost" id="wsShipLoad">Показать</button>
                 </div>
+                <div class="seg" id="wsShipView" style="margin:0 0 8px">
+                  <button type="button" class="is-active" data-shipview="days">По дням</button>
+                  <button type="button" data-shipview="items">По товарам</button>
+                </div>
                 <div id="wsShipTotals" style="font-size:12.5px;margin-bottom:6px"></div>
-                <div style="overflow-x:auto"><table class="table" id="wsShipTable" style="font-size:12px;min-width:520px">
+                <div id="wsShipDays"></div>
+                <div id="wsShipItemsWrap" hidden style="overflow-x:auto"><table class="table" id="wsShipTable" style="font-size:12px;min-width:520px">
                   <thead><tr><th>Товар</th><th class="num">Шт</th><th class="num">Закуп</th><th class="num">Продажа</th><th class="num">Ozon</th><th class="num">Налог</th><th class="num">Чистая</th></tr></thead>
                   <tbody></tbody>
                 </table></div>
