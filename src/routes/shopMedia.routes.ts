@@ -88,9 +88,16 @@ export const VIDEO_ALLOWED_TYPES = ['video/mp4', 'video/webm'];
 /** Предел видео при прямой загрузке в R2 (мимо Vercel). */
 export const DIRECT_MAX_VIDEO_BYTES = 100 * 1024 * 1024;
 
-type Purpose = 'image' | 'banner' | 'video';
+type Purpose = 'image' | 'banner' | 'video' | 'audio';
+
+/** Звук подарка Live (рёв льва, крик беркута): MP3/OGG/AAC до 1,5 МБ. */
+export const AUDIO_ALLOWED_TYPES = ['audio/mpeg', 'audio/mp3', 'audio/ogg', 'audio/aac', 'audio/mp4', 'audio/x-m4a'];
+export const MAX_AUDIO_BYTES = 1_500_000;
 
 function rulesFor(purpose: Purpose) {
+  if (purpose === 'audio') {
+    return { folder: 'audio', allowedTypes: AUDIO_ALLOWED_TYPES, viaServerMax: MAX_AUDIO_BYTES, formatError: 'Формат не поддерживается. Нужен MP3, OGG или M4A' };
+  }
   const isVideo = purpose === 'video';
   const isBanner = purpose === 'banner' || isVideo;
   return {
@@ -159,7 +166,7 @@ shopMediaRouter.post('/upload-url', async (req, res) => {
 
 const uploadSchema = z.object({
   kind: z.literal('image'),
-  purpose: z.enum(['banner', 'video']).optional(),
+  purpose: z.enum(['banner', 'video', 'audio']).optional(),
   filename: z.string().min(1),
   contentType: z.string().min(1),
   dataBase64: z.string().min(1),
