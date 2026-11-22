@@ -268,10 +268,10 @@ export async function eveningReport(): Promise<string> {
 // ---------------------------------------------------------------- карточки с фото (для оптовиков)
 
 /** stickers — крупные 4 цифры со стикеров Ozon тех отправлений, где есть этот товар. */
-export type PhotoCard = { offerId: string; name: string; qty: number; photo: string | null; stickers?: string[] };
+export type PhotoCard = { offerId: string; name: string; qty: number; photo: string | null; stickers?: string[]; postings?: string[] };
 
 /** Первое фото товара: витрина My Market, иначе фото с площадки. */
-async function photosByOffer(offerIds: string[]): Promise<Map<string, string>> {
+export async function photosByOffer(offerIds: string[]): Promise<Map<string, string>> {
   const ids = [...new Set(offerIds.filter(Boolean))];
   if (!ids.length) return new Map();
   const rows = await prisma.product.findMany({
@@ -295,17 +295,24 @@ async function photosByOffer(offerIds: string[]): Promise<Map<string, string>> {
  * Товары одной картинкой на позицию: «collect» — что собрать у оптовиков (несобранные FBS-заказы),
  * «sold» — что продалось за день (FBS + FBO). Одинаковые товары сложены в одну строку с общим количеством.
  */
-export async function photoCards(kind: 'collect' | 'sold', dateStr?: string): Promise<{ title: string; cards: PhotoCard[] }> {
-  const agg = new Map<string, { offerId: string; name: string; qty: number; stickers: string[] }>();
-  const add = (offerId: string, name: string, qty: number, stickers: string[] = []) => {
+export async function photoCards(kind: 'collect' | 'sold' | 'ship', dateStr?: string): Promise<{ title: string; cards: PhotoCard[] }> {
+  const agg = new Map<string, { offerId: string; name: string; qty: number; stickers: string[]; postings: string[] }>();
+  const add = (offerId: string, name: string, qty: number, stickers: string[] = [], postings: string[] = []) => {
     const key = offerId || name;
-    const cur = agg.get(key) ?? { offerId, name, qty: 0, stickers: [] };
+    const cur = agg.get(key) ?? { offerId, name, qty: 0, stickers: [], postings: [] };
     cur.qty += qty;
     for (const s of stickers) if (s && !cur.stickers.includes(s)) cur.stickers.push(s);
+    for (const p of postings) if (p && !cur.postings.includes(p)) cur.postings.push(p);
     agg.set(key, cur);
   };
   let title: string;
-  if (kind === 'collect') {
+  if (kind === 'ship') {
+    // Только «Готовы к отгрузке» (накладные уже сделаны, статус awaiting_deliver); новые, ещё не собранные — не берём.
+    const ship = await fbsToShip();
+    const ready = ship.postings.filter((p) => !p.needPacking);
+    for (const p of ready) for (const i of p.items) add(i.offerId, i.name, i.qty, [p.sticker], [p.postingNumber]);
+    title = `🚚 Готовы к отгрузке FBS: ${ready.length} заказов`;
+  } else if (kind === 'collect') {
     const need = await purchaseNeeds();
     for (const i of need.items) add(i.offerId, i.name, i.qty, i.stickers);
     title = '🛒 Собрать у оптовиков (несобранные заказы FBS)';
@@ -320,14 +327,18 @@ export async function photoCards(kind: 'collect' | 'sold', dateStr?: string): Pr
     title = `📦 Продано ${dayjs(date).format('DD.MM')} (FBS + FBO)`;
   }
   const photos = await photosByOffer([...agg.values()].map((x) => x.offerId));
-  const cards = [...agg.values()].sort((a, b) => b.qty - a.qty).map((x) => ({ ...x, photo: photos.get(x.offerId) ?? null }));
+  const cards = [...agg.values()].sort((a, b) => b.qty - a.qty).map((x) => ({ ...x, postings: kind === 'ship' ? x.postings : undefined, photo: photos.get(x.offerId) ?? null }));
   return { title, cards };
 }
 
 /** Кто отправляет фото в чат — задаёт Telegram-модуль бота (сервис о Telegram не знает). */
-type PhotoSender = (chatId: string, title: string, cards: PhotoCard[]) => Promise<void>;
+type PhotoSender = (chatId: string, title: string, cards: PhotoCard[], numbered?: boolean) => Promise<void>;
 let photoSender: PhotoSender | null = null;
 export function setOzonBotPhotoSender(fn: PhotoSender | null) { photoSender = fn; }
+/** Список сборки с номерами живёт в Telegram-модуле: отметить собранное и показать остаток. */
+type PickHandlers = { mark: (chatId: string, nums: number[], undo?: boolean) => Promise<string>; left: (chatId: string) => Promise<string>; leftPhotos: (chatId: string) => Promise<string> };
+let pickHandlers: PickHandlers | null = null;
+export function setOzonBotPickHandlers(h: PickHandlers | null) { pickHandlers = h; }
 
 // ---------------------------------------------------------------- «мозг»: Claude с инструментами
 
@@ -338,16 +349,24 @@ export const OZON_TOOLS = [
   { name: 'purchase_needs', description: 'Сколько товара и денег по закупочной (оптовой) цене нужно, чтобы собрать ещё не собранные FBS-заказы.', input_schema: { type: 'object', properties: {} } },
   { name: 'returns', description: 'Возвраты Ozon за последние N дней: статус, причина, где сейчас, сумма.', input_schema: { type: 'object', properties: { days: { type: 'number' } } } },
   { name: 'fbo_stock', description: 'Остатки на складах Ozon (FBO) и на сколько дней хватит; что заканчивается.', input_schema: { type: 'object', properties: {} } },
-  { name: 'show_photos', description: 'Отправить в чат товары ФОТОГРАФИЯМИ с количеством (одно фото на товар, одинаковые сложены): kind=collect — что собрать у оптовиков под несобранные заказы; kind=sold — что продалось за день. Используй, когда просят «покажи с фото», «что собрать у оптовиков», «какие товары продались». После вызова фото уже в чате — напиши только короткий итог.', input_schema: { type: 'object', properties: { kind: { type: 'string', enum: ['collect', 'sold'] }, date: { type: 'string', description: 'YYYY-MM-DD для sold, пусто — сегодня' } }, required: ['kind'] } },
+  { name: 'show_photos', description: 'Отправить в чат товары ФОТОГРАФИЯМИ с количеством (одно фото на товар, одинаковые сложены): kind=ship — заказы FBS «Готовы к отгрузке» (накладные сделаны; новые несобранные не входят), у каждого фото номера заказов и количество (просят «что отгрузить», «фото и номер заказа», «отгрузка»); kind=collect — что собрать у оптовиков под несобранные заказы; kind=sold — что продалось за день. Используй, когда просят «покажи с фото», «вытащи сюда», «что собрать у оптовиков», «какие товары продались». После вызова фото уже в чате — напиши только короткий итог.', input_schema: { type: 'object', properties: { kind: { type: 'string', enum: ['ship', 'collect', 'sold'] }, date: { type: 'string', description: 'YYYY-MM-DD для sold, пусто — сегодня' } }, required: ['kind'] } },
+  { name: 'pick_list', description: 'Список сборки с номерами (после show_photos ship/collect): action=done — отметить собранными номера (владелец пишет «собрал 2 и 5», «убери 3»); action=undo — вернуть номера в список; action=left — что осталось собрать (текстом); action=left_photos — прислать ФОТО ещё не собранных (с теми же номерами), когда просят «фото того, что не собрал». Ответ — готовый текст, перешли его как есть.', input_schema: { type: 'object', properties: { action: { type: 'string', enum: ['done', 'undo', 'left', 'left_photos'] }, numbers: { type: 'array', items: { type: 'number' } } }, required: ['action'] } },
 ] as const;
 
 export async function runTool(name: string, input: any, ctx: { chatId?: string } = {}): Promise<unknown> {
   switch (name) {
     case 'show_photos': {
-      const { title, cards } = await photoCards(input?.kind === 'sold' ? 'sold' : 'collect', input?.date);
+      const kind = input?.kind === 'sold' ? 'sold' : input?.kind === 'ship' ? 'ship' : 'collect';
+      const { title, cards } = await photoCards(kind, input?.date);
       if (!ctx.chatId || !photoSender) return { error: 'фото сейчас отправить нельзя', cards };
-      await photoSender(ctx.chatId, title, cards);
+      await photoSender(ctx.chatId, title, cards, kind !== 'sold');
       return { sent: true, positions: cards.length, totalQty: cards.reduce((s, c) => s + c.qty, 0), withoutPhoto: cards.filter((c) => !c.photo).map((c) => c.name) };
+    }
+    case 'pick_list': {
+      if (!ctx.chatId || !pickHandlers) return { error: 'список сейчас недоступен' };
+      const nums = Array.isArray(input?.numbers) ? input.numbers.map(Number).filter((n: number) => Number.isFinite(n)) : [];
+      if (input?.action === 'left_photos') return { sent: true, text: await pickHandlers.leftPhotos(ctx.chatId) };
+      return { text: input?.action === 'left' ? await pickHandlers.left(ctx.chatId) : await pickHandlers.mark(ctx.chatId, nums, input?.action === 'undo') };
     }
     case 'day_sales': return daySales(input?.date);
     case 'period_report': return periodReport(String(input?.from ?? ''), String(input?.to ?? ''));
@@ -366,6 +385,7 @@ function systemPrompt() {
     `Сейчас ${now.format('YYYY-MM-DD HH:mm')} по Алматы, валюта — тенге (₸).`,
     'Магазин продаёт на Ozon по FBS (свой склад: сами собираем и отгружаем) и FBO (склад Ozon).',
     'Твоя работа: продажи и маржа, что и до какого срока отгрузить (просрочка = штраф Ozon), сколько денег нужно на закупку товара по оптовой цене, возвраты, остатки FBO.',
+    'ФОТО: отправить фото в чат можно ТОЛЬКО инструментом show_photos. Никогда не пиши «фото отправлены», если в этом ответе не вызывал show_photos и он не вернул sent:true. Просят фото — вызывай show_photos (для отгрузки — kind=ship).',
     'Всегда бери цифры только из инструментов, ничего не выдумывай. Если данных нет или в них пометка (нет закупочной цены, комиссия ещё не начислена) — прямо скажи.',
     'Отвечай по-русски, коротко и по делу, как опытный менеджер: сначала главное (цифры, срочное), потом детали и совет, что сделать.',
     'Формат — Telegram HTML: только <b>, <i>, переносы строк и «•» для списков. Никакого Markdown (**, #, таблиц).',
@@ -396,18 +416,20 @@ export async function askOzonManager(history: Msg[], question: string, image?: O
   if (!apiKey) return 'Мозг бота не подключён: нет ANTHROPIC_API_KEY в Vercel.';
   // Модели по очереди: если аккаунту Anthropic какая-то недоступна (not_found) — берём следующую.
   // Последняя — та же, на которой уже работает Баурсак.
-  const models = [...new Set([process.env.OZON_BOT_MODEL, 'claude-sonnet-4-5-20250929', 'claude-sonnet-4-20250514', DEFAULT_MODEL].filter(Boolean) as string[])];
+  const models = [...new Set([process.env.OZON_BOT_MODEL, 'claude-sonnet-5-5', DEFAULT_MODEL].filter(Boolean) as string[])];
   let model = models.shift()!;
   let webSearch = (process.env.OZON_BOT_WEB_SEARCH ?? 'on').toLowerCase() !== 'off';
   const userContent: string | Block[] = image
     ? [{ type: 'image', source: { type: 'base64', media_type: image.mediaType, data: image.base64 } }, { type: 'text', text: question || 'Проанализируй этот товар для Ozon.' }]
     : question;
   const messages: Msg[] = [...history, { role: 'user', content: userContent }];
+  // Один system на весь разговор: в нём время, и если оно сменится между шагами, Claude отвергает свои thinking-блоки.
+  const system = systemPrompt();
   for (let step = 0; step < 8; step++) {
     const r = await fetchImpl('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model, max_tokens: 2500, system: systemPrompt(), tools: webSearch ? [...OZON_TOOLS, WEB_SEARCH_TOOL] : OZON_TOOLS, messages }),
+      body: JSON.stringify({ model, max_tokens: 2500, system, tools: webSearch ? [...OZON_TOOLS, WEB_SEARCH_TOOL] : OZON_TOOLS, messages }),
     });
     const body: any = await r.json().catch(() => ({}));
     if (!r.ok) {
