@@ -722,6 +722,7 @@
               <button data-cardtab="qty">Количество</button>
               <button data-cardtab="details">Детали</button>
               <button data-cardtab="media">Медиа</button>
+              <button data-cardtab="hanger">Вешалка 360°</button>
               <button data-cardtab="preview">Превью</button>
             </div>
 
@@ -852,6 +853,14 @@
                 <div id="mmVideosStatus" class="panel__hint"></div>
 
                 <label>Видео URL (отдельное поле)<input type="text" name="videoUrl" placeholder="https://…mp4 или .webm — необязательно" /></label>
+              </div>
+
+              <!-- ---- Вешалка 360° (только одежда) ---- -->
+              <div class="mm-cardtab" data-cardtab-panel="hanger" hidden>
+                <p class="panel__hint" style="margin-top:0">Только для одежды. Загрузите 3 фото вещи на вешалке: <b>спереди</b>, <b>сбоку</b> и <b>сзади</b>. В приложении вещь висит боком на вешалке, по нажатию поворачивается к покупателю, а в шторке крутится на 360°. Если фото нет — товар показывается обычной карточкой.</p>
+                <label style="display:flex;gap:6px;align-items:center;margin:6px 0 10px"><input type="checkbox" id="mmHangerRemoveBg" checked /> Убирать фон автоматически (в браузере, бесплатно; первый раз грузится ~1 минуту)</label>
+                <div id="mmHangerSlots" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px"></div>
+                <div id="mmHangerStatus" class="panel__hint"></div>
               </div>
 
               <!-- ---- Превью ---- -->

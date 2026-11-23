@@ -4,7 +4,7 @@ import { z } from 'zod';
 import multer from 'multer';
 import { put } from '@vercel/blob';
 import { prisma } from '../db/prisma';
-import { parseQuantityVariants, parseDetails, parseVideos } from '../services/productExtras';
+import { parseQuantityVariants, parseDetails, parseVideos, parseHanger } from '../services/productExtras';
 import { getSearchSuggestions } from '../services/searchSuggestions.service';
 import { MAX_CITY_IMAGES, resolveCity } from '../config/cities';
 import { env } from '../config/env';
@@ -136,6 +136,8 @@ export function toShopProduct(p: any) {
     details: parseDetails(p.details),
     // До 3 видео товара (URL); нет видео — [].
     videos: parseVideos(p.videos),
+    // Одежда «на вешалке» (как в Shopify): { front, side, back } — фото без фона; null — обычная карточка.
+    hanger: parseHanger(p.hanger),
   };
 }
 
