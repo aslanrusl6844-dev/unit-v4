@@ -331,6 +331,16 @@ describe('публикация и скрытие', () => {
     assert.deepEqual(v2.map((x: any) => x.title), ['Магазин у дома', 'Nike']);
     assert.equal(v2[0].type, 'market');
   });
+
+  test('плитка «Магазин одежды» (type clothes) видна только с ?v=3', async () => {
+    const c = await newShowcase({ title: 'Магазин одежды', type: 'clothes' });
+    const m = await newShowcase({ title: 'Магазин у дома', type: 'market' });
+    await adm('PATCH', `/${c.id}`, { published: true });
+    await adm('PATCH', `/${m.id}`, { published: true });
+    assert.deepEqual((await pub('')).json.map((x: any) => x.title), []);
+    assert.deepEqual((await pub('?v=2')).json.map((x: any) => x.title), ['Магазин у дома']);
+    assert.deepEqual((await pub('?v=3')).json.map((x: any) => x.title).sort(), ['Магазин одежды', 'Магазин у дома']);
+  });
 });
 
 // ---------------------------------------------------------------------------
