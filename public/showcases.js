@@ -10,7 +10,7 @@
 const scState = { list: [], q: '', current: null, editingNew: false, status: '', statusKind: '', wired: false, busy: false, loading: false, loadError: null };
 const scEsc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const scErr = (err) => (err && err.body && err.body.error) ? String(err.body.error) : String((err && err.message) || err);
-const scTypeName = (t) => (t === 'shop' ? 'Магазин' : t === 'market' ? 'Кнопка «Магазин у дома»' : 'Бренд');
+const scTypeName = (t) => (t === 'shop' ? 'Магазин' : t === 'market' ? 'Кнопка «Магазин у дома»' : t === 'clothes' ? 'Кнопка «Магазин одежды»' : 'Бренд');
 
 function scRoot() { return document.getElementById('scRoot'); }
 
@@ -257,7 +257,7 @@ function scEditorHtml() {
     <p id="scStatus" class="panel__hint" style="color:${scState.statusKind === 'error' ? 'var(--loss)' : 'var(--text-muted)'}">${scEsc(scState.status)}</p>
     <form id="scForm" style="display:grid;gap:10px;max-width:640px">
       <label>Тип
-        <select id="scType"><option value="brand" ${c.type === 'brand' ? 'selected' : ''}>Бренд</option><option value="shop" ${c.type === 'shop' ? 'selected' : ''}>Магазин</option><option value="market" ${c.type === 'market' ? 'selected' : ''}>Кнопка «Магазин у дома» (открывает карту, товары не нужны)</option></select>
+        <select id="scType"><option value="brand" ${c.type === 'brand' ? 'selected' : ''}>Бренд</option><option value="shop" ${c.type === 'shop' ? 'selected' : ''}>Магазин</option><option value="market" ${c.type === 'market' ? 'selected' : ''}>Кнопка «Магазин у дома» (открывает карту, товары не нужны)</option><option value="clothes" ${c.type === 'clothes' ? 'selected' : ''}>Кнопка «Магазин одежды» (вешалка + Мужское/Женское/Детское, товары не нужны)</option></select>
       </label>
       <label>Название <input type="text" id="scTitle" maxlength="120" value="${scEsc(c.title)}" /></label>
       <label>Короткое описание <input type="text" id="scDescription" maxlength="500" value="${scEsc(c.description)}" /></label>
