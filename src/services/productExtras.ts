@@ -93,3 +93,18 @@ export function parseVideos(raw: unknown, max: number = MAX_VIDEOS): string[] {
   if (!Array.isArray(raw)) return [];
   return raw.filter((u): u is string => typeof u === 'string' && /^https?:\/\/\S+$/i.test(u)).slice(0, max);
 }
+
+/** «Вешалка 360°»: три фото одежды без фона. Все три — ссылки http(s), иначе null. */
+export const hangerSchema = z.object({ front: httpUrl, side: httpUrl, back: httpUrl });
+export type Hanger = { front: string; side: string; back: string };
+
+export function parseHanger(raw: unknown): Hanger | null {
+  let v: unknown = raw;
+  if (typeof v === 'string') {
+    try { v = JSON.parse(v); } catch { return null; }
+  }
+  if (!v || typeof v !== 'object') return null;
+  const o = v as Record<string, unknown>;
+  const ok = (u: unknown): u is string => typeof u === 'string' && /^https?:\/\/\S+$/i.test(u);
+  return ok(o.front) && ok(o.side) && ok(o.back) ? { front: o.front, side: o.side, back: o.back } : null;
+}

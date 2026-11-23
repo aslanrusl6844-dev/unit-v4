@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from '../db/prisma';
 import { logger } from '../utils/logger';
@@ -7,7 +7,7 @@ import { getAllKaspiCategoriesWithRates } from '../integrations/kaspi.categories
 import { SHOP_TYPE_REQUIRED_FOR_SALE } from '../config/shopRules';
 import { maybeGenerateShopArticle } from '../services/shopArticle';
 import { isValidShopCategory } from '../config/shopCategories';
-import { quantityVariantsSchema, detailsSchema, videosSchema, serializeJsonArray } from '../services/productExtras';
+import { quantityVariantsSchema, detailsSchema, videosSchema, serializeJsonArray, hangerSchema } from '../services/productExtras';
 
 export const productsRouter = Router();
 
@@ -83,6 +83,7 @@ const productSchema = z.object({
   quantityVariants: quantityVariantsSchema.optional().nullable(),
   details: detailsSchema.optional().nullable(),
   videos: videosSchema.optional(), // до 3 видео товара (URL)
+  hanger: hangerSchema.optional().nullable(), // одежда «на вешалке»: фото спереди/сбоку/сзади; null — убрать
   shopCost: z.number().nonnegative().optional().nullable(),
   // Подписка «Вау»: % скидки для подписчиков (1..30), null — без метки «Вау».
   wowPercent: z.number().int().min(1).max(30).optional().nullable(),
@@ -100,6 +101,7 @@ productsRouter.post('/', async (req, res) => {
   const data: Prisma.ProductUncheckedCreateInput = { ...parsed.data } as Prisma.ProductUncheckedCreateInput;
   if (parsed.data.quantityVariants !== undefined) (data as any).quantityVariants = serializeJsonArray(parsed.data.quantityVariants);
   if (parsed.data.details !== undefined) (data as any).details = parsed.data.details ?? [];
+  if (parsed.data.hanger !== undefined) (data as any).hanger = parsed.data.hanger ?? Prisma.DbNull;
   // Та же защита, что и в PUT: нельзя СРАЗУ создать товар «В продаже» без
   // корректной category/цены — на практике карточка всегда создаёт новый
   // товар с shopActive=false, но проверяем и здесь, а не только в PUT.
@@ -344,6 +346,7 @@ productsRouter.put('/:id', async (req, res) => {
   const data: Record<string, any> = { ...parsed.data };
   if (parsed.data.quantityVariants !== undefined) data.quantityVariants = serializeJsonArray(parsed.data.quantityVariants);
   if (parsed.data.details !== undefined) data.details = parsed.data.details ?? [];
+  if (parsed.data.hanger !== undefined) data.hanger = parsed.data.hanger ?? Prisma.DbNull;
   if (data.kaspiReferencePrice != null) data.kaspiReferencePriceUpdatedAt = new Date();
   if (data.ozonReferencePrice != null) data.ozonReferencePriceUpdatedAt = new Date();
   if (data.wbReferencePrice != null) data.wbReferencePriceUpdatedAt = new Date();

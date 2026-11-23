@@ -3823,6 +3823,7 @@ function switchMyMarketCardTab(tab) {
   document.querySelectorAll('.mm-cardtab').forEach((el) => { el.hidden = el.dataset.cardtabPanel !== tab; });
   if (tab === 'preview') renderMyMarketPreviewCard();
   if (tab === 'variants') renderMyMarketVariantsTab();
+  if (tab === 'hanger') mmHangerRender();
 }
 
 // ---------------------------------------------------------------------
@@ -4297,6 +4298,7 @@ function openMyMarketProductCard(id) {
   resetMyMarketQtyAddForm();
   myMarketCardDetails = (Array.isArray(p.details) ? p.details : mmxParse(p.details)).filter((u) => typeof u === 'string');
   myMarketCardVideos = Array.isArray(p.videos) ? p.videos.filter((u) => typeof u === 'string') : [];
+  mmHangerSet(p.hanger);
   document.getElementById('mmVideosStatus').textContent = '';
   renderMyMarketQtyList();
   renderMyMarketDetailsList();
@@ -4320,6 +4322,7 @@ function closeMyMarketProductCard() {
   resetMyMarketQtyAddForm();
   myMarketCardDetails = [];
   myMarketCardVideos = [];
+  mmHangerSet(null);
   myMarketCardShowcaseLink = null;
   myMarketCardEditDone = null;
 }
@@ -4711,6 +4714,7 @@ async function saveMyMarketProductCard(e) {
     quantityVariants: myMarketCardQty,
     details: myMarketCardDetails,
     videos: myMarketCardVideos.slice(),
+    hanger: mmHangerPayload(),
     shopActive,
     // Пользователь сам выбирал категорию/тип (или кликнул вариант) — это уже его
     // выбор: пометка «с названия» снимается, синк Ozon это больше не перезаписывает.
@@ -11616,3 +11620,117 @@ document.addEventListener('click', (e) => {
     dm.remove();
   }
 });
+
+
+// ---------------------------------------------------------------------
+// Вешалка 360° — одежда как в Shopify: три фото без фона (спереди / сбоку / сзади).
+// Фон убирается прямо в браузере (@imgly/background-removal, без платных сервисов),
+// фото обрезается по краям вещи и грузится тем же путём, что и обычные фото товара.
+// ---------------------------------------------------------------------
+const MM_HANGER_SLOTS = [['front', 'Спереди'], ['side', 'Сбоку'], ['back', 'Сзади']];
+let mmHanger = { front: null, side: null, back: null };
+let mmBgLib = null;
+
+function mmHangerSet(h) {
+  mmHanger = { front: h?.front ?? null, side: h?.side ?? null, back: h?.back ?? null };
+  const st = document.getElementById('mmHangerStatus');
+  if (st) st.textContent = '';
+  mmHangerRender();
+}
+
+/** Все три фото есть → объект; ни одного → null; часть → null (в приложение не уходит, предупреждаем). */
+function mmHangerPayload() {
+  const n = MM_HANGER_SLOTS.filter(([k]) => mmHanger[k]).length;
+  return n === 3 ? { ...mmHanger } : null;
+}
+
+function mmHangerRender() {
+  const box = document.getElementById('mmHangerSlots');
+  if (!box) return;
+  box.innerHTML = MM_HANGER_SLOTS.map(([k, label]) => `
+    <div style="border:1px dashed var(--border,#ccc);border-radius:10px;padding:8px;text-align:center;background:linear-gradient(#f3f1f4,#e2e3e6)">
+      <div style="font-weight:700;margin-bottom:6px">${label}</div>
+      <div style="height:180px;display:flex;align-items:center;justify-content:center">
+        ${mmHanger[k] ? `<img src="${mmEsc(mmHanger[k])}" style="max-height:180px;max-width:100%">` : '<span class="panel__hint">нет фото</span>'}
+      </div>
+      <div style="display:flex;gap:6px;justify-content:center;margin-top:6px">
+        <button type="button" class="btn btn--ghost" data-hanger-pick="${k}">${mmHanger[k] ? 'Заменить' : 'Загрузить'}</button>
+        ${mmHanger[k] ? `<button type="button" class="btn btn--ghost" data-hanger-del="${k}">✕</button>` : ''}
+      </div>
+    </div>`).join('');
+  const n = MM_HANGER_SLOTS.filter(([k]) => mmHanger[k]).length;
+  const st = document.getElementById('mmHangerStatus');
+  if (st && !st.dataset.busy) {
+    st.style.color = n === 3 || n === 0 ? 'var(--text-faint)' : 'var(--warn)';
+    st.textContent = n === 3 ? 'Готово: вещь будет на вешалке в приложении после «Сохранить».'
+      : n === 0 ? '' : `Загружено ${n} из 3 — пока нет всех трёх фото, вешалка в приложении не появится.`;
+  }
+  box.querySelectorAll('[data-hanger-pick]').forEach((b) => b.addEventListener('click', () => mmHangerPick(b.dataset.hangerPick)));
+  box.querySelectorAll('[data-hanger-del]').forEach((b) => b.addEventListener('click', () => { mmHanger[b.dataset.hangerDel] = null; mmHangerRender(); }));
+}
+
+function mmHangerPick(slot) {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/jpeg,image/png,image/webp';
+  input.onchange = () => { if (input.files[0]) mmHangerUpload(slot, input.files[0]); };
+  input.click();
+}
+
+async function mmRemoveBg(file) {
+  if (!mmBgLib) mmBgLib = await import('https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.4.5/+esm');
+  const fn = mmBgLib.removeBackground || mmBgLib.default;
+  return fn(file, { output: { format: 'image/png' } });
+}
+
+/** Обрезка по краям вещи (прозрачные поля убираем) и уменьшение до 900px по высоте → PNG File. */
+async function mmHangerTrim(blob, name) {
+  const bmp = await createImageBitmap(blob);
+  const c = document.createElement('canvas');
+  c.width = bmp.width; c.height = bmp.height;
+  const ctx = c.getContext('2d');
+  ctx.drawImage(bmp, 0, 0);
+  const { data } = ctx.getImageData(0, 0, c.width, c.height);
+  let x0 = c.width, y0 = c.height, x1 = -1, y1 = -1;
+  for (let y = 0; y < c.height; y++) {
+    for (let x = 0; x < c.width; x++) {
+      if (data[(y * c.width + x) * 4 + 3] > 16) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    }
+  }
+  if (x1 < 0) { x0 = 0; y0 = 0; x1 = c.width - 1; y1 = c.height - 1; }
+  const w = x1 - x0 + 1, h = y1 - y0 + 1;
+  const k = Math.min(1, 900 / h);
+  const out = document.createElement('canvas');
+  out.width = Math.round(w * k); out.height = Math.round(h * k);
+  out.getContext('2d').drawImage(c, x0, y0, w, h, 0, 0, out.width, out.height);
+  const png = await new Promise((r) => out.toBlob(r, 'image/png'));
+  return new File([png], name.replace(/\.[^.]+$/, '') + '-hanger.png', { type: 'image/png' });
+}
+
+async function mmHangerUpload(slot, file) {
+  const st = document.getElementById('mmHangerStatus');
+  st.dataset.busy = '1';
+  st.style.color = 'var(--text-faint)';
+  try {
+    let blob = file;
+    if (document.getElementById('mmHangerRemoveBg').checked) {
+      st.textContent = 'Убираю фон… (первый раз дольше — загружается модель)';
+      try {
+        blob = await mmRemoveBg(file);
+      } catch (err) {
+        console.warn('Фон не убрался:', err);
+        st.textContent = 'Фон убрать не получилось — загружаю фото как есть.';
+        blob = file;
+      }
+    }
+    st.textContent = 'Загружаю…';
+    const trimmed = await mmHangerTrim(blob, file.name);
+    mmHanger[slot] = await uploadMyMarketFile(trimmed);
+    delete st.dataset.busy;
+    mmHangerRender();
+  } catch (err) {
+    delete st.dataset.busy;
+    st.textContent = err.message;
+    st.style.color = 'var(--loss)';
+  }
+}
