@@ -11609,7 +11609,7 @@ function wsShipRender() {
         ${day.extraCogs ? `<div style="display:flex;justify-content:space-between;font-size:11.5px;padding:4px 2px;border-top:1px dashed var(--border);color:#0369a1"><span>➕ Доплата к закупу (вручную)</span><b>${fmtMoney(day.extraCogs)}</b></div>` : ''}
         ${day.items.length > 10 ? `<button type="button" class="btn btn--ghost" data-ship-day-more="${day.date}" style="width:100%;margin-top:4px">Показать ещё ${day.items.length - 10} ▾</button>` : ''}
       </details>`).join('') + (daysMore > 0 ? moreBtn('days', daysMore) : '') : '<div style="color:var(--text-faint);font-size:12.5px">За период отправок нет</div>';
-    document.getElementById('wsShipHint').textContent = `Отправлено = заказы FBS «в доставке» и «доставлен» (отменённые не входят). Налог ${d.taxPct}%. Расходы Ozon: для доставленных — реальные, для ещё в пути — по тарифам из карточки (≈).${t.noCost ? ` У ${t.noCost} товар(ов) нет себестоимости — прибыль завышена.` : ''}`;
+    document.getElementById('wsShipHint').textContent = `Отправлено = заказы FBS «в доставке» и «доставлен» (отменённые не входят), по дню, когда Ozon принял отправление. Налог ${d.taxPct}%. Расходы Ozon: для доставленных — реальные, для ещё в пути — по тарифам из карточки (≈).${t.noCost ? ` У ${t.noCost} товар(ов) нет себестоимости — прибыль завышена.` : ''}`;
   }
 }
 

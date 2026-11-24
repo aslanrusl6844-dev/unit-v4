@@ -133,6 +133,16 @@ ozonFboRouter.get('/delivered', async (req, res) => {
 /** Статусы FBS «отправлено»: заказ уже передан Ozon (в доставке, доставлен, спор). Отменённые и ещё не отгруженные — нет. */
 const SHIPPED_STATUSES = ['delivering', 'delivered', 'arbitration', 'client_arbitration', 'driver_pickup', 'sent_by_seller'];
 
+/** Когда отправление реально отдали Ozon: delivering_date из данных Ozon; если его нет — дата заказа. */
+export function ozonShipDate(o: { orderDate: Date; rawData?: unknown }): Date {
+  let raw: any = o.rawData;
+  if (typeof raw === 'string') {
+    try { raw = JSON.parse(raw); } catch { raw = null; }
+  }
+  const d = raw && typeof raw === 'object' ? new Date(String(raw.delivering_date ?? '')) : null;
+  return d && !Number.isNaN(d.getTime()) && d.getFullYear() > 2000 ? d : new Date(o.orderDate);
+}
+
 /**
  * GET /api/ozon-fbo/shipped?from=&to= — сколько товаров отправили на Ozon (FBS) за период, по каждому товару:
  * штук, закуп (себестоимость), продажа, расходы Ozon (комиссия, логистика, последняя миля, эквайринг), налог, чистая прибыль.
@@ -144,10 +154,20 @@ ozonFboRouter.get('/shipped', async (req, res) => {
     const dateTo = to ? almatyEndOfDay(to) : new Date();
     const dateFrom = from ? almatyStartOfDay(from) : new Date(dateTo.getTime() - 30 * 24 * 3600 * 1000);
     const taxPct = await getTaxRatePct().catch(() => 4);
-    const orders: any[] = await prisma.order.findMany({
-      where: { marketplace: 'OZON', status: { in: SHIPPED_STATUSES }, orderDate: { gte: dateFrom, lte: dateTo } },
+    // День отгрузки = когда Ozon принял отправление (delivering_date из данных Ozon), а не день заказа:
+    // заказ от 22-го, отданный 24-го, считается в 24-м. Берём заказы с запасом в 21 день назад и
+    // фильтруем уже по дате отгрузки.
+    const fetched: any[] = await prisma.order.findMany({
+      where: {
+        marketplace: 'OZON',
+        status: { in: SHIPPED_STATUSES },
+        orderDate: { gte: new Date(dateFrom.getTime() - 21 * 24 * 3600 * 1000), lte: dateTo },
+      },
       include: { items: true },
     });
+    const orders = fetched
+      .map((o) => ({ ...o, shipDate: ozonShipDate(o) }))
+      .filter((o) => o.shipDate >= dateFrom && o.shipDate <= dateTo);
     const skus = Array.from(new Set(orders.flatMap((o) => (o.items ?? []).map((i: any) => String(i.externalSku)))));
     const products: any[] = skus.length ? await prisma.product.findMany({
       where: { OR: [{ ozonOfferId: { in: skus } }, { sku: { in: skus } }] },
@@ -183,7 +203,7 @@ ozonFboRouter.get('/shipped', async (req, res) => {
         if (!unitCost) a.noCost = true;
         if (estimated) a.estimated = true;
         agg.set(key, a);
-        const dk = dayKey(o.orderDate);
+        const dk = dayKey(o.shipDate);
         const day = dayAgg.get(dk) ?? { orders: new Set<string>(), items: new Map<string, Agg>() };
         day.orders.add(o.externalId);
         const di = day.items.get(key) ?? { offerId: a.offerId, name: a.name, qty: 0, orders: new Set<string>(), revenue: 0, cogs: 0, fees: 0, tax: 0, noCost: false, estimated: false };
