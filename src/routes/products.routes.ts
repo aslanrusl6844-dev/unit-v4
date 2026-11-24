@@ -84,6 +84,7 @@ const productSchema = z.object({
   details: detailsSchema.optional().nullable(),
   videos: videosSchema.optional(), // до 3 видео товара (URL)
   hanger: hangerSchema.optional().nullable(), // одежда «на вешалке»: фото спереди/сбоку/сзади; null — убрать
+  sizes: z.array(z.string().trim().min(1).max(12)).max(20).optional(), // размеры одежды: S, M, L, XL…
   shopCost: z.number().nonnegative().optional().nullable(),
   // Подписка «Вау»: % скидки для подписчиков (1..30), null — без метки «Вау».
   wowPercent: z.number().int().min(1).max(30).optional().nullable(),
@@ -102,6 +103,7 @@ productsRouter.post('/', async (req, res) => {
   if (parsed.data.quantityVariants !== undefined) (data as any).quantityVariants = serializeJsonArray(parsed.data.quantityVariants);
   if (parsed.data.details !== undefined) (data as any).details = parsed.data.details ?? [];
   if (parsed.data.hanger !== undefined) (data as any).hanger = parsed.data.hanger ?? Prisma.DbNull;
+  if (parsed.data.sizes !== undefined) (data as any).sizes = [...new Set(parsed.data.sizes)];
   // Та же защита, что и в PUT: нельзя СРАЗУ создать товар «В продаже» без
   // корректной category/цены — на практике карточка всегда создаёт новый
   // товар с shopActive=false, но проверяем и здесь, а не только в PUT.
@@ -347,6 +349,7 @@ productsRouter.put('/:id', async (req, res) => {
   if (parsed.data.quantityVariants !== undefined) data.quantityVariants = serializeJsonArray(parsed.data.quantityVariants);
   if (parsed.data.details !== undefined) data.details = parsed.data.details ?? [];
   if (parsed.data.hanger !== undefined) data.hanger = parsed.data.hanger ?? Prisma.DbNull;
+  if (parsed.data.sizes !== undefined) data.sizes = [...new Set(parsed.data.sizes)];
   if (data.kaspiReferencePrice != null) data.kaspiReferencePriceUpdatedAt = new Date();
   if (data.ozonReferencePrice != null) data.ozonReferencePriceUpdatedAt = new Date();
   if (data.wbReferencePrice != null) data.wbReferencePriceUpdatedAt = new Date();

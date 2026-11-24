@@ -138,6 +138,8 @@ export function toShopProduct(p: any) {
     videos: parseVideos(p.videos),
     // Одежда «на вешалке» (как в Shopify): { front, side, back } — фото без фона; null — обычная карточка.
     hanger: parseHanger(p.hanger),
+    // Размеры одежды (S, M, L…): приложение просит выбрать размер перед «В корзину».
+    sizes: Array.isArray(p.sizes) ? p.sizes : [],
   };
 }
 
@@ -818,12 +820,17 @@ shopRouter.post('/reviews', async (req, res) => {
   }
 });
 
-const orderItemSchema = z.object({
-  sku: z.string().min(1),
-  name: z.string().min(1),
-  price: z.number().nonnegative(),
-  quantity: z.number().int().positive(),
-});
+const orderItemSchema = z
+  .object({
+    sku: z.string().min(1),
+    name: z.string().min(1),
+    price: z.number().nonnegative(),
+    quantity: z.number().int().positive(),
+    // Выбранный вариант строки корзины, например «Размер: L». Дописываем его к названию,
+    // чтобы размер был виден везде: в Telegram, админке, накладной.
+    variant: z.string().trim().max(80).optional().nullable(),
+  })
+  .transform(({ variant, ...i }) => (variant ? { ...i, name: `${i.name} (${variant})` } : i));
 
 const createOrderSchema = z.object({
   city: z.string().min(1),
