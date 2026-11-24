@@ -4299,6 +4299,7 @@ function openMyMarketProductCard(id) {
   myMarketCardDetails = (Array.isArray(p.details) ? p.details : mmxParse(p.details)).filter((u) => typeof u === 'string');
   myMarketCardVideos = Array.isArray(p.videos) ? p.videos.filter((u) => typeof u === 'string') : [];
   mmHangerSet(p.hanger);
+  mmSizesSet(p.sizes);
   document.getElementById('mmVideosStatus').textContent = '';
   renderMyMarketQtyList();
   renderMyMarketDetailsList();
@@ -4323,6 +4324,7 @@ function closeMyMarketProductCard() {
   myMarketCardDetails = [];
   myMarketCardVideos = [];
   mmHangerSet(null);
+  mmSizesSet([]);
   myMarketCardShowcaseLink = null;
   myMarketCardEditDone = null;
 }
@@ -4715,6 +4717,7 @@ async function saveMyMarketProductCard(e) {
     details: myMarketCardDetails,
     videos: myMarketCardVideos.slice(),
     hanger: mmHangerPayload(),
+    sizes: mmSizesPayload(),
     shopActive,
     // Пользователь сам выбирал категорию/тип (или кликнул вариант) — это уже его
     // выбор: пометка «с названия» снимается, синк Ozon это больше не перезаписывает.
@@ -11733,4 +11736,40 @@ async function mmHangerUpload(slot, file) {
     st.textContent = err.message;
     st.style.color = 'var(--loss)';
   }
+}
+
+
+// ---------------------------------------------------------------------
+// Размеры одежды (S, M, L, XL…): строка через запятую + быстрые кнопки.
+// ---------------------------------------------------------------------
+const MM_SIZE_PRESETS = ['XS', 'S', 'M', 'L', 'XL', 'XXL', '3XL'];
+
+function mmSizesPayload() {
+  const el = document.getElementById('mmSizes');
+  if (!el) return [];
+  return [...new Set(el.value.split(/[,;\s]+/).map((x) => x.trim()).filter(Boolean))].slice(0, 20);
+}
+
+function mmSizesSet(list) {
+  const el = document.getElementById('mmSizes');
+  if (!el) return;
+  el.value = Array.isArray(list) ? list.join(', ') : '';
+  mmSizesRenderQuick();
+  el.oninput = mmSizesRenderQuick;
+}
+
+function mmSizesRenderQuick() {
+  const box = document.getElementById('mmSizeQuick');
+  if (!box) return;
+  const cur = mmSizesPayload();
+  box.innerHTML = MM_SIZE_PRESETS.map((z) => `<button type="button" class="btn ${cur.includes(z) ? '' : 'btn--ghost'}" data-size="${z}" style="min-width:44px;padding:4px 10px">${z}</button>`).join('');
+  box.querySelectorAll('[data-size]').forEach((b) => b.addEventListener('click', () => {
+    const z = b.dataset.size;
+    const list = mmSizesPayload();
+    const next = list.includes(z) ? list.filter((x) => x !== z) : [...list, z];
+    // Порядок как в стандартной сетке, свои размеры — в конце.
+    next.sort((a, c) => (MM_SIZE_PRESETS.indexOf(a) + 1 || 99) - (MM_SIZE_PRESETS.indexOf(c) + 1 || 99));
+    document.getElementById('mmSizes').value = next.join(', ');
+    mmSizesRenderQuick();
+  }));
 }

@@ -722,7 +722,7 @@
               <button data-cardtab="qty">Количество</button>
               <button data-cardtab="details">Детали</button>
               <button data-cardtab="media">Медиа</button>
-              <button data-cardtab="hanger">Вешалка 360°</button>
+              <button data-cardtab="hanger">Одежда: вешалка и размеры</button>
               <button data-cardtab="preview">Превью</button>
             </div>
 
@@ -861,6 +861,10 @@
                 <label style="display:flex;gap:6px;align-items:center;margin:6px 0 10px"><input type="checkbox" id="mmHangerRemoveBg" checked /> Убирать фон автоматически (в браузере, бесплатно; первый раз грузится ~1 минуту)</label>
                 <div id="mmHangerSlots" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px"></div>
                 <div id="mmHangerStatus" class="panel__hint"></div>
+                <h4 style="margin:18px 0 6px">Размеры</h4>
+                <p class="panel__hint" style="margin-top:0">Покупатель выбирает размер перед «В корзину», размер виден в заказе. Пусто — товар без размеров.</p>
+                <div id="mmSizeQuick" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px"></div>
+                <input id="mmSizes" type="text" placeholder="Например: S, M, L, XL или 44, 46, 48" style="width:100%" />
               </div>
 
               <!-- ---- Превью ---- -->
