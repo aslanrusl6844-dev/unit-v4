@@ -7589,7 +7589,7 @@ function reloadCurrentPage() {
 
 document.getElementById('mpFilter').addEventListener('click', (e) => {
   const btn = e.target.closest('.mp-filter__btn');
-  if (!btn) return;
+  if (!btn || btn.classList.contains('mp-filter__link')) return;
   document.querySelectorAll('.mp-filter__btn').forEach((b) => b.classList.remove('is-active'));
   btn.classList.add('is-active');
   state.marketplace = btn.dataset.mp;
@@ -7796,6 +7796,57 @@ async function applyAppConfig() {
       document.querySelectorAll(`.nav-item[data-page="${page}"]`).forEach((b) => { b.hidden = true; });
     }
     hidePanelByTitle('Yandex Cloud (Wordstat)');
+  }
+  // Кнопки каталога площадок, которые выключены
+  const CATALOG_BTN = { KASPI: ['syncCatalogBtn', 'syncKaspiPhotosBtn'], WB: ['syncWbCatalogBtn'], OZON: ['syncOzonCatalogBtn'] };
+  for (const [mp, ids] of Object.entries(CATALOG_BTN)) {
+    if (mpEnabled(mp)) continue;
+    ids.forEach((id) => { const b = document.getElementById(id); if (b) b.hidden = true; });
+  }
+  if (!mpEnabled('KASPI')) { const sel = document.getElementById('kaspiSyncDays'); if (sel) sel.hidden = true; }
+  // Одна площадка (кабинет «Озон друга»): «Всё вместе» не нужно, сразу выбрана она.
+  if (ENABLED_MPS.length === 1) {
+    const only = ENABLED_MPS[0];
+    document.querySelectorAll('.mp-filter__btn[data-mp=""]').forEach((b) => { b.hidden = true; });
+    document.querySelectorAll('.mp-filter__btn').forEach((b) => b.classList.toggle('is-active', b.dataset.mp === only));
+    state.marketplace = only;
+    reloadCurrentPage();
+  }
+  // Кабинет друга: название сверху и кнопка обратно в наш кабинет.
+  if (cfg.cabinetName) {
+    const t = document.querySelector('.brand-title'); if (t) t.textContent = cfg.cabinetName;
+    const sub = document.querySelector('.brand-sub'); if (sub) sub.textContent = ENABLED_MPS.map((m) => ({ KASPI: 'Kaspi', OZON: 'Ozon', WB: 'WB', TEEZ: 'Tez' })[m] || m).join(' · ');
+    document.title = `${cfg.cabinetName} · Юнит-экономика`;
+  }
+  const actions = document.querySelector('.topbar__actions');
+  if (cfg.mainCabinetUrl && actions) {
+    const back = document.createElement('a');
+    back.className = 'btn btn--ghost';
+    back.href = cfg.mainCabinetUrl;
+    back.textContent = '← Мой кабинет';
+    actions.prepend(back);
+  }
+  // Наш кабинет: «Озон друга» после Tez Market и «↻ Озон друга» после «↻ Tez».
+  if (cfg.friendOzon && actions) {
+    const go = document.createElement('a');
+    go.className = 'mp-filter__btn mp-filter__link';
+    go.href = cfg.friendOzon.url + '/';
+    go.innerHTML = '<i class="dot dot--ozon"></i>';
+    go.append(cfg.friendOzon.label);
+    document.getElementById('mpFilter').appendChild(go);
+    const sync = document.createElement('a');
+    sync.className = 'btn btn--ghost';
+    sync.href = cfg.friendOzon.url + '/?sync=ozon';
+    sync.title = 'Открыть кабинет друга и обновить его Ozon';
+    sync.textContent = '↻ ' + cfg.friendOzon.label;
+    actions.appendChild(sync);
+  }
+  // Пришли по кнопке «↻ Озон друга»: сразу запускаем синхронизацию Ozon.
+  const params = new URLSearchParams(location.search);
+  if (params.get('sync') === 'ozon' && mpEnabled('OZON')) {
+    params.delete('sync');
+    history.replaceState(null, '', location.pathname + (params.toString() ? '?' + params : '') + location.hash);
+    setTimeout(() => document.getElementById('syncOzonBtn')?.click(), 800);
   }
 }
 applyAppConfig();

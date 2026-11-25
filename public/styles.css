@@ -492,3 +492,7 @@ body {
    атрибутом hidden. У этих элементов свой display (flex/inline-flex/block), который перебивает
    стандартное [hidden]{display:none} браузера, — поэтому явно. */
 .nav-item[hidden], .mp-filter__btn[hidden], .btn[hidden], .panel[hidden] { display: none !important; }
+
+/* Кнопки-ссылки «Озон друга» / «← Мой кабинет» выглядят как обычные кнопки */
+a.mp-filter__btn, .topbar__actions a.btn { text-decoration: none; }
+.mp-filter__link { color: var(--text); font-weight: 600; }
