@@ -140,7 +140,18 @@ app.get('/api/health', (_req, res) => res.json({
 app.get('/api/app-config', (_req, res) => {
   const all = ['KASPI', 'OZON', 'WB', 'TEEZ'];
   const enabled = (process.env.ENABLED_MARKETPLACES || '').split(',').map((x) => x.trim().toUpperCase()).filter((x) => all.includes(x));
-  res.json({ marketplaces: enabled.length ? enabled : all, shop: process.env.APP_MODE !== 'marketplaces' });
+  // Отдельный кабинет друга («Озон друга»): своя копия на своём адресе и со своей базой.
+  //  FRIEND_OZON_URL / FRIEND_OZON_LABEL — в НАШЕМ кабинете: кнопка в верхнем ряду и «↻» для синхронизации.
+  //  CABINET_NAME / MAIN_CABINET_URL   — в кабинете ДРУГА: название сверху и кнопка «← Мой кабинет».
+  const httpUrl = (v?: string) => (/^https:\/\/[^\s"'<>]+$/i.test(String(v ?? '').trim()) ? String(v).trim().replace(/\/+$/, '') : null);
+  const friendUrl = httpUrl(process.env.FRIEND_OZON_URL);
+  res.json({
+    marketplaces: enabled.length ? enabled : all,
+    shop: process.env.APP_MODE !== 'marketplaces',
+    friendOzon: friendUrl ? { url: friendUrl, label: (process.env.FRIEND_OZON_LABEL || 'Озон друга').slice(0, 40) } : null,
+    cabinetName: (process.env.CABINET_NAME || '').slice(0, 40) || null,
+    mainCabinetUrl: httpUrl(process.env.MAIN_CABINET_URL),
+  });
 });
 
 app.use('/api/products', productsRouter);
