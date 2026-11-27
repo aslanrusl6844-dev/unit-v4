@@ -509,6 +509,69 @@ export class OzonClient {
     };
   }
 
+  /** Текущие цены сразу многих товаров (до 1000 offer_id за запрос). */
+  async fetchPriceDetailsMany(offerIds: string[]): Promise<Map<string, OzonPriceDetails>> {
+    const http = await this.getHttp();
+    const out = new Map<string, OzonPriceDetails>();
+    const num = (v: unknown) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : null; };
+    for (let i = 0; i < offerIds.length; i += 1000) {
+      const chunk = offerIds.slice(i, i + 1000);
+      const { data } = await http.post('/v5/product/info/prices', { filter: { offer_id: chunk, visibility: 'ALL' }, limit: 1000, cursor: '' });
+      for (const item of data.items ?? data.result?.items ?? []) {
+        const p = item.price ?? {};
+        out.set(String(item.offer_id), {
+          offerId: item.offer_id,
+          price: num(p.price),
+          oldPrice: num(p.old_price),
+          minPrice: num(p.min_price),
+          sellingPrice: sellingPrice(p) ?? null,
+          currency: p.currency_code || null,
+        });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Поменять цены многих товаров одним запросом (/v1/product/import/prices, до 1000 за раз).
+   * Возвращает ошибки по offer_id: пустой массив — Ozon принял.
+   */
+  async updatePricesMany(items: Array<{ offerId: string; price: number; oldPrice: number; minPrice?: number; currency?: string | null }>): Promise<Map<string, string[]>> {
+    const http = await this.getHttp();
+    const out = new Map<string, string[]>();
+    for (let i = 0; i < items.length; i += 1000) {
+      const chunk = items.slice(i, i + 1000);
+      const prices = chunk.map((x) => {
+        const item: Record<string, unknown> = { offer_id: x.offerId, price: String(Math.round(x.price)), old_price: String(Math.round(x.oldPrice)) };
+        if (x.minPrice !== undefined) item.min_price = String(Math.round(x.minPrice));
+        if (x.currency) item.currency_code = x.currency;
+        return item;
+      });
+      try {
+        const { data } = await http.post('/v1/product/import/prices', { prices });
+        const byId = new Map<string, any>((data.result ?? []).map((r: any) => [String(r.offer_id), r]));
+        for (const x of chunk) {
+          const r = byId.get(x.offerId);
+          if (!r) out.set(x.offerId, ['Ozon не вернул ответ по товару']);
+          else if (r.updated) out.set(x.offerId, []);
+          else {
+            const errs = (r.errors ?? []).map((e: any) => [e.code, e.message].filter(Boolean).join(': ')).filter(Boolean);
+            out.set(x.offerId, errs.length ? errs : ['Ozon не обновил цену']);
+          }
+        }
+      } catch (err: any) {
+        const status = err?.response?.status;
+        const body = err?.response?.data;
+        logger.error({ status, body }, '[Ozon] Ошибка массовой смены цен (/v1/product/import/prices)');
+        const msg = status === 403
+          ? 'У ключа Ozon нет прав менять цены — нужен ключ с ролью «Admin» или «Цены и остатки»'
+          : String(body?.message || err?.message || err);
+        for (const x of chunk) out.set(x.offerId, [msg]);
+      }
+    }
+    return out;
+  }
+
   /**
    * Поменять цены товара на Ozon (/v1/product/import/prices). oldPrice = 0 — убрать зачёркнутую цену;
    * minPrice = undefined — минимальную не трогаем. Возвращает ошибки Ozon текстом (пусто — принято).

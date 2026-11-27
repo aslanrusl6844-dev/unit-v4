@@ -9048,6 +9048,7 @@ function wsTableHtml(group, mp, products) {
         ${wholesalersState.wholesalers.filter((w) => (w.marketplace || 'KASPI') === mp && w.id !== group.key).map((w) => `<option value="${wsEsc(w.id)}">${wsEsc(wsDisplayName(w))}</option>`).join('')}
       </select>
       <button class="btn btn--accent" data-ws-bulk-move="${wsEsc(group.key)}" data-ws-bulk-mp="${mp}" ${pickedHere ? '' : 'disabled'}>Переместить</button>
+      ${mp === 'OZON' ? `<button class="btn btn--ghost" data-ws-bulk-price="${wsEsc(group.key)}" ${pickedHere ? '' : 'disabled'} title="Поменять цену, зачёркнутую и минимальную для акций сразу у всех выбранных">₸ Цены на Ozon выбранным</button>` : ''}
     </div>` : '';
   return `
     <div style="margin:10px 0 4px;font-weight:600;font-size:12.5px">${head}</div>
@@ -9453,6 +9454,12 @@ function wsWireBulk(list, groups) {
     for (const p of g.products) { const k = p.id + '|' + c.dataset.wsPickMp; if (c.checked) wsPicked.add(k); else wsPicked.delete(k); }
     renderWholesalerShelves();
   }));
+  list.querySelectorAll('[data-ws-bulk-price]').forEach((b) => b.addEventListener('click', () => {
+    const g = byKey.get(b.dataset.wsBulkPrice);
+    if (!g) return;
+    const ids = g.products.filter((p) => wsPicked.has(p.id + '|OZON')).map((p) => p.id);
+    if (ids.length) wsOpenBulkPrice(ids);
+  }));
   list.querySelectorAll('[data-ws-bulk-move]').forEach((b) => b.addEventListener('click', async () => {
     const g = byKey.get(b.dataset.wsBulkMove);
     const mp = b.dataset.wsBulkMp;
@@ -9473,6 +9480,74 @@ function wsWireBulk(list, groups) {
       alert('Не удалось переместить: ' + err.message);
     }
   }));
+}
+
+// ---------------------------------------------------------------------------
+// Массовая смена цен Ozon: отметили товары галочками → «₸ Цены на Ozon выбранным».
+// Пустое поле — у каждого товара остаётся его текущее значение.
+// ---------------------------------------------------------------------------
+function wsOpenBulkPrice(ids) {
+  let ov = document.getElementById('ozonBulkPriceOverlay');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.id = 'ozonBulkPriceOverlay';
+    ov.className = 'modal-overlay';
+    ov.innerHTML = `<div class="modal" style="max-width:460px">
+      <div class="modal__head"><h2>Цены на Ozon — сразу всем</h2><button type="button" class="btn btn--ghost" data-bp-close>✕</button></div>
+      <p data-bp-count style="margin:0 0 10px;font-size:13px;color:var(--text-muted)"></p>
+      <form data-bp-form style="display:grid;gap:10px">
+        <label style="display:grid;gap:4px;font-size:13px;font-weight:600">Цена продажи, ₸<input type="number" name="price" min="1" step="1" placeholder="пусто — не менять" style="width:100%" /></label>
+        <label style="display:grid;gap:4px;font-size:13px">Старая цена (зачёркнутая), ₸<input type="number" name="oldPrice" min="0" step="1" placeholder="пусто — не менять, 0 — убрать" style="width:100%" /></label>
+        <label style="display:grid;gap:4px;font-size:13px">Минимальная цена для акций, ₸<input type="number" name="minPrice" min="0" step="1" placeholder="пусто — не менять" style="width:100%" /></label>
+        <p class="panel__hint" style="margin:0">Одинаковые цены поставятся всем выбранным товарам. Зачёркнутая должна быть больше цены продажи, минимальная — не больше. Товары, где это не выполняется, не отправятся — покажу их списком.</p>
+        <div data-bp-status class="panel__hint" style="margin:0;white-space:pre-line"></div>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button type="button" class="btn btn--ghost" data-bp-close>Закрыть</button>
+          <button type="submit" class="btn btn--accent" data-bp-save>Сохранить на Ozon</button>
+        </div>
+      </form></div>`;
+    document.body.appendChild(ov);
+    ov.addEventListener('click', (e) => { if (e.target === ov || e.target.closest('[data-bp-close]')) ov.hidden = true; });
+    ov.querySelector('[data-bp-form]').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const f = e.target;
+      const st = ov.querySelector('[data-bp-status]');
+      const v = (n) => (f.elements[n].value === '' ? null : Number(f.elements[n].value));
+      const body = { productIds: JSON.parse(ov.dataset.ids || '[]'), price: v('price'), oldPrice: v('oldPrice'), minPrice: v('minPrice') };
+      if (body.price == null && body.oldPrice == null && body.minPrice == null) { st.textContent = 'Впишите хотя бы одну цену'; st.style.color = 'var(--loss)'; return; }
+      const lines = [];
+      if (body.price != null) lines.push(`Цена продажи: ${fmtMoney(body.price)}`);
+      if (body.oldPrice != null) lines.push(`Старая цена: ${body.oldPrice ? fmtMoney(body.oldPrice) : 'убрать'}`);
+      if (body.minPrice != null) lines.push(`Минимальная для акций: ${fmtMoney(body.minPrice)}`);
+      if (!confirm(`Поменять цены на Ozon у ${body.productIds.length} ${wsPlural(body.productIds.length, 'товара', 'товаров', 'товаров')}?\n\n${lines.join('\n')}`)) return;
+      const btn = ov.querySelector('[data-bp-save]');
+      btn.disabled = true;
+      st.textContent = 'Отправляю на Ozon…';
+      st.style.color = 'var(--text-faint)';
+      try {
+        const r = await api('/sync/ozon-prices-bulk', { method: 'POST', body: JSON.stringify(body) });
+        const bad = (r.failed || []).map((x) => `• ${x.name}: ${x.reason}`).join('\n');
+        st.textContent = `Готово: изменено ${r.updated}.` + (bad ? `\nНе изменены (${r.failed.length}):\n${bad}` : ' На витрине Ozon новые цены появятся через несколько минут.');
+        st.style.color = r.failed?.length ? 'var(--warn)' : 'var(--accent)';
+        try {
+          const forecasts = await api('/analytics/forecast');
+          productsForecastCache = new Map(forecasts.map((x) => [`${x.productId}:${x.marketplace}`, x]));
+          wsPayout.cache.clear();
+          renderWholesalerShelves();
+        } catch { /* перерисуется при открытии */ }
+      } catch (err) {
+        st.textContent = err.message;
+        st.style.color = 'var(--loss)';
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
+  ov.dataset.ids = JSON.stringify(ids);
+  ov.querySelector('[data-bp-form]').reset();
+  ov.querySelector('[data-bp-status]').textContent = '';
+  ov.querySelector('[data-bp-count]').textContent = `Выбрано товаров: ${ids.length}`;
+  ov.hidden = false;
 }
 
 function wsUpdateToolbar() {
