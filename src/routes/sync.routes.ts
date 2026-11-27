@@ -151,6 +151,69 @@ syncRouter.post('/ozon-price/:productId', async (req, res) => {
   }
 });
 
+/**
+ * Массовая смена цен на Ozon для выбранных товаров: { productIds, price?, oldPrice?, minPrice? }.
+ * Пустое поле (null) — у каждого товара оставить его текущее значение; oldPrice = 0 — убрать зачёркнутую.
+ * Каждый товар проверяется отдельно; не прошедшие проверку не отправляются и возвращаются с причиной.
+ */
+export function planBulkOzonPrices(
+  rows: Array<{ id: string; name: string; offerId: string; cur: { price: number | null; oldPrice: number | null; minPrice: number | null; currency?: string | null } | null }>,
+  set: { price: number | null; oldPrice: number | null; minPrice: number | null },
+) {
+  const send: Array<{ id: string; offerId: string; price: number; oldPrice: number; minPrice?: number; currency?: string | null }> = [];
+  const skipped: Array<{ id: string; name: string; reason: string }> = [];
+  for (const r of rows) {
+    if (!r.cur) { skipped.push({ id: r.id, name: r.name, reason: 'Ozon не нашёл товар' }); continue; }
+    const price = set.price ?? r.cur.price ?? 0;
+    const oldPrice = set.oldPrice ?? r.cur.oldPrice ?? 0;
+    const minPrice = set.minPrice ?? undefined;
+    if (!(price > 0)) { skipped.push({ id: r.id, name: r.name, reason: 'нет цены продажи' }); continue; }
+    if (oldPrice > 0 && oldPrice <= price) { skipped.push({ id: r.id, name: r.name, reason: `зачёркнутая ${Math.round(oldPrice)} ₸ не больше цены ${Math.round(price)} ₸` }); continue; }
+    if (minPrice !== undefined && minPrice > price) { skipped.push({ id: r.id, name: r.name, reason: `минимальная ${Math.round(minPrice)} ₸ больше цены ${Math.round(price)} ₸` }); continue; }
+    send.push({ id: r.id, offerId: r.offerId, price, oldPrice, minPrice, currency: r.cur.currency });
+  }
+  return { send, skipped };
+}
+
+syncRouter.post('/ozon-prices-bulk', async (req, res) => {
+  const ids: string[] = Array.isArray(req.body?.productIds) ? req.body.productIds.map(String).slice(0, 1000) : [];
+  const opt = (v: unknown) => (v == null || v === '' ? null : Number(v));
+  const set = { price: opt(req.body?.price), oldPrice: opt(req.body?.oldPrice), minPrice: opt(req.body?.minPrice) };
+  if (!ids.length) return res.status(400).json({ error: 'Не выбраны товары' });
+  if (set.price == null && set.oldPrice == null && set.minPrice == null) return res.status(400).json({ error: 'Укажите хотя бы одну цену' });
+  for (const [k, v] of Object.entries(set)) {
+    if (v != null && (!Number.isFinite(v) || v < 0 || (k === 'price' && v === 0))) return res.status(400).json({ error: 'Цены — положительные числа' });
+  }
+  try {
+    const products = await prisma.product.findMany({ where: { id: { in: ids } }, select: { id: true, name: true, ozonOfferId: true } });
+    const withOffer = products.filter((p) => p.ozonOfferId);
+    const noOffer = products.filter((p) => !p.ozonOfferId).map((p) => ({ id: p.id, name: p.name, reason: 'нет offer_id Ozon' }));
+    const current = await ozonClient.fetchPriceDetailsMany(withOffer.map((p) => p.ozonOfferId!));
+    const { send, skipped } = planBulkOzonPrices(
+      withOffer.map((p) => ({ id: p.id, name: p.name, offerId: p.ozonOfferId!, cur: current.get(p.ozonOfferId!) ?? null })),
+      set,
+    );
+    const results = send.length ? await ozonClient.updatePricesMany(send) : new Map<string, string[]>();
+    const ok: string[] = [];
+    const failed: Array<{ id: string; name: string; reason: string }> = [];
+    const nameById = new Map(products.map((p) => [p.id, p.name]));
+    for (const x of send) {
+      const errs = results.get(x.offerId) ?? ['нет ответа'];
+      if (errs.length) failed.push({ id: x.id, name: nameById.get(x.id) || x.id, reason: errs.join('; ') });
+      else ok.push(x.id);
+    }
+    const now = new Date();
+    for (const x of send.filter((s) => ok.includes(s.id))) {
+      await prisma.product.update({ where: { id: x.id }, data: { ozonReferencePrice: Math.round(x.price), ozonReferencePriceUpdatedAt: now } });
+    }
+    logger.info({ count: ok.length, failed: failed.length, set }, '[Ozon] массовая смена цен из админки');
+    res.json({ ok: true, updated: ok.length, failed: [...noOffer, ...skipped, ...failed] });
+  } catch (err: any) {
+    logger.error({ err }, 'Ошибка массовой смены цен Ozon');
+    res.status(500).json({ error: 'Не удалось поменять цены на Ozon', details: String(err?.message ?? err) });
+  }
+});
+
 syncRouter.post('/ozon-catalog', async (_req, res) => {
   try {
     const result = await syncOzonCatalog();
