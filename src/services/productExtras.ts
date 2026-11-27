@@ -108,3 +108,18 @@ export function parseHanger(raw: unknown): Hanger | null {
   const ok = (u: unknown): u is string => typeof u === 'string' && /^https?:\/\/\S+$/i.test(u);
   return ok(o.front) && ok(o.side) && ok(o.back) ? { front: o.front, side: o.side, back: o.back } : null;
 }
+
+/** Режим показа товара в приложении. */
+export const displayModeSchema = z.enum(['card', 'hanger', 'shelf']);
+export type DisplayMode = z.infer<typeof displayModeSchema>;
+
+/**
+ * Итоговый режим для приложения: полочка — только если есть фото полки; вешалка — если
+ * выбрана (или не выбрано ничего) и есть все три фото; иначе обычная карточка.
+ */
+export function resolveDisplayMode(p: { displayMode?: string | null; hanger?: unknown; shelfImage?: string | null }): DisplayMode {
+  const shelfOk = typeof p.shelfImage === 'string' && /^https?:\/\/\S+$/i.test(p.shelfImage);
+  if (p.displayMode === 'shelf') return shelfOk ? 'shelf' : 'card';
+  if (p.displayMode === 'card') return 'card';
+  return parseHanger(p.hanger) ? 'hanger' : 'card';
+}

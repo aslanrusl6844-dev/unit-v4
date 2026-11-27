@@ -722,7 +722,7 @@
               <button data-cardtab="qty">Количество</button>
               <button data-cardtab="details">Детали</button>
               <button data-cardtab="media">Медиа</button>
-              <button data-cardtab="hanger">Одежда: вешалка и размеры</button>
+              <button data-cardtab="hanger">Вешалка / Полка и размеры</button>
               <button data-cardtab="preview">Превью</button>
             </div>
 
@@ -857,7 +857,13 @@
 
               <!-- ---- Вешалка 360° (только одежда) ---- -->
               <div class="mm-cardtab" data-cardtab-panel="hanger" hidden>
-                <p class="panel__hint" style="margin-top:0">Только для одежды. Загрузите 3 фото вещи на вешалке: <b>спереди</b>, <b>сбоку</b> и <b>сзади</b>. В приложении вещь висит боком на вешалке, по нажатию поворачивается к покупателю, а в шторке крутится на 360°. Если фото нет — товар показывается обычной карточкой.</p>
+                <h4 style="margin:0 0 6px">Как показывать в приложении</h4>
+                <div id="mmDisplayMode" style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:8px">
+                  <label style="display:flex;gap:6px;align-items:center"><input type="radio" name="mmDisplayMode" value="card" /> Обычная карточка</label>
+                  <label style="display:flex;gap:6px;align-items:center"><input type="radio" name="mmDisplayMode" value="hanger" /> На вешалке <span class="panel__hint">(одежда, сумки)</span></label>
+                  <label style="display:flex;gap:6px;align-items:center"><input type="radio" name="mmDisplayMode" value="shelf" /> На полочке <span class="panel__hint">(обувь: кроссовки, зимняя, летняя, тапочки)</span></label>
+                </div>
+                <p class="panel__hint" id="mmDisplayHint" style="margin-top:0"></p>
                 <label style="display:flex;gap:6px;align-items:center;margin:6px 0 10px"><input type="checkbox" id="mmHangerRemoveBg" checked /> Убирать фон автоматически (в браузере, бесплатно; первый раз грузится ~1 минуту)</label>
                 <div id="mmHangerSlots" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px"></div>
                 <div id="mmHangerStatus" class="panel__hint"></div>

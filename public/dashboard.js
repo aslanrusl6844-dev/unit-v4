@@ -4299,6 +4299,7 @@ function openMyMarketProductCard(id) {
   myMarketCardDetails = (Array.isArray(p.details) ? p.details : mmxParse(p.details)).filter((u) => typeof u === 'string');
   myMarketCardVideos = Array.isArray(p.videos) ? p.videos.filter((u) => typeof u === 'string') : [];
   mmHangerSet(p.hanger);
+  mmDisplaySet(p.displayMode, p.shelfImage, p.hanger);
   mmSizesSet(p.sizes);
   document.getElementById('mmVideosStatus').textContent = '';
   renderMyMarketQtyList();
@@ -4324,6 +4325,7 @@ function closeMyMarketProductCard() {
   myMarketCardDetails = [];
   myMarketCardVideos = [];
   mmHangerSet(null);
+  mmDisplaySet(null, null, null);
   mmSizesSet([]);
   myMarketCardShowcaseLink = null;
   myMarketCardEditDone = null;
@@ -4717,6 +4719,8 @@ async function saveMyMarketProductCard(e) {
     details: myMarketCardDetails,
     videos: myMarketCardVideos.slice(),
     hanger: mmHangerPayload(),
+    displayMode: mmDisplayMode,
+    shelfImage: mmDisplayMode === 'shelf' ? (mmHanger.side || null) : null,
     sizes: mmSizesPayload(),
     shopActive,
     // Пользователь сам выбирал категорию/тип (или кликнул вариант) — это уже его
@@ -11773,10 +11777,36 @@ function mmHangerPayload() {
   return n === 3 ? { ...mmHanger } : null;
 }
 
+// Режим показа: card — обычная карточка, hanger — вешалка (3 фото), shelf — полочка (1 фото сбоку).
+let mmDisplayMode = 'card';
+
+function mmDisplaySet(mode, shelfImage, hanger) {
+  const hasHanger = !!(hanger && hanger.front && hanger.side && hanger.back);
+  mmDisplayMode = mode || (hasHanger ? 'hanger' : 'card');
+  if (mmDisplayMode === 'shelf' && shelfImage) mmHanger.side = shelfImage;
+  document.querySelectorAll('input[name="mmDisplayMode"]').forEach((r) => {
+    r.checked = r.value === mmDisplayMode;
+    r.onchange = () => { mmDisplayMode = r.value; mmHangerRender(); };
+  });
+  mmHangerRender();
+}
+
 function mmHangerRender() {
   const box = document.getElementById('mmHangerSlots');
   if (!box) return;
-  box.innerHTML = MM_HANGER_SLOTS.map(([k, label]) => `
+  const hint = document.getElementById('mmDisplayHint');
+  const mode = typeof mmDisplayMode === 'string' ? mmDisplayMode : 'card';
+  if (hint) {
+    hint.innerHTML = mode === 'hanger'
+      ? 'Загрузите 3 фото вещи на вешалке: <b>спереди</b>, <b>сбоку</b> и <b>сзади</b>. В приложении вещь висит боком, по нажатию поворачивается к покупателю, в шторке крутится на 360°.'
+      : mode === 'shelf'
+        ? 'Загрузите 1 фото пары <b>сбоку</b>. В приложении пара стоит на стеклянной полочке в витрине в 2 колонки, по нажатию «подъезжает» крупно — с ценой, размером и «В корзину».'
+        : 'Товар показывается обычной карточкой. Фото ниже не используются.';
+  }
+  const slots = mode === 'shelf' ? [['side', 'Сбоку (для полочки)']] : MM_HANGER_SLOTS;
+  box.style.display = mode === 'card' ? 'none' : 'grid';
+  box.style.gridTemplateColumns = mode === 'shelf' ? 'minmax(0,320px)' : 'repeat(3,1fr)';
+  box.innerHTML = slots.map(([k, label]) => `
     <div style="border:1px dashed var(--border,#ccc);border-radius:10px;padding:8px;text-align:center;background:linear-gradient(#f3f1f4,#e2e3e6)">
       <div style="font-weight:700;margin-bottom:6px">${label}</div>
       <div style="height:180px;display:flex;align-items:center;justify-content:center">
@@ -11790,9 +11820,14 @@ function mmHangerRender() {
   const n = MM_HANGER_SLOTS.filter(([k]) => mmHanger[k]).length;
   const st = document.getElementById('mmHangerStatus');
   if (st && !st.dataset.busy) {
-    st.style.color = n === 3 || n === 0 ? 'var(--text-faint)' : 'var(--warn)';
-    st.textContent = n === 3 ? 'Готово: вещь будет на вешалке в приложении после «Сохранить».'
-      : n === 0 ? '' : `Загружено ${n} из 3 — пока нет всех трёх фото, вешалка в приложении не появится.`;
+    if (mode === 'shelf') {
+      st.style.color = mmHanger.side ? 'var(--text-faint)' : 'var(--warn)';
+      st.textContent = mmHanger.side ? 'Готово: пара будет на полочке в приложении после «Сохранить».' : 'Нет фото сбоку — без него товар покажется обычной карточкой.';
+    } else if (mode === 'hanger') {
+      st.style.color = n === 3 ? 'var(--text-faint)' : 'var(--warn)';
+      st.textContent = n === 3 ? 'Готово: вещь будет на вешалке в приложении после «Сохранить».'
+        : `Загружено ${n} из 3 — пока нет всех трёх фото, вешалка в приложении не появится.`;
+    } else st.textContent = '';
   }
   box.querySelectorAll('[data-hanger-pick]').forEach((b) => b.addEventListener('click', () => mmHangerPick(b.dataset.hangerPick)));
   box.querySelectorAll('[data-hanger-del]').forEach((b) => b.addEventListener('click', () => { mmHanger[b.dataset.hangerDel] = null; mmHangerRender(); }));
