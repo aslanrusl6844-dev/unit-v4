@@ -11842,7 +11842,8 @@ function mmHangerPick(slot) {
 }
 
 async function mmRemoveBg(file) {
-  if (!mmBgLib) mmBgLib = await import('https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.4.5/+esm');
+  // 1.4.5 на jsdelivr собран с ошибкой (lodash: нет export memoize) — модуль не грузился, фон не убирался.
+  if (!mmBgLib) mmBgLib = await import('https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.5.5/+esm');
   const fn = mmBgLib.removeBackground || mmBgLib.default;
   return fn(file, { output: { format: 'image/png' } });
 }
@@ -11908,7 +11909,7 @@ const MM_SIZE_PRESETS = ['XS', 'S', 'M', 'L', 'XL', 'XXL', '3XL'];
 function mmSizesPayload() {
   const el = document.getElementById('mmSizes');
   if (!el) return [];
-  return [...new Set(el.value.split(/[,;\s]+/).map((x) => x.trim()).filter(Boolean))].slice(0, 20);
+  return [...new Set(el.value.split(/[,;\/|\s]+/).map((x) => x.trim()).filter(Boolean))].slice(0, 20);
 }
 
 function mmSizesSet(list) {
