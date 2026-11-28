@@ -11814,6 +11814,7 @@ function mmHangerRender() {
       </div>
       <div style="display:flex;gap:6px;justify-content:center;margin-top:6px">
         <button type="button" class="btn btn--ghost" data-hanger-pick="${k}">${mmHanger[k] ? 'Заменить' : 'Загрузить'}</button>
+        ${mmHanger[k] && k === 'side' ? `<button type="button" class="btn btn--ghost" data-hanger-flip="${k}" title="Отразить зеркально — носок смотрит в другую сторону">↔ Отразить</button>` : ''}
         ${mmHanger[k] ? `<button type="button" class="btn btn--ghost" data-hanger-del="${k}">✕</button>` : ''}
       </div>
     </div>`).join('');
@@ -11831,6 +11832,7 @@ function mmHangerRender() {
   }
   box.querySelectorAll('[data-hanger-pick]').forEach((b) => b.addEventListener('click', () => mmHangerPick(b.dataset.hangerPick)));
   box.querySelectorAll('[data-hanger-del]').forEach((b) => b.addEventListener('click', () => { mmHanger[b.dataset.hangerDel] = null; mmHangerRender(); }));
+  box.querySelectorAll('[data-hanger-flip]').forEach((b) => b.addEventListener('click', () => mmHangerFlip(b.dataset.hangerFlip)));
 }
 
 function mmHangerPick(slot) {
@@ -11934,4 +11936,36 @@ function mmSizesRenderQuick() {
     document.getElementById('mmSizes').value = next.join(', ');
     mmSizesRenderQuick();
   }));
+}
+
+
+/** Отразить фото зеркально (кроссовок смотрит носком в другую сторону) и загрузить заново. */
+async function mmHangerFlip(slot) {
+  const url = mmHanger[slot];
+  if (!url) return;
+  const st = document.getElementById('mmHangerStatus');
+  st.dataset.busy = '1';
+  st.style.color = 'var(--text-faint)';
+  st.textContent = 'Отражаю…';
+  try {
+    const res = await fetch(url, { mode: 'cors' });
+    if (!res.ok) throw new Error('не удалось открыть фото');
+    const bmp = await createImageBitmap(await res.blob());
+    const c = document.createElement('canvas');
+    c.width = bmp.width; c.height = bmp.height;
+    const ctx = c.getContext('2d');
+    ctx.translate(c.width, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(bmp, 0, 0);
+    const png = await new Promise((r) => c.toBlob(r, 'image/png'));
+    const name = (url.split('/').pop() || 'photo').replace(/\.[^.]+$/, '').replace(/-flip$/, '') + '-flip.png';
+    mmHanger[slot] = await uploadMyMarketFile(new File([png], name, { type: 'image/png' }));
+    delete st.dataset.busy;
+    mmHangerRender();
+    st.textContent = 'Отражено. Нажмите «Сохранить», чтобы применить.';
+  } catch (err) {
+    delete st.dataset.busy;
+    st.textContent = 'Не получилось отразить: ' + err.message;
+    st.style.color = 'var(--loss)';
+  }
 }
